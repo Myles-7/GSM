@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 全页面中文翻译/恢复原文 | App、PageTranslationButton、usePageTranslation、pageTranslationClient | 固定 translate.js 4.0.0，动态 DOM/Portal 可翻译，跳过代码/敏感内容，不持久化译文 |
 | 翻译偏好 | 原 Store 的 pageTranslationEnabled | 保留现有版本 16，清理旧翻译字段，不恢复旧服务/按钮 |
-| 桌面热更新 | scripts/dev-desktop.mjs | 自动选端口，Vite 就绪后启动 Electron，不要求打安装包 |
+| 桌面热更新 | scripts/dev-desktop.mjs、desktop-dev-address.mjs | 默认自动选端口；快捷方式显式固定原数据端口，占用时报错；Vite 就绪后启动 Electron |
 | 开发地址 | electron/main.js 的 GSM_DEV_SERVER_URL | 保留环境变量和默认地址回退 |
 | 本地启动/停止 | scripts/launch.mjs、stop.mjs、start-gsm.bat、stop-gsm.bat | 保留既有桌面快捷方式，不随意终止无关进程 |
 | 个人图标 | public/app.ico | 保留 |
@@ -23,4 +23,7 @@
 - 后端 CSP 为翻译放行精确 Edge 来源，仍禁止 unsafe-eval。
 - 过滤器规范化与个人翻译偏好兼容；正常加载、后端同步、旧备份导入均已验证。
 - 上游网络路由/同步竞态修复完整保留；Docker 构建上下文排除个人数据与密钥。
+- 交付启动时发现自动选端口会切换 IndexedDB 来源，补充开发启动器对
+  `GSM_DEV_SERVER_URL` 的校验与精确端口绑定。原桌面快捷方式固定
+  `http://127.0.0.1:5174`；未设置环境变量的命令行启动仍保留原自动选择行为。
 - 详细门禁与已知限制见 `upgrades/v0.8.4.md`。

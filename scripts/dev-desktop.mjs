@@ -3,13 +3,17 @@ import net from 'node:net';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { parseDesktopDevAddress } from './desktop-dev-address.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const viteEntry = path.join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
-const port = await findAvailablePort(5173);
-const devServerUrl = `http://127.0.0.1:${port}`;
+const pinnedAddress = parseDesktopDevAddress(process.env.GSM_DEV_SERVER_URL);
+const host = pinnedAddress?.host ?? '127.0.0.1';
+// A pinned origin owns persisted browser data. Never silently move it to another port.
+const port = await findAvailablePort(pinnedAddress?.port ?? 5173, pinnedAddress ? 1 : 100, host);
+const devServerUrl = pinnedAddress?.url ?? `http://${host}:${port}`;
 
-const vite = spawn(process.execPath, [viteEntry, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {
+const vite = spawn(process.execPath, [viteEntry, '--host', host, '--port', String(port), '--strictPort'], {
   cwd: projectRoot,
   stdio: 'inherit',
 });
@@ -64,17 +68,19 @@ async function waitForDevServer() {
   throw new Error(`Timed out waiting for Vite at ${devServerUrl}.`);
 }
 
-async function findAvailablePort(startPort) {
-  for (let port = startPort; port < startPort + 100; port += 1) {
+async function findAvailablePort(startPort, count, host) {
+  for (let port = startPort; port < startPort + count; port += 1) {
     const available = await new Promise((resolve) => {
       const server = net.createServer();
       server.once('error', () => resolve(false));
-      server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+      server.listen(port, host, () => server.close(() => resolve(true)));
     });
     if (available) return port;
   }
 
-  throw new Error(`No available development port found near ${startPort}.`);
+  throw new Error(count === 1
+    ? `Pinned desktop port ${startPort} is unavailable. Close its owner before restarting; the storage origin will not be changed.`
+    : `No available development port found near ${startPort}.`);
 }
 
 try {
