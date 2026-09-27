@@ -421,6 +421,24 @@ export interface AssetFilter {
   id: string;
   name: string;
   keywords: string[];
+  /**
+   * 黑名单关键词：资产文件名命中任一关键词时，即使命中 keywords 也不匹配。
+   * 用于在同平台过滤器内剔除安装包等噪声（如 "setup"、"installer"）。
+   */
+  excludeKeywords?: string[];
+  /**
+   * 始终包含的仓库（Repository.full_name）：该过滤器启用时，这些仓库的 Release
+   * 无需命中关键词也会出现在筛选结果中（用于 Release 不含过滤器关键词的仓库，
+   * 如仅发布 zip 或源码归档的项目）；未选过滤器时列表不受影响，也不影响订阅。
+   */
+  includeRepos?: string[];
+  /**
+   * 始终排除的仓库（Repository.full_name）：仅作用于所属过滤器。该过滤器启用时，
+   * 这些仓库的 Release 不通过本过滤器（优先于本过滤器的关键词与 includeRepos），
+   * 但不会否决其它已启用过滤器的命中。不复用 #405 遗留的 `excludeRepos` 键，
+   * 避免历史数据被重新解释为该语义。
+   */
+  alwaysExcludeRepos?: string[];
   isPreset?: boolean;
   icon?: string;
 }

@@ -17,3 +17,12 @@ assets
 templates
 *.md
 .DS_Store
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+server/data
+.playwright-cli
+playwright-report
+test-results
+**/*.log

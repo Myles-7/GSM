@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "recordedOn": "2026-09-27",
   "timeZone": "Asia/Shanghai",
-  "status": "pending-local-history-verification",
+  "status": "v0.8.4-validation-in-progress",
   "repositories": {
     "upstream": {
       "url": "https://github.com/AmintaCCCP/GithubStarsManager.git",
@@ -13,34 +13,31 @@
       "defaultBranch": "main"
     }
   },
-  "remoteObservation": {
-    "method": "git ls-remote --symref",
-    "upstreamMainCommit": "6f509d6c65fd537538281b794a6fbdfdb233e8db",
-    "originMainCommit": "6f509d6c65fd537538281b794a6fbdfdb233e8db",
-    "releaseCandidate": {
-      "tag": "v0.8.3",
-      "tagObject": "925305e6ea9bfb126c8ad10ee563d24107070ab4",
-      "commit": "7e63b30774ec9b36e5c57441950a05b94a753fff",
-      "latestReleaseVerified": false
-    }
-  },
-  "upstreamVersion": null,
-  "upstreamCommit": null,
-  "personalVersion": null,
-  "personalCommit": null,
+  "upstreamVersion": "0.8.3",
+  "upstreamCommit": "7e63b30774ec9b36e5c57441950a05b94a753fff",
+  "personalVersion": "P0.1.0",
+  "personalCommit": "20f861a5d8174db67ba4541c93158e6d9cf0bef4",
   "upgradeDate": null,
-  "local": {
-    "packageVersion": "0.8.3",
-    "intendedBranch": "personal/main",
-    "gitInitialized": false,
-    "remotesConfigured": false,
-    "fullHistoryFetched": false,
-    "sourceComparedWithUpstream": false,
-    "pushed": false
+  "candidate": {
+    "upstreamVersion": "0.8.4",
+    "upstreamCommit": "ade5901c20c1a98512b3a09bce0ff176d16079d8",
+    "branch": "upgrade/upstream-v0.8.4",
+    "personalVersion": "P0.1.1"
   },
-  "blocker": {
-    "operation": "git init --initial-branch=personal/main",
-    "executed": false,
-    "reason": "Permission approval service returned 403 Forbidden; Git metadata setup requires approval to proceed."
+  "historyReconstruction": {
+    "method": "full upstream history, read-tree without worktree replacement, personal differences committed on v0.8.3",
+    "originalPersonalHistoryRecovered": false,
+    "sourceComparison": { "equal": 769, "modified": 39, "deleted": 10 },
+    "baselineTag": "personal-P0.1.0",
+    "recoveryTag": "recovery/pre-v0.8.4"
+  },
+  "local": {
+    "packageVersion": "0.8.4",
+    "intendedBranch": "personal/main",
+    "gitInitialized": true,
+    "remotesConfigured": true,
+    "fullHistoryFetched": true,
+    "sourceComparedWithUpstream": true,
+    "pushed": false
   }
 }

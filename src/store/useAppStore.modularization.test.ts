@@ -230,6 +230,36 @@ describe('PR-07 Store modularization compatibility', () => {
     }
   });
 
+  it('normalizes v0.8.4 filters idempotently while preserving personal translation and user data', () => {
+    const options = persistenceOptions();
+    const snapshot = buildPersistedSnapshot({
+      pageTranslationEnabled: true,
+      customCategories: [{ id: 'mine', name: 'My category', keywords: ['personal'] }],
+      aiConfigs: [{ id: 'local-ai', name: 'My config', apiKey: '', model: 'test' }],
+      assetFilters: [{
+        id: 'personal', name: 'Personal', keywords: [' zip ', 'ZIP'],
+        includeRepos: ['Owner/Repo'], alwaysExcludeRepos: ['Owner/Blocked'],
+        excludeRepos: ['owner/legacy'],
+      } as never],
+      translationEngine: 'ai',
+      autoTranslateRepoDescription: true,
+    } as never);
+    const once = options.merge(snapshot, actualStore.useAppStore.getInitialState());
+    const twice = options.merge(options.partialize(once), actualStore.useAppStore.getInitialState());
+    expect(options.version).toBe(16);
+    expect(twice.assetFilters).toEqual([{
+      id: 'personal', name: 'Personal', keywords: ['zip'],
+      includeRepos: ['Owner/Repo'], alwaysExcludeRepos: ['Owner/Blocked'],
+    }]);
+    expect(twice.assetFilters).toEqual(once.assetFilters);
+    expect(twice.pageTranslationEnabled).toBe(true);
+    expect(twice.repositories).toEqual(once.repositories);
+    expect(twice.customCategories).toEqual(snapshot.customCategories);
+    expect(twice.aiConfigs).toEqual(snapshot.aiConfigs);
+    expect(twice).not.toHaveProperty('translationEngine');
+    expect(twice).not.toHaveProperty('autoTranslateRepoDescription');
+  });
+
   it('normalizes theme tokens at the hydration boundary without a persistence version bump', () => {
     const merged = persistenceOptions().merge(
       buildPersistedSnapshot({ themeTokens: { accentColor: 'javascript:bad', fontScale: 9 } as never }),

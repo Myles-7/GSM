@@ -357,8 +357,8 @@ To customize, create a `.env` file:
 ```bash
 API_SECRET=your-secret
 ENCRYPTION_KEY=your-key
-BACKEND_IMAGE_TAG=0.8.3   # pin backend image version (default: latest)
-FRONTEND_IMAGE_TAG=0.8.3  # pin frontend image version (default: latest)
+BACKEND_IMAGE_TAG=0.8.4   # pin backend image version (default: latest)
+FRONTEND_IMAGE_TAG=0.8.4  # pin frontend image version (default: latest)
 ```
 
 #### Backend only (docker run)
@@ -391,6 +391,7 @@ npm run dev
 | `API_SECRET` | No | Bearer token for API authentication. If unset, auth is disabled. |
 | `ENCRYPTION_KEY` | No | AES-256 key for encrypting stored secrets. Auto-generated if unset. |
 | `PORT` | No | Server port (default: 3000) |
+| `CSP_CONNECT_SRC` | No | Comma-separated extra origins appended to the `connect-src` CSP directive, for custom AI provider / vector-search worker endpoints called directly from the browser (e.g. `https://ai.example.com,https://worker.example.org`). |
 
 #### Connecting Frontend to Backend
 1. Open Settings panel in the app

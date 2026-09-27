@@ -18,3 +18,9 @@ assets
 templates
 *.md
 .DS_Store
+**/.env
+**/.env.*
+.playwright-cli
+playwright-report
+test-results
+**/*.log

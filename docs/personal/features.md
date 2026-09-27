@@ -16,3 +16,11 @@
 | 工程约束 | eslint.config.js、check-boundaries.cjs | 保留组件访问服务边界、旧翻译模块移除规则 |
 
 完整实现边界与隐私说明见 `translate-js-page-translation.md`。
+
+## P0.1.1 迁移增量
+
+- 批量 Star 新弹窗复用全页面翻译，不再阻塞选中或 Star。
+- 后端 CSP 为翻译放行精确 Edge 来源，仍禁止 unsafe-eval。
+- 过滤器规范化与个人翻译偏好兼容；正常加载、后端同步、旧备份导入均已验证。
+- 上游网络路由/同步竞态修复完整保留；Docker 构建上下文排除个人数据与密钥。
+- 详细门禁与已知限制见 `upgrades/v0.8.4.md`。
