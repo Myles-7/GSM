@@ -36,7 +36,11 @@ export const normalizePersistedState = (
   persisted: PersistedAppState | undefined,
   currentState: AppStoreState
 ): Partial<AppStoreState> => {
-  const safePersisted = persisted ?? {};
+  const safePersisted = { ...persisted };
+  // Discard retired preferences instead of leaking them back into live state.
+  for (const key of ['translationEngine', 'autoTranslateRepoDescription']) {
+    delete (safePersisted as Record<string, unknown>)[key];
+  }
   const defaultDiscoveryChannelIds = new Set(defaultDiscoveryChannels.map((channel) => channel.id));
   const authMirror = readAuthMirror();
 
@@ -183,12 +187,7 @@ export const normalizePersistedState = (
     // 卡片可见字段（开发守则 §14）：逐项校验，非法值按默认（显示）处理
     repositoryCardFields: normalizeRepositoryCardFields((safePersisted as Record<string, unknown>).repositoryCardFields),
     language: isAppLanguage(safePersisted.language) ? safePersisted.language : currentState.language,
-    translationEngine: safePersisted.translationEngine === 'google' || safePersisted.translationEngine === 'ai'
-      ? safePersisted.translationEngine
-      : 'microsoft',
-    autoTranslateRepoDescription: typeof safePersisted.autoTranslateRepoDescription === 'boolean'
-      ? safePersisted.autoTranslateRepoDescription
-      : false,
+    pageTranslationEnabled: safePersisted.pageTranslationEnabled === true,
     isAuthenticated: !!(resolvedUser && resolvedGithubToken),
     releaseViewMode: safePersisted.releaseViewMode || 'timeline',
     releaseShowMode: safePersisted.releaseShowMode === 'unread' ? 'unread' : 'all',

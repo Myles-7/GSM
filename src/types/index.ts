@@ -327,9 +327,6 @@ export interface SimilarViewState {
 export type AIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export type MiMoPlan = 'api' | 'token-plan';
 
-/** README 文档翻译使用的引擎：微软 Edge 翻译（免费）、Google 翻译（免费）或用户配置的 AI。 */
-export type TranslationEngine = 'microsoft' | 'google' | 'ai';
-
 export type SecretStatus = 'ok' | 'empty' | 'decrypt_failed';
 
 export interface AIConfig {
@@ -545,10 +542,8 @@ export interface AppState {
   currentView: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription';
   selectedCategory: string;
   language: AppLanguage;
-  /** README 文档翻译引擎（微软 / Google / AI），见 TranslationEngine */
-  translationEngine: TranslationEngine;
-  /** 自动翻译卡片上的仓库原始描述为界面语言（默认关闭；同语言/失败时显示原文） */
-  autoTranslateRepoDescription: boolean;
+  /** Global, display-only English to Chinese translation via translate.js. */
+  pageTranslationEnabled: boolean;
   isSidebarCollapsed: boolean;
   readmeModalOpen: boolean;
   headerMenuConfig: HeaderMenuItem[];

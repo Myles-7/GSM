@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "Back to top"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "Content is already in English",
-    "original": "Original",
-    "translated": "Translated",
-    "bilingual": "Bilingual",
-    "translating": "Translating…",
-    "content-already-in-language": "Content is already in {{language}}; no translation needed"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "Plugin action failed",
     "export-complete": "Export complete",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "Switch README language",
-    "close-translation": "Close Translation",
-    "translated": "Translated",
-    "original": "Original",
-    "translated-2": "Translated",
-    "bilingual": "Bilingual",
-    "retry-translation": "Retry Translation",
     "retry": "Retry",
-    "translate-document": "Translate Document",
-    "translating": "Translating…",
-    "translate-to-chinese": "Translate to Chinese",
-    "translate-to-english": "Translate to English",
     "table-of-contents": "Table of Contents",
     "font-size-v1": "Font Size: {{v1}}",
     "view-on-github": "View on GitHub",
@@ -559,17 +541,7 @@
     "maximum-files-read": "Maximum files read",
     "maximum-code-files-read": "Maximum code files read",
     "code-is-read-only-when-documentation-evidence-is": "Code is read only when documentation evidence is insufficient and the Evidence Gate requests it.",
-    "maximum-execution-time-seconds": "Maximum execution time (seconds)",
-    "translation-engine": "Translation Engine",
-    "engine-used-for-readme-document-translation": "Engine used for README document translation",
-    "microsoft-translate-free": "Microsoft Translate (Free)",
-    "google-translate-free": "Google Translate (Free)",
-    "ai-translation-uses-the-active-ai-configuration": "AI Translation (uses the active AI configuration)",
-    "ai-translation-usually-has-higher-quality-but-is": "AI translation usually has higher quality, but is slower and consumes API quota. It uses the active AI configuration above.",
-    "auto-translate-repo-descriptions": "Auto-translate repository descriptions",
-    "when-enabled-card-repository-description": "When enabled, repository descriptions on the repositories and discovery cards are automatically translated into the interface language. Descriptions already in that language stay unchanged, and the original text is shown if translation fails.",
-    "free-google-endpoint-no-configuration-needed-may": "Free Google endpoint, no configuration needed; may be unreachable in some regions.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Free Microsoft Edge endpoint, no configuration needed, fast direct connection."
+    "maximum-execution-time-seconds": "Maximum execution time (seconds)"
   },
   "backendPanel": {
     "auto": "Auto",
@@ -1248,5 +1220,11 @@
     "download": "Download",
     "detected-from-filenames-and-release-metadata-no": "Detected from filenames and release metadata. No safety check is performed and nothing runs automatically. You can always pick another asset in the list below.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "Excluded {{v1}} asset(s) that do not apply to this device (source code, checksums, signatures, debug symbols, blockmaps, other platforms or architectures)."
+  },
+  "pageTranslation": {
+    "enable": "Translate page to Chinese",
+    "original": "Show original page",
+    "translating": "Translating page; click to restore original",
+    "retry": "Some text could not be translated. Retry"
   }
 }

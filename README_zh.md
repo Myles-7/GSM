@@ -321,6 +321,13 @@ npm install
 npm run dev
 ```
 
+### 桌面端热更新开发
+```bash
+npm run dev:desktop
+```
+
+该命令会自动启动 Vite 与 Electron。React、样式和前端逻辑通过 HMR 即时更新，无需重新构建安装包；修改 `electron/main.js` 或 `electron/preload.js` 后重启桌面进程即可。若 5173 端口被占用，会自动选择附近的空闲端口。
+
 > [!TIP]
 > 本地使用 `npm run dev` 运行项目时，AI 服务和 WebDAV 的调用可能因浏览器 CORS 限制而失败。建议使用预编译客户端，或启动后端服务器（`cd server && npm run dev`）代理 API 请求以完全避免 CORS 问题。
 

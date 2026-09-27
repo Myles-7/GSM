@@ -6,7 +6,6 @@ import { getPlatformIcon as getSharedPlatformIcon } from './platformMeta';
 import type { DiscoveryRepo } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useDiscoveryRepoActions } from '../features/discovery/hooks/useDiscoveryRepoActions';
-import { useTranslatedDescription } from '../hooks/useTranslatedDescription';
 import { ReadmeModal } from './ReadmeModal';
 import { WeeklyIssueModal } from './WeeklyIssueModal';
 import { XTweetModal } from './XTweetModal';
@@ -31,8 +30,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
 
   // 「自动翻译仓库描述」：发现页卡片原始描述与 AI 总结同时展示，有描述即翻译；
   // 翻译中/失败/同语言时回退原文。
-  const translatedDescription = useTranslatedDescription(repo.description);
-  const displayDescription = translatedDescription ?? repo.description ?? null;
+  const displayDescription = repo.description ?? null;
 
   const { analyze, star, executeUnstar, isAnalyzing, isStarring, isStarred } =
     useDiscoveryRepoActions({ repo });

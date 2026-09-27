@@ -102,7 +102,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL(process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
     // 生产环境：尝试多个可能的路径

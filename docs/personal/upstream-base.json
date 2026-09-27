@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-09-27",
+  "timeZone": "Asia/Shanghai",
+  "status": "pending-local-history-verification",
+  "repositories": {
+    "upstream": {
+      "url": "https://github.com/AmintaCCCP/GithubStarsManager.git",
+      "defaultBranch": "main"
+    },
+    "origin": {
+      "url": "https://github.com/Myles-7/GSM.git",
+      "defaultBranch": "main"
+    }
+  },
+  "remoteObservation": {
+    "method": "git ls-remote --symref",
+    "upstreamMainCommit": "6f509d6c65fd537538281b794a6fbdfdb233e8db",
+    "originMainCommit": "6f509d6c65fd537538281b794a6fbdfdb233e8db",
+    "releaseCandidate": {
+      "tag": "v0.8.3",
+      "tagObject": "925305e6ea9bfb126c8ad10ee563d24107070ab4",
+      "commit": "7e63b30774ec9b36e5c57441950a05b94a753fff",
+      "latestReleaseVerified": false
+    }
+  },
+  "upstreamVersion": null,
+  "upstreamCommit": null,
+  "personalVersion": null,
+  "personalCommit": null,
+  "upgradeDate": null,
+  "local": {
+    "packageVersion": "0.8.3",
+    "intendedBranch": "personal/main",
+    "gitInitialized": false,
+    "remotesConfigured": false,
+    "fullHistoryFetched": false,
+    "sourceComparedWithUpstream": false,
+    "pushed": false
+  },
+  "blocker": {
+    "operation": "git init --initial-branch=personal/main",
+    "executed": false,
+    "reason": "Permission approval service returned 403 Forbidden; Git metadata setup requires approval to proceed."
+  }
+}

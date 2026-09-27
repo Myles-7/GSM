@@ -115,18 +115,6 @@
           }
         ]
       ],
-      "translateTexts": [
-        [
-          {
-            "role": "system",
-            "content": "你是一个专业的机器翻译引擎。把用户提供的每条文本翻译成自然流畅的目标语言。规则：保留占位符（如 {0}）、HTML 行内标签（如 <code>）、专有名词和命令原样不译；不加解释；输出一个 JSON 字符串数组，长度与输入完全一致。"
-          },
-          {
-            "role": "user",
-            "content": "目标语言：English\n源语言：auto-detect\n\n待翻译文本（JSON 数组）：\n[\"Hello world\",\"Install the app\"]"
-          }
-        ]
-      ],
       "createCustomAnalysisPrompt": "Analyze zh.\n仓库名称: acme/sample-app\n描述: A sample repository for fixture snapshots\n编程语言: TypeScript\nStar数: 120\n主题标签: react, typescript\n客观事实（中性，不代表质量结论）:\n状态: 已归档=未知, 已停用=未知, Fork=未知, 模板=未知\n创建时间: 2024-01-01 | 最近推送: 2024-06-01\nLicense: 未声明 | Open Issues: 未知\n保守观测: no-recent-activity\n\nREADME内容 (前2000字符):\n# Sample App\n\nA demo repository used by the i18n fixture guard.\n\n## Install\n\nnpm install sample-app\n\n\n可用的应用分类: 自定义分类\nCategories hint: 自定义分类（custom,自定义）"
     },
     "en": {
@@ -241,18 +229,6 @@
           {
             "role": "user",
             "content": "User query: \"react state management\"\n\nCandidate repositories (2 total):\n1. ID: 42 | acme/sample-app\n   A sample repository for fixture snapshots\n   TypeScript | ★120\n\n2. ID: 43 | acme/sample-cli\n   A sample repository for fixture snapshots\n   TypeScript | ★120\n\nRequirements:\n- Keep only repositories that satisfy the query intent; if none truly do, return [] instead of padding with loosely related ones.\n- When relevance is similar, prefer higher stars and more active projects.\n- Return at most 20 IDs."
-          }
-        ]
-      ],
-      "translateTexts": [
-        [
-          {
-            "role": "system",
-            "content": "You are a professional machine translation engine. Translate each input text into the target language naturally. Rules: keep placeholders (e.g. {0}), inline HTML tags (e.g. <code>), proper nouns and commands untranslated; no explanations; output a JSON array of strings with exactly the same length as the input."
-          },
-          {
-            "role": "user",
-            "content": "Target language: Simplified Chinese\nSource language: auto-detect\n\nTexts to translate (JSON array):\n[\"Hello world\",\"Install the app\"]"
           }
         ]
       ],

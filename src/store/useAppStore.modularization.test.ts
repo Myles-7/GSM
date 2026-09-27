@@ -88,8 +88,7 @@ const currentPersistedKeys = [
   'currentView',
   'selectedCategory',
   'language',
-  'translationEngine',
-  'autoTranslateRepoDescription',
+  'pageTranslationEnabled',
   'isSidebarCollapsed',
   'headerMenuConfig',
   'backendApiSecret',
@@ -168,6 +167,23 @@ const historicalSnapshots = (): PersistedSnapshot[] => [
 ];
 
 describe('PR-07 Store modularization compatibility', () => {
+  it('retires legacy translation preferences without enabling whole-page uploads implicitly', () => {
+    const legacy = {
+      ...buildPersistedSnapshot(),
+      translationEngine: 'ai',
+      autoTranslateRepoDescription: true,
+    };
+    const merged = persistenceOptions().merge(legacy, actualStore.useAppStore.getInitialState());
+    expect(merged.pageTranslationEnabled).toBe(false);
+    expect(merged).not.toHaveProperty('translationEngine');
+    expect(merged).not.toHaveProperty('autoTranslateRepoDescription');
+    const enabled = persistenceOptions().merge(
+      buildPersistedSnapshot({ pageTranslationEnabled: true }),
+      actualStore.useAppStore.getInitialState(),
+    );
+    expect(enabled.pageTranslationEnabled).toBe(true);
+    expect(partialize({ pageTranslationEnabled: true }).pageTranslationEnabled).toBe(true);
+  });
   it('keeps exactly one persistence shell and the current persisted key set', () => {
     const options = persistenceOptions();
     const persisted = partialize({

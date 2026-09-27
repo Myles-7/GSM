@@ -12,6 +12,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
 import { HeaderMenuId, AppState } from '../types';
+import { PageTranslationButton } from './PageTranslationButton';
 
 const MENU_META: Record<HeaderMenuId, {
   icon: React.ComponentType<{ className?: string }>;
@@ -152,6 +153,7 @@ export const Header: React.FC = () => {
 
           {/* User Actions */}
           <div className="flex items-center gap-2 sm:gap-3 hd-btns lg:hd-btns">
+            <PageTranslationButton />
             {/* Theme Toggle */}
             <Tooltip>
               <TooltipTrigger asChild>

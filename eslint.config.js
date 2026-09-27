@@ -25,7 +25,8 @@ const BANNED_COMPONENT_SERVICES = [
   'rpcDownloadService',
   'githubApiFactory',
   'updateService',
-  'translateService',
+  'pageTranslation',
+  'pageTranslationClient',
 ];
 
 // Static-import ban patterns for no-restricted-imports.

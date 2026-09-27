@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "トップに戻る"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "コンテンツはすでに中国語になっているため、翻訳は必要ありません",
-    "original": "オリジナル",
-    "translated": "翻訳",
-    "bilingual": "バイリンガル",
-    "translating": "翻訳中…",
-    "content-already-in-language": "コンテンツはすでに {{language}} なので、翻訳する必要はありません"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "プラグインの操作に失敗しました",
     "export-complete": "エクスポートが完了しました",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "README の言語を切り替える",
-    "close-translation": "翻訳をオフにする",
-    "translated": "翻訳済み",
-    "original": "オリジナル",
-    "translated-2": "翻訳",
-    "bilingual": "バイリンガル",
-    "retry-translation": "翻訳を再試行する",
     "retry": "もう一度やり直してください",
-    "translate-document": "文書を翻訳する",
-    "translating": "翻訳中…",
-    "translate-to-chinese": "中国語に翻訳する",
-    "translate-to-english": "英語に翻訳する",
     "table-of-contents": "目次",
     "font-size-v1": "フォントサイズ: {{v1}}",
     "view-on-github": "GitHub で見る",
@@ -559,17 +541,7 @@
     "maximum-files-read": "ファイル読み取りの最大数",
     "maximum-code-files-read": "コードファイルの最大読み取り数",
     "code-is-read-only-when-documentation-evidence-is": "コードは、文書化された証拠が不十分で、Evidence Gate が明示的に要求する場合にのみ読み取られます。",
-    "maximum-execution-time-seconds": "最大実行時間(秒)",
-    "translation-engine": "翻訳エンジン",
-    "engine-used-for-readme-document-translation": "READMEドキュメントの翻訳に使用されるエンジン",
-    "microsoft-translate-free": "Microsoft 翻訳者 (無料)",
-    "google-translate-free": "Google翻訳（無料）",
-    "ai-translation-uses-the-active-ai-configuration": "AI 翻訳 (現在有効化されている AI 構成を使用)",
-    "ai-translation-usually-has-higher-quality-but-is": "AI 翻訳は一般に高品質ですが、速度が遅く API クレジットを消費するため、上記の現在アクティブな AI 構成が使用されます。",
-    "auto-translate-repo-descriptions": "リポジトリの説明を自動翻訳",
-    "when-enabled-card-repository-description": "有効にすると、リポジトリページとディスカバリーページのカードに表示されるリポジトリの元の説明が、自動的にインターフェースの言語に翻訳されます。すでにその言語の説明は元のまま表示され、翻訳に失敗した場合も元のテキストが表示されます。",
-    "free-google-endpoint-no-configuration-needed-may": "Google の無料インターフェースは設定を必要としません。一部のエリアは直接接続できない場合があります。",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Microsoft Edgeの無料インターフェイス、設定不要、直接接続速度は高速です。"
+    "maximum-execution-time-seconds": "最大実行時間(秒)"
   },
   "backendPanel": {
     "auto": "知的",
@@ -1248,6 +1220,11 @@
     "download": "ダウンロード",
     "detected-from-filenames-and-release-metadata-no": "ファイル名と Release メタデータから判定しています。安全性の検証は行わず、自動実行も行いません。下のアセット一覧からいつでも別のアセットを選べます。",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "このデバイスに該当しないアセット（ソースコード、チェックサム、署名、デバッグシンボル、blockmap、他のプラットフォームやアーキテクチャ）を {{v1}} 件除外しました。"
+  },
+  "pageTranslation": {
+    "enable": "ページを中国語に翻訳",
+    "original": "ページの原文を表示",
+    "translating": "翻訳中。クリックで原文に戻す",
+    "retry": "一部の翻訳に失敗しました。再試行"
   }
-
 }

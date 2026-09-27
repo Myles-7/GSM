@@ -32,6 +32,14 @@ release
 # Backend server data
 server/data/*.db
 server/data/.encryption-key
+server/data/*.db-wal
+server/data/*.db-shm
+.env.*
+!.env.example
+!server/.env.example
+.playwright-cli/
+playwright-report/
+test-results/
 server/dist/
 
  # Orchestrator internal files

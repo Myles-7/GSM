@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "回到顶部"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "内容已是中文，无需翻译",
-    "original": "原文",
-    "translated": "译文",
-    "bilingual": "双语",
-    "translating": "翻译中…",
-    "content-already-in-language": "内容已是{{language}}，无需翻译"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "插件操作失败",
     "export-complete": "导出完成",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "切换 README 语言",
-    "close-translation": "关闭翻译",
-    "translated": "已翻译",
-    "original": "原文",
-    "translated-2": "译文",
-    "bilingual": "双语",
-    "retry-translation": "重试翻译",
     "retry": "重试",
-    "translate-document": "翻译文档",
-    "translating": "翻译中…",
-    "translate-to-chinese": "翻译为中文",
-    "translate-to-english": "翻译为英文",
     "table-of-contents": "目录",
     "font-size-v1": "字体大小: {{v1}}",
     "view-on-github": "在 GitHub 上查看",
@@ -559,17 +541,7 @@
     "maximum-files-read": "最大文件读取数",
     "maximum-code-files-read": "最大代码文件读取数",
     "code-is-read-only-when-documentation-evidence-is": "代码只会在文档证据不足且 Evidence Gate 明确要求时读取。",
-    "maximum-execution-time-seconds": "最长执行时间（秒）",
-    "translation-engine": "翻译引擎",
-    "engine-used-for-readme-document-translation": "README 文档翻译使用的引擎",
-    "microsoft-translate-free": "微软翻译（免费）",
-    "google-translate-free": "Google 翻译（免费）",
-    "ai-translation-uses-the-active-ai-configuration": "AI 翻译（使用当前激活的 AI 配置）",
-    "ai-translation-usually-has-higher-quality-but-is": "AI 翻译质量通常更高，但速度较慢且消耗 API 额度，将使用上方当前激活的 AI 配置。",
-    "auto-translate-repo-descriptions": "自动翻译仓库描述",
-    "when-enabled-card-repository-description": "开启后，仓库页与发现页卡片上的仓库原始描述会自动翻译成当前界面语言显示；已是界面语言的描述保持原文，翻译失败时也显示原文。",
-    "free-google-endpoint-no-configuration-needed-may": "Google 免费接口，无需配置；部分地区可能无法直连。",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "微软 Edge 免费接口，无需配置，直连速度快。"
+    "maximum-execution-time-seconds": "最长执行时间（秒）"
   },
   "backendPanel": {
     "auto": "智能",
@@ -1248,5 +1220,11 @@
     "download": "下载",
     "detected-from-filenames-and-release-metadata-no": "按文件名与 Release 元数据识别，未验证安装包安全性，也不会自动运行。你始终可以在下方资产列表中手动选择其他资产。",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "已排除 {{v1}} 个不适用于当前设备的资产（源代码、校验和、签名、调试符号、blockmap、其他平台/架构）。"
+  },
+  "pageTranslation": {
+    "enable": "整页翻译为中文",
+    "original": "显示全页原文",
+    "translating": "正在翻译全页，点击可恢复原文",
+    "retry": "部分内容翻译失败，点击重试"
   }
 }

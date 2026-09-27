@@ -7,15 +7,10 @@ import { GitHubApiService } from '../services/githubApi';
 import { useAppStore } from '../store/useAppStore';
 import type { Repository, RouteMode } from '../types';
 
-vi.mock('./BilingualMarkdownRenderer', async () => {
-  const React = await import('react');
-  return {
-    default: React.forwardRef(({ markdown }: { markdown: string }, ref) => {
-      void ref;
-      return <div>{markdown}</div>;
-    }),
-  };
-});
+vi.mock('./MarkdownRenderer', () => ({
+  default: ({ content }: { content: string }) => <div>{content}</div>,
+}));
+vi.mock('./PageTranslationButton', () => ({ PageTranslationButton: () => null }));
 
 vi.mock('../services/backendAdapter', () => ({
   backend: {

@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "맨 위로 돌아가기"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "내용은 이미 중국어로 되어 있어 번역이 필요하지 않습니다.",
-    "original": "원래의",
-    "translated": "번역",
-    "bilingual": "이중 언어",
-    "translating": "번역 중…",
-    "content-already-in-language": "콘텐츠가 이미 {{language}}이므로 번역할 필요가 없습니다."
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "플러그인 작업 실패",
     "export-complete": "내보내기 완료",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "README 언어 전환",
-    "close-translation": "번역 끄기",
-    "translated": "번역됨",
-    "original": "원래의",
-    "translated-2": "번역",
-    "bilingual": "이중 언어",
-    "retry-translation": "번역 재시도",
     "retry": "다시 시도해 보세요",
-    "translate-document": "문서 번역",
-    "translating": "번역 중…",
-    "translate-to-chinese": "중국어로 번역",
-    "translate-to-english": "영어로 번역",
     "table-of-contents": "목차",
     "font-size-v1": "글꼴 크기: {{v1}}",
     "view-on-github": "GitHub에서 보기",
@@ -559,17 +541,7 @@
     "maximum-files-read": "최대 파일 읽기 수",
     "maximum-code-files-read": "최대 코드 파일 읽기 수",
     "code-is-read-only-when-documentation-evidence-is": "코드는 문서화된 증거가 충분하지 않고 Evidence Gate에서 명시적으로 요구하는 경우에만 읽혀집니다.",
-    "maximum-execution-time-seconds": "최대 실행 시간(초)",
-    "translation-engine": "번역 엔진",
-    "engine-used-for-readme-document-translation": "README 문서 번역에 사용되는 엔진",
-    "microsoft-translate-free": "마이크로소프트 번역기(무료)",
-    "google-translate-free": "Google 번역(무료)",
-    "ai-translation-uses-the-active-ai-configuration": "AI 번역(현재 활성화된 AI 구성 사용)",
-    "ai-translation-usually-has-higher-quality-but-is": "AI 번역은 일반적으로 품질이 더 높지만 속도가 느리고 API 크레딧을 소비하며 위의 현재 활성화된 AI 구성을 사용합니다.",
-    "auto-translate-repo-descriptions": "저장소 설명 자동 번역",
-    "when-enabled-card-repository-description": "사용하면 저장소 페이지와 발견 페이지 카드의 저장소 원본 설명이 인터페이스 언어로 자동 번역되어 표시됩니다. 이미 해당 언어인 설명은 원본 그대로 표시되며, 번역에 실패하면 원본 텍스트가 표시됩니다.",
-    "free-google-endpoint-no-configuration-needed-may": "Google의 무료 인터페이스에는 구성이 필요하지 않습니다. 일부 지역은 직접 연결되지 않을 수 있습니다.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Microsoft Edge 무료 인터페이스, 구성이 필요하지 않으며 직접 연결 속도가 빠릅니다."
+    "maximum-execution-time-seconds": "최대 실행 시간(초)"
   },
   "backendPanel": {
     "auto": "지능적인",
@@ -1248,6 +1220,11 @@
     "download": "다운로드",
     "detected-from-filenames-and-release-metadata-no": "파일 이름과 Release 메타데이터로 판별합니다. 보안 검사는 하지 않으며 자동으로 실행되지 않습니다. 아래 자산 목록에서 언제든 다른 자산을 선택할 수 있습니다.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "이 기기에 해당하지 않는 자산 {{v1}}개를 제외했습니다(소스 코드, 체크섬, 서명, 디버그 기호, blockmap, 다른 플랫폼 또는 아키텍처)."
+  },
+  "pageTranslation": {
+    "enable": "페이지를 중국어로 번역",
+    "original": "페이지 원문 보기",
+    "translating": "번역 중. 클릭하여 원문 복원",
+    "retry": "일부 번역 실패. 다시 시도"
   }
-
 }

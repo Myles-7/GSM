@@ -38,7 +38,6 @@ import type {
   ReleaseSourceSettings,
   HeaderMenuItem,
   SyncMode,
-  TranslationEngine,
   RepositoryCardFieldId,
   RepositoryChatSettings,
   ThemeTokens,
@@ -176,8 +175,7 @@ export interface AppActions {
   setCurrentView: (view: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription') => void;
   setSelectedCategory: (category: string) => void;
   setLanguage: (language: AppLanguage) => void;
-  setTranslationEngine: (engine: TranslationEngine) => void;
-  setAutoTranslateRepoDescription: (enabled: boolean) => void;
+  setPageTranslationEnabled: (enabled: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setReadmeModalOpen: (open: boolean) => void;
   setHeaderMenuConfig: (config: HeaderMenuItem[]) => void;

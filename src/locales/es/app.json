@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "volver arriba"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "El contenido ya está en chino, no se necesita traducción.",
-    "original": "original",
-    "translated": "traducción",
-    "bilingual": "bilingüe",
-    "translating": "Traductorio…",
-    "content-already-in-language": "El contenido ya es {{language}}, no es necesario traducir"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "Error en la operación del complemento",
     "export-complete": "Exportación completada",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "Cambiar idioma LÉAME",
-    "close-translation": "Desactivar traducción",
-    "translated": "Traducido",
-    "original": "original",
-    "translated-2": "traducción",
-    "bilingual": "bilingüe",
-    "retry-translation": "Reintentar traducción",
     "retry": "Intentar otra vez",
-    "translate-document": "Traducir documentos",
-    "translating": "Traductorio…",
-    "translate-to-chinese": "Traducir al chino",
-    "translate-to-english": "Traducir al inglés",
     "table-of-contents": "Tabla de contenido",
     "font-size-v1": "Tamaño de fuente: {{v1}}",
     "view-on-github": "Ver en GitHub",
@@ -559,17 +541,7 @@
     "maximum-files-read": "Número máximo de lecturas de archivos",
     "maximum-code-files-read": "Número máximo de lecturas de archivos de código",
     "code-is-read-only-when-documentation-evidence-is": "El código solo se leerá si no hay pruebas documentadas suficientes y Evidence Gate lo requiere explícitamente.",
-    "maximum-execution-time-seconds": "Tiempo máximo de ejecución (segundos)",
-    "translation-engine": "motor de traducción",
-    "engine-used-for-readme-document-translation": "El motor utilizado para la traducción de documentos README",
-    "microsoft-translate-free": "Traductor de Microsoft (gratis)",
-    "google-translate-free": "Traductor de Google (gratis)",
-    "ai-translation-uses-the-active-ai-configuration": "Traducción de IA (usando la configuración de IA actualmente activada)",
-    "ai-translation-usually-has-higher-quality-but-is": "La traducción de IA es generalmente de mayor calidad, pero más lenta y consume créditos de API, y utilizará la configuración de IA actualmente activa anterior.",
-    "auto-translate-repo-descriptions": "Traducir automáticamente las descripciones de repositorios",
-    "when-enabled-card-repository-description": "Si se activa, las descripciones originales de los repositorios en las tarjetas de las páginas de repositorios y descubrimiento se traducen automáticamente al idioma de la interfaz. Las descripciones que ya están en ese idioma se muestran sin cambios, y se muestra el texto original si la traducción falla.",
-    "free-google-endpoint-no-configuration-needed-may": "La interfaz gratuita de Google no requiere configuración; Es posible que algunas áreas no estén conectadas directamente.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Interfaz gratuita de Microsoft Edge, no requiere configuración, la velocidad de conexión directa es rápida."
+    "maximum-execution-time-seconds": "Tiempo máximo de ejecución (segundos)"
   },
   "backendPanel": {
     "auto": "inteligente",
@@ -1248,6 +1220,11 @@
     "download": "Descargar",
     "detected-from-filenames-and-release-metadata-no": "Se detecta a partir de nombres de archivo y metadatos del Release. No se comprueba la seguridad ni se ejecuta nada automáticamente. Siempre puedes elegir otro recurso en la lista de abajo.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "Se excluyeron {{v1}} recursos que no aplican a este dispositivo (código fuente, sumas de verificación, firmas, símbolos de depuración, blockmaps, otras plataformas o arquitecturas)."
+  },
+  "pageTranslation": {
+    "enable": "Traducir página al chino",
+    "original": "Mostrar página original",
+    "translating": "Traduciendo; pulsa para restaurar el original",
+    "retry": "Traducción parcial. Reintentar"
   }
-
 }

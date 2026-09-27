@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "zurück nach oben"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "Der Inhalt ist bereits auf Chinesisch, eine Übersetzung ist nicht erforderlich",
-    "translated": "Übersetzung",
-    "bilingual": "zweisprachig",
-    "translating": "Übersetzen…",
-    "content-already-in-language": "Der Inhalt ist bereits {{language}} und muss nicht übersetzt werden",
-    "original": "Original"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "Der Plug-in-Vorgang ist fehlgeschlagen",
     "export-complete": "Export abgeschlossen",
@@ -205,16 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "README-Sprache wechseln",
-    "close-translation": "Übersetzung deaktivieren",
-    "translated": "Übersetzt",
-    "translated-2": "Übersetzung",
-    "bilingual": "zweisprachig",
-    "retry-translation": "Versuchen Sie die Übersetzung erneut",
     "retry": "Versuchen Sie es erneut",
-    "translate-document": "Übersetzen Sie Dokumente",
-    "translating": "Übersetzen…",
-    "translate-to-chinese": "Ins Chinesische übersetzen",
-    "translate-to-english": "Ins Englische übersetzen",
     "table-of-contents": "Inhaltsverzeichnis",
     "font-size-v1": "Schriftgröße: {{v1}}",
     "view-on-github": "Auf GitHub ansehen",
@@ -227,8 +210,7 @@
     "failed-to-load-selected-readme-please-try-again": "Die ausgewählte README-Datei konnte nicht geladen werden. Bitte versuchen Sie es später noch einmal",
     "loading-readme": "README wird geladen…",
     "default-readme": "Standard-README",
-    "cycle-font-size": "Schriftgröße ändern",
-    "original": "Original"
+    "cycle-font-size": "Schriftgröße ändern"
   },
   "scrollToBottom": {
     "scroll-to-bottom": "nach unten scrollen"
@@ -559,16 +541,6 @@
     "maximum-code-files-read": "Maximale Anzahl von Codedatei-Lesevorgängen",
     "code-is-read-only-when-documentation-evidence-is": "Der Code wird nur gelesen, wenn keine ausreichenden dokumentierten Beweise vorliegen und das Evidence Gate dies ausdrücklich verlangt.",
     "maximum-execution-time-seconds": "Maximale Ausführungszeit (Sekunden)",
-    "translation-engine": "Übersetzungsmaschine",
-    "engine-used-for-readme-document-translation": "Die für die README-Dokumentübersetzung verwendete Engine",
-    "microsoft-translate-free": "Microsoft Übersetzer (kostenlos)",
-    "google-translate-free": "Google Translate (kostenlos)",
-    "ai-translation-uses-the-active-ai-configuration": "KI-Übersetzung (unter Verwendung der aktuell aktivierten KI-Konfiguration)",
-    "ai-translation-usually-has-higher-quality-but-is": "Die KI-Übersetzung ist im Allgemeinen von höherer Qualität, aber langsamer, verbraucht API-Credits und verwendet die aktuell aktive KI-Konfiguration oben.",
-    "auto-translate-repo-descriptions": "Repository-Beschreibungen automatisch übersetzen",
-    "when-enabled-card-repository-description": "Wenn aktiviert, werden die ursprünglichen Repository-Beschreibungen auf den Karten der Repository- und Discovery-Seiten automatisch in die Oberflächensprache übersetzt. Bereits in dieser Sprache vorliegende Beschreibungen bleiben unverändert; bei fehlgeschlagener Übersetzung wird der Originaltext angezeigt.",
-    "free-google-endpoint-no-configuration-needed-may": "Die kostenlose Benutzeroberfläche von Google erfordert keine Konfiguration; Einige Bereiche sind möglicherweise nicht direkt miteinander verbunden.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Kostenlose Microsoft Edge-Schnittstelle, keine Konfiguration erforderlich, schnelle direkte Verbindungsgeschwindigkeit.",
     "api-pay-as-you-go": "API (Pay-as-you-go)"
   },
   "backendPanel": {
@@ -1248,6 +1220,11 @@
     "download": "Herunterladen",
     "detected-from-filenames-and-release-metadata-no": "Erkannt anhand von Dateinamen und Release-Metadaten. Es findet keine Sicherheitsprüfung statt und es wird nichts automatisch ausgeführt. Du kannst unten jederzeit eine andere Datei auswählen.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "{{v1}} Datei(en) ausgeschlossen, die nicht zu diesem Gerät passen (Quellcode, Prüfsummen, Signaturen, Debug-Symbole, Blockmaps, andere Plattformen oder Architekturen)."
+  },
+  "pageTranslation": {
+    "enable": "Seite ins Chinesische übersetzen",
+    "original": "Originalseite anzeigen",
+    "translating": "Übersetzung läuft; klicken zum Wiederherstellen",
+    "retry": "Teilweise fehlgeschlagen. Erneut versuchen"
   }
-
 }

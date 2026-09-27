@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "retour en haut"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "Le contenu est déjà en chinois, aucune traduction n'est nécessaire",
-    "original": "original",
-    "translated": "traduction",
-    "bilingual": "bilingue",
-    "translating": "Traduire…",
-    "content-already-in-language": "Le contenu est déjà en {{language}}, pas besoin de traduire"
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "L'opération du plug-in a échoué",
     "export-complete": "Exportation terminée",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "Changer la langue du README",
-    "close-translation": "Désactiver la traduction",
-    "translated": "Traduit",
-    "original": "original",
-    "translated-2": "traduction",
-    "bilingual": "bilingue",
-    "retry-translation": "Réessayer la traduction",
     "retry": "Essayer à nouveau",
-    "translate-document": "Traduire des documents",
-    "translating": "Traduire…",
-    "translate-to-chinese": "Traduire en chinois",
-    "translate-to-english": "Traduire en anglais",
     "table-of-contents": "Table des matières",
     "font-size-v1": "Taille de la police : {{v1}}",
     "view-on-github": "Voir sur GitHub",
@@ -559,17 +541,7 @@
     "maximum-files-read": "Nombre maximum de lectures de fichiers",
     "maximum-code-files-read": "Nombre maximum de lectures de fichiers de code",
     "code-is-read-only-when-documentation-evidence-is": "Le code ne sera lu que s’il n’y a pas suffisamment de preuves documentées et que l’Evidence Gate l’exige explicitement.",
-    "maximum-execution-time-seconds": "Temps d'exécution maximum (secondes)",
-    "translation-engine": "moteur de traduction",
-    "engine-used-for-readme-document-translation": "Le moteur utilisé pour la traduction des documents README",
-    "microsoft-translate-free": "Traducteur Microsoft (gratuit)",
-    "google-translate-free": "Google Traduction (gratuit)",
-    "ai-translation-uses-the-active-ai-configuration": "Traduction AI (en utilisant la configuration AI actuellement activée)",
-    "ai-translation-usually-has-higher-quality-but-is": "La traduction IA est généralement de meilleure qualité, mais plus lente et consomme des crédits API, et utilisera la configuration IA actuellement active ci-dessus.",
-    "auto-translate-repo-descriptions": "Traduire automatiquement les descriptions de dépôts",
-    "when-enabled-card-repository-description": "Une fois activé, les descriptions d’origine des dépôts sur les cartes des pages dépôts et découverte sont automatiquement traduites dans la langue de l’interface. Les descriptions déjà dans cette langue restent inchangées, et le texte d’origine s’affiche en cas d’échec de la traduction.",
-    "free-google-endpoint-no-configuration-needed-may": "L'interface gratuite de Google ne nécessite aucune configuration ; certaines zones peuvent ne pas être directement connectées.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Interface gratuite Microsoft Edge, aucune configuration requise, la vitesse de connexion directe est rapide."
+    "maximum-execution-time-seconds": "Temps d'exécution maximum (secondes)"
   },
   "backendPanel": {
     "auto": "intelligent",
@@ -1248,6 +1220,11 @@
     "download": "Télécharger",
     "detected-from-filenames-and-release-metadata-no": "Détecté à partir des noms de fichiers et des métadonnées de la Release. Aucun contrôle de sécurité n'est effectué et rien ne s'exécute automatiquement. Vous pouvez toujours choisir un autre fichier dans la liste ci-dessous.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "{{v1}} fichier(s) écarté(s) car ils ne concernent pas cet appareil (code source, sommes de contrôle, signatures, symboles de débogage, blockmaps, autres plateformes ou architectures)."
+  },
+  "pageTranslation": {
+    "enable": "Traduire la page en chinois",
+    "original": "Afficher la page originale",
+    "translating": "Traduction en cours ; cliquer pour restaurer",
+    "retry": "Traduction partielle. Réessayer"
   }
-
 }

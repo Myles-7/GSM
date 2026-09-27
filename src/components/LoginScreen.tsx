@@ -15,6 +15,7 @@ import { Label } from './ui/label';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { APP_LANGUAGES, type AppLanguage } from '../i18n/languages';
+import { PageTranslationButton } from './PageTranslationButton';
 
 export const LoginScreen: React.FC = () => {
   const { authenticateWithGitHub, configuredBackendUrl, restoreBackendSession, setupBackendGitHubToken, syncBackendData, syncTokenToBackend } = useLoginActions();
@@ -274,6 +275,7 @@ export const LoginScreen: React.FC = () => {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground transition-colors duration-300">
       <div className="fixed right-4 top-4 z-50 flex items-center gap-2">
+        <PageTranslationButton />
         <div className="flex items-center overflow-hidden rounded-md border border-border bg-card">
           <Select value={language} onValueChange={(value) => setLanguage(value as AppLanguage)}>
             <SelectTrigger aria-label={t('loginScreen.interface-language')} className="h-9 w-[150px] rounded-none border-0 bg-card shadow-none focus:ring-0 focus:ring-offset-0">
@@ -432,7 +434,7 @@ export const LoginScreen: React.FC = () => {
             <ol className="space-y-1 text-xs leading-5 text-muted-foreground">
               <li>1. {t('loginScreen.go-to-github-settings-developer-settings-persona')}</li>
               <li>2. {t('loginScreen.click-generate-new-token-classic')}</li>
-              <li>3. {t('loginScreen.select-scopes')} <strong>repo</strong>、<strong>user</strong> {t('loginScreen.and')} <strong>gist</strong></li>
+              <li>3. {t('loginScreen.select-scopes')} <strong translate="no">repo</strong>、<strong translate="no">user</strong> {t('loginScreen.and')} <strong translate="no">gist</strong></li>
               <li>4. {t('loginScreen.copy-the-generated-token-and-paste-it-above')}</li>
             </ol>
             <div className="mt-3">

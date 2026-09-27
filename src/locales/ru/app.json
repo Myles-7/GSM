@@ -17,14 +17,6 @@
   "backToTop": {
     "back-to-top": "вернуться наверх"
   },
-  "bilingualMarkdownRenderer": {
-    "content-is-already-in-english": "Контент уже на китайском языке, перевод не требуется.",
-    "original": "оригинальный",
-    "translated": "перевод",
-    "bilingual": "двуязычный",
-    "translating": "Перевод…",
-    "content-already-in-language": "Содержимое уже {{language}}, переводить не нужно."
-  },
   "bulkActionToolbar": {
     "plugin-action-failed": "Операция плагина не удалась",
     "export-complete": "Экспорт завершен",
@@ -205,17 +197,7 @@
   },
   "readmeModal": {
     "switch-readme-language": "Переключить язык README",
-    "close-translation": "Отключить перевод",
-    "translated": "Переведено",
-    "original": "оригинальный",
-    "translated-2": "перевод",
-    "bilingual": "двуязычный",
-    "retry-translation": "Повторить перевод",
     "retry": "Попробуйте еще раз",
-    "translate-document": "Перевести документы",
-    "translating": "Перевод…",
-    "translate-to-chinese": "Перевести на китайский",
-    "translate-to-english": "Перевести на английский",
     "table-of-contents": "Оглавление",
     "font-size-v1": "Размер шрифта: {{v1}}",
     "view-on-github": "Посмотреть на GitHub",
@@ -559,17 +541,7 @@
     "maximum-files-read": "Максимальное количество чтений файлов",
     "maximum-code-files-read": "Максимальное количество чтений файла кода",
     "code-is-read-only-when-documentation-evidence-is": "Код будет прочитан только в том случае, если документальных доказательств недостаточно и Врата доказательств явно требуют этого.",
-    "maximum-execution-time-seconds": "Максимальное время выполнения (секунды)",
-    "translation-engine": "механизм перевода",
-    "engine-used-for-readme-document-translation": "Движок, используемый для перевода документа README.",
-    "microsoft-translate-free": "Microsoft Translator (бесплатно)",
-    "google-translate-free": "Google Переводчик (бесплатно)",
-    "ai-translation-uses-the-active-ai-configuration": "Перевод AI (с использованием текущей активированной конфигурации AI)",
-    "ai-translation-usually-has-higher-quality-but-is": "Перевод ИИ, как правило, более качественный, но медленнее, требует кредитов API и будет использовать текущую активную конфигурацию ИИ, указанную выше.",
-    "auto-translate-repo-descriptions": "Автоматически переводить описания репозиториев",
-    "when-enabled-card-repository-description": "Если включено, исходные описания репозиториев на карточках страниц репозиториев и обзора автоматически переводятся на язык интерфейса. Описания, уже написанные на этом языке, остаются без изменений, а при сбое перевода отображается исходный текст.",
-    "free-google-endpoint-no-configuration-needed-may": "Бесплатный интерфейс Google не требует настройки; некоторые области могут быть не связаны напрямую.",
-    "free-microsoft-edge-endpoint-no-configuration-ne": "Бесплатный интерфейс Microsoft Edge, настройка не требуется, скорость прямого соединения высокая."
+    "maximum-execution-time-seconds": "Максимальное время выполнения (секунды)"
   },
   "backendPanel": {
     "auto": "разумный",
@@ -1248,6 +1220,11 @@
     "download": "Скачать",
     "detected-from-filenames-and-release-metadata-no": "Определяется по именам файлов и метаданным релиза. Безопасность не проверяется, ничего не запускается автоматически. Вы всегда можете выбрать другой файл в списке ниже.",
     "excluded-v1-asset-s-that-do-not-apply-to-this-de": "Исключено файлов, не подходящих для этого устройства: {{v1}} (исходный код, контрольные суммы, подписи, отладочные символы, blockmap, другие платформы и архитектуры)."
+  },
+  "pageTranslation": {
+    "enable": "Перевести страницу на китайский",
+    "original": "Показать оригинал страницы",
+    "translating": "Перевод; нажмите для возврата к оригиналу",
+    "retry": "Часть текста не переведена. Повторить"
   }
-
 }

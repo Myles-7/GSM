@@ -164,8 +164,6 @@ const buildAIServiceFixtures = async (language: 'zh' | 'en') => {
     makeService().searchGistsWithReranking([makeGist()], 'state management'));
   result.searchRepositoriesWithSelection = await captureRequests(() =>
     makeService().searchRepositoriesWithSelection([repo, repoB], 'react state management'));
-  result.translateTexts = await captureRequests(() =>
-    makeService().translateTexts(['Hello world', 'Install the app'], language === 'zh' ? 'en' : 'zh', undefined));
 
   const customConfig = {
     ...makeConfig(),

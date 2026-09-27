@@ -41,7 +41,8 @@ const BANNED_COMPONENT_SERVICES = [
   'rpcDownloadService',
   'githubApiFactory',
   'updateService',
-  'translateService',
+  'pageTranslation',
+  'pageTranslationClient',
 ];
 
 // application purity: banned module specifiers (exact) + banned path patterns.

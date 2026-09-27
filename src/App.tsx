@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useMemo, useCallback } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { Header } from './components/Header';
+import { usePageTranslationLifecycle } from './hooks/usePageTranslation';
 import { SearchBar } from './components/SearchBar';
 import { RepositoryList } from './components/RepositoryList';
 import { CategorySidebar } from './components/CategorySidebar';
@@ -141,6 +142,7 @@ const DiscoverySubscriptionView = React.memo(() => (
 DiscoverySubscriptionView.displayName = 'DiscoverySubscriptionView';
 
 function App() {
+  usePageTranslationLifecycle();
   const {
     isAuthenticated,
     currentView,

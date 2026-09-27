@@ -7,8 +7,8 @@ import { Checkbox } from '../ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { Bot, Plus, Edit3, Trash2, Save, X, TestTube, RefreshCw, MessageSquare, Eye, EyeOff, AlertCircle, Languages } from 'lucide-react';
-import { AIConfig, AIApiType, AIReasoningEffort, MiMoPlan, TranslationEngine } from '../../types';
+import { Bot, Plus, Edit3, Trash2, Save, X, TestTube, RefreshCw, MessageSquare, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { AIConfig, AIApiType, AIReasoningEffort, MiMoPlan } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useAIConfigActions } from '../../features/settings/hooks/useAIConfigActions';
@@ -91,11 +91,7 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
     aiConfigs,
     activeAIConfig,
     language,
-    translationEngine,
-    autoTranslateRepoDescription,
     repositoryChatSettings,
-    setTranslationEngine,
-    setAutoTranslateRepoDescription,
     setRepositoryChatSettings,
     addAIConfig,
     updateAIConfig,
@@ -106,11 +102,7 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
     aiConfigs: state.aiConfigs,
     activeAIConfig: state.activeAIConfig,
     language: state.language,
-    translationEngine: state.translationEngine,
-    autoTranslateRepoDescription: state.autoTranslateRepoDescription,
     repositoryChatSettings: state.repositoryChatSettings,
-    setTranslationEngine: state.setTranslationEngine,
-    setAutoTranslateRepoDescription: state.setAutoTranslateRepoDescription,
     setRepositoryChatSettings: state.setRepositoryChatSettings,
     addAIConfig: state.addAIConfig,
     updateAIConfig: state.updateAIConfig,
@@ -940,49 +932,6 @@ Repository information:
         </details>
       </section>
 
-      <div className="mt-6 p-4 bg-background dark:bg-muted/40 rounded-lg border border-border dark:border-border">
-        <div className="flex items-center space-x-2 mb-3">
-          <Languages className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />
-          <h4 className="text-sm font-medium text-foreground dark:text-foreground">
-            {t('aIConfigPanel.translation-engine')}
-          </h4>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label id="translation-engine-label" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-              {t('aIConfigPanel.engine-used-for-readme-document-translation')}
-            </label>
-            <Select value={translationEngine} onValueChange={(value) => setTranslationEngine(value as TranslationEngine)}>
-              <SelectTrigger aria-labelledby="translation-engine-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="microsoft">{t('aIConfigPanel.microsoft-translate-free')}</SelectItem>
-                <SelectItem value="google">{t('aIConfigPanel.google-translate-free')}</SelectItem>
-                <SelectItem value="ai">{t('aIConfigPanel.ai-translation-uses-the-active-ai-configuration')}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <p className="text-xs text-muted-foreground dark:text-muted-foreground self-end pb-1">
-            {translationEngine === 'ai'
-              ? t('aIConfigPanel.ai-translation-usually-has-higher-quality-but-is')
-              : translationEngine === 'google'
-                ? t('aIConfigPanel.free-google-endpoint-no-configuration-needed-may')
-                : t('aIConfigPanel.free-microsoft-edge-endpoint-no-configuration-ne')}
-          </p>
-        </div>
-        <label className="mt-4 flex items-start gap-2 text-sm text-foreground dark:text-foreground">
-          <Checkbox
-            checked={autoTranslateRepoDescription}
-            onCheckedChange={(checked) => setAutoTranslateRepoDescription(checked === true)}
-            className="mt-0.5"
-          />
-          <span>
-            {t('aIConfigPanel.auto-translate-repo-descriptions')}
-            <span className="mt-1 block text-xs text-muted-foreground dark:text-muted-foreground">
-              {t('aIConfigPanel.when-enabled-card-repository-description')}
-            </span>
-          </span>
-        </label>
-      </div>
     </div>
   );
 };
