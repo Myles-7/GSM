@@ -157,6 +157,22 @@ beforeEach(() => {
 });
 
 describe('RepositoryCard view modes', () => {
+  it('shows detailed analysis immediately without hiding personal descriptions or raw-description preference', () => {
+    const repo: Repository = { ...repository, analysis_failed: true, ai_summary: 'Old summary', ai_details: {
+      version: 1, generated_at: '2026-09-01T00:00:00Z', repository_pushed_at: null, model: 'test',
+      sources: [], problem: 'Verified detailed purpose', features: [], scenarios: [], architecture: null,
+      quickstart: [], deployment: null, cost: null, maintenance: null,
+    } };
+    const card = (value: Repository, showAISummary = true) => <TooltipProvider><RepositoryCard repository={value} allCategories={[]} showAISummary={showAISummary} /></TooltipProvider>;
+    const { rerender } = render(card(repo));
+    expect(screen.getByText('Verified detailed purpose')).toBeInTheDocument();
+    expect(screen.queryByText('Old summary')).not.toBeInTheDocument();
+    rerender(card({ ...repo, custom_description: 'My notes' }));
+    expect(screen.getByText('My notes')).toBeInTheDocument();
+    rerender(card(repo, false));
+    expect(screen.getByText('Repository description')).toBeInTheDocument();
+    expect(screen.queryByText('Verified detailed purpose')).not.toBeInTheDocument();
+  });
   it('shows at most two validated software forms and respects AI and tag visibility', () => {
     const repo: Repository = { ...repository, ai_details: {
       version: 1, generated_at: '2026-09-01T00:00:00Z', repository_pushed_at: null, model: 'test',
@@ -383,7 +399,7 @@ describe('RepositoryCard view modes', () => {
     expect(screen.queryByTitle('编辑仓库信息')).not.toBeInTheDocument();
 
     const actionRow = screen.getByTestId('grid-action-row');
-    expect(actionRow).toHaveClass('w-full', 'justify-start', 'overflow-hidden');
+    expect(actionRow).toHaveClass('shrink-0', 'justify-end');
 
     const footer = screen.getByText(/最近提交/).closest('.border-t');
     expect(footer?.parentElement).toHaveClass('mt-4');
@@ -593,12 +609,12 @@ describe('RepositoryCard rapid touch drags (CodeRabbit round 2)', () => {
     }
   });
 
-  it('shows customized status in list view', () => {
+  it('does not show customized status in list view', () => {
     repository.custom_description = 'Customized description';
 
     try {
       renderRepositoryCard('list');
-      expect(screen.getByText('已自定义')).toBeInTheDocument();
+      expect(screen.queryByText('已自定义')).not.toBeInTheDocument();
     } finally {
       delete repository.custom_description;
     }

@@ -3,6 +3,9 @@ import type { RepositoryDetailsAnalysis } from '../../../types/repositoryDetails
 
 const text = z.string().trim().min(1).max(12000);
 export const repositoryDetailContentSchema = z.object({
+  summary: text.nullable().optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(10).default([]),
+  platforms: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
   software_forms: z.array(z.enum(['cli', 'desktop', 'web', 'library', 'plugin', 'model', 'agent'])).max(7).default([]),
   deployment_modes: z.array(z.enum(['local', 'self-hosted', 'managed', 'container'])).max(4).default([]),
   problem: text.nullable(),

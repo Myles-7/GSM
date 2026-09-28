@@ -30,6 +30,7 @@ describe('detail analysis job', () => {
     await act(() => result.current.run([repo]));
     expect(mocks.update).not.toHaveBeenCalled();
     expect(result.current.failures).toEqual([repo]);
+    expect(result.current.errors).toEqual([{ repository: repo.full_name, message: 'invalid model result' }]);
     await act(() => result.current.run(result.current.failures));
     expect(mocks.update).toHaveBeenCalledOnce();
   });
@@ -47,6 +48,12 @@ describe('detail analysis job', () => {
     await act(() => run);
     expect(mocks.analyze).toHaveBeenCalledTimes(2);
     expect(result.current.progress).toEqual({ current: 2, total: 2 });
+  });
+  it('redacts credentials from visible errors', async () => {
+    mocks.analyze.mockRejectedValueOnce(new Error('Provider rejected secret and mock'));
+    const { result } = renderHook(useRepositoryDetailAnalysisJob);
+    await act(() => result.current.run([repo]));
+    expect(result.current.errors[0].message).toBe('Provider rejected [redacted] and [redacted]');
   });
   it('stops in-flight work without saving late results or starting the next repo', async () => {
     let finish!: (value: unknown) => void;

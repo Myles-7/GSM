@@ -11,9 +11,12 @@ interface JobState {
   progress: { current: number; total: number };
   failures: Repository[];
   syncFailed: boolean;
+  errors: { repository: string; message: string }[];
+  stage?: 'readme' | 'model' | 'validation' | 'saving';
+  currentRepository?: string;
 }
 const emptyState = (): JobState => ({
-  running: false, paused: false, progress: { current: 0, total: 0 }, failures: [], syncFailed: false,
+  running: false, paused: false, progress: { current: 0, total: 0 }, failures: [], syncFailed: false, errors: [],
 });
 let snapshot = emptyState();
 const listeners = new Set<() => void>();
@@ -67,17 +70,29 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
         const details = await analyzeRepositoryDetails({
           repository, accountId, aiConfig: config, githubToken: state.githubToken || '',
           language: state.language, signal: job.controller.signal,
+          onStage: stage => { if (canContinue()) publish({ stage, currentRepository: repository.full_name }); },
         });
         if (!canContinue()) break;
         const latestState = useAppStore.getState();
         const latest = latestState.repositories.find((item) => item.id === repository.id);
         if (latest && latestState.user?.id === accountId) {
-          latestState.updateRepository({ ...latest, ai_details: details });
+          publish({ stage: 'saving' });
+          latestState.updateRepository({
+            ...latest, ai_details: details,
+            ai_summary: details.summary ?? details.problem ?? latest.ai_summary,
+            ai_tags: details.tags?.length ? details.tags : latest.ai_tags,
+            ai_platforms: details.platforms?.length ? details.platforms : latest.ai_platforms,
+            analyzed_at: details.generated_at || new Date().toISOString(),
+            analysis_failed: false, analysis_error: undefined,
+          });
           successfulWrites += 1;
         }
-      } catch {
+      } catch (error) {
         if (!canContinue()) break;
-        publish({ failures: [...snapshot.failures, repository] });
+        const message = (error instanceof Error ? error.message : String(error))
+          .split(config.apiKey).join('[redacted]')
+          .split(state.githubToken || '\u0000').join('[redacted]').slice(0, 500);
+        publish({ failures: [...snapshot.failures, repository], errors: [...snapshot.errors, { repository: repository.full_name, message }] });
       }
       current += 1;
       publish({ progress: { current, total: queue.length } });

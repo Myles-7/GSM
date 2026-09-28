@@ -147,6 +147,8 @@ interface RepositoryCardProps {
   viewMode?: 'grid' | 'list';
   onAskRepository?: (repository: Repository) => void;
   onViewDetails?: (repository: Repository) => void;
+  onAnalyzeRepository?: (repository: Repository) => void;
+  organizationActions?: React.ReactNode;
 }
 
 const PluginRepositoryActionItems: React.FC<{
@@ -191,6 +193,7 @@ const mutedIconButtonClass =
   'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground';
 
 interface OverflowActionRowProps {
+  organizationActions?: React.ReactNode;
   actionRowRef: React.Ref<HTMLDivElement>;
   testId: string;
   className: string;
@@ -224,6 +227,7 @@ interface OverflowActionRowProps {
 }
 
 const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
+  organizationActions,
   actionRowRef,
   testId,
   className,
@@ -313,6 +317,7 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
               <BookOpen className="mr-2 h-3.5 w-3.5" />
               {t('details.readme')}
             </DropdownMenuItem>
+            {organizationActions}
               <DropdownMenuItem title={aiButtonTitle} disabled={isAnalyzing} onSelect={() => void onAnalyze()}>
                 {isAnalyzing ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Bot className="mr-2 h-3.5 w-3.5" />}
                 {t('repositoryCard.analyze-with-ai-2')}
@@ -374,6 +379,8 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   viewMode = 'grid',
   onAskRepository,
   onViewDetails,
+  onAnalyzeRepository,
+  organizationActions,
 }) => {
     const t = useT('repositories');
   const language = useAppStore((state) => state.language);
@@ -534,6 +541,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       // 有自定义描述
       content = repository.custom_description;
       contentSource = 'custom';
+    } else if (showAISummary && (readRepositoryDetails(repository.ai_details)?.summary || readRepositoryDetails(repository.ai_details)?.problem)) {
+      content = (readRepositoryDetails(repository.ai_details)!.summary || readRepositoryDetails(repository.ai_details)!.problem)!;
+      contentSource = 'ai';
     } else if (showAISummary && repository.ai_summary) {
       // 显示AI总结
       content = repository.ai_summary;
@@ -548,7 +558,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       contentSource = 'empty';
     }
 
-    if (showAISummary && repository.analysis_failed) {
+    if (showAISummary && repository.analysis_failed && !readRepositoryDetails(repository.ai_details)) {
       if (isExplicitlyCleared) {
         content = t('repositoryCard.no-description');
         contentSource = 'empty';
@@ -599,9 +609,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       contentSource,
       hasCustomDescription: hasExplicitCustomDesc,
       hasAISummary: !!repository.ai_summary,
-      isAnalysisFailed: !!repository.analysis_failed,
-      isAnalyzed: !!repository.analyzed_at,
-      analyzedAt: repository.analyzed_at,
+      isAnalysisFailed: !!repository.analysis_failed && !readRepositoryDetails(repository.ai_details),
+      isAnalyzed: !!repository.analyzed_at || !!readRepositoryDetails(repository.ai_details),
+      analyzedAt: readRepositoryDetails(repository.ai_details)?.generated_at || repository.analyzed_at,
       isExplicitlyCleared,
       isCustomized
     };
@@ -884,7 +894,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   const cardClassName = useMemo(() => {
     const baseClasses = viewMode === 'list'
       ? 'repository-card repository-card--list ui-card group relative px-6 pt-5 pb-0 transition-[color,background-color,border-color,box-shadow] duration-200 cursor-pointer'
-      : 'repository-card ui-card group p-5 transition-[color,background-color,border-color,box-shadow] duration-200 flex flex-col h-full cursor-pointer';
+      : 'repository-card ui-card group relative p-4 transition-[color,background-color,border-color,box-shadow] duration-200 flex flex-col h-full cursor-pointer';
     const selectedClasses = isSelected
       ? 'linear-card-selected'
       : '';
@@ -913,30 +923,25 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       aria-disabled={isModalOpen}
     >
       {/* Header - Repository Info */}
-      <div className="flex items-start space-x-3 mb-3">
+      <div className="flex items-start gap-2 mb-3">
         <img
           src={repository.owner.avatar_url}
           alt={repository.owner.login}
           className={`${viewMode === 'list' ? 'w-10 h-10' : 'w-8 h-8'} rounded-full flex-shrink-0`}
         />
         <div className="min-w-0 flex-1">
-          <h3 className={`${viewMode === 'list' ? 'text-base' : ''} font-semibold text-foreground dark:text-foreground truncate`}>
+          <h3 title={repository.full_name} className={`${viewMode === 'list' ? 'text-base' : 'text-sm'} font-semibold text-foreground dark:text-foreground break-all line-clamp-2`}>
             {highlightSearchTerm(repository.name, searchQuery)}
           </h3>
           <p className="text-sm text-muted-foreground dark:text-muted-foreground truncate">
             {repository.owner.login}
+            {viewMode === 'grid' && displayContent.isAnalyzed && !displayContent.isAnalysisFailed && <span className="ml-1.5 inline-flex align-middle" title={t('repositoryCard.ai-analyzed')}><Sparkles className="h-3 w-3" /><span className="sr-only">{t('repositoryCard.ai-analyzed')}</span></span>}
           </p>
         </div>
         
         {/* 拖拽按钮 - 右上角 - 手机和平板端隐藏 */}
         {viewMode === 'list' && (
           <div className="ml-auto flex max-w-[60%] flex-wrap items-start justify-end gap-1.5">
-            {displayContent.isCustomized && (
-              <span className="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium bg-muted dark:bg-muted/40 text-muted-foreground dark:text-muted-foreground">
-                <Edit3 className="w-3 h-3" />
-                {t('repositoryCard.customized')}
-              </span>
-            )}
             {displayContent.isAnalysisFailed ? (
                 <span className="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium bg-destructive/10 text-destructive">
                   <Bot className="w-3 h-3" />
@@ -954,6 +959,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
               </span>
             )}
               <OverflowActionRow
+                organizationActions={organizationActions}
                 actionRowRef={overflowActionRowRef}
                 testId="list-action-row"
                 className="flex shrink-0 items-center justify-end gap-1.5"
@@ -973,7 +979,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 pluginActions={pluginActions.actions}
                 isActionsMenuOpen={isActionsMenuOpen}
                 onActionsMenuOpenChange={setIsActionsMenuOpen}
-                onAnalyze={handleAIAnalyze}
+                onAnalyze={() => onAnalyzeRepository ? onAnalyzeRepository(repository) : handleAIAnalyze()}
                 onAsk={onAskRepository ? () => onAskRepository(repository) : undefined}
                 onToggleReleaseSubscription={toggleReleaseSubscription}
                 onEdit={() => setEditModalOpen(true)}
@@ -993,7 +999,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         )}
 
         {viewMode === 'grid' && !selectionMode && (
-          <div className="hidden lg:block relative flex-shrink-0 mt-[-4px] opacity-0 hover:opacity-100 transition-opacity duration-200 group-hover:opacity-100">
+          <div className="hidden lg:block absolute -left-2 top-3 z-[1] opacity-0 focus-within:opacity-100 transition-opacity duration-200 group-hover:opacity-100">
             <div
               ref={dragHandleRef}
               draggable
@@ -1041,13 +1047,12 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
             )}
           </div>
         )}
-      </div>
-
       {viewMode === 'grid' ? (
         <OverflowActionRow
+          organizationActions={organizationActions}
           actionRowRef={overflowActionRowRef}
           testId="grid-action-row"
-          className="mb-4 flex w-full items-center justify-start gap-1.5 overflow-hidden"
+          className="flex shrink-0 items-center justify-end gap-0.5 [&_button]:h-7 [&_button]:w-7 [&_a]:h-7 [&_a]:w-7"
           selectionMode={selectionMode}
           onAskRepository={onAskRepository}
           repository={repository}
@@ -1061,7 +1066,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           pluginActions={pluginActions.actions}
           isActionsMenuOpen={isActionsMenuOpen}
           onActionsMenuOpenChange={setIsActionsMenuOpen}
-          onAnalyze={handleAIAnalyze}
+          onAnalyze={() => onAnalyzeRepository ? onAnalyzeRepository(repository) : handleAIAnalyze()}
           onAsk={onAskRepository ? () => onAskRepository(repository) : undefined}
           onToggleReleaseSubscription={toggleReleaseSubscription}
           onEdit={() => setEditModalOpen(true)}
@@ -1080,11 +1085,12 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           t={t}
         />
       ) : null}
+      </div>
 
       {/* Description with shared Tooltip. Keep analysis status visible independently. */}
       {(showDescription || (
         viewMode === 'grid'
-        && (displayContent.isCustomized || displayContent.isAnalysisFailed || displayContent.isAnalyzed)
+        && (displayContent.isAnalysisFailed || displayContent.isAnalyzed)
       )) && (
       <div className={viewMode === 'list' ? 'mb-3' : 'mb-4 flex-1'}>
         {showDescription && (
@@ -1106,15 +1112,8 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         )}
 
         {/* 方案一：同时显示多个状态标签 */}
-        {viewMode === 'grid' && (
+        {viewMode === 'grid' && displayContent.isAnalysisFailed && (
         <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-          {/* 已自定义标签 - 与筛选器逻辑一致 */}
-          {displayContent.isCustomized && (
-            <div className="flex items-center space-x-1 text-xs text-muted-foreground dark:text-muted-foreground" title={t('repositoryCard.this-repository-has-been-customized-description')}>
-              <Edit3 className="w-3 h-3" />
-              <span>{t('repositoryCard.customized')}</span>
-            </div>
-          )}
           {/* AI 分析状态标签 (合并展示) */}
           {displayContent.isAnalysisFailed ? (
             <div className="flex items-center space-x-1 text-xs text-destructive dark:text-destructive" title={t('repositoryCard.ai-analysis-failed-click-ai-button-to-retry')}>
@@ -1370,6 +1369,8 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.viewMode === nextProps.viewMode &&
     prevProps.onAskRepository === nextProps.onAskRepository &&
     prevProps.onViewDetails === nextProps.onViewDetails &&
+    prevProps.onAnalyzeRepository === nextProps.onAnalyzeRepository &&
+    prevProps.organizationActions === nextProps.organizationActions &&
     allCategoriesEqual
   );
 });

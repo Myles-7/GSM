@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dial
 
 type DetailJob = ReturnType<typeof useRepositoryDetailAnalysisJob>;
 
-export function RepositoryDetailAnalysisAction({ repositories, job: externalJob, compact = false }: { repositories: Repository[]; job?: DetailJob; compact?: boolean }) {
+export function RepositoryDetailAnalysisAction({ repositories, job: externalJob, compact = false, request, hideTrigger = false }: { repositories: Repository[]; job?: DetailJob; compact?: boolean; request?: { repositories: Repository[]; accountId?: number }; hideTrigger?: boolean }) {
   const t = useT('repositories');
   const configs = useAppStore((state) => state.aiConfigs);
   const activeConfigId = useAppStore((state) => state.activeAIConfig);
@@ -19,14 +19,16 @@ export function RepositoryDetailAnalysisAction({ repositories, job: externalJob,
   const accountId = useAppStore((state) => state.user?.id);
   const [pending, setPending] = useState<{ repositories: Repository[]; accountId: number | undefined } | null>(null);
   useEffect(() => { setPending(null); setSelectedConfigId(null); }, [accountId]);
+  useEffect(() => { if (request && request.accountId === accountId) setPending({ repositories: [...request.repositories], accountId }); }, [request, accountId]);
   const localJob = useRepositoryDetailAnalysisJob();
   const job = externalJob || localJob;
   const configured = !!(config?.model && config.apiKey && config.baseUrl && config.apiKeyStatus !== 'decrypt_failed');
   return <div className="flex flex-wrap items-center gap-2">
-    <Button variant="outline" size={compact ? 'icon' : 'sm'} title={t('details.analyze')} aria-label={t('details.analyze')} disabled={!repositories.length || job.running} onClick={() => setPending({ repositories: [...repositories], accountId })}>
+    {!hideTrigger && <Button variant="outline" size={compact ? 'icon' : 'sm'} title={t('details.analyze')} aria-label={t('details.analyze')} disabled={!repositories.length || job.running} onClick={() => setPending({ repositories: [...repositories], accountId })}>
       <Sparkles className={compact ? 'h-4 w-4' : 'mr-2 h-4 w-4'} />{!compact && t('details.analyze')}
-    </Button>
+    </Button>}
     {job.progress.total > 0 && <span role="status" className="text-xs">{job.progress.current}/{job.progress.total}</span>}
+    {job.running && job.stage && <span className="max-w-48 truncate text-xs text-muted-foreground" title={job.currentRepository}>{t(`details.stage${job.stage}`)}</span>}
     {job.running && <>
       <Button variant="ghost" size="icon" title={t(job.paused ? 'details.resume' : 'details.pause')} aria-label={t(job.paused ? 'details.resume' : 'details.pause')} onClick={job.paused ? job.resume : job.pause}>
         {job.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
@@ -34,6 +36,9 @@ export function RepositoryDetailAnalysisAction({ repositories, job: externalJob,
       <Button variant="ghost" size="icon" title={t('details.stop')} aria-label={t('details.stop')} onClick={job.stop}><Square className="h-4 w-4" /></Button>
     </>}
     {job.syncFailed && <p role="alert" className="text-sm text-destructive">{t('details.syncFailed')}</p>}
+    {!!job.errors?.length && <ul role="alert" className="max-h-32 w-full overflow-auto text-xs text-destructive">
+      {job.errors.map((error, index) => <li key={`${error.repository}-${index}`} className="break-words">{error.repository}: {error.message}</li>)}
+    </ul>}
     {!job.running && job.failures.length > 0 && <Button variant="outline" size="sm" onClick={() => setPending({ repositories: job.failures, accountId })}>
       <RotateCcw className="mr-2 h-4 w-4" />{t('details.retry', { count: job.failures.length })}
     </Button>}

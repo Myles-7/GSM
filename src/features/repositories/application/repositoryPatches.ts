@@ -63,6 +63,7 @@ export const restoreRepositoryFields = (
     updatedRepository.custom_description = undefined;
     if (config.description.target === 'original') {
       updatedRepository.ai_summary = undefined;
+      updatedRepository.ai_details = undefined;
       updatedRepository.analyzed_at = undefined;
       updatedRepository.analysis_failed = undefined;
       updatedRepository.analysis_error = undefined;
@@ -101,6 +102,7 @@ export const restoreRepositoryFields = (
     || updatedRepository.custom_category !== repository.custom_category
     || updatedRepository.category_locked !== repository.category_locked
     || updatedRepository.ai_summary !== repository.ai_summary
+    || updatedRepository.ai_details !== repository.ai_details
     || updatedRepository.ai_tags !== repository.ai_tags
     || updatedRepository.ai_platforms !== repository.ai_platforms
     || updatedRepository.analyzed_at !== repository.analyzed_at

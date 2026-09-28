@@ -5,6 +5,7 @@ import type { Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { useRepositoryDragStore } from '../../../store/useRepositoryDragStore';
 import { RepositoryGroups } from './RepositoryGroups';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../../components/ui/dropdown-menu';
 
 const mocks = vi.hoisted(() => ({ confirm: vi.fn() }));
 vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm }) }));
@@ -26,7 +27,7 @@ const state = {
 };
 const renderGroups = (props: Partial<React.ComponentProps<typeof RepositoryGroups>> = {}) =>
   render(<RepositoryGroups categoryId="main" repositories={state.repositories.filter(r => r.category_id === 'main')} filtered={false}
-    customSort viewMode="grid" renderRepository={r => <div data-testid={`repo-${r.id}`}>{r.name}</div>} {...props} />);
+    customSort viewMode="grid" renderRepository={(r, actions) => <div data-testid={`repo-${r.id}`}>{r.name}<DropdownMenu><DropdownMenuTrigger aria-label={`organization.moveRepository: ${r.name}`} /><DropdownMenuContent>{actions}</DropdownMenuContent></DropdownMenu></div>} {...props} />);
 const section = (name: string) => screen.getByRole('heading', { name: new RegExp(name) }).closest('section')!;
 const transfer = (id: string, type = 'application/x-gsm-repository-id') => ({
   types: [type], getData: (requested: string) => requested === type ? id : '', setData: vi.fn(), effectAllowed: 'move',
@@ -39,6 +40,17 @@ beforeEach(() => {
 });
 
 describe('RepositoryGroups', () => {
+  it('tracks current visual positions instead of stale heading registration order', () => {
+    renderGroups();
+    const alpha = screen.getByRole('heading', { name: 'Alpha 2' });
+    const beta = screen.getByRole('heading', { name: 'Beta 1' });
+    const ungrouped = screen.getByRole('heading', { name: 'organization.ungrouped 1' });
+    vi.spyOn(alpha, 'getBoundingClientRect').mockReturnValue({ top: -100 } as DOMRect);
+    vi.spyOn(beta, 'getBoundingClientRect').mockReturnValue({ top: 100 } as DOMRect);
+    vi.spyOn(ungrouped, 'getBoundingClientRect').mockReturnValue({ top: 500 } as DOMRect);
+    fireEvent.scroll(window);
+    expect(within(screen.getByRole('navigation')).getByRole('button', { name: 'Beta' })).toHaveAttribute('aria-current', 'location');
+  });
   it('keeps every heading mounted, puts ungrouped last, and honors group and repository orders', () => {
     renderGroups();
     expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(['Beta 1', 'Alpha 2', 'organization.ungrouped 1']);
@@ -73,6 +85,7 @@ describe('RepositoryGroups', () => {
     const user = userEvent.setup();
     renderGroups({ filtered: true });
     await user.click(screen.getByRole('button', { name: 'organization.moveRepository: repo-1' }));
+    await user.click(screen.getByRole('menuitem', { name: 'organization.moveRepository' }));
     expect(screen.getByRole('menuitem', { name: 'organization.moveUp' })).toHaveAttribute('aria-disabled', 'true');
     await user.keyboard('{Escape}');
     fireEvent.drop(screen.getByTestId('repo-2'), { dataTransfer: transfer('1') });

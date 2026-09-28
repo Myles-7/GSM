@@ -8,7 +8,7 @@ import { useT } from '../../../i18n/useT';
 import { useDialog } from '../../../hooks/useDialog';
 import { Button } from '../../../components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../../../components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../../components/ui/dropdown-menu';
 import { RepositoryGrid } from './RepositoryGrid';
 import { moveBefore, orderedIds, replaceGroupOrder } from './repositoryGroupOrder';
 
@@ -23,7 +23,7 @@ interface Props {
   filtered: boolean;
   customSort: boolean;
   viewMode: 'grid' | 'list';
-  renderRepository: (repository: Repository) => ReactNode;
+  renderRepository: (repository: Repository, organizationActions?: ReactNode) => ReactNode;
   filterKey?: string;
 }
 
@@ -54,6 +54,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState('');
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const headingRefs = useRef(new Map<string, HTMLElement>());
   const canReorder = customSort && !filtered;
@@ -61,7 +62,8 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
 
   useEffect(() => {
     const updateActive = () => {
-      const headings = [...headingRefs.current.entries()];
+      const headings = [...headingRefs.current.entries()].sort(([, left], [, right]) =>
+        left.getBoundingClientRect().top - right.getBoundingClientRect().top);
       const above = headings.filter(([, node]) => node.getBoundingClientRect().top <= 150);
       setActive((above[above.length - 1] ?? headings[0])?.[0] ?? '');
     };
@@ -110,6 +112,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
     }
   };
   const drop = (event: DragEvent, target: string | null, before?: number) => {
+    setDropTarget(null);
     event.preventDefault();
     event.stopPropagation();
     useRepositoryDragStore.getState().endDrag();
@@ -131,8 +134,8 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   };
 
   return (
-    <div ref={root} className="min-w-0">
-      <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-border pb-2">
+    <div ref={root} className="min-w-0" onDragEnd={() => setDropTarget(null)}>
+      <div className="sticky top-16 z-10 mb-3 flex flex-wrap items-center gap-2 border-b border-border bg-background py-2">
         <nav aria-label={t('organization.outline')} className="flex min-w-0 flex-1 gap-3 overflow-x-auto whitespace-nowrap py-1">
           {sections.map(section => (
             <button type="button" key={section.key} onClick={() => jump(section.key)} aria-current={active === section.key ? 'location' : undefined}
@@ -153,8 +156,8 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
           ? orderedIds(state.repositoryOrder ?? [], members.map(r => r.id)).map(id => members.find(r => r.id === id)!)
           : members;
         return (
-          <section key={section.key} className="mb-6 min-w-0" aria-labelledby={`repository-group-${section.key}`}
-            onDragOver={acceptDrag} onDrop={event => drop(event, section.id)}>
+          <section key={section.key} className={`mb-6 min-w-0 transition-colors ${dropTarget === section.key ? 'bg-accent/40 outline outline-2 outline-primary' : ''}`} aria-labelledby={`repository-group-${section.key}`}
+            onDragOver={event => { acceptDrag(event); if (event.defaultPrevented) setDropTarget(section.key); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null); }} onDrop={event => drop(event, section.id)}>
             <div className="mb-3 flex min-w-0 items-center gap-1 border-b border-border py-2">
               {section.id && <button type="button" draggable={!filtered} disabled={filtered} title={t('organization.reorderGroup')} aria-label={t('organization.reorderGroup')}
                 className="shrink-0 cursor-grab p-1 text-muted-foreground disabled:opacity-30"
@@ -173,6 +176,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
                 className="min-w-0 flex-1 scroll-mt-36 break-words text-sm font-semibold outline-none">
                 <GroupIcon icon={section.icon} />{section.name} <span className="ml-2 font-normal tabular-nums text-muted-foreground">{members.length}</span>
               </h3>
+              {section.id && <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t('organization.addExisting')} title={t('organization.addExisting')} onClick={() => { setAddingTo(section.id); setChosen(new Set()); setQuery(''); }}><Plus className="h-4 w-4" /></Button>}
               {section.id && <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('organization.groupActions')} title={t('organization.groupActions')}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -189,11 +193,10 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
             <GroupBatch repositories={ordered} collapsed={collapsed.has(section.key)} viewMode={viewMode} resetKey={filterKey}
               renderRepository={repo => (
                 <div key={repo.id} className="flex h-full min-w-0 flex-col" onDragOver={acceptDrag} onDrop={event => drop(event, section.id, repo.id)}>
-                  <div className="flex min-w-0 flex-1 flex-col [&>.repository-card]:flex-1">{renderRepository(repo)}</div>
-                  <div className="flex items-center justify-end py-0.5">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-6 w-6" title={t('organization.moveRepository')} aria-label={`${t('organization.moveRepository')}: ${repo.name}`}><MoreHorizontal className="h-3.5 w-3.5" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                  <div className="flex min-w-0 flex-1 flex-col [&>.repository-card]:flex-1">{renderRepository(repo,
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>{t('organization.moveRepository')}</DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
                         {sections.map(destination => <DropdownMenuItem key={destination.key} disabled={destination.id === section.id} onSelect={() => moveRepo(repo, destination.id)}>{destination.name}</DropdownMenuItem>)}
                         <DropdownMenuItem disabled={!canReorder || ordered[0]?.id === repo.id}
                           onSelect={() => moveRepo(repo, section.id, ordered[ordered.indexOf(repo) - 1]?.id)}>
@@ -203,9 +206,9 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
                           onSelect={() => { const next = ordered[ordered.indexOf(repo) + 1]; if (next) moveRepo(next, section.id, repo.id); }}>
                           <ArrowDown className="mr-2 h-3.5 w-3.5" />{t('organization.moveDown')}
                         </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  )}</div>
                 </div>
               )} />
           </section>

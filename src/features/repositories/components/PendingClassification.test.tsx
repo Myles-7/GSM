@@ -31,7 +31,7 @@ const categories = [
 ];
 const renderPending = (selectedIds = new Set([1]), repositories = [pending]) =>
   render(<PendingClassification repositories={repositories} categories={categories} selectedIds={selectedIds} onSelect={mocks.onSelect}
-    onSelectAll={vi.fn()} onAssigned={mocks.onAssigned} renderRepository={repo => <div>{repo.name}</div>} viewMode="grid" />);
+    onSelectAll={vi.fn()} onAssigned={mocks.onAssigned} />);
 beforeEach(() => {
   vi.clearAllMocks();
   state.repositories = [pending];
@@ -46,12 +46,22 @@ beforeEach(() => {
 });
 
 describe('PendingClassification', () => {
+  it('confirms different per-row destinations together without altering unselected repositories', async () => {
+    const user = userEvent.setup();
+    const second = { ...pending, id: 2, name: 'second', category_locked: false };
+    state.repositories = [{ ...pending, category_locked: false }, second];
+    renderPending(new Set([1, 2]), state.repositories);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'organization.chooseCategory: pending' }), 'a');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'organization.chooseCategory: second' }), 'b');
+    await user.click(screen.getByRole('button', { name: 'organization.assignSelected' }));
+    expect(state.repositories.map(repo => repo.category_id)).toEqual(['a', 'b']);
+  });
   it('requires an explicit category choice, preserves legacy suggestions and restores a confirmed lock', async () => {
     const user = userEvent.setup();
     renderPending();
     expect(screen.getByRole('button', { name: 'organization.assignSelected' })).toBeDisabled();
     expect(screen.getByText('organization.suggestions: Alpha, Beta')).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox'), 'b');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'organization.chooseCategory' }), 'b');
     await user.click(screen.getByRole('button', { name: 'organization.assignSelected' }));
     expect(mocks.confirm).toHaveBeenCalledOnce();
     expect(state.updateRepository).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 1, category_id: 'b' }), { overrideCategoryLock: true });
@@ -64,7 +74,7 @@ describe('PendingClassification', () => {
     const user = userEvent.setup();
     mocks.confirm.mockResolvedValue(false);
     renderPending();
-    await user.selectOptions(screen.getByRole('combobox'), 'a');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'organization.chooseCategory' }), 'a');
     await user.click(screen.getByRole('button', { name: 'organization.assignSelected' }));
     expect(state.assignRepositoryCategory).not.toHaveBeenCalled();
     expect(state.updateRepository).not.toHaveBeenCalled();
@@ -77,7 +87,7 @@ describe('PendingClassification', () => {
     state.repositories = repositories;
     renderPending(new Set(repositories.map(repo => repo.id)), repositories);
     expect(screen.getAllByRole('checkbox')).toHaveLength(50);
-    await user.selectOptions(screen.getByRole('combobox'), 'a');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'organization.chooseCategory' }), 'a');
     await user.click(screen.getByRole('button', { name: 'organization.assignSelected' }));
     expect(state.updateRepository).toHaveBeenCalledTimes(60);
     expect(mocks.confirm).not.toHaveBeenCalled();

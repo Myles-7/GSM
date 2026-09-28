@@ -9,6 +9,7 @@ import type { Repository } from '../types';
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   toast: vi.fn(),
+  details: vi.fn(),
   analyzeRepositoriesPipelined: vi.fn(),
   abort: vi.fn(),
   getStats: vi.fn(() => ({ averageResponseTime: 1 })),
@@ -37,6 +38,7 @@ vi.mock('../services/githubApi', () => ({
 vi.mock('../services/aiService', () => ({
   AIService: vi.fn(),
 }));
+vi.mock('../services/repositoryDetailAnalysis', () => ({ analyzeRepositoryDetails: mocks.details }));
 
 vi.mock('../services/aiAnalysisOptimizer', () => ({
   AIAnalysisOptimizer: vi.fn(function AIAnalysisOptimizer() {
@@ -95,6 +97,8 @@ vi.mock('./BulkRestoreModal', () => ({
 }));
 
 type StoreState = {
+  user: { id: number };
+  repositories: Repository[];
   githubToken: string | null;
   aiConfigs: Array<Record<string, unknown>>;
   activeAIConfig: string | null;
@@ -151,9 +155,10 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-const renderWithRepositories = (repositories: Repository[]) => render(
-  <RepositoryList repositories={repositories} selectedCategory="all" />,
-);
+const renderWithRepositories = (repositories: Repository[]) => {
+  storeState.repositories = repositories;
+  return render(<RepositoryList repositories={repositories} selectedCategory="all" />);
+};
 
 const selectRepositories = async (user: ReturnType<typeof userEvent.setup>, repositories: Repository[]) => {
   for (const repository of repositories) {
@@ -167,6 +172,7 @@ beforeEach(() => {
   listeners.clear();
   mocks.confirm.mockResolvedValue(true);
   storeState = {
+    user: { id: 1 }, repositories: [],
     githubToken: 'github-token',
     aiConfigs: [{ id: 'ai-config', baseUrl: 'https://ai.example.com', apiKey: 'api-key', model: 'test-model', concurrency: 1 }],
     activeAIConfig: 'ai-config',
@@ -211,24 +217,21 @@ describe('RepositoryList repository workflow contracts', () => {
       custom_category: '已锁定',
       category_locked: true,
     });
-    mocks.analyzeRepositoriesPipelined.mockImplementation(async (...args: unknown[]) => {
-      const onResult = args[6] as (result: Record<string, unknown>) => void;
-      onResult({
-        success: true,
-        repo: lockedRepository,
-        summary: 'AI summary',
+    mocks.details.mockResolvedValueOnce({
+        problem: 'AI summary',
         tags: ['ai-tag'],
         platforms: ['web'],
-      });
-      onResult({ success: false, repo: failedRepository, error: new Error('AI unavailable') });
-    });
+      }).mockRejectedValueOnce(new Error('AI unavailable'));
 
     const user = userEvent.setup();
     renderWithRepositories([lockedRepository, failedRepository]);
     await selectRepositories(user, [lockedRepository, failedRepository]);
     await user.click(screen.getByRole('button', { name: 'contract-run-bulk-ai' }));
+    expect(mocks.details).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '开始分析' }));
 
-    await waitFor(() => expect(storeState.updateRepository).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.details).toHaveBeenCalledTimes(2));
+    expect(storeState.updateRepository).toHaveBeenCalledTimes(1);
     expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({
       id: lockedRepository.id,
       ai_summary: 'AI summary',
@@ -241,15 +244,8 @@ describe('RepositoryList repository workflow contracts', () => {
       analysis_failed: false,
       analysis_error: undefined,
     }));
-    expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({
-      id: failedRepository.id,
-      custom_description: 'Do not erase',
-      custom_tags: ['do-not-erase'],
-      custom_category: '已锁定',
-      category_locked: true,
-      analysis_failed: true,
-      analysis_error: 'AI unavailable',
-    }));
+    expect(storeState.updateRepository).not.toHaveBeenCalledWith(expect.objectContaining({ id: failedRepository.id }));
+    expect(await screen.findByText(/owner\/repo-2: AI unavailable/)).toBeInTheDocument();
   });
 
   it('clears description, tags, category lock, and AI-derived fields when bulk restore targets original values', async () => {
@@ -306,33 +302,24 @@ describe('RepositoryList repository workflow contracts', () => {
 
   it('retains completed AI results after the user stops a running batch', async () => {
     const repository = createRepository(1, { custom_description: 'User description' });
-    let finishPipeline: (() => void) | undefined;
-    mocks.analyzeRepositoriesPipelined.mockImplementation((...args: unknown[]) => {
-      const onResult = args[6] as (result: Record<string, unknown>) => void;
-      onResult({
-        success: true,
-        repo: repository,
-        summary: 'Completed before stop',
-        tags: ['done'],
-        platforms: ['cli'],
-      });
-      return new Promise<void>((resolve) => {
-        finishPipeline = resolve;
-      });
-    });
-    mocks.abort.mockImplementation(() => finishPipeline?.());
+    mocks.details.mockResolvedValueOnce({ problem: 'Completed before stop', tags: ['done'], platforms: ['cli'] });
+    mocks.details.mockImplementationOnce(({ signal }: { signal: AbortSignal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => { mocks.abort(); reject(new Error('aborted')); }, { once: true });
+    }));
 
     const user = userEvent.setup();
-    renderWithRepositories([repository]);
-    await selectRepositories(user, [repository]);
+    const second = createRepository(2);
+    renderWithRepositories([repository, second]);
+    await selectRepositories(user, [repository, second]);
     await user.click(screen.getByRole('button', { name: 'contract-run-bulk-ai' }));
+    await user.click(screen.getByRole('button', { name: '开始分析' }));
 
     await waitFor(() => expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({
       id: repository.id,
       ai_summary: 'Completed before stop',
       custom_description: 'User description',
     })));
-    await user.click(await screen.findByRole('button', { name: '停止' }));
+    await user.click((await screen.findAllByRole('button', { name: '停止' }))[0]);
 
     await waitFor(() => expect(mocks.abort).toHaveBeenCalledTimes(1));
     expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({

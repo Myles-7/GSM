@@ -2,7 +2,7 @@ import { useT } from "../i18n/useT";
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { Bot, LayoutGrid, List, Pause, Play, SearchX, Square, X } from 'lucide-react';
+import { Bot, LayoutGrid, List, SearchX, X } from 'lucide-react';
 import { RepositoryCard } from './RepositoryCard';
 import { SimilarViewBanner } from './SimilarViewBanner';
 import { GlobalChatHistorySheet } from './GlobalChatHistorySheet';
@@ -15,7 +15,7 @@ import { Repository } from '../types';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
 import { matchesCategory } from '../utils/categoryUtils';
 import { sortRepositories } from '../utils/repoSearch';
-import { useRepositoryAnalysisJob } from '../features/repositories/hooks/useRepositoryAnalysisJob';
+import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
 import { useBulkRepositoryActions } from '../features/repositories/hooks/useBulkRepositoryActions';
 import { useDialog } from '../hooks/useDialog';
 import { Button } from './ui/button';
@@ -146,10 +146,14 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     () => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),
     [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]
   );
-  const analysisJob = useRepositoryAnalysisJob({ allCategories });
+  const analysisJob = useRepositoryDetailAnalysisJob();
+  const [analysisRequest, setAnalysisRequest] = useState<{ repositories: Repository[]; accountId?: number }>();
+  const requestAnalysis = useCallback((repository: Repository) => {
+    setShowAISummary(true);
+    setAnalysisRequest({ repositories: [repository], accountId: useAppStore.getState().user?.id });
+  }, []);
   const bulkActions = useBulkRepositoryActions({ allCategories });
-  const isLoading = analysisJob.isRunning;
-  const { isPaused, progress: analysisProgress } = analysisJob;
+  const isLoading = analysisJob.running;
 
   useEffect(() => {
     try {
@@ -361,29 +365,16 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const t = useT('repositories');
 
   const handleAIAnalyze = (analyzeUnanalyzedOnly: boolean = false, analyzeFailedOnly: boolean = false) => {
-    const scope = analyzeFailedOnly ? 'failed' : analyzeUnanalyzedOnly ? 'unanalyzed' : 'all';
     const targetRepositories = analyzeFailedOnly
       ? filteredRepositories.filter((repository) => repository.analysis_failed)
       : analyzeUnanalyzedOnly
         ? filteredRepositories.filter((repository) => !repository.analyzed_at)
         : filteredRepositories;
 
-    return analysisJob.run({
-      repositories: targetRepositories,
-      scope,
-      syncOnComplete: false,
-    });
+    setShowAISummary(true);
+    setAnalysisRequest({ repositories: targetRepositories, accountId: useAppStore.getState().user?.id });
   };
 
-  const handlePauseResume = () => {
-    if (isPaused) {
-      analysisJob.resume();
-      return;
-    }
-    analysisJob.pause();
-  };
-
-  const handleStop = () => analysisJob.requestStop();
 
   // 批量操作处理函数
   // 使用 useCallback 优化事件处理函数
@@ -493,12 +484,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
           setShowRestoreModal(true);
           return;
         case 'ai-summary':
-          completed = await analysisJob.run({
-            repositories: selectedRepositories,
-            scope: 'selected',
-            syncOnComplete: true,
-          });
-          break;
+          setShowAISummary(true);
+          setAnalysisRequest({ repositories: selectedRepositories, accountId: useAppStore.getState().user?.id });
+          return;
         case 'subscribe':
           completed = await bulkActions.subscribe(selectedRepositories);
           break;
@@ -626,7 +614,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     : filteredRepositories;
   const activeDetailIndex = detailRepositories.findIndex(repo => repo.id === activeDetailRepository?.id);
 
-  const renderRepository = (repo: Repository) => (
+  const renderRepository = (repo: Repository, organizationActions?: React.ReactNode) => (
     <div key={repo.id} data-detail-repository={repo.id}
       className={`flex h-full min-w-0 flex-1 flex-col rounded-md [&>.repository-card]:flex-1 ${activeDetailRepository?.id === repo.id ? 'outline outline-2 outline-offset-2 outline-primary' : ''}`}>
     <RepositoryCard
@@ -641,6 +629,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       viewMode={repositoryViewMode}
       onAskRepository={handleAskRepository}
       onViewDetails={setActiveDetailRepository}
+      onAnalyzeRepository={requestAnalysis}
+      organizationActions={organizationActions}
     />
     </div>
   );
@@ -693,42 +683,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
-          <RepositoryDetailAnalysisAction compact repositories={selectedRepositories.length ? selectedRepositories : filteredRepositories} />
+          <RepositoryDetailAnalysisAction hideTrigger request={analysisRequest} job={analysisJob} repositories={selectedRepositories.length ? selectedRepositories : filteredRepositories} />
 
           {/* Progress Bar and Controls - 移动端优化 */}
-          {isLoading && analysisProgress.total > 0 && (
-            <div className="flex items-center gap-1">
-              <div className="hidden w-12 bg-accent dark:bg-accent rounded-full h-2 sm:block">
-                <div
-                  className="bg-primary dark:bg-primary h-2 rounded-full transition-[width] duration-300"
-                  style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
-                ></div>
-              </div>
-              <span className="text-xs sm:text-sm text-muted-foreground dark:text-muted-foreground">
-                {Math.round((analysisProgress.current / analysisProgress.total) * 100)}%
-              </span>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handlePauseResume}
-                className="h-7 w-7 p-0 rounded-lg bg-muted text-muted-foreground dark:bg-warning/20 dark:text-warning hover:bg-accent dark:hover:bg-warning/30 transition-colors"
-                aria-label={isPaused ? t('repositoryList.resume') : t('repositoryList.pause')}
-                title={isPaused ? t('repositoryList.resume') : t('repositoryList.pause')}
-              >
-                {isPaused ? <Play className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleStop}
-                className="h-7 w-7"
-                aria-label={t('repositoryList.stop')}
-                title={t('repositoryList.stop')}
-              >
-                <Square className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          )}
 
         </div>
 
@@ -778,8 +735,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
           filterKey={JSON.stringify(filterResetKey)} viewMode={repositoryViewMode} renderRepository={renderRepository} />
           : selectedCategory === 'pending' ? <PendingClassification repositories={filteredRepositories} visibleCount={visibleCount} categories={allCategories}
             selectedIds={selectedRepoIds} onSelect={handleSelectRepo} onSelectAll={handleSelectAll} onAssigned={handleDeselectAll}
-            viewMode={repositoryViewMode} renderRepository={renderRepository} />
-            : <RepositoryGrid viewMode={repositoryViewMode}>{visibleRepositories.map(renderRepository)}</RepositoryGrid>}
+            onOpenRepository={setActiveDetailRepository} />
+            : <RepositoryGrid viewMode={repositoryViewMode}>{visibleRepositories.map(repo => renderRepository(repo))}</RepositoryGrid>}
       </div>
       {activeDetailRepository &&
         <React.Suspense fallback={null}>

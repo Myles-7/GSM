@@ -1,4 +1,7 @@
 export interface RepositoryDetailsAnalysis {
+  summary?: string | null;
+  tags?: string[];
+  platforms?: string[];
   software_forms?: ('cli' | 'desktop' | 'web' | 'library' | 'plugin' | 'model' | 'agent')[];
   deployment_modes?: ('local' | 'self-hosted' | 'managed' | 'container')[];
   version: 1;

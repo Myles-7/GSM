@@ -798,7 +798,7 @@ export const SearchBar: React.FC = () => {
       </div>
 
       {/* Filter Controls */}
-      <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 md:contents">
+      <div className="flex w-full flex-wrap items-center gap-2 pb-1 md:contents">
         <div className="flex shrink-0 items-center gap-1">
           <Button
             variant="ghost"

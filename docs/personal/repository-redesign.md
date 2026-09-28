@@ -58,6 +58,47 @@ Date: 2026-09-28
 - New locale keys have English fallback outside Chinese; locale parity passes.
 - Browser records, profiles, databases and keys remain outside Git.
 
+## Follow-up repair: 2026-09-28
+
+- Reviewed against the repository-card/subcategory design document. Unified the
+  repository-page card, detail and bulk AI entry points behind one model/range
+  confirmation and one shared job. A single model response supplies overview,
+  tags, platforms and detailed evidence. Existing personal fields and category
+  membership are preserved. Other application features retain their own AI APIs.
+- Show per-repository failures with credentials redacted; preserve prior good
+  results. Unsupported commands are omitted instead of discarding valid analysis.
+- Accept fenced JSON with surrounding commentary without weakening schema checks.
+- Detailed results update the card and analyzed status. Restoring original
+  descriptions clears detailed analysis too, preventing stale AI text returning.
+- Correct scrollspy after group reorder and keep the outline visible on scroll.
+- Verification: 148 frontend test files / 1623 tests passed; TypeScript, ESLint,
+  locale and architecture checks passed. Isolated Electron desktop/mobile smoke
+  passed against the original checkout on port 5174 with synthetic network data.
+- No live model-provider request or real-account Star/unstar was performed.
+
+## Screenshot-led layout pass
+
+- Moved permanent card actions into the title row; reduced padding and replaced
+  the standalone AI-success badge with an accessible status icon. Long titles
+  wrap to two lines. Existing description and visibility preferences are intact.
+- Consolidated subgroup movement and keyboard ordering into each card's menu.
+  Group headers now expose Add directly and highlight drag destinations.
+- Split details into Overview, Setup and Maintenance, with source/model metadata
+  folded away. README remains the existing accessible in-app viewer.
+- Pending classification is now a compact list with per-row category targets and
+  one explicit confirmation for selected rows. Bulk select displays result count.
+- Mobile controls wrap instead of hiding actions in horizontal overflow.
+- AI exposes README/model/validation/save stages. Optional summary is separate
+  from problem explanation; legacy detailed results remain compatible.
+- Before screenshots: external backup `ui-1790587829734`.
+- After screenshots: external backup `ui-1790588298397`, including desktop,
+  mobile, light theme, overlay, pinned details, setup tab and pending list.
+- Verification: 148 frontend files / 1624 tests passed; TypeScript, ESLint,
+  i18n and frontend boundaries passed. Electron fixture smoke passed without
+  real-account writes; desktop 1600x1000 and mobile 390x844 had no viewport overflow.
+- Still deferred: repository comparison, adjustable panel width, comprehensive
+  move undo, virtualized large-library benchmarks and live model-provider QA.
+
 ## Rollback
 
 Keep the running desktop closed before restoring data. Restore the code recovery

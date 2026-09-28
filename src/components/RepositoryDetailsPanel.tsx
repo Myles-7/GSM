@@ -9,6 +9,7 @@ import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const LazyReadmeModal = lazy(() => import('./ReadmeModal').then((module) => ({ default: module.ReadmeModal })));
@@ -30,6 +31,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   const [canPin, setCanPin] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [readmeOpen, setReadmeOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState('overview');
   const readmeTrigger = useRef<HTMLButtonElement>(null);
   const job = useRepositoryDetailAnalysisJob();
   const pinnedRef = useRef(pinned);
@@ -40,7 +42,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   const opener = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
   const repositoryId = repository?.id;
-  useEffect(() => setReadmeOpen(false), [repositoryId]);
+  useEffect(() => { setReadmeOpen(false); setDetailTab('overview'); }, [repositoryId]);
   const isOpen = !!repository;
   const onPinnedChangeRef = useRef(onPinnedChange);
   onPinnedChangeRef.current = onPinnedChange;
@@ -89,6 +91,12 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
       {iconButton(t(pinned ? 'details.unpin' : 'details.pin'), () => setPinned(!pinned), pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />, !pinned && !canPin)}
       {iconButton(t('details.close'), close, <X className="h-4 w-4" />)}
     </header>
+    <Tabs value={detailTab} onValueChange={setDetailTab} className="flex min-h-0 flex-1 flex-col">
+    <TabsList className="mx-4 mt-3 grid shrink-0 grid-cols-3">
+      <TabsTrigger value="overview">{t('details.overviewTab')}</TabsTrigger>
+      <TabsTrigger value="usage">{t('details.usageTab')}</TabsTrigger>
+      <TabsTrigger value="maintenance">{t('details.maintenanceTab')}</TabsTrigger>
+    </TabsList>
     <div ref={scroller} className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4" onScroll={(event) => scrollPositions.current.set(repository.id, event.currentTarget.scrollTop)}>
       <p className="whitespace-pre-wrap break-words text-sm">{repository.custom_description ?? repository.ai_summary ?? repository.description ?? t('details.unknown')}</p>
       <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -97,18 +105,23 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
         <a href={repository.html_url} target="_blank" rel="noopener noreferrer" aria-label={t('repositoryCard.view-on-github')} title={t('repositoryCard.view-on-github')}><ExternalLink className="h-4 w-4" /></a>
       </div>
       <RepositoryDetailAnalysisAction repositories={[repository]} job={job} />
+      <TabsContent value={detailTab} className="space-y-5">
       {!details && <p className="text-sm text-muted-foreground">{t('details.notAnalyzed')}</p>}
       {details && <>
+        {detailTab === 'overview' && <>
         <section><h3 className="mb-2 text-sm font-semibold">{t('details.softwareForms')}</h3><p className="text-sm">{details.software_forms?.length ? details.software_forms.map((form) => t(`details.forms.${form}`)).join(', ') : t('details.unknown')}</p></section>
         <section><h3 className="mb-2 text-sm font-semibold">{t('details.deploymentModes')}</h3><p className="text-sm">{details.deployment_modes?.length ? details.deployment_modes.map((mode) => t(`details.modes.${mode}`)).join(', ') : t('details.unknown')}</p></section>
-        <p className="break-words text-xs text-muted-foreground">{details.model} · <time>{details.generated_at}</time>{details.repository_pushed_at !== (repository.pushed_at || null) && <span> · {t('details.stale')}</span>}</p>
-        {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).map((key) => <section key={key}>
+        </>}
+        {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).filter(key =>
+          detailTab === 'overview' ? ['problem', 'features', 'scenarios'].includes(key) :
+          detailTab === 'usage' ? ['architecture', 'deployment', 'cost'].includes(key) : key === 'maintenance'
+        ).map((key) => <section key={key}>
           <h3 className="mb-2 text-sm font-semibold">{t(`details.${key}`)}</h3>
           {Array.isArray(details[key])
             ? <ul className="list-inside list-disc space-y-1 break-words text-sm">{(details[key] as string[]).length ? (details[key] as string[]).map((line, index) => <li key={index}>{line}</li>) : <li>{t('details.unknown')}</li>}</ul>
             : <p className="whitespace-pre-wrap break-words text-sm">{details[key] || t('details.unknown')}</p>}
         </section>)}
-        <section><h3 className="mb-2 text-sm font-semibold">{t('details.quickstart')}</h3>
+        {detailTab === 'usage' && <section><h3 className="mb-2 text-sm font-semibold">{t('details.quickstart')}</h3>
           {details.quickstart.length === 0 && <p className="text-sm">{t('details.unknown')}</p>}
           {details.quickstart.map((step, index) => <div key={index} className="mb-3 text-sm">
             <p>{step.description}</p>
@@ -118,13 +131,16 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
             </div>}
           </div>)}
           {copyFailed && <p role="alert">{t('details.copyFailed')}</p>}
-        </section>
-        <section><h3 className="mb-2 text-sm font-semibold">{t('details.sources')}</h3>
+        </section>}
+        <details className="border-t pt-3"><summary className="cursor-pointer text-xs text-muted-foreground">{t('details.sources')}</summary>
+          <p className="my-2 break-words text-xs text-muted-foreground">{details.model} · <time>{new Date(details.generated_at).toLocaleString(language)}</time>{details.repository_pushed_at !== (repository.pushed_at || null) && <span> · {t('details.stale')}</span>}</p>
           {details.sources.map((source) => <a key={source.url} className="block break-all text-sm underline" href={source.url} target="_blank" rel="noopener noreferrer">{source.label}</a>)}
-        </section>
+        </details>
       </>}
-      <RepositoryHealthPanel repository={repository} releases={releases.filter((release) => release.repository.id === repository.id).length ? releases.filter((release) => release.repository.id === repository.id) : undefined} language={language} />
+      {(detailTab === 'maintenance' || !details) && <RepositoryHealthPanel repository={repository} releases={releases.filter((release) => release.repository.id === repository.id).length ? releases.filter((release) => release.repository.id === repository.id) : undefined} language={language} />}
+      </TabsContent>
     </div>
+    </Tabs>
   </>;
   return <>
     <span ref={anchor} className="hidden" />

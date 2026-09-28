@@ -98,6 +98,7 @@ describe('RepositoryDetailsPanel', () => {
     expect(screen.getByText('Documented problem')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'README source' })).toHaveAttribute('href', 'https://github.com/owner/repo#readme');
     expect(writeText).not.toHaveBeenCalled();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'details.usageTab' }), { button: 0, ctrlKey: false });
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'details.copy' })));
     expect(writeText).toHaveBeenCalledWith('npm install');
   });

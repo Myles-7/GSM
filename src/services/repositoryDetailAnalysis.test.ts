@@ -21,7 +21,9 @@ describe('repository detail analysis evidence and validation', () => {
   });
   beforeEach(() => { vi.clearAllMocks(); mocks.readme.mockResolvedValue({ content: '# README', retrievedAt: '2026-09-01T00:00:00Z' }); mocks.generate.mockResolvedValue(JSON.stringify(content)); });
   it('records version, configured model, evidence time and pushed-at independently of model output', async () => {
-    const result = await analyzeRepositoryDetails(options);
+    const onStage = vi.fn();
+    const result = await analyzeRepositoryDetails({ ...options, onStage });
+    expect(onStage.mock.calls.map(([stage]) => stage)).toEqual(['readme', 'model', 'validation']);
     expect(result).toMatchObject({ version: 1, model: 'mock-model', repository_pushed_at: repository.pushed_at, problem: null });
     expect(result.sources.map((source) => source.label)).toEqual(['GitHub metadata', 'README']);
     expect(readRepositoryDetails(result)).toEqual(result);
@@ -56,19 +58,23 @@ describe('repository detail analysis evidence and validation', () => {
     const result = await analyzeRepositoryDetails(options);
     expect(result.quickstart[0].command).toBe('npm install');
   });
-  it.each(['# README', '', '# README\nnpm install --ignore-scripts'])('rejects fabricated or modified commands against evidence %j', async (readme) => {
+  it('accepts explanatory text surrounding a fenced JSON result', async () => {
+    mocks.generate.mockResolvedValue('Analysis follows:\n```json\n' + JSON.stringify(content) + '\n```\nBased on the supplied README.');
+    expect((await analyzeRepositoryDetails(options)).version).toBe(1);
+  });
+  it.each(['# README', '', '# README\nnpm install --ignore-scripts'])('removes unsupported commands but preserves useful analysis against evidence %j', async (readme) => {
     mocks.readme.mockResolvedValue({ content: readme, retrievedAt: '2026-09-01T00:00:00Z' });
     mocks.generate.mockResolvedValue(JSON.stringify({ ...content, quickstart: [{ description: 'Install', command: 'npm install && run-unknown-script' }] }));
-    await expect(analyzeRepositoryDetails(options)).rejects.toThrow('not present in README evidence');
+    expect((await analyzeRepositoryDetails(options)).quickstart[0].command).toBeNull();
   });
   it('accepts literal multiline commands with normalized line endings', async () => {
     mocks.readme.mockResolvedValue({ content: '```sh\r\nnpm install\r\nnpm start\r\n```', retrievedAt: '2026-09-01T00:00:00Z' });
     mocks.generate.mockResolvedValue(JSON.stringify({ ...content, quickstart: [{ description: 'Start', command: 'npm install\nnpm start' }] }));
     expect((await analyzeRepositoryDetails(options)).quickstart[0].command).toBe('npm install\nnpm start');
   });
-  it('rejects commands outside the README excerpt actually provided to the model', async () => {
+  it('removes commands outside the README excerpt actually provided to the model', async () => {
     mocks.readme.mockResolvedValue({ content: 'x'.repeat(36000) + '\nnpm install', retrievedAt: '2026-09-01T00:00:00Z' });
     mocks.generate.mockResolvedValue(JSON.stringify({ ...content, quickstart: [{ description: 'Install', command: 'npm install' }] }));
-    await expect(analyzeRepositoryDetails(options)).rejects.toThrow('not present in README evidence');
+    expect((await analyzeRepositoryDetails(options)).quickstart[0].command).toBeNull();
   });
 });
