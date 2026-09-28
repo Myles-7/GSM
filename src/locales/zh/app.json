@@ -208,7 +208,8 @@
     "menu-releases": "发布",
     "menu-forks": "复刻",
     "menu-subscription": "发现",
-    "menu-settings": "设置"
+    "menu-settings": "设置",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "同步分类到 GitHub list"

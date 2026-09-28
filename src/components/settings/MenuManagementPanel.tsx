@@ -14,6 +14,7 @@ import {
   ChevronUp,
   ChevronDown,
   Info,
+  Bot,
 } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -35,6 +36,7 @@ const MENU_META: Record<HeaderMenuId, {
   releases: { icon: Calendar, labelZh: '发布', labelEn: 'Releases', canHide: true },
   forks: { icon: GitFork, labelZh: '复刻', labelEn: 'Forks', canHide: true },
   subscription: { icon: Compass, labelZh: '发现', labelEn: 'Discover', canHide: true },
+  ai: { icon: Bot, labelZh: 'AI', labelEn: 'AI', canHide: true },
   settings: { icon: Settings, labelZh: '设置', labelEn: 'Settings', canHide: false },
 };
 

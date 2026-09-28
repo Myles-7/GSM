@@ -208,7 +208,8 @@
     "menu-releases": "リリース",
     "menu-forks": "レプリカ",
     "menu-subscription": "発見する",
-    "menu-settings": "設定"
+    "menu-settings": "設定",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "カテゴリを GitHub リストに同期する"

@@ -4,8 +4,8 @@ import { useRepositoryChatSessions } from './useRepositoryChatSessions';
 import type { Repository } from '../../../types';
 
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: (selector: (state: { githubToken: string; repositoryChatSettings: { retainSessionDays: number } }) => unknown) =>
-    selector({ githubToken: 'test-token', repositoryChatSettings: { retainSessionDays: 90 } }),
+  useAppStore: (selector: (state: { user: { id: number }; githubToken: string; repositoryChatSettings: { retainSessionDays: number } }) => unknown) =>
+    selector({ user: { id: 7 }, githubToken: 'test-token', repositoryChatSettings: { retainSessionDays: 90 } }),
 }));
 
 const repository = { id: 1, full_name: 'owner/repo-one' } as unknown as Repository;

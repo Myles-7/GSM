@@ -4,7 +4,7 @@
 
 import { makeT, useT } from '../../../i18n/useT';
 import type { AppLanguage } from '../../../i18n/languages';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { Repository } from '../../../types';
@@ -17,6 +17,7 @@ import type {
 import { runRepositoryChatTurn } from '../../../services/repositoryChatRunner';
 import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
 import { DEFAULT_CHAT_TITLES } from './useRepositoryChatSessions';
+import { workbenchRuntime } from '../../../services/aiWorkbenchService';
 
 const createId = (prefix: string): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
@@ -45,8 +46,8 @@ export const useRepositoryChat = ({
   repository,
   session,
   messages,
-  onMessagesChange,
-  onSessionChange,
+    onMessagesChange: updateVisibleMessages,
+    onSessionChange: updateVisibleSession,
 }: UseRepositoryChatOptions) => {
   const t = useT('chat');
   const {
@@ -72,7 +73,21 @@ export const useRepositoryChat = ({
     timelineTimestampRef.current = timestamp;
     return new Date(timestamp).toISOString();
   };
-  const [isSending, setIsSending] = useState(false);
+  const [localSending, setIsSending] = useState(false);
+  const runtime = useSyncExternalStore(workbenchRuntime.subscribe, workbenchRuntime.getSnapshot);
+  const isSending = localSending || (runtime.running && runtime.sessionId === session?.id);
+  const currentSessionRef = useRef(session?.id);
+  currentSessionRef.current = session?.id;
+  const onMessagesChange = useCallback((next: RepositoryChatMessage[]) => {
+    if (currentSessionRef.current === session?.id) updateVisibleMessages(next);
+  }, [session?.id, updateVisibleMessages]);
+  const onSessionChange = useCallback(async (next: RepositoryChatSession) => {
+    const latest = await repositoryChatStorage.getSession(next.id);
+    const merged = { ...next, ...latest, updatedAt: next.updatedAt, modelConfigId: next.modelConfigId, modelLabelAtTime: next.modelLabelAtTime,
+      title: latest && !DEFAULT_CHAT_TITLES.has(latest.title) ? latest.title : next.title };
+    if (currentSessionRef.current === next.id) await updateVisibleSession(merged);
+    else await repositoryChatStorage.saveSession(merged);
+  }, [updateVisibleSession]);
   const [error, setError] = useState<string | null>(null);
   const [toolEvents, setToolEvents] = useState<RepositoryChatToolEvent[]>([]);
   const [evidenceById, setEvidenceById] = useState<Record<string, ToolEvidence>>({});
@@ -169,7 +184,17 @@ export const useRepositoryChat = ({
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion) return;
 
+    const ownerId = String(useAppStore.getState().user?.id ?? '');
+    if (!ownerId || session.ownerId !== ownerId) {
+      setError(t('workbench.accountChanged'));
+      return;
+    }
+    try {
+    await workbenchRuntime.run(session.id, ownerId, async (signal, stage) => {
+    stage('verification');
     const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
     abortControllerRef.current = controller;
     setIsSending(true);
     setError(null);
@@ -251,6 +276,7 @@ export const useRepositoryChat = ({
             scheduleStreamedFlush();
           },
         });
+        controller.signal.throwIfAborted();
         // 拿到最终结果后立即取消挂起的节流刷新：否则最后一个分片若在
         // saveEvidence/saveMessage 等持久化 await 之前不足 60ms 到达，挂起
         // 定时器会把已完成的回答覆盖回流式状态（status: streaming 且无证据）。
@@ -298,14 +324,20 @@ export const useRepositoryChat = ({
       }
       if (!aborted) setError(repositoryChatErrorMessage(unknownError, language));
     } finally {
+      signal.removeEventListener('abort', abort);
       abortControllerRef.current = null;
       setIsSending(false);
+    }
+    });
+    } catch (runtimeError) {
+      setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
     }
   }, [aiConfig, githubToken, isSending, language, messages, onMessagesChange, onSessionChange, persistToolEvent, repository, repositoryChatSettings.agentBudget, repositoryChatSettings.enableAgentToolLoop, repositoryChatSettings.maxToolsPerTurn, repositoryChatSettings.streamingMode, repositoryChatSettings.taskDepth, session, unavailableReason, t]);
 
   const stop = useCallback(() => {
+    if (workbenchRuntime.getSnapshot().sessionId === session?.id) workbenchRuntime.stop();
     abortControllerRef.current?.abort();
-  }, []);
+  }, [session?.id]);
 
   const resendLastPair = useCallback(async (requireFailedStatus: boolean) => {
     if (retryInFlightRef.current || isSending) return;

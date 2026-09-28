@@ -172,7 +172,7 @@ export interface AppActions {
   // UI actions
   setTheme: (theme: 'light' | 'dark') => void;
   setThemePreset: (preset: ThemePresetId) => void;
-  setCurrentView: (view: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription') => void;
+  setCurrentView: (view: AppState['currentView']) => void;
   setSelectedCategory: (category: string) => void;
   setLanguage: (language: AppLanguage) => void;
   setPageTranslationEnabled: (enabled: boolean) => void;

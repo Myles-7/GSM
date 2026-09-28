@@ -208,7 +208,8 @@
     "menu-releases": "выпускать",
     "menu-forks": "копия",
     "menu-subscription": "Обнаружить",
-    "menu-settings": "настраивать"
+    "menu-settings": "настраивать",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "Синхронизировать категории со списком GitHub"

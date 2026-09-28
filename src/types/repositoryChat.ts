@@ -1,3 +1,5 @@
+import type { WorkbenchSessionData } from './aiWorkbench';
+
 export interface RepositoryChatSession {
   id: string;
   repoId: number;
@@ -7,6 +9,12 @@ export interface RepositoryChatSession {
   summary?: string;
   modelConfigId?: string | null;
   modelLabelAtTime?: string;
+  ownerId?: string;
+  kind?: 'repository' | 'workbench';
+  projectId?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  workbench?: WorkbenchSessionData;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;

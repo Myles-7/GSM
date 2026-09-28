@@ -443,7 +443,7 @@ export interface AssetFilter {
   icon?: string;
 }
 
-export type HeaderMenuId = 'repositories' | 'gists' | 'releases' | 'forks' | 'subscription' | 'settings';
+export type HeaderMenuId = 'repositories' | 'gists' | 'releases' | 'forks' | 'subscription' | 'ai' | 'settings';
 
 export interface HeaderMenuItem {
   id: HeaderMenuId;
@@ -457,7 +457,8 @@ export const defaultHeaderMenuConfig: HeaderMenuItem[] = [
   { id: 'releases', visible: true, order: 2 },
   { id: 'forks', visible: true, order: 3 },
   { id: 'subscription', visible: true, order: 4 },
-  { id: 'settings', visible: true, order: 5 },
+  { id: 'ai', visible: true, order: 5 },
+  { id: 'settings', visible: true, order: 6 },
 ];
 
 export interface AccountWorkspace {
@@ -557,7 +558,7 @@ export interface AppState {
   theme: 'light' | 'dark';
   /** 主题配色预设（默认 + 内置精选），见 constants/themePresets */
   themePreset: ThemePresetId;
-  currentView: 'repositories' | 'gists' | 'releases' | 'forks' | 'settings' | 'subscription';
+  currentView: HeaderMenuId;
   selectedCategory: string;
   language: AppLanguage;
   /** Global, display-only English to Chinese translation via translate.js. */

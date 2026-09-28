@@ -208,7 +208,8 @@
     "menu-releases": "Releases",
     "menu-forks": "Forks",
     "menu-subscription": "Discover",
-    "menu-settings": "Settings"
+    "menu-settings": "Settings",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "Pushing categories to lists"

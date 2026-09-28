@@ -7,6 +7,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { resolveRepositoryChatHeadSha } from '../../../services/repositoryChatService';
 import type { RepositoryChatMessage, RepositoryChatSession } from '../../../types/repositoryChat';
 import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
+import { workbenchRuntime } from '../../../services/aiWorkbenchService';
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -44,6 +45,8 @@ export const useRepositoryChatSessions = ({
 }: UseRepositoryChatSessionsOptions) => {
   const t = useT('chat');
   const githubToken = useAppStore((state) => state.githubToken);
+  const user = useAppStore((state) => state.user);
+  const ownerId = user ? String(user.id) : '';
   const retainSessionDays = useAppStore((state) => state.repositoryChatSettings.retainSessionDays);
   const [sessions, setSessions] = useState<RepositoryChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<RepositoryChatSession | null>(null);
@@ -73,8 +76,8 @@ export const useRepositoryChatSessions = ({
     setIsLoading(true);
     setError(null);
     try {
-      await repositoryChatStorage.purgeExpiredSessions(repository.id, retainSessionDays);
-      const nextSessions = await repositoryChatStorage.listSessionsByRepository(repository.id);
+      const nextSessions = (await repositoryChatStorage.listSessionsByRepository(repository.id))
+        .filter((session) => Boolean(ownerId) && session.ownerId === ownerId && !session.archived);
       if (operationId !== operationIdRef.current) return;
       setSessions(nextSessions);
       const mostRecent = nextSessions[0] ?? null;
@@ -85,15 +88,39 @@ export const useRepositoryChatSessions = ({
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [loadSessionMessages, repository, retainSessionDays]);
+  }, [loadSessionMessages, repository, ownerId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!ownerId) return;
+    const task = workbenchRuntime.getSnapshot();
+    void repositoryChatStorage.cleanupWorkbench(ownerId, retainSessionDays, task.running ? task.sessionId ?? undefined : undefined)
+      .catch(() => undefined);
+  }, [ownerId, retainSessionDays]);
+
+  useEffect(() => {
+    let active = true;
+    const reload = async () => {
+      if (!repository || !ownerId) return;
+      const next = (await repositoryChatStorage.listSessionsByRepository(repository.id))
+        .filter((item) => item.ownerId === ownerId && !item.archived);
+      const current = next.find((item) => item.id === activeSession?.id);
+      const nextMessages = current ? await repositoryChatStorage.listMessages(current.id) : [];
+      if (!active) return;
+      setSessions(next);
+      if (current) { setActiveSession(current); setMessages(nextMessages); }
+    };
+    const handler = () => { void reload().catch(() => undefined); };
+    window.addEventListener('gsm:global-chat-history-changed', handler);
+    return () => { active = false; window.removeEventListener('gsm:global-chat-history-changed', handler); };
+  }, [repository, ownerId, activeSession?.id]);
+
   const createSession = useCallback(async () => {
     const operationId = ++operationIdRef.current;
-    if (!repository) return null;
+    if (!repository || !ownerId) return null;
     setIsLoading(true);
     setError(null);
     try {
@@ -106,6 +133,8 @@ export const useRepositoryChatSessions = ({
       const now = new Date().toISOString();
       const session: RepositoryChatSession = {
         id: createId(),
+        ownerId,
+        kind: 'repository',
         repoId: repository.id,
         repoFullName: repository.full_name,
         sourceRefSha,
@@ -126,7 +155,7 @@ export const useRepositoryChatSessions = ({
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [githubToken, language, repository, resolveSourceRefSha, t]);
+  }, [githubToken, language, repository, resolveSourceRefSha, t, ownerId]);
 
   const selectSession = useCallback(async (sessionId: string) => {
     const operationId = ++operationIdRef.current;
@@ -140,7 +169,8 @@ export const useRepositoryChatSessions = ({
     setIsLoading(true);
     setError(null);
     try {
-      await repositoryChatStorage.permanentlyDeleteSession(sessionId);
+      if (!sessions.some((item) => item.id === sessionId && item.ownerId === ownerId)) return;
+      await repositoryChatStorage.softDeleteSession(sessionId);
       notifyGlobalHistoryChanged();
       if (operationId !== operationIdRef.current) return;
       const nextSessions = sessions.filter((session) => session.id !== sessionId);
@@ -153,7 +183,7 @@ export const useRepositoryChatSessions = ({
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [activeSession, loadSessionMessages, sessions]);
+  }, [activeSession, loadSessionMessages, sessions, ownerId]);
 
   const updateSession = useCallback(async (session: RepositoryChatSession) => {
     await repositoryChatStorage.saveSession(session);

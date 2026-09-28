@@ -208,7 +208,8 @@
     "menu-releases": "풀어 주다",
     "menu-forks": "레플리카",
     "menu-subscription": "발견하다",
-    "menu-settings": "설정"
+    "menu-settings": "설정",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "카테고리를 GitHub 목록에 동기화"

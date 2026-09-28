@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { repositoryChatStorage } from './repositoryChatStorage';
 import type { RepositoryChatMessage, RepositoryChatSession, RepositoryChatToolEvent, ToolEvidence } from '../types/repositoryChat';
+import type { Repository } from '../types';
+import type { WorkbenchProject, WorkbenchProposal } from '../types/aiWorkbench';
 
 const createSession = (id: string, repoId: number, updatedAt: string): RepositoryChatSession => ({
   id,
@@ -46,6 +48,58 @@ const createEvidence = (id: string): ToolEvidence => ({
   retrievedAt: '2026-08-26T00:00:00.000Z',
 });
 
+const createRepository = (id = 1): Repository => ({
+  id,
+  name: `repository-${id}`,
+  full_name: `owner/repository-${id}`,
+  description: null,
+  html_url: `https://github.com/owner/repository-${id}`,
+  stargazers_count: 10,
+  forks_count: 2,
+  forks: 2,
+  language: 'TypeScript',
+  created_at: '2026-01-01T00:00:00.000Z',
+  updated_at: '2026-08-26T00:00:00.000Z',
+  pushed_at: '2026-08-26T00:00:00.000Z',
+  owner: { login: 'owner', avatar_url: 'https://example.com/avatar.png' },
+  topics: ['test'],
+});
+
+const createProject = (id: string, ownerId: string): WorkbenchProject => ({
+  id,
+  ownerId,
+  name: id,
+  instructions: '',
+  conclusions: '',
+  repositories: [createRepository()],
+  createdAt: '2026-08-26T00:00:00.000Z',
+  updatedAt: '2026-08-26T00:00:00.000Z',
+});
+
+const createProposal = (
+  id: string,
+  ownerId: string,
+  sessionId: string,
+  status: WorkbenchProposal['operations'][number]['status'] = 'proposed',
+): WorkbenchProposal => ({
+  id,
+  ownerId,
+  sessionId,
+  createdAt: '2026-08-26T00:00:00.000Z',
+  updatedAt: '2026-08-26T00:00:00.000Z',
+  operations: [{
+    id: `operation-${id}`,
+    repository: createRepository(),
+    kind: 'update',
+    reason: 'test proposal',
+    before: {},
+    after: { custom_description: 'updated' },
+    selected: true,
+    overrideLocked: false,
+    status,
+  }],
+});
+
 describe('repositoryChatStorage local fallback', () => {
   const originalIndexedDb = Object.getOwnPropertyDescriptor(window, 'indexedDB');
   const originalLocalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
@@ -81,13 +135,15 @@ describe('repositoryChatStorage local fallback', () => {
     ]);
   });
 
-  it('purges expired sessions for the active repository while retaining current sessions', async () => {
+  it('moves expired legacy repository sessions to trash without assigning an owner', async () => {
     await repositoryChatStorage.saveSession(createSession('expired', 1, '2026-01-01T00:00:00.000Z'));
     await repositoryChatStorage.saveSession(createSession('current', 1, new Date().toISOString()));
 
     await repositoryChatStorage.purgeExpiredSessions(1, 1);
 
-    await expect(repositoryChatStorage.getSession('expired')).resolves.toBeNull();
+    const expired = await repositoryChatStorage.getSession('expired');
+    expect(expired).toMatchObject({ id: 'expired', deletedAt: expect.any(String) });
+    expect(expired?.ownerId).toBeUndefined();
     await expect(repositoryChatStorage.getSession('current')).resolves.toMatchObject({ id: 'current' });
   });
 
@@ -129,6 +185,198 @@ describe('repositoryChatStorage local fallback', () => {
       { id: 'repo1-middle', repoId: 1 },
       { id: 'repo1-older', repoId: 1 },
     ]);
+  });
+
+  it('scopes workbench session modes by owner and only claims unowned legacy sessions', async () => {
+    const ownerId = 'owner-a';
+    await repositoryChatStorage.saveSession(createSession('legacy', 1, '2026-08-20T00:00:00.000Z'));
+    await repositoryChatStorage.saveSession({
+      ...createSession('active', 1, '2026-08-26T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+    });
+    await repositoryChatStorage.saveSession({
+      ...createSession('archived', 1, '2026-08-25T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+      archived: true,
+    });
+    await repositoryChatStorage.saveSession({
+      ...createSession('trash', 1, '2026-08-24T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+      deletedAt: '2026-08-24T12:00:00.000Z',
+    });
+    await repositoryChatStorage.saveSession({
+      ...createSession('foreign', 1, '2026-08-27T00:00:00.000Z'),
+      ownerId: 'owner-b',
+      kind: 'workbench',
+    });
+
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'active')).resolves.toMatchObject([{ id: 'active' }]);
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'archived')).resolves.toMatchObject([{ id: 'archived' }]);
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'trash')).resolves.toMatchObject([{ id: 'trash' }]);
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'legacy')).resolves.toMatchObject([{ id: 'legacy' }]);
+
+    await expect(repositoryChatStorage.claimSession('legacy', ownerId)).resolves.toMatchObject({ id: 'legacy', ownerId });
+    await expect(repositoryChatStorage.claimSession('legacy', 'owner-b')).resolves.toBeNull();
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'legacy')).resolves.toEqual([]);
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId, 'active')).resolves.toMatchObject([
+      { id: 'active' },
+      { id: 'legacy' },
+    ]);
+  });
+
+  it('stores projects and proposals per owner and filters proposals by session', async () => {
+    const ownerId = 'owner-a';
+    await repositoryChatStorage.saveProject(createProject('project-a', ownerId));
+    await repositoryChatStorage.saveProject(createProject('project-b', 'owner-b'));
+    await repositoryChatStorage.saveProposal(createProposal('proposal-a1', ownerId, 'session-a'));
+    await repositoryChatStorage.saveProposal(createProposal('proposal-a2', ownerId, 'session-b'));
+    await repositoryChatStorage.saveProposal(createProposal('proposal-b', 'owner-b', 'session-a'));
+
+    await expect(repositoryChatStorage.listProjects(ownerId)).resolves.toMatchObject([{ id: 'project-a', ownerId }]);
+    await expect(repositoryChatStorage.getProposal('proposal-a1')).resolves.toMatchObject({ id: 'proposal-a1', ownerId });
+    await expect(repositoryChatStorage.listProposals(ownerId, 'session-a')).resolves.toMatchObject([
+      { id: 'proposal-a1', sessionId: 'session-a' },
+    ]);
+    await expect(repositoryChatStorage.listProposals(ownerId)).resolves.toHaveLength(2);
+  });
+
+  it('cleans up ordinary expired sessions while retaining protected and operation records', async () => {
+    const ownerId = 'owner-a';
+    const old = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const oldTrash = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    const owned = (id: string): RepositoryChatSession => ({ ...createSession(id, 1, old), ownerId, kind: 'workbench' });
+    await repositoryChatStorage.saveSession(owned('ordinary'));
+    await repositoryChatStorage.saveSession({ ...owned('pinned'), pinned: true });
+    await repositoryChatStorage.saveSession({ ...owned('project'), projectId: 'project-a' });
+    await repositoryChatStorage.saveSession({ ...owned('archived'), archived: true });
+    await repositoryChatStorage.saveSession(owned('running'));
+    await repositoryChatStorage.saveSession(owned('active-task'));
+    await repositoryChatStorage.saveSession({ ...owned('old-trash'), deletedAt: oldTrash });
+    await repositoryChatStorage.saveProposal(createProposal('running-proposal', ownerId, 'running', 'running'));
+    await repositoryChatStorage.saveProposal(createProposal('retained-proposal', ownerId, 'old-trash', 'success'));
+
+    await repositoryChatStorage.cleanupWorkbench(ownerId, 1, 'active-task');
+
+    await expect(repositoryChatStorage.getSession('ordinary')).resolves.toMatchObject({ deletedAt: expect.any(String) });
+    for (const id of ['pinned', 'project', 'archived', 'running', 'active-task']) {
+      await expect(repositoryChatStorage.getSession(id)).resolves.not.toMatchObject({ deletedAt: expect.any(String) });
+    }
+    await expect(repositoryChatStorage.getSession('old-trash')).resolves.toBeNull();
+    await expect(repositoryChatStorage.getProposal('retained-proposal')).resolves.toMatchObject({
+      id: 'retained-proposal',
+      sessionId: 'old-trash',
+    });
+  });
+
+  it('exports and restores a bounded owner backup with collision-safe relationships and inert operations', async () => {
+    const ownerId = 'owner-a';
+    const session: RepositoryChatSession = {
+      ...createSession('workbench-session', 0, '2026-08-26T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+      repoFullName: '',
+      sourceRefSha: '',
+      projectId: 'project-a',
+      workbench: {
+        scope: 'selected',
+        depth: 'standard',
+        selectedRepositories: [createRepository()],
+        searchBatches: [],
+      },
+    };
+    const evidence = createEvidence('evidence-a');
+    const message = createMessage('message-a', session.id, [evidence.id]);
+    const toolEvent = {
+      ...createToolEvent(session.id, evidence.id),
+      id: 'tool-a',
+      messageId: message.id,
+    };
+    await repositoryChatStorage.saveProject(createProject('project-a', ownerId));
+    await repositoryChatStorage.saveSession(session);
+    await repositoryChatStorage.saveMessage(message);
+    await repositoryChatStorage.saveEvidence(evidence);
+    await repositoryChatStorage.saveToolEvent(toolEvent);
+    await repositoryChatStorage.saveProposal(createProposal('proposal-a', ownerId, session.id));
+
+    const backup = await repositoryChatStorage.exportWorkbench(ownerId);
+    await repositoryChatStorage.importWorkbench(ownerId, backup);
+
+    const sessions = await repositoryChatStorage.listWorkbenchSessions(ownerId);
+    const importedSession = sessions.find((item) => item.id !== session.id);
+    expect(importedSession?.id).toBe('workbench-session-import-1');
+    expect(importedSession?.projectId).toBe('project-a-import-1');
+    const importedMessages = await repositoryChatStorage.listMessages(importedSession!.id);
+    expect(importedMessages).toHaveLength(1);
+    expect(importedMessages[0]).toMatchObject({
+      id: 'message-a-import-1',
+      sessionId: importedSession!.id,
+      evidenceIds: ['evidence-a-import-1'],
+    });
+    await expect(repositoryChatStorage.listEvidence(['evidence-a-import-1'])).resolves.toMatchObject([
+      { id: 'evidence-a-import-1' },
+    ]);
+    const proposals = await repositoryChatStorage.listProposals(ownerId, importedSession!.id);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      id: 'proposal-a-import-1',
+      sessionId: importedSession!.id,
+      operations: [{ selected: false, status: 'restored' }],
+    });
+  });
+
+  it('keeps retained proposal journals detached when an orphaned session id collides on import', async () => {
+    const ownerId = 'owner-a';
+    await repositoryChatStorage.saveProposal(createProposal('orphan-proposal', ownerId, 'orphan-session'));
+    const backup = await repositoryChatStorage.exportWorkbench(ownerId);
+    await repositoryChatStorage.saveSession({
+      ...createSession('orphan-session', 0, '2026-08-27T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+      repoFullName: '',
+      sourceRefSha: '',
+    });
+
+    await repositoryChatStorage.importWorkbench(ownerId, backup);
+
+    const imported = (await repositoryChatStorage.listProposals(ownerId))
+      .find((proposal) => proposal.id === 'orphan-proposal-import-1');
+    expect(imported).toMatchObject({
+      id: 'orphan-proposal-import-1',
+      sessionId: 'orphan-session-import-1',
+      operations: [{ selected: false, status: 'restored' }],
+    });
+    await expect(repositoryChatStorage.getSession('orphan-session-import-1')).resolves.toBeNull();
+  });
+
+  it('rejects malformed and foreign backups before writing any records', async () => {
+    const ownerId = 'owner-a';
+    await repositoryChatStorage.saveSession({
+      ...createSession('owned', 1, '2026-08-26T00:00:00.000Z'),
+      ownerId,
+      kind: 'workbench',
+    });
+    const backup = await repositoryChatStorage.exportWorkbench(ownerId) as Record<string, unknown>;
+    const before = await repositoryChatStorage.listWorkbenchSessions(ownerId);
+
+    await expect(repositoryChatStorage.importWorkbench(ownerId, { ...backup, githubToken: 'secret' }))
+      .rejects.toThrow('secret-like field');
+    await expect(repositoryChatStorage.importWorkbench(ownerId, { ...backup, ownerId: 'owner-b' }))
+      .rejects.toThrow('another account');
+    await expect(repositoryChatStorage.listWorkbenchSessions(ownerId)).resolves.toEqual(before);
+  });
+
+  it('dispatches the global history notification after storage writes', async () => {
+    const listener = vi.fn();
+    window.addEventListener('gsm:global-chat-history-changed', listener);
+    await repositoryChatStorage.saveSession(createSession('event-session', 1, '2026-08-26T00:00:00.000Z'));
+    await repositoryChatStorage.saveProject(createProject('event-project', 'owner-a'));
+    await repositoryChatStorage.saveProposal(createProposal('event-proposal', 'owner-a', 'event-session'));
+    window.removeEventListener('gsm:global-chat-history-changed', listener);
+
+    expect(listener).toHaveBeenCalledTimes(3);
   });
 
   it('rejects fallback writes when localStorage persistence is unavailable', async () => {

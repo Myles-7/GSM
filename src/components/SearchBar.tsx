@@ -129,7 +129,8 @@ export const SearchBar: React.FC = () => {
     const refreshGlobalHistoryCount = async () => {
       const requestId = ++globalHistoryRequestRef.current;
       try {
-        const sessions = await repositoryChatStorage.listRecentSessions(100);
+        const user = useAppStore.getState().user;
+        const sessions = user ? await repositoryChatStorage.listWorkbenchSessions(String(user.id)) : [];
         if (!cancelled && requestId === globalHistoryRequestRef.current) setGlobalHistoryCount(sessions.length);
       } catch {
         if (!cancelled && requestId === globalHistoryRequestRef.current) setGlobalHistoryCount(0);

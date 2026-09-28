@@ -208,7 +208,8 @@
     "menu-releases": "發布",
     "menu-forks": "復刻",
     "menu-subscription": "發現",
-    "menu-settings": "設定"
+    "menu-settings": "設定",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "同步分類到 GitHub list"

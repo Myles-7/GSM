@@ -357,6 +357,12 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
         </SheetHeader>
 
         <div className="flex items-center gap-2 border-b border-border pb-3">
+          <Button type="button" variant="ghost" size="sm" disabled={!activeSession} onClick={() => {
+            if (!activeSession) return;
+            sessionStorage.setItem('gsm:ai-workbench-session', activeSession.id);
+            onClose();
+            setCurrentView('ai');
+          }}><ExternalLink className="h-4 w-4" />{t('workbench.title')}</Button>
           <Button type="button" variant="secondary" size="sm" onClick={handleCreateSession} disabled={isLoading || isSending}>
             {isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />}
             {t('repositoryChatSheet.new-chat')}

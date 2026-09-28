@@ -330,7 +330,7 @@ export const normalizePersistedState = (
           .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
           .map((item) => [item.id, item])
       );
-      return defaultHeaderMenuConfig.map((defaultItem) => {
+      const merged = defaultHeaderMenuConfig.map((defaultItem) => {
         const persistedItem = persistedMap.get(defaultItem.id);
         if (!persistedItem) return defaultItem;
         const isRequired = REQUIRED_HEADER_MENU_IDS.has(defaultItem.id);
@@ -340,6 +340,13 @@ export const normalizePersistedState = (
           order: typeof persistedItem.order === 'number' ? persistedItem.order : defaultItem.order,
         };
       });
+      if (!persistedMap.has('ai')) {
+        const ordered = merged.filter((item) => item.id !== 'ai').sort((a, b) => a.order - b.order);
+        const settingsIndex = ordered.findIndex((item) => item.id === 'settings');
+        ordered.splice(settingsIndex < 0 ? ordered.length : settingsIndex, 0, { id: 'ai', visible: true, order: 0 });
+        return ordered.map((item, order) => ({ ...item, order }));
+      }
+      return merged;
     })(),
   };
 };

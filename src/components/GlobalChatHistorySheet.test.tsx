@@ -6,7 +6,7 @@ import type { Repository } from '../types';
 import type { RepositoryChatSession } from '../types/repositoryChat';
 
 vi.mock('../store/useAppStore', () => ({
-  useAppStore: (selector: (state: { language: 'zh' }) => unknown) => selector({ language: 'zh' }),
+  useAppStore: (selector: (state: { language: 'zh'; user: { id: number } }) => unknown) => selector({ language: 'zh', user: { id: 7 } }),
 }));
 
 const createRepository = (id: number, fullName: string): Repository => ({
@@ -18,6 +18,7 @@ const createRepository = (id: number, fullName: string): Repository => ({
 
 const createSession = (id: string, repoId: number, repoFullName: string, updatedAt: string): RepositoryChatSession => ({
   id,
+  ownerId: '7',
   repoId,
   repoFullName,
   sourceRefSha: 'abcdef1234567890',
@@ -75,7 +76,7 @@ describe('GlobalChatHistorySheet', () => {
   });
 
   it('读取失败时显示错误与重试，恢复后可重载', async () => {
-    const listSpy = vi.spyOn(repositoryChatStorage, 'listRecentSessions');
+    const listSpy = vi.spyOn(repositoryChatStorage, 'listWorkbenchSessions');
     listSpy.mockRejectedValueOnce(new Error('IndexedDB unavailable'));
 
     render(<GlobalChatHistorySheet isOpen repositories={repositories} onClose={() => {}} onSelectSession={() => {}} />);

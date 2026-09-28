@@ -36,6 +36,9 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
   onSelectSession,
 }) => {
   const language = useAppStore((state) => state.language);
+  const user = useAppStore((state) => state.user);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const ownerId = user ? String(user.id) : '';
   const t = useT('chat');
   const [sessions, setSessions] = useState<RepositoryChatSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -56,7 +59,7 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
     setIsLoading(true);
     setLoadError(null);
     try {
-      const nextSessions = await repositoryChatStorage.listRecentSessions(50);
+      const nextSessions = ownerId ? await repositoryChatStorage.listWorkbenchSessions(ownerId) : [];
       if (requestId !== requestIdRef.current) return;
       setSessions(nextSessions);
     } catch {
@@ -65,7 +68,7 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
     } finally {
       if (requestId === requestIdRef.current) setIsLoading(false);
     }
-  }, [t]);
+  }, [t, ownerId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -75,10 +78,12 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
   }, [isOpen, refresh]);
 
   const handleDelete = useCallback(async (sessionId: string) => {
-    await repositoryChatStorage.permanentlyDeleteSession(sessionId);
+    const record = await repositoryChatStorage.getSession(sessionId);
+    if (!ownerId || record?.ownerId !== ownerId) return;
+    await repositoryChatStorage.softDeleteSession(sessionId);
     setSessions((previous) => previous.filter((session) => session.id !== sessionId));
     window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT));
-  }, []);
+  }, [ownerId]);
 
   const visibleSessions = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -169,9 +174,13 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
                       variant="ghost"
                       className="h-auto min-w-0 flex-1 items-center justify-start gap-2.5 px-2 py-2 text-left"
                       onClick={() => {
-                        if (repository) onSelectSession(repository, session.id);
+                        if (repository && session.kind !== 'workbench') onSelectSession(repository, session.id);
+                        else {
+                          sessionStorage.setItem('gsm:ai-workbench-session', session.id);
+                          onClose();
+                          setCurrentView('ai');
+                        }
                       }}
-                      disabled={!repository}
                       title={repository ? t('globalChatHistorySheet.open-conversation-in-v1', { v1: session.repoFullName }) : t('globalChatHistorySheet.the-repository-is-no-longer-in-the-list')}
                     >
                       {repository && (

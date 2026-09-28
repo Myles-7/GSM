@@ -208,7 +208,8 @@
     "menu-releases": "freigeben",
     "menu-forks": "Replik",
     "menu-subscription": "Entdecken",
-    "menu-settings": "aufstellen"
+    "menu-settings": "aufstellen",
+    "menu-ai": "AI"
   },
   "listsPushIndicator": {
     "pushing-categories-to-lists": "Kategorien mit der GitHub-Liste synchronisieren"

@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.appState),
+  useAppStore: Object.assign((selector: (state: Record<string, unknown>) => unknown) => selector(mocks.appState), { getState: () => mocks.appState }),
 }));
 
 vi.mock('../../../services/repositoryChatRunner', () => ({
@@ -28,6 +28,7 @@ vi.mock('../../../services/repositoryChatStorage', () => ({
     saveMessage: mocks.saveMessage,
     saveToolEvent: mocks.saveToolEvent,
     saveEvidence: mocks.saveEvidence,
+    getSession: vi.fn(async () => null),
   },
 }));
 
@@ -52,6 +53,7 @@ const repository: Repository = {
 
 const session: RepositoryChatSession = {
   id: 'session-1',
+  ownerId: '7',
   repoId: repository.id,
   repoFullName: repository.full_name,
   sourceRefSha: 'abcdef1234567890',
@@ -106,6 +108,7 @@ describe('useRepositoryChat persistence failures', () => {
     mocks.listEvidence.mockResolvedValue([]);
     mocks.listToolEvents.mockResolvedValue([]);
     mocks.appState = {
+      user: { id: 7 },
       language: 'en',
       githubToken: 'github-token',
       aiConfigs: [aiConfig],

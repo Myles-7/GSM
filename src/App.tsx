@@ -2,6 +2,7 @@ import React, { Suspense, useEffect, useMemo, useCallback } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { Header } from './components/Header';
 import { usePageTranslationLifecycle } from './hooks/usePageTranslation';
+import { useWorkbenchLifecycle } from './features/ai-workbench/hooks/useWorkbenchLifecycle';
 import { SearchBar } from './components/SearchBar';
 import { RepositoryList } from './components/RepositoryList';
 import { CategorySidebar } from './components/CategorySidebar';
@@ -40,6 +41,9 @@ const LazyDiscoveryView = React.lazy(() =>
 );
 const LazyGistView = React.lazy(() =>
   import('./components/GistView').then((module) => ({ default: module.GistView }))
+);
+const LazyAIWorkbench = React.lazy(() =>
+  import('./features/ai-workbench/components/AIWorkbench').then((module) => ({ default: module.AIWorkbench }))
 );
 
 const ViewLoadingFallback: React.FC = () => (
@@ -143,6 +147,7 @@ DiscoverySubscriptionView.displayName = 'DiscoverySubscriptionView';
 
 function App() {
   usePageTranslationLifecycle();
+  useWorkbenchLifecycle();
   const {
     isAuthenticated,
     currentView,
@@ -258,6 +263,8 @@ function App() {
         );
       case 'settings':
         return <SettingsView />;
+      case 'ai':
+        return <LazyViewBoundary><LazyAIWorkbench /></LazyViewBoundary>;
       default:
         return null;
     }
@@ -282,7 +289,7 @@ function App() {
     <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
       <Header />
-      <main className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
+      <main className={currentView === 'ai' ? 'w-full' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
         {currentViewContent}
       </main>
       <BackToTop />
