@@ -14,9 +14,19 @@ vi.mock('../hooks/useDialog', () => ({
 }));
 
 vi.mock('./RepositoryCard', () => ({
-  RepositoryCard: ({ repository, viewMode }: { repository: Repository; viewMode: string }) => (
-    <div data-testid={`repository-card-${repository.id}`} data-view-mode={viewMode}>{repository.name}</div>
+  RepositoryCard: ({ repository, viewMode, onViewDetails }: { repository: Repository; viewMode: string; onViewDetails?: (repo: Repository) => void }) => (
+    <button data-testid={`repository-card-${repository.id}`} data-view-mode={viewMode} onClick={() => onViewDetails?.(repository)}>{repository.name}</button>
   ),
+}));
+vi.mock('./RepositoryDetailsPanel', () => ({
+  RepositoryDetailsPanel: ({ repository, onPrevious, onNext, onClose }: {
+    repository: Repository; onPrevious?: () => void; onNext?: () => void; onClose: () => void;
+  }) => <aside data-testid="details">
+    <span>{repository.name}</span>
+    <button disabled={!onPrevious} onClick={onPrevious}>Previous detail</button>
+    <button disabled={!onNext} onClick={onNext}>Next detail</button>
+    <button onClick={onClose}>Close detail</button>
+  </aside>,
 }));
 
 vi.mock('./SimilarViewBanner', () => ({ SimilarViewBanner: () => null }));
@@ -88,10 +98,26 @@ beforeEach(() => {
   mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(storeState) : storeState)) as unknown as typeof useAppStore);
   Object.assign(mockUseAppStore, {
     getState: () => storeState,
+    subscribe: vi.fn(() => () => {}),
   });
 });
 
 describe('RepositoryList view mode controls', () => {
+  it('opens details, navigates in visible order, and highlights only the active repository', async () => {
+    const second = { ...repository, id: 2, name: 'second', stargazers_count: 1 };
+    const { container } = render(<RepositoryList repositories={[second, repository]} selectedCategory="all" />);
+    fireEvent.click(screen.getByTestId('repository-card-1'));
+    expect(await screen.findByTestId('details')).toHaveTextContent('repository-one');
+    expect(screen.getByRole('button', { name: 'Previous detail' })).toBeDisabled();
+    expect(container.querySelector('[data-detail-repository="1"]')).toHaveClass('outline-primary');
+    fireEvent.click(screen.getByRole('button', { name: 'Next detail' }));
+    expect(screen.getByTestId('details')).toHaveTextContent('second');
+    expect(container.querySelector('[data-detail-repository="2"]')).toHaveClass('outline-primary');
+    expect(container.querySelector('[data-detail-repository="1"]')).not.toHaveClass('outline-primary');
+    fireEvent.click(screen.getByRole('button', { name: 'Close detail' }));
+    expect(screen.queryByTestId('details')).not.toBeInTheDocument();
+  });
+
   it('sorts the raw default repository list by stars before rendering cards', () => {
     const lowerStarRepository = { ...repository, id: 2, name: 'lower-star', full_name: 'owner/lower-star', stargazers_count: 1 };
     const higherStarRepository = { ...repository, id: 3, name: 'higher-star', full_name: 'owner/higher-star', stargazers_count: 999 };
@@ -134,7 +160,7 @@ describe('RepositoryList view mode controls', () => {
     expect(screen.getByTitle('多列卡片')).toHaveAttribute('aria-pressed', 'true');
 
     const layoutControls = screen.getByRole('group', { name: '仓库布局' });
-    const toolbar = layoutControls.closest('.ui-toolbar');
+    const toolbar = layoutControls.closest('[data-repository-toolbar]');
     expect(toolbar?.lastElementChild).toContainElement(layoutControls);
 
     fireEvent.click(screen.getByTitle('单列列表'));

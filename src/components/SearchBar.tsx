@@ -6,7 +6,7 @@ import { getIntlLocale } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { Input } from './ui/input';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2 } from 'lucide-react';
+import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2, MoreHorizontal } from 'lucide-react';
 import { BatchStarImportDialog } from './BatchStarImportDialog';
 import { getPlatformDisplayName, getPlatformIcon } from './platformMeta';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
@@ -30,10 +30,10 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
-type SortBy = 'stars' | 'updated' | 'name' | 'starred' | 'created';
+type SortBy = 'custom' | 'stars' | 'updated' | 'name' | 'starred' | 'created';
 
 // 标签走 i18n key（searchBar.sort-<value>），这里只保留顺序。created 是本仓库新增的排序。
-const sortOptions: SortBy[] = ['stars', 'updated', 'name', 'starred', 'created'];
+const sortOptions: SortBy[] = ['custom', 'stars', 'updated', 'name', 'starred', 'created'];
 
 interface SortByDropdownProps {
   value: SortBy;
@@ -340,6 +340,9 @@ export const SearchBar: React.FC = () => {
       performBasicFilter();
       return;
     }
+    // Commit the query so the list uses searchResults and disables filtered reordering.
+    // Local input state alone is invisible to both consumers.
+    if (useAppStore.getState().searchFilters.query !== query) setSearchFilters({ query });
 
     // Real-time search only matches repository names for fast response
     const normalizedQuery = query.toLowerCase();
@@ -588,8 +591,6 @@ export const SearchBar: React.FC = () => {
       languages: [],
       platforms: [],
       licenses: [],
-      sortBy: 'stars',
-      sortOrder: 'desc',
       minStars: undefined,
       maxStars: undefined,
       isAnalyzed: undefined,
@@ -667,9 +668,10 @@ export const SearchBar: React.FC = () => {
 
   return (
     <TooltipProvider>
-      <div className="ui-toolbar p-4 sm:p-5 mb-5">
+      <div className="mb-3 border-b border-border pb-3">
+      <div className="flex flex-wrap items-center gap-2" data-testid="repository-main-toolbar">
       {/* Search Input */}
-      <div className="relative z-40 mb-4">
+      <div className="relative z-40 min-w-0 basis-full grow md:basis-52">
         <div className="flex min-w-0 items-center gap-2">
           <div className="relative min-w-0 flex-1">
         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground dark:text-muted-foreground/70 w-5 h-5" />
@@ -687,7 +689,7 @@ export const SearchBar: React.FC = () => {
           onBlur={handleInputBlur}
           onCompositionStart={handleCompositionStart}
           onCompositionEnd={handleCompositionEnd}
-          className="h-10 w-full pl-10 pr-3"
+          className="h-10 w-full pl-10 pr-20"
         />
 
         {/* Search History Dropdown */}
@@ -763,8 +765,7 @@ export const SearchBar: React.FC = () => {
               ))}
           </div>
         )}
-          </div>
-          <div className="relative flex shrink-0 items-center gap-1 sm:gap-2">
+          <div className="absolute inset-y-0 right-1 flex items-center gap-1">
           {searchQuery && (
             <Button
               type="button"
@@ -780,83 +781,38 @@ export const SearchBar: React.FC = () => {
           )}
           <Button
             onClick={handleAISearch}
-            variant="default"
+            variant="ghost"
+            size="icon"
             aria-label={isSearching ? t('searchBar.ai-searching') : t('searchBar.ai-search')}
             disabled={isSearching || !searchQuery.trim()}
-            className="flex shrink-0 items-center sm:px-4"
+            className="h-8 w-8 shrink-0 text-primary"
             title={activeAIConfig
               ? t('searchBar.use-configured-ai-service-for-semantic-search-an')
               : t('searchBar.use-local-intelligent-ranking-algorithm-for-sear')}
           >
             <Bot className="w-4 h-4" />
-            <span className="hidden sm:inline">{isSearching ? t('searchBar.ai-searching') : t('searchBar.ai-search')}</span>
           </Button>
-          {isSearching && searchPhase && (
-            <span className="max-w-[12rem] truncate text-xs text-muted-foreground dark:text-muted-foreground animate-pulse whitespace-nowrap">
-              {searchPhase}
-            </span>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={t('searchBar.about-ai-search')}
-                className="h-8 w-8 shrink-0 text-muted-foreground"
-              >
-                <AlertCircle className="h-4 w-4" aria-hidden="true" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" align="end" className="w-80 max-w-xs whitespace-normal break-words text-left">
-              <p className="mb-1 font-medium">{t('searchBar.about-ai-search-2')}</p>
-              <p className="leading-relaxed text-primary-foreground/80">
-                {activeAIConfig ? t('searchBar.ai-semantic-search-mode-uses-configured-ai-servi') : t('searchBar.fallback-mode-basic-text-search-with-default-sor')}
-              </p>
-            </TooltipContent>
-          </Tooltip>
+          </div>
           </div>
         </div>
       </div>
 
-      {/* Search Status Indicator */}
-      {searchQuery && (
-        <div className="mb-4 flex items-center justify-between text-sm">
-          <div className="flex items-center space-x-2">
-            {isRealTimeSearch ? (
-              <div className="flex items-center space-x-2 text-primary dark:text-primary">
-                <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
-                <span>{t('searchBar.real-time-search-mode-matching-repository-names')}</span>
-              </div>
-            ) : searchFilters.query ? (
-              <div className="flex items-center space-x-2 text-muted-foreground dark:text-muted-foreground ">
-                <Bot className="w-4 h-4" />
-                <span>{t('searchBar.ai-semantic-search-mode-intelligent-matching-and')}</span>
-              </div>
-            ) : null}
-          </div>
-          {isRealTimeSearch && (
-            <div className="text-muted-foreground dark:text-muted-foreground">
-              {t('searchBar.press-enter-or-click-ai-search-for-deep-search')}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Filter Controls */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+      <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 md:contents">
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             variant="ghost"
             aria-expanded={showFilters}
             aria-controls="advanced-filters-panel"
             onClick={() => setShowFilters(!showFilters)}
-            className={`linear-filter-toggle flex items-center space-x-2 px-3 py-2 text-sm ${
+            aria-label={t('searchBar.filters')}
+            title={t('searchBar.filters')}
+            className={`linear-filter-toggle flex h-9 items-center gap-1 px-2 text-sm ${
               showFilters || activeFiltersCount > 0 ? 'is-active' : ''
             }`}
           >
             <SlidersHorizontal className="w-4 h-4" />
-            <span>{t('searchBar.filters')}</span>
+            <span className="hidden xl:inline">{t('searchBar.filters')}</span>
             {activeFiltersCount > 0 && (
               <span className="bg-primary text-primary-foreground rounded-full px-2 py-0.5 text-xs">
                 {activeFiltersCount}
@@ -864,32 +820,22 @@ export const SearchBar: React.FC = () => {
             )}
           </Button>
 
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={openGlobalChatHistory}
-            className="linear-filter-toggle flex items-center space-x-2 px-3 py-2 text-sm"
-            aria-label={t('searchBar.chat-history')}
-            title={t('searchBar.view-chat-history-across-repositories')}
-          >
-            <History className="w-4 h-4" aria-hidden="true" />
-            <span>{t('searchBar.chat-history')}</span>
-            {globalHistoryCount > 0 && (
-              <span className="bg-primary text-primary-foreground rounded-full px-2 py-0.5 text-xs">
-                {globalHistoryCount > 99 ? '99+' : globalHistoryCount}
-              </span>
-            )}
-          </Button>
-
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setBatchStarOpen(true)}
-            className="linear-filter-toggle flex items-center space-x-2 px-3 py-2 text-sm"
-          >
-            <Link2 className="w-4 h-4" aria-hidden="true" />
-            <span>{repositoryT('batchStar.title')}</span>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label={repositoryT('organization.moreActions')} title={repositoryT('organization.moreActions')}>
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={openGlobalChatHistory}>
+                <History className="mr-2 h-4 w-4" />
+                {t('searchBar.chat-history')}{globalHistoryCount > 0 ? ` (${globalHistoryCount})` : ''}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setBatchStarOpen(true)}>
+                <Link2 className="mr-2 h-4 w-4" />{repositoryT('batchStar.title')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {activeFiltersCount > 0 && (
             <Button
@@ -905,12 +851,13 @@ export const SearchBar: React.FC = () => {
         </div>
 
         {/* Sort Controls + Sync Button */}
-        <div className="flex items-center gap-2 relative z-30">
+        <div className="relative z-30 flex shrink-0 items-center gap-1">
           <SortByDropdown
             value={searchFilters.sortBy}
             onChange={(value) => setSearchFilters({ sortBy: value })}
           />
           <Button
+            disabled={searchFilters.sortBy === 'custom'}
             onClick={() => setSearchFilters({
               sortOrder: searchFilters.sortOrder === 'desc' ? 'asc' : 'desc'
             })}
@@ -930,11 +877,12 @@ export const SearchBar: React.FC = () => {
                     type="button"
                     onClick={() => { void syncStars(); }}
                     disabled={isSyncingStars}
-                    className="inline-flex items-center gap-1.5 rounded-none border-0 bg-transparent px-3 py-2 text-inherit shadow-none hover:bg-primary/90 disabled:opacity-50"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-none border-0 bg-transparent px-2 text-inherit shadow-none hover:bg-primary/90 disabled:opacity-50"
+                    aria-label={t('searchBar.sync')}
                     title={t('searchBar.sync-starred-repositories')}
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncingStars ? 'animate-spin' : ''}`} />
-                    <span className="whitespace-nowrap">{t('searchBar.sync')}</span>
+                    <span className="hidden whitespace-nowrap xl:inline">{t('searchBar.sync')}</span>
                   </Button>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -973,7 +921,7 @@ export const SearchBar: React.FC = () => {
                   variant="ghost"
                   size="icon"
                   aria-label={t('searchBar.last-synced')}
-                  className="h-8 w-8 shrink-0 text-muted-foreground"
+                  className="hidden h-8 w-8 shrink-0 text-muted-foreground xl:inline-flex"
                 >
                   <Clock className="h-4 w-4" aria-hidden="true" />
                 </Button>
@@ -986,7 +934,12 @@ export const SearchBar: React.FC = () => {
           </div>
         </div>
         {batchStarOpen && <BatchStarImportDialog isOpen onClose={() => setBatchStarOpen(false)} />}
+      <div id="repository-toolbar-actions" className="flex shrink-0 items-center gap-2" />
       </div>
+      </div>
+      {isSearching && searchPhase && (
+        <div className="mt-2 text-xs text-muted-foreground" role="status">{searchPhase}</div>
+      )}
 
       {/* Advanced Filters */}
       {showFilters && (

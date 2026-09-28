@@ -194,7 +194,7 @@ beforeEach(() => {
   mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (
     selector ? selector(storeState) : (useSyncExternalStore(subscribe, () => storeState, () => storeState))
   )) as unknown as typeof useAppStore);
-  Object.assign(mockUseAppStore, { getState: () => storeState });
+  Object.assign(mockUseAppStore, { getState: () => storeState, subscribe: vi.fn(() => () => {}) });
 });
 
 describe('RepositoryList repository workflow contracts', () => {

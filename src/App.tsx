@@ -98,7 +98,7 @@ const RepositoriesView = React.memo(({
         selectedCategory={selectedCategory}
         onCategorySelect={onCategorySelect}
       />
-      <div className="flex-1 space-y-6">
+      <div className="min-w-0 flex-1 space-y-3">
         <SearchBar />
         <RepositoryList
           repositories={listRepositories}

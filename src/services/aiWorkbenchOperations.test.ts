@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Category, Repository } from '../types';
 import type { WorkbenchOperation, WorkbenchProposal } from '../types/aiWorkbench';
+import { normalizeRepositoryMembership } from '../store/helpers/repositoryOrganization';
 
 const mocks = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   updateRepository: vi.fn(),
   deleteRepository: vi.fn(),
   setRepositories: vi.fn(),
+  moveRepositoryToSubcategory: vi.fn(),
 }));
 
 vi.mock('../store/useAppStore', () => ({
@@ -94,6 +96,8 @@ const repo = (id: number, overrides: Partial<Repository> = {}): Repository => ({
 });
 
 const editable = (repository: Repository) => ({
+  category_id: repository.category_id,
+  subcategory_id: repository.subcategory_id,
   custom_category: repository.custom_category,
   category_locked: repository.category_locked,
   custom_tags: repository.custom_tags ? [...repository.custom_tags] : repository.custom_tags,
@@ -147,11 +151,13 @@ describe('aiWorkbenchOperations', () => {
       repositoryChatSettings: { chatConfigId: null },
       language: 'en',
       customCategories: [category('keep', 'Keep'), category('archive', 'Archive')],
+      subcategories: [{ id: 'keep-group', parentId: 'keep', name: 'Group', icon: 'folder' }],
       hiddenDefaultCategoryIds: [],
       defaultCategoryOverrides: {},
       updateRepository: mocks.updateRepository,
       deleteRepository: mocks.deleteRepository,
       setRepositories: mocks.setRepositories,
+      moveRepositoryToSubcategory: mocks.moveRepositoryToSubcategory,
     };
     mocks.getCurrentUser.mockResolvedValue({ id: 1, login: 'octocat', name: 'Octo', avatar_url: '', email: null });
     mocks.searchRepositoriesWithSelection.mockImplementation(async (repositories: Repository[]) => repositories);
@@ -227,6 +233,142 @@ describe('aiWorkbenchOperations', () => {
       sessionId: 'session-arbitrary-tool',
       signal: new AbortController().signal,
     })).rejects.toThrow('required schema');
+  });
+
+  it('journals stable category/group IDs and restores the former group after an approved locked move', async () => {
+    const repository = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep', category_locked: true });
+    setRepositories([repository]);
+    mocks.generateChatText.mockResolvedValue(JSON.stringify({
+      operations: [{ repositoryId: 1, reason: 'Move', categoryId: 'archive' }],
+    }));
+    const proposal = await proposeWorkbenchOperations({
+      question: 'organize this repository', sessionId: 'stable-ids', signal: new AbortController().signal,
+    });
+    expect(proposal.operations[0].before).toMatchObject({ category_id: 'keep', subcategory_id: 'keep-group' });
+    expect(proposal.operations[0].after).toMatchObject({ category_id: 'archive', subcategory_id: null, category_locked: true });
+    proposal.operations[0].selected = true;
+    proposal.operations[0].overrideLocked = true;
+    const applied = await executeWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(applied.operations[0].status).toBe('success');
+    expect(mocks.updateRepository).toHaveBeenLastCalledWith(expect.objectContaining({ category_id: 'archive', category_locked: true }), { overrideCategoryLock: true });
+    const restored = await restoreWorkbenchProposal(applied, new AbortController().signal, async () => undefined);
+    expect(restored.operations[0].status).toBe('restored');
+    expect(mocks.moveRepositoryToSubcategory).not.toHaveBeenCalled();
+    expect(mocks.updateRepository).toHaveBeenLastCalledWith(expect.objectContaining({
+      category_id: 'keep', subcategory_id: 'keep-group',
+    }), { overrideCategoryLock: true, restoreSubcategory: true });
+  });
+
+  it('restores original category/group IDs with the renamed projection after a successful move', async () => {
+    const original = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep' });
+    setRepositories([original]);
+    mocks.updateRepository.mockImplementation((repository: Repository) => {
+      const normalized = normalizeRepositoryMembership(repository, mocks.state.customCategories as Category[],
+        mocks.state.subcategories as { id: string; parentId: string; name: string; icon: string }[]);
+      setRepositories((mocks.state.repositories as Repository[]).map(current => current.id === normalized.id ? normalized : current));
+    });
+    const after = { ...editable(original), category_id: 'archive', subcategory_id: null, custom_category: 'Archive' };
+    const proposal = proposalFor(updateOperation(original, after));
+    persist(proposal);
+    const applied = await executeWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(applied.operations[0].status).toBe('success');
+
+    mocks.state.customCategories = [category('keep', 'Renamed Keep'), category('archive', 'Archive')];
+    mocks.updateRepository.mockClear();
+    const restored = await restoreWorkbenchProposal(applied, new AbortController().signal, async () => undefined);
+    expect(restored.operations[0].status).toBe('restored');
+    expect(mocks.saved.get(proposal.id)?.operations[0].status).toBe('restored');
+    expect(mocks.updateRepository).toHaveBeenCalledTimes(1);
+    expect((mocks.state.repositories as Repository[])[0]).toMatchObject({
+      category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Renamed Keep',
+    });
+  });
+
+  it('executes a safe edit after a category rename without requiring a lock override', async () => {
+    const original = repo(1, { category_id: 'keep', custom_category: 'Keep', category_locked: true });
+    const after = { ...editable(original), custom_category: 'Renamed Keep', custom_description: 'Edited' };
+    const proposal = proposalFor(updateOperation(original, after));
+    persist(proposal);
+    mocks.state.customCategories = [category('keep', 'Renamed Keep')];
+    setRepositories([{ ...original, custom_category: 'Renamed Keep' }]);
+    const result = await executeWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(result.operations[0].status).toBe('success');
+    expect(mocks.updateRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['execute', 'restore'] as const)('reconciles an interrupted %s after renaming without repeating a write', async (action) => {
+    const original = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep' });
+    const after = { ...editable(original), category_id: 'archive', subcategory_id: null, custom_category: 'Archive' };
+    const proposal = proposalFor(updateOperation(original, after, {
+      status: 'running', ...(action === 'restore' ? { error: '__workbench_restore_running__' } : {}),
+    }));
+    persist(proposal);
+    mocks.state.customCategories = [category('keep', 'Renamed Keep'), category('archive', 'Renamed Archive')];
+    setRepositories([action === 'restore'
+      ? { ...original, custom_category: 'Renamed Keep' }
+      : { ...original, ...after, custom_category: 'Renamed Archive' }]);
+    const run = action === 'restore' ? restoreWorkbenchProposal : executeWorkbenchProposal;
+    const result = await run(proposal, new AbortController().signal, async () => undefined);
+    expect(result.operations[0].status).toBe(action === 'restore' ? 'restored' : 'success');
+    expect(mocks.updateRepository).not.toHaveBeenCalled();
+  });
+
+  it('still detects legacy name changes when category IDs are absent', async () => {
+    const original = repo(1, { custom_category: 'Keep' });
+    const proposal = proposalFor(updateOperation(original, { ...editable(original), custom_description: 'Edited' }));
+    persist(proposal);
+    setRepositories([{ ...original, custom_category: 'Archive' }]);
+    const result = await executeWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(result.operations[0].status).toBe('conflict');
+    expect(mocks.updateRepository).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { category_id: 'keep' },
+    { subcategory_id: 'new-group' },
+    { category_locked: true },
+    { custom_description: 'New user description' },
+    { custom_tags: ['new-user-tag'] },
+  ])('preserves real metadata conflict checks during undo: %j', async (patch) => {
+    const original = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep', category_locked: false });
+    const after = { ...editable(original), category_id: 'archive', subcategory_id: null, custom_category: 'Archive' };
+    const proposal = proposalFor(updateOperation(original, after, { status: 'success' }));
+    persist(proposal);
+    setRepositories([{ ...original, ...after, ...patch }]);
+    const result = await restoreWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(result.operations[0].status).toBe('conflict');
+    expect(mocks.updateRepository).not.toHaveBeenCalled();
+  });
+
+  it.each(['category', 'group', 'parent', 'during-journal-save'])('conflicts without repository writes when the original %s becomes unavailable before undo', async (missing) => {
+    const original = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep' });
+    const after = { ...editable(original), category_id: 'archive', subcategory_id: null, custom_category: 'Archive' };
+    const proposal = proposalFor(updateOperation(original, after, { status: 'success' }));
+    persist(proposal);
+    setRepositories([{ ...original, ...after }]);
+    if (missing === 'category') mocks.state.customCategories = [category('archive', 'Archive')];
+    if (missing === 'group') mocks.state.subcategories = [];
+    if (missing === 'parent') mocks.state.subcategories = [{ id: 'keep-group', parentId: 'archive', name: 'Group', icon: 'folder' }];
+    const result = await restoreWorkbenchProposal(proposal, new AbortController().signal, async () => {
+      if (missing === 'during-journal-save') mocks.state.subcategories = [];
+    });
+    expect(result.operations[0].status).toBe('conflict');
+    expect(mocks.updateRepository).not.toHaveBeenCalled();
+    expect(mocks.moveRepositoryToSubcategory).not.toHaveBeenCalled();
+    expect((mocks.state.repositories as Repository[])[0]).toMatchObject(after);
+  });
+
+  it('does not mark undo restored when store readback differs from the original snapshot', async () => {
+    const original = repo(1, { category_id: 'keep', subcategory_id: 'keep-group', custom_category: 'Keep' });
+    const after = { ...editable(original), category_id: 'archive', subcategory_id: null, custom_category: 'Archive' };
+    const proposal = proposalFor(updateOperation(original, after, { status: 'success' }));
+    persist(proposal);
+    setRepositories([{ ...original, ...after }]);
+    mocks.updateRepository.mockImplementationOnce(() => undefined);
+    const result = await restoreWorkbenchProposal(proposal, new AbortController().signal, async () => undefined);
+    expect(result.operations[0].status).toBe('conflict');
+    expect(result.operations[0].error).toContain('did not match');
+    expect(mocks.updateRepository).toHaveBeenCalledTimes(1);
   });
 
   it('turns an explicit unstar request into review-only unstar proposals without asking the model for mutation actions', async () => {

@@ -16,9 +16,11 @@ import { normalizeTrendingSnapshots } from '../../utils/trendingSnapshots';
 import { normalizeRepositoryCardFields } from '../../utils/repositoryCardFields';
 import { normalizeXTweetAuth, normalizeXTweetFollows } from '../../utils/xTweetFollows';
 import { normalizeTelegramFollows } from '../../utils/telegramFollows';
+import { sortRepositories } from '../../utils/repoSearch';
 import type { AppStoreState } from '../types';
 import { normalizeAccountWorkspaces } from '../helpers/accountWorkspace';
 import { readAuthMirror } from '../persistence/authStorage';
+import { normalizeRepositoryOrganization, organizationCategories, recoverLocalCategorySnapshot } from '../helpers/repositoryOrganization';
 import {
   defaultDiscoveryChannels,
   defaultPresetFilters,
@@ -101,6 +103,19 @@ export const normalizePersistedState = (
     : true;
 
   const normalizedAssetFilters = normalizeAssetFilters(safePersisted.assetFilters);
+  const recovered = recoverLocalCategorySnapshot(safePersisted.customCategories, migratedRepositories);
+  const repositoryOrder = safePersisted.repositoryOrder === undefined && persisted
+    ? sortRepositories(migratedRepositories, safePersisted.searchFilters?.sortBy ?? 'stars',
+      safePersisted.searchFilters?.sortOrder ?? 'desc').map(repo => repo.id)
+    : safePersisted.repositoryOrder;
+  const organization = normalizeRepositoryOrganization({
+    ...safePersisted,
+    repositoryOrder,
+    repositories: recovered.repositories,
+  }, organizationCategories({ ...currentState, ...safePersisted,
+    customCategories: recovered.customCategories,
+    defaultCategoryOverrides: safePersisted.defaultCategoryOverrides ?? {},
+  }));
 
   return {
     ...currentState,
@@ -122,7 +137,7 @@ export const normalizePersistedState = (
       ? safePersisted.themePreset
       : DEFAULT_THEME_PRESET_ID,
     themeTokens: normalizeThemeTokens((safePersisted as Record<string, unknown>).themeTokens),
-    repositories: migratedRepositories,
+    ...organization,
     gists,
     starredGists,
     gistSearchResults: Array.isArray(safePersisted.gistSearchResults) ? safePersisted.gistSearchResults : gists,
@@ -133,7 +148,7 @@ export const normalizePersistedState = (
     analyzingRepositoryIds: new Set<number>(),
     analyzingGistIds: new Set<string>(),
     releases,
-    searchResults: migratedRepositories,
+    searchResults: organization.repositories,
     releaseSubscriptions: normalizeNumberSet(safePersisted.releaseSubscriptions),
     repositoryViewMode: safePersisted.repositoryViewMode === 'list' ? 'list' : 'grid',
     releaseSourceSettings: normalizeReleaseSourceSettings(safePersisted.releaseSourceSettings),
@@ -160,7 +175,7 @@ export const normalizePersistedState = (
     searchFilters: {
       ...initialSearchFilters,
       ...safePersisted.searchFilters,
-      sortBy: safePersisted.searchFilters?.sortBy || 'stars',
+      sortBy: safePersisted.searchFilters?.sortBy || (persisted ? 'stars' : 'custom'),
       sortOrder: safePersisted.searchFilters?.sortOrder || 'desc',
     },
     gistSearchFilters: {
@@ -183,7 +198,7 @@ export const normalizePersistedState = (
     // unless the user explicitly resets the token.
     mcpConfig: normalizeMcpConfig((safePersisted as Record<string, unknown>).mcpConfig),
     repositoryChatSettings: normalizeRepositoryChatSettings((safePersisted as Record<string, unknown>).repositoryChatSettings),
-    customCategories: Array.isArray(safePersisted.customCategories) ? safePersisted.customCategories : [],
+    customCategories: recovered.customCategories,
     hiddenDefaultCategoryIds: (() => {
       const persistedIds = (safePersisted as Record<string, unknown>).hiddenDefaultCategoryIds;
       return Array.isArray(persistedIds)

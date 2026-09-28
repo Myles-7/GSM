@@ -62,7 +62,7 @@ describe('repositoryPatches', () => {
         ai_summary: 'New summary',
         ai_tags: ['new-tag'],
         ai_platforms: ['web'],
-        custom_category: 'AI category',
+        custom_category: 'Locked category',
         category_locked: true,
         analyzed_at: analyzedAt,
         analysis_failed: false,
@@ -91,8 +91,8 @@ describe('repositoryPatches', () => {
         analyzedAt,
       });
 
-      expect(result.custom_category).toBe(category);
-      expect(result.category_locked).toBe(categoryLocked);
+      expect(result.custom_category).toBe('Manual category');
+      expect(result.category_locked).toBe(true);
       expectInputUnchanged(repository, before);
     });
   });

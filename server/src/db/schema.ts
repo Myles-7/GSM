@@ -146,6 +146,12 @@ export function initializeSchema(db: Database.Database): void {
   addColumnIfMissing(db, 'ai_configs', 'reasoning_effort', 'TEXT');
   addColumnIfMissing(db, 'ai_configs', 'mimo_plan', 'TEXT');
   addColumnIfMissing(db, 'repositories', 'category_locked', 'INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'repositories', 'category_id', 'TEXT');
+  addColumnIfMissing(db, 'repositories', 'category_id_defined', 'INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'repositories', 'subcategory_id', 'TEXT');
+  addColumnIfMissing(db, 'repositories', 'category_candidates', 'TEXT');
+  addColumnIfMissing(db, 'repositories', 'category_legacy', 'TEXT');
+  addColumnIfMissing(db, 'repositories', 'ai_details', 'TEXT');
   addColumnIfMissing(db, 'releases', 'zipball_url', 'TEXT');
   addColumnIfMissing(db, 'releases', 'tarball_url', 'TEXT');
   addColumnIfMissing(db, 'categories', 'description', 'TEXT');

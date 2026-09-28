@@ -327,7 +327,8 @@
     "show-only-repositories-pushed-within-the-last-12": "Показывать только репозитории с пушем за последние 12 месяцев",
     "pushed-in-12-months": "Пуш за 12 месяцев",
     "show-only-repositories-without-a-declared-licens": "Показывать только репозитории без объявленной лицензии",
-    "no-declared-license": "Лицензия не объявлена"
+    "no-declared-license": "Лицензия не объявлена",
+    "sort-custom": "Custom order"
   },
   "searchDemo": {
     "search-feature-upgrade": "Обновление функции поиска",

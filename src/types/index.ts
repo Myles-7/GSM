@@ -65,6 +65,12 @@ export interface Repository {
   custom_description?: string;
   custom_tags?: string[];
   custom_category?: string;
+  /** undefined: legacy/unmigrated; null: explicitly pending. */
+  category_id?: string | null;
+  subcategory_id?: string | null;
+  category_candidates?: string[];
+  category_legacy?: import('./repositoryOrganization').RepositoryLegacyClassification;
+  ai_details?: import('./repositoryDetails').RepositoryDetailsAnalysis;
   category_locked?: boolean;
   last_edited?: string;
   vector_indexed_at?: string;  // ISO timestamp of last successful vector indexing
@@ -384,7 +390,7 @@ export interface SearchFilters {
   tags: string[];
   languages: string[];
   platforms: string[]; // 新增：平台过滤
-  sortBy: 'stars' | 'updated' | 'name' | 'starred' | 'created';
+  sortBy: 'stars' | 'updated' | 'name' | 'starred' | 'created' | 'custom';
   sortOrder: 'desc' | 'asc';
   minStars?: number;
   maxStars?: number;
@@ -462,6 +468,9 @@ export const defaultHeaderMenuConfig: HeaderMenuItem[] = [
 ];
 
 export interface AccountWorkspace {
+  subcategories?: import('./repositoryOrganization').RepositorySubcategory[];
+  subcategoryOrder?: string[];
+  repositoryOrder?: number[];
   repositories: Repository[];
   lastSync: string | null;
   gists: Gist[];
@@ -548,6 +557,9 @@ export interface AppState {
   hiddenDefaultCategoryIds: string[];
   defaultCategoryOverrides: Record<string, Partial<Category>>;
   categoryOrder: string[]; // 新增：分类排序顺序
+  subcategories: import('./repositoryOrganization').RepositorySubcategory[];
+  subcategoryOrder: string[];
+  repositoryOrder: number[];
   collapsedSidebarCategoryCount: number; // 新增：折叠状态下显示的分类个数
   categoryMatchMode: CategoryMatchMode; // 分类匹配模式：按卡片展示标签（含自定义）或仅AI标签
   

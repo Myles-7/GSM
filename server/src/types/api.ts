@@ -21,6 +21,12 @@ export interface RepositoryRow {
   custom_description: string | null;
   custom_tags: string | null;
   custom_category: string | null;
+  category_id?: string | null;
+  category_id_defined?: number;
+  subcategory_id?: string | null;
+  category_candidates?: string | null;
+  category_legacy?: string | null;
+  ai_details?: string | null;
   category_locked: number;
   last_edited: string | null;
   subscribed_to_releases: number;
@@ -150,6 +156,9 @@ export interface SyncSettingsRequest {
   activeWebDAVConfig?: string | null;
   hiddenDefaultCategoryIds?: string[];
   categoryOrder?: string[];
+  subcategories?: { id: string; parentId: string; name: string; icon: string }[];
+  subcategoryOrder?: string[];
+  repositoryOrder?: number[];
   customCategories?: unknown[];
   assetFilters?: unknown[];
   collapsedSidebarCategoryCount?: number;

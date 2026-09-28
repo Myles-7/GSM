@@ -327,7 +327,8 @@
     "show-only-repositories-pushed-within-the-last-12": "Nur Repositories mit Push in den letzten 12 Monaten anzeigen",
     "pushed-in-12-months": "Push in 12 Monaten",
     "show-only-repositories-without-a-declared-licens": "Nur Repositories ohne deklarierte Lizenz anzeigen",
-    "no-declared-license": "Keine deklarierte Lizenz"
+    "no-declared-license": "Keine deklarierte Lizenz",
+    "sort-custom": "Custom order"
   },
   "searchDemo": {
     "search-feature-upgrade": "Upgrade der Suchfunktion",

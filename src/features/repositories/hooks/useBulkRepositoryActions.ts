@@ -11,9 +11,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
-import { computeCustomCategory, getAICategory, getDefaultCategory } from '../../../utils/categoryUtils';
 import {
-  applyCategoryAssignment,
   lockRepositoryCategory,
   restoreRepositoryFields,
   setReleaseSubscriptionMarker,
@@ -147,10 +145,17 @@ export const useBulkRepositoryActions = ({
     const failedRepositories: string[] = [];
     for (const repository of repositories) {
       try {
-        const aiCategory = getAICategory(repository, allCategories);
-        const defaultCategory = getDefaultCategory(repository, allCategories);
-        const customCategory = computeCustomCategory(categoryName, aiCategory, defaultCategory);
-        updateRepository(applyCategoryAssignment(repository, customCategory, new Date().toISOString()));
+        const matches = allCategories.filter(category => category.id === categoryName || category.name === categoryName);
+        const target = categoryName === '' ? null : matches.length === 1 ? matches[0].id : undefined;
+        if (target === undefined || (repository.category_locked && repository.category_id !== target)) {
+          failedRepositories.push(repository.full_name);
+          continue;
+        }
+        updateRepository({
+          ...repository, category_id: target, subcategory_id: repository.category_id === target ? repository.subcategory_id : null,
+          custom_category: target === null ? '' : matches[0].name,
+          last_edited: new Date().toISOString(),
+        });
       } catch (error) {
         console.error(`Failed to categorize ${repository.full_name}:`, error);
         failedRepositories.push(repository.full_name);

@@ -21,6 +21,9 @@ const BACKEND_URL_STORAGE_KEY = 'github-stars-manager-backend-url';
 const JSON_ARRAY_SETTING_KEYS = new Set([
   'hiddenDefaultCategoryIds',
   'categoryOrder',
+  'subcategories',
+  'subcategoryOrder',
+  'repositoryOrder',
   'customCategories',
   'assetFilters',
 ]);

@@ -196,7 +196,8 @@ export const useRepositoryCardActions = ({
 
       if (controller.signal.aborted) return;
 
-      const updatedRepo = applyAnalysisSuccess(repository, {
+      const latestRepository = useAppStore.getState().repositories.find(repo => repo.id === repoId) ?? repository;
+      const updatedRepo = applyAnalysisSuccess(latestRepository, {
         summary: result.summary,
         tags: result.tags,
         platforms: result.platforms,
@@ -228,7 +229,8 @@ export const useRepositoryCardActions = ({
           ? error.message
           : (t('useRepositoryCardActions.ai-analysis-failed-please-check-ai-configuration'));
         const failedResult = createFailedAnalysisResult(errorMessage);
-        const failedRepo = applyAnalysisFailure(repository, {
+        const latestRepository = useAppStore.getState().repositories.find(repo => repo.id === repoId) ?? repository;
+        const failedRepo = applyAnalysisFailure(latestRepository, {
           analyzedAt: failedResult.analyzed_at,
           error: failedResult.analysis_error,
         });

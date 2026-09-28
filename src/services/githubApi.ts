@@ -500,7 +500,7 @@ export class GitHubApiService {
       const isRetryable = response.status >= 500 && response.status <= 599;
       if (!isRetryable || attempt === maxRetries) {
         logger.warn('githubApi', 'API request failed', { method, endpoint, status: response.status, durationMs });
-        throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+        throw Object.assign(new Error(`GitHub API error: ${response.status} ${response.statusText}`), { status: response.status });
       }
 
       // 重试前若请求已被取消，则不再等待，直接以当前失败状态抛出。
@@ -1004,16 +1004,25 @@ export class GitHubApiService {
     };
   }
 
-  async getRepositoryReadme(owner: string, repo: string, signal?: AbortSignal): Promise<string> {
+  async getRepositoryReadme(owner: string, repo: string, signal?: AbortSignal, options: { strict?: boolean } = {}): Promise<string> {
     try {
+      if (options.strict) signal?.throwIfAborted();
       const response = await this.makeRequest<GitHubContentResponse>(
         `/repos/${owner}/${repo}/readme`,
         undefined,
         signal
       );
 
+      if (options.strict) signal?.throwIfAborted();
       return this.decodeContentResponse(response);
     } catch (error) {
+      // Evidence consumers distinguish an absent README from a failed request.
+      // Preserve the legacy empty fallback for callers that did not opt in.
+      if (options.strict) {
+        signal?.throwIfAborted();
+        if ((error as { status?: number })?.status === 404) return '';
+        throw error;
+      }
       logger.warn('githubApi', `Failed to fetch README for ${owner}/${repo}`, error);
       return '';
     }

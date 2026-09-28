@@ -1,13 +1,26 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RepositoryEditModal } from "./RepositoryEditModal";
 import { deferOutsideDismiss } from "./modalDismiss";
 import type { Repository } from "../types";
 import { useAppStore } from "../store/useAppStore";
 
+const { confirmMock, categories } = vi.hoisted(() => ({
+  confirmMock: vi.fn(),
+  categories: [
+    { id: 'math', name: '数学', keywords: ['modeling'], icon: '', isCustom: true },
+    { id: 'tools', name: '工具', keywords: ['tool'], icon: '', isCustom: true },
+  ],
+}));
+
+vi.mock("../hooks/useDialog", () => ({
+  useDialog: () => ({ confirm: confirmMock }),
+}));
+
 vi.mock("../store/useAppStore", () => ({
   useAppStore: vi.fn(),
-  getAllCategories: () => [],
+  getAllCategories: () => categories,
 }));
 
 vi.mock("../services/autoSync", () => ({
@@ -47,12 +60,32 @@ const mockUseAppStore = vi.mocked(useAppStore);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  confirmMock.mockResolvedValue(false);
   mockUseAppStore.mockImplementation(((
     selector?: (state: typeof storeState) => unknown,
   ) => (selector ? selector(storeState) : storeState)) as typeof useAppStore);
 });
 
 describe("RepositoryEditModal", () => {
+  it("does not infer a category for migrated pending repositories", () => {
+    render(<RepositoryEditModal isOpen onClose={vi.fn()} repository={{
+      ...repository, category_id: null, ai_tags: ['modeling'],
+    }} />);
+    expect(screen.getByRole('combobox', { name: '分类' })).toHaveTextContent('选择分类');
+  });
+
+  it("requires approval before changing a locked main category", async () => {
+    const user = userEvent.setup();
+    render(<RepositoryEditModal isOpen onClose={vi.fn()} repository={{
+      ...repository, category_id: 'math', custom_category: '数学', category_locked: true,
+    }} />);
+    await user.click(screen.getByRole('combobox', { name: '分类' }));
+    await user.click(screen.getByRole('option', { name: '工具' }));
+    await user.click(screen.getByRole('button', { name: /保存/ }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(storeState.updateRepository).not.toHaveBeenCalled();
+  });
+
   it("preserves an in-progress draft when polling replaces the repository object", () => {
     const onClose = vi.fn();
     const { rerender } = render(

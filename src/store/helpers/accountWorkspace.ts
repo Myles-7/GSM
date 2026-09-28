@@ -12,10 +12,13 @@ import type {
 } from '../../types';
 import { defaultReleaseSourceSettings } from '../../types';
 import { normalizeReleaseSourceSettings } from '../../utils/releaseSources';
+import type { RepositoryOrganization } from '../../types/repositoryOrganization';
+import { normalizeRepositoryOrganization, recoverLocalCategorySnapshot } from './repositoryOrganization';
+import { getAllCategories } from './categoryHelpers';
 
 export type { AccountWorkspace };
 
-export interface AccountWorkspaceRuntime {
+export interface AccountWorkspaceRuntime extends RepositoryOrganization {
   repositories: Repository[];
   lastSync: string | null;
   gists: Gist[];
@@ -41,7 +44,7 @@ export interface AccountWorkspaceRuntime {
   syncModeConfigured: boolean;
 }
 
-export interface AccountWorkspaceSource {
+export interface AccountWorkspaceSource extends Partial<RepositoryOrganization> {
   repositories: Repository[];
   lastSync: string | null;
   gists: Gist[];
@@ -116,6 +119,9 @@ export const normalizeAccountWorkspaces = (value: unknown): Record<string, Accou
         categoryOrder: Array.isArray(record.categoryOrder)
           ? record.categoryOrder.filter((item): item is string => typeof item === 'string')
           : [],
+        subcategories: Array.isArray(record.subcategories) ? record.subcategories : [],
+        subcategoryOrder: Array.isArray(record.subcategoryOrder) ? record.subcategoryOrder : [],
+        repositoryOrder: Array.isArray(record.repositoryOrder) ? record.repositoryOrder : [],
         defaultCategoryOverrides: record.defaultCategoryOverrides && typeof record.defaultCategoryOverrides === 'object'
           && !Array.isArray(record.defaultCategoryOverrides)
           ? record.defaultCategoryOverrides as AccountWorkspace['defaultCategoryOverrides']
@@ -150,6 +156,9 @@ export const emptyAccountWorkspace = (): AccountWorkspace => ({
   customCategories: [],
   hiddenDefaultCategoryIds: [],
   categoryOrder: [],
+  subcategories: [],
+  subcategoryOrder: [],
+  repositoryOrder: [],
   defaultCategoryOverrides: {},
   categoryListIdMap: {},
   syncMode: 'stars',
@@ -171,6 +180,9 @@ export const captureAccountWorkspace = (state: AccountWorkspaceSource): AccountW
   customCategories: state.customCategories,
   hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
   categoryOrder: state.categoryOrder,
+  subcategories: state.subcategories ?? [],
+  subcategoryOrder: state.subcategoryOrder ?? [],
+  repositoryOrder: state.repositoryOrder ?? [],
   defaultCategoryOverrides: state.defaultCategoryOverrides,
   categoryListIdMap: state.categoryListIdMap,
   syncMode: state.syncMode,
@@ -179,14 +191,17 @@ export const captureAccountWorkspace = (state: AccountWorkspaceSource): AccountW
 
 export const applyAccountWorkspace = (workspace: AccountWorkspace | undefined): AccountWorkspaceRuntime => {
   const snapshot = workspace ?? emptyAccountWorkspace();
+  const recovered = recoverLocalCategorySnapshot(snapshot.customCategories, snapshot.repositories);
+  const organization = normalizeRepositoryOrganization({ ...snapshot, repositories: recovered.repositories },
+    getAllCategories(recovered.customCategories, 'zh', [], snapshot.defaultCategoryOverrides).filter(category => category.id !== 'all'));
   return {
-    repositories: snapshot.repositories,
+    ...organization,
     lastSync: snapshot.lastSync,
     gists: snapshot.gists,
     starredGists: snapshot.starredGists,
     gistSearchResults: snapshot.gists,
     selectedGistCategory: snapshot.selectedGistCategory,
-    searchResults: snapshot.repositories,
+    searchResults: organization.repositories,
     similarView: null,
     analyzingGistIds: new Set<string>(),
     analyzingRepositoryIds: new Set<number>(),
@@ -196,7 +211,7 @@ export const applyAccountWorkspace = (workspace: AccountWorkspace | undefined): 
     readReleases: new Set(snapshot.readReleases),
     forks: snapshot.forks,
     readForks: new Set(snapshot.readForks),
-    customCategories: snapshot.customCategories,
+    customCategories: recovered.customCategories,
     hiddenDefaultCategoryIds: snapshot.hiddenDefaultCategoryIds,
     categoryOrder: snapshot.categoryOrder,
     defaultCategoryOverrides: snapshot.defaultCategoryOverrides,

@@ -99,7 +99,10 @@ describe('backendAdapter settings hydration', () => {
     vi.mocked(window.fetch).mockResolvedValue(makeJsonResponse({
       customCategories: '[{"id":"custom-1","name":"Custom","icon":"folder","keywords":["custom"]}]',
       hiddenDefaultCategoryIds: '["hidden-default"]',
-      categoryOrder: '["custom-1","hidden-default"]',
+        categoryOrder: '["custom-1","hidden-default"]',
+        subcategories: '[{"id":"group","parentId":"custom-1","name":"Group","icon":"folder"}]',
+        subcategoryOrder: '["group"]',
+        repositoryOrder: '[2,1]',
       assetFilters: '[{"id":"zip","name":"Archives","keywords":["zip"]}]',
       releaseSourceSettings: '{"source":"github"}',
       defaultCategoryOverrides: '{"web":{"name":"Web Apps","keywords":["web"]}}',
@@ -109,7 +112,10 @@ describe('backendAdapter settings hydration', () => {
     await expect(backend.fetchSettings()).resolves.toEqual({
       customCategories: [{ id: 'custom-1', name: 'Custom', icon: 'folder', keywords: ['custom'] }],
       hiddenDefaultCategoryIds: ['hidden-default'],
-      categoryOrder: ['custom-1', 'hidden-default'],
+        categoryOrder: ['custom-1', 'hidden-default'],
+        subcategories: [{ id: 'group', parentId: 'custom-1', name: 'Group', icon: 'folder' }],
+        subcategoryOrder: ['group'],
+        repositoryOrder: [2, 1],
       assetFilters: [{ id: 'zip', name: 'Archives', keywords: ['zip'] }],
       releaseSourceSettings: { source: 'github' },
       defaultCategoryOverrides: { web: { name: 'Web Apps', keywords: ['web'] } },

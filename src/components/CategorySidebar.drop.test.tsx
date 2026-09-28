@@ -18,10 +18,11 @@ vi.mock('../store/useAppStore', () => ({
 const syncMocks = vi.hoisted(() => ({
   forceSyncToBackend: vi.fn(),
   toast: vi.fn(),
+  confirm: vi.fn(),
 }));
 
 vi.mock('../hooks/useDialog', () => ({
-  useDialog: () => ({ toast: syncMocks.toast, confirm: vi.fn().mockResolvedValue(true) }),
+  useDialog: () => ({ toast: syncMocks.toast, confirm: syncMocks.confirm }),
 }));
 
 vi.mock('../features/repositories/hooks/useCategorySyncActions', () => ({
@@ -49,6 +50,8 @@ const categorizedRepo: Repository = {
   ai_platforms: ['web', 'cli'],
   custom_category: '分类B',
   category_locked: true,
+  category_id: 'cat-b',
+  category_candidates: ['cat-b', 'cat-c'],
 };
 
 const storeState = {
@@ -65,18 +68,22 @@ const storeState = {
   updateRepository: vi.fn(),
   isSidebarCollapsed: false,
   setSidebarCollapsed: vi.fn(),
+  repositories: [] as Repository[],
+  assignRepositoryCategory: vi.fn(),
 };
 
 const mockUseAppStore = vi.mocked(useAppStore);
 
-const renderSidebar = (repositories: Repository[]) =>
-  render(
+const renderSidebar = (repositories: Repository[]) => {
+  storeState.repositories = repositories;
+  return render(
     <CategorySidebar
       repositories={repositories}
       selectedCategory="cat-b"
       onCategorySelect={vi.fn()}
     />
   );
+};
 
 const dropOnCategory = async (categoryName: string, repoId: string) => {
   const target = screen.getByText(categoryName);
@@ -90,27 +97,34 @@ beforeEach(() => {
   vi.clearAllMocks();
   useRepositoryDragStore.getState().endDrag();
   syncMocks.forceSyncToBackend.mockReset().mockResolvedValue(undefined);
+  syncMocks.confirm.mockResolvedValue(true);
+  storeState.updateRepository.mockImplementation((repository: Repository) => {
+    storeState.repositories = storeState.repositories.map(repo => repo.id === repository.id ? repository : repo);
+  });
+  storeState.assignRepositoryCategory.mockImplementation((id: number, categoryId: string | null) => {
+    storeState.repositories = storeState.repositories.map(repo => repo.id === id ? { ...repo, category_id: categoryId, subcategory_id: null } : repo);
+  });
   mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (
     selector ? selector(storeState) : storeState
   )) as typeof useAppStore);
+  Object.assign(mockUseAppStore, { getState: () => storeState });
 });
 
 describe('CategorySidebar drop-to-uncategorize (issue #353 suggestion)', () => {
-  it('将已分类仓库拖到「全部分类」时显式清空分类并同步后端', async () => {
+  it('moves a confirmed locked repository to pending, preserves suggestions, and clears its lock atomically', async () => {
     renderSidebar([categorizedRepo]);
 
     await dropOnCategory('全部分类', String(categorizedRepo.id));
 
-    expect(storeState.updateRepository).toHaveBeenCalledOnce();
-    const updated = storeState.updateRepository.mock.calls[0][0] as Repository;
-    expect(updated.custom_category).toBe('');
-    expect(updated.category_locked).toBe(false);
+    expect(syncMocks.confirm).toHaveBeenCalledOnce();
+    expect(storeState.updateRepository).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category_id: null }), { overrideCategoryLock: true });
+    expect(storeState.repositories[0]).toMatchObject({ category_id: null, category_locked: false, category_candidates: ['cat-b', 'cat-c'] });
     expect(syncMocks.forceSyncToBackend).toHaveBeenCalledOnce();
     expect(useRepositoryDragStore.getState().isDragging).toBe(false);
   });
 
   it('本就无分类的仓库拖到「全部分类」时不写入不同步', async () => {
-    renderSidebar([{ ...categorizedRepo, custom_category: '', category_locked: false }]);
+    renderSidebar([{ ...categorizedRepo, category_id: null, custom_category: '', category_locked: false }]);
 
     await dropOnCategory('全部分类', String(categorizedRepo.id));
 
@@ -131,6 +145,7 @@ describe('CategorySidebar drop-to-uncategorize (issue #353 suggestion)', () => {
       ai_summary: undefined,
       custom_category: undefined,
       category_locked: false,
+      category_id: null,
     };
     renderSidebar([neverMatchedRepo]);
 
@@ -140,15 +155,13 @@ describe('CategorySidebar drop-to-uncategorize (issue #353 suggestion)', () => {
     expect(syncMocks.forceSyncToBackend).not.toHaveBeenCalled();
   });
 
-  it('拖到普通分类时沿用原有改分类逻辑（回归保护）', async () => {
+  it('assigns a single explicit category id after confirming a locked reassignment', async () => {
     renderSidebar([categorizedRepo]);
 
     await dropOnCategory('分类C', String(categorizedRepo.id));
 
-    expect(storeState.updateRepository).toHaveBeenCalledOnce();
-    const updated = storeState.updateRepository.mock.calls[0][0] as Repository;
-    expect(updated.custom_category).toBe('分类C');
-    expect(updated.category_locked).toBe(true);
+    expect(storeState.updateRepository).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category_id: 'cat-c' }), { overrideCategoryLock: true });
+    expect(storeState.repositories[0]).toMatchObject({ category_id: 'cat-c', category_locked: true });
     expect(syncMocks.forceSyncToBackend).toHaveBeenCalledOnce();
   });
 
@@ -164,5 +177,19 @@ describe('CategorySidebar drop-to-uncategorize (issue #353 suggestion)', () => {
     expect(rollback.custom_category).toBe('分类B');
     expect(rollback.category_locked).toBe(true);
     expect(syncMocks.toast).toHaveBeenCalledWith('同步到后端失败，已恢复分类更改。', 'error');
+  });
+
+  it('does not write or sync when the lock confirmation is cancelled', async () => {
+    syncMocks.confirm.mockResolvedValue(false);
+    renderSidebar([categorizedRepo]);
+    await dropOnCategory('分类C', '1');
+    expect(storeState.updateRepository).not.toHaveBeenCalled();
+    expect(storeState.assignRepositoryCategory).not.toHaveBeenCalled();
+    expect(syncMocks.forceSyncToBackend).not.toHaveBeenCalled();
+  });
+
+  it('includes a pending classification entry with the pending count', () => {
+    renderSidebar([{ ...categorizedRepo, category_id: null }]);
+    expect(screen.getByText('待分类').closest('button')).toHaveTextContent('1');
   });
 });

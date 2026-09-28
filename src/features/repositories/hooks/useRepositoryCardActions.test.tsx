@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: mocks.useAppStore,
+  useAppStore: Object.assign(mocks.useAppStore, { getState: () => storeState }),
 }));
 
 vi.mock('../../../hooks/useDialog', () => ({

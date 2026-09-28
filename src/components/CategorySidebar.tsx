@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Undo2,
+  Inbox,
 } from 'lucide-react';
 import { Category, Repository } from '../types';
 import { useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useAppStore';
@@ -16,8 +17,9 @@ import { useRepositoryDragStore } from '../store/useRepositoryDragStore';
 import { useShallow } from 'zustand/react/shallow';
 import { CategoryEditModal } from './CategoryEditModal';
 import { useCategorySyncActions } from '../features/repositories/hooks/useCategorySyncActions';
-import { getAICategory, getDefaultCategory, computeCustomCategory, matchesCategory } from '../utils/categoryUtils';
+import { matchesCategory } from '../utils/categoryUtils';
 import { useDialog } from '../hooks/useDialog';
+import { assignConfirmedCategory } from '../features/repositories/components/repositoryCategoryAssignment';
 
 interface CategorySidebarProps {
   repositories: Repository[];
@@ -62,6 +64,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
 
   const { toast, confirm } = useDialog();
   const { forceSyncToBackend } = useCategorySyncActions();
+  const organizationT = useT('repositories');
   const t = useT('app');
   // 仓库卡片拖拽中：驱动「全部分类」变为「取消分类」热区提示
   const isRepoDragging = useRepositoryDragStore((state) => state.isDragging);
@@ -188,17 +191,20 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
 
   const allCategories = useMemo(() => {
     const categories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides);
-    return sortCategoriesByOrder(categories, categoryOrder);
-  }, [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, categoryOrder]);
+    const sorted = sortCategoriesByOrder(categories, categoryOrder);
+    const pending: Category = { id: 'pending', name: organizationT('organization.pending'), icon: '', keywords: [] };
+    return [...sorted.filter(category => category.id === 'all'), pending, ...sorted.filter(category => category.id !== 'all')];
+  }, [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, categoryOrder, organizationT]);
 
   const repositoryMap = useMemo(() => new Map(repositories.map(repo => [String(repo.id), repo])), [repositories]);
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
     counts.set('all', repositories.length);
+    counts.set('pending', repositories.filter(repo => repo.category_id == null).length);
     
     for (const category of allCategories) {
-      if (category.id === 'all') continue;
+      if (category.id === 'all' || category.id === 'pending') continue;
       const count = repositories.filter(repo => matchesCategory(repo, category, categoryMatchMode)).length;
       counts.set(category.id, count);
     }
@@ -224,7 +230,11 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
   const handleDeleteCategory = async (category: Category) => {
     const confirmed = await confirm(
       t('categorySidebar.delete-category-confirmation'),
-      t('categorySidebar.delete-custom-category-v1-repositories-will-stay', { v1: category.name }),
+      organizationT('organization.deleteCategoryImpact', {
+        name: category.name,
+        repositories: repositories.filter(repo => repo.category_id === category.id).length,
+        groups: useAppStore.getState().subcategories.filter(group => group.parentId === category.id).length,
+      }),
       { type: 'danger', confirmText: t('categorySidebar.delete') }
     );
 
@@ -263,7 +273,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
   };
 
   const handleSyncError = (originalRepo: Repository) => {
-    updateRepository(originalRepo);
+    updateRepository(originalRepo, { overrideCategoryLock: true });
     setDragOverCategoryId(null);
     toast(
       t('categorySidebar.sync-failed-reverted'),
@@ -292,54 +302,16 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     const repository = repositoryMap.get(repoId);
     if (!repository) return;
 
-    const allCategoriesList = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides);
-
-    // 拖到「全部分类」= 取消分类：显式清空（''），与编辑弹窗清空分类的结果一致；
-    // resolveCategoryAssignment 会保留显式清空，后续 AI 重新分析不会重新归类
-    if (category.id === 'all') {
-      // 已显式清空过的仓库无需再写
-      if (repository.custom_category === '') return;
-      // 无锁定分类且 AI/默认分类均未命中时，仓库本就无归属：
-      // 写入 '' 会被 resolveCategoryAssignment 永久保留，阻止后续 AI 重新归类，故 no-op
-      const hasAssignedCategory = !!repository.custom_category ||
-        !!(getAICategory(repository, allCategoriesList) || getDefaultCategory(repository, allCategoriesList));
-      if (!hasAssignedCategory) return;
-
-      const originalRepo = { ...repository };
-      const nextRepo = {
-        ...repository,
-        custom_category: '',
-        category_locked: false,
-        last_edited: new Date().toISOString(),
-      };
-      updateRepository(nextRepo);
-
-      try {
-        await forceSyncToBackend();
-      } catch {
-        handleSyncError(originalRepo);
-      }
-      return;
-    }
+    const targetId = category.id === 'all' || category.id === 'pending' ? null : category.id;
+    if ((repository.category_id ?? null) === targetId) return;
+    if (repository.category_locked && !await confirm(
+      organizationT('organization.lockedTitle'),
+      organizationT('organization.lockedConfirm'),
+      { type: 'warning' },
+    )) return;
 
     const originalRepo = { ...repository };
-
-    const aiCat = getAICategory(repository, allCategoriesList);
-    const defaultCat = getDefaultCategory(repository, allCategoriesList);
-
-    // 使用通用函数计算应该保存的自定义分类值
-    // 如果拖拽的分类与AI/默认一致，则清除自定义标记
-    const customCategoryValue = computeCustomCategory(category.name, aiCat, defaultCat);
-
-    const nextRepo = {
-      ...repository,
-      custom_category: customCategoryValue,
-      category_locked: customCategoryValue !== undefined && customCategoryValue !== '',
-      last_edited: new Date().toISOString(),
-    };
-
-    updateRepository(nextRepo);
-
+    assignConfirmedCategory(repository.id, targetId);
     try {
       await forceSyncToBackend();
     } catch {
@@ -420,7 +392,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                   >
                     <div className="flex items-center space-x-3 min-w-0 flex-1">
                       <span className="text-base flex-shrink-0">
-                        {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.icon}
+                        {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
                       </span>
                       <span className="text-sm font-medium truncate">
                         {isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}
@@ -529,7 +501,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                             title={category.id !== 'all' ? t('categorySidebar.drag-hint', { name: category.name }) : (isUncategorizeHotspot ? t('categorySidebar.uncategorize-drop-here-to-remove-category') : category.name)}
                             aria-label={isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}
                           >
-                            {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.icon}
+                            {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
                           </Button>
                         </div>
                       );
@@ -639,7 +611,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                         >
                           <div className="flex items-center space-x-3 min-w-0 flex-1">
                             <span className="text-base flex-shrink-0">
-                              {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.icon}
+                              {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
                             </span>
                             <span
                               className={`text-sm font-medium truncate transition-[opacity,transform] duration-200 ease-out ${
@@ -669,7 +641,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                         </Button>
 
                         {/* 操作按钮 - 绝对定位，hover/focus-within 时显示，不占位 */}
-                        {category.id !== 'all' && (
+                        {category.id !== 'all' && category.id !== 'pending' && (
                           <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
                             <Button
                               variant="ghost"

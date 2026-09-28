@@ -2,7 +2,7 @@ import { useT } from "../i18n/useT";
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { Bot, ChevronDown, LayoutGrid, List, Pause, Play, SearchX, X } from 'lucide-react';
+import { Bot, LayoutGrid, List, Pause, Play, SearchX, Square, X } from 'lucide-react';
 import { RepositoryCard } from './RepositoryCard';
 import { SimilarViewBanner } from './SimilarViewBanner';
 import { GlobalChatHistorySheet } from './GlobalChatHistorySheet';
@@ -19,8 +19,18 @@ import { useRepositoryAnalysisJob } from '../features/repositories/hooks/useRepo
 import { useBulkRepositoryActions } from '../features/repositories/hooks/useBulkRepositoryActions';
 import { useDialog } from '../hooks/useDialog';
 import { Button } from './ui/button';
-import { RadioGroup, RadioGroupItem } from './ui/radio-group';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem } from './ui/dropdown-menu';
+import { RepositoryGroups } from '../features/repositories/components/RepositoryGroups';
+import { RepositoryGrid } from '../features/repositories/components/RepositoryGrid';
+import { PendingClassification } from '../features/repositories/components/PendingClassification';
+import { RepositoryToolbarPortal } from '../features/repositories/components/RepositoryToolbarPortal';
+import { orderedIds } from '../features/repositories/components/repositoryGroupOrder';
+import { assignConfirmedCategory } from '../features/repositories/components/repositoryCategoryAssignment';
+import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
+
+const LazyRepositoryDetailsPanel = React.lazy(() =>
+  import('./RepositoryDetailsPanel').then(module => ({ default: module.RepositoryDetailsPanel }))
+);
 
 const LazyRepositoryChatSheet = React.lazy(() =>
   import('./RepositoryChatSheet').then((module) => ({ default: module.default }))
@@ -47,6 +57,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     resetSimilarView,
     repositoryViewMode,
     setRepositoryViewMode,
+    repositoryOrder,
+    subcategories,
+    subcategoryOrder,
   } = useAppStore(useShallow((state) => ({
     language: state.language,
     customCategories: state.customCategories,
@@ -59,6 +72,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     resetSimilarView: state.resetSimilarView,
     repositoryViewMode: state.repositoryViewMode,
     setRepositoryViewMode: state.setRepositoryViewMode,
+    repositoryOrder: state.repositoryOrder,
+    subcategories: state.subcategories,
+    subcategoryOrder: state.subcategoryOrder,
   })));
 
   // 空状态的"清除全部筛选"出口：只重置筛选条件，保留查询词——查询词是
@@ -76,6 +92,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       isEdited: undefined,
       isCategoryLocked: undefined,
       analysisFailed: undefined,
+      healthArchived: undefined,
+      healthRecentActivity: undefined,
+      healthHasLicense: undefined,
     });
   }, [setSearchFilters]);
 
@@ -92,11 +111,14 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       searchFilters.isSubscribed !== undefined ||
       searchFilters.isEdited !== undefined ||
       searchFilters.isCategoryLocked !== undefined ||
-      searchFilters.analysisFailed !== undefined;
+      searchFilters.analysisFailed !== undefined ||
+      searchFilters.healthArchived !== undefined ||
+      searchFilters.healthRecentActivity !== undefined ||
+      searchFilters.healthHasLicense !== undefined;
   }, [searchFilters]);
 
 
-  const { toast } = useDialog();
+  const { toast, confirm } = useDialog();
 
   const [showAISummary, setShowAISummary] = useState(true);
   const [disableCardAnimations, setDisableCardAnimations] = useState(false);
@@ -113,6 +135,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const [isExitingSelection, setIsExitingSelection] = useState(false);
   const selectionExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeChatRepository, setActiveChatRepository] = useState<Repository | null>(null);
+  const [activeDetailRepository, setActiveDetailRepository] = useState<Repository | null>(null);
+  const [detailsPinned, setDetailsPinned] = useState(false);
   const activeChatTriggerRef = useRef<HTMLElement | null>(null);
   // 全局问答历史（S4 入口）：抽屉 + 从历史进入单仓会话的目标会话。
   const [globalHistoryOpen, setGlobalHistoryOpen] = useState(false);
@@ -139,7 +163,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   }, [repositories]);
 
   const filteredRepositories = useMemo(() => {
-    const categoryRepositories = selectedCategory === 'all'
+    const categoryRepositories = selectedCategory === 'pending'
+      ? repositories.filter(repo => repo.category_id == null)
+      : selectedCategory === 'all' || similarView?.active || !!searchFilters.query?.trim()
       ? repositories
       : (() => {
         const selectedCategoryObj = allCategories.find(cat => cat.id === selectedCategory);
@@ -151,8 +177,15 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     // Do not let the normal list preference (stars/updated/name) overwrite that
     // relevance ordering after the card action has entered similar-view mode.
     if (similarView?.active) return categoryRepositories;
+    if (searchFilters.sortBy === 'custom') {
+      const byId = new Map(categoryRepositories.map(repo => [repo.id, repo]));
+      return orderedIds(repositoryOrder ?? [], [...byId.keys()]).map(id => byId.get(id)!);
+    }
     return sortRepositories(categoryRepositories, searchFilters.sortBy, searchFilters.sortOrder);
-  }, [repositories, selectedCategory, allCategories, categoryMatchMode, searchFilters.sortBy, searchFilters.sortOrder, similarView?.active]);
+  }, [repositories, selectedCategory, allCategories, categoryMatchMode, searchFilters.query, searchFilters.sortBy, searchFilters.sortOrder, similarView?.active, repositoryOrder]);
+  const grouped = selectedCategory !== 'all' && selectedCategory !== 'pending' &&
+    !similarView?.active && !searchFilters.query?.trim() &&
+    allCategories.some(category => category.id === selectedCategory);
 
   // 根据当前筛选的仓库中是否有AI分析内容来动态设置默认显示模式
   const hasAnalyzedRepos = useMemo(() => 
@@ -179,8 +212,6 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const [visibleCount, setVisibleCount] = useState(LOAD_BATCH);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const startIndex = filteredRepositories.length === 0 ? 0 : 1;
-  const endIndex = Math.min(visibleCount, filteredRepositories.length);
   const visibleRepositories = filteredRepositories.slice(0, visibleCount);
 
   // 派生选中的仓库数组，统一用于计数与传递
@@ -224,6 +255,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     isEdited: searchFilters.isEdited,
     isCategoryLocked: searchFilters.isCategoryLocked,
     analysisFailed: searchFilters.analysisFailed,
+    healthArchived: searchFilters.healthArchived,
+    healthRecentActivity: searchFilters.healthRecentActivity,
+    healthHasLicense: searchFilters.healthHasLicense,
   }), [
     selectedCategory,
     searchFilters.query,
@@ -240,6 +274,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     searchFilters.isEdited,
     searchFilters.isCategoryLocked,
     searchFilters.analysisFailed,
+    searchFilters.healthArchived,
+    searchFilters.healthRecentActivity,
+    searchFilters.healthHasLicense,
   ]);
 
   // Reset visible count only when filter context changes.
@@ -266,7 +303,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   // IntersectionObserver to load more on demand
   useEffect(() => {
     const node = sentinelRef.current;
-    if (!node) return;
+    if (!node || typeof IntersectionObserver === 'undefined') return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -283,7 +320,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
 
     observer.observe(node);
     return () => observer.disconnect();
-  }, [filteredRepositories.length]);
+  }, [filteredRepositories.length, grouped]);
 
   useEffect(() => {
     const handleSyncVisualState = (event: Event) => {
@@ -490,9 +527,12 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
 
   const handleBulkCategorize = async (categoryName: string) => {
     const selectedRepositories = filteredRepositories.filter((repository) => selectedRepoIds.has(repository.id));
-    if (await bulkActions.categorize(selectedRepositories, categoryName)) {
-      handleDeselectAll();
-    }
+    const category = allCategories.find(item => item.name === categoryName && item.id !== 'all');
+    if (!category) return;
+    if (selectedRepositories.some(repo => repo.category_locked && repo.category_id !== category.id) &&
+      !await confirm(t('organization.lockedTitle'), t('organization.lockedConfirm'), { type: 'warning' })) return;
+    selectedRepositories.forEach(repo => assignConfirmedCategory(repo.id, category.id));
+    handleDeselectAll();
   };
 
   const handleBulkRestore = async (config: RestoreConfig) => {
@@ -527,7 +567,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     />
   );
 
-  if (filteredRepositories.length === 0) {
+  if (filteredRepositories.length === 0 && !grouped) {
     const selectedCategoryObj = allCategories.find(cat => cat.id === selectedCategory);
     const categoryName = selectedCategoryObj?.name || selectedCategory;
 
@@ -574,7 +614,36 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     );
   }
 
-  const { unanalyzedCount, analyzedCount, failedCount } = repositoryStats;
+  const { unanalyzedCount, failedCount } = repositoryStats;
+  const currentGroups = (subcategories ?? []).filter(group => group.parentId === selectedCategory);
+  const groupIds = orderedIds(subcategoryOrder ?? [], currentGroups.map(group => group.id));
+  const detailRepositories = grouped
+    ? [...filteredRepositories].sort((left, right) => {
+      const leftIndex = groupIds.indexOf(left.subcategory_id ?? '');
+      const rightIndex = groupIds.indexOf(right.subcategory_id ?? '');
+      return (leftIndex < 0 ? groupIds.length : leftIndex) - (rightIndex < 0 ? groupIds.length : rightIndex);
+    })
+    : filteredRepositories;
+  const activeDetailIndex = detailRepositories.findIndex(repo => repo.id === activeDetailRepository?.id);
+
+  const renderRepository = (repo: Repository) => (
+    <div key={repo.id} data-detail-repository={repo.id}
+      className={`flex h-full min-w-0 flex-1 flex-col rounded-md [&>.repository-card]:flex-1 ${activeDetailRepository?.id === repo.id ? 'outline outline-2 outline-offset-2 outline-primary' : ''}`}>
+    <RepositoryCard
+      repository={repo}
+      showAISummary={showAISummary}
+      searchQuery={searchFilters.query}
+      isSelected={selectedRepoIds.has(repo.id)}
+      onSelect={handleSelectRepo}
+      selectionMode={showBulkToolbar}
+      isExitingSelection={isExitingSelection}
+      allCategories={allCategories}
+      viewMode={repositoryViewMode}
+      onAskRepository={handleAskRepository}
+      onViewDetails={setActiveDetailRepository}
+    />
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -589,43 +658,47 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       )}
 
       {/* Controls Bar */}
-      <div className="ui-toolbar flex flex-col sm:flex-row sm:items-center sm:justify-between p-3 sm:p-4 gap-3 sm:gap-0">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+      <RepositoryToolbarPortal>
+      <div className="flex shrink-0 items-center justify-end gap-1" data-repository-toolbar>
+        <div className="flex items-center gap-1">
 
           {/* AI Analysis Select */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
-                variant="outline"
-                disabled={isLoading}
+                variant="ghost"
+                size="icon"
                 aria-label={t('repositoryList.ai-analysis-actions')}
-                className="ui-field h-9 w-auto min-w-32 justify-between gap-2 px-3 py-1 text-sm font-medium"
+                title={t('repositoryList.ai-analysis-actions')}
+                className="h-8 w-8"
               >
                 <Bot className="h-4 w-4 shrink-0" />
-                {isLoading
-                  ? t('repositoryList.analyzing-v1-v2', { v1: analysisProgress.current, v2: analysisProgress.total })
-                  : t('repositoryList.ai-analysis')}
-                <ChevronDown className="h-4 w-4 shrink-0 opacity-70" aria-hidden="true" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
-              <DropdownMenuItem onSelect={() => void handleAIAnalyze(false)}>
+              <DropdownMenuItem disabled={isLoading} onSelect={() => void handleAIAnalyze(false)}>
                 {t('repositoryList.analyze-all-v1', { v1: filteredRepositories.length })}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={unanalyzedCount === 0} onSelect={() => void handleAIAnalyze(true)}>
+              <DropdownMenuItem disabled={isLoading || unanalyzedCount === 0} onSelect={() => void handleAIAnalyze(true)}>
                 {t('repositoryList.analyze-unanalyzed-unanalyzedcount', { unanalyzedCount: unanalyzedCount })}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={failedCount === 0} onSelect={() => void handleAIAnalyze(false, true)}>
+              <DropdownMenuItem disabled={isLoading || failedCount === 0} onSelect={() => void handleAIAnalyze(false, true)}>
                 {t('repositoryList.re-analyze-failed-failedcount', { failedCount: failedCount })}
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup value={showAISummary ? 'ai' : 'original'} onValueChange={value => setShowAISummary(value === 'ai')}>
+                <DropdownMenuRadioItem value="ai" disabled={!hasAnalyzedRepos}>{t('repositoryList.ai-analysis-2')}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="original">{t('repositoryList.original')}</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          <RepositoryDetailAnalysisAction compact repositories={selectedRepositories.length ? selectedRepositories : filteredRepositories} />
 
           {/* Progress Bar and Controls - 移动端优化 */}
           {isLoading && analysisProgress.total > 0 && (
-            <div className="flex items-center space-x-2 sm:space-x-3">
-              <div className="w-20 sm:w-32 bg-accent dark:bg-accent rounded-full h-2">
+            <div className="flex items-center gap-1">
+              <div className="hidden w-12 bg-accent dark:bg-accent rounded-full h-2 sm:block">
                 <div
                   className="bg-primary dark:bg-primary h-2 rounded-full transition-[width] duration-300"
                   style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
@@ -646,67 +719,21 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
               </Button>
               <Button
                 variant="ghost"
+                size="icon"
                 onClick={handleStop}
-                className="h-7 px-2 sm:px-3 py-1 rounded-lg bg-muted text-muted-foreground dark:bg-destructive/20 dark:text-destructive hover:bg-accent dark:hover:bg-destructive/30 transition-colors text-xs sm:text-sm"
+                className="h-7 w-7"
+                aria-label={t('repositoryList.stop')}
+                title={t('repositoryList.stop')}
               >
-                {t('repositoryList.stop')}
+                <Square className="h-3.5 w-3.5" />
               </Button>
-            </div>
-          )}
-
-          {/* Description Toggle - Radio Style - 移动端优化 */}
-          {!isLoading && (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-              <span id="repository-display-content-label" className="text-xs sm:text-sm text-muted-foreground dark:text-muted-foreground">
-                {t('repositoryList.display')}
-              </span>
-              <RadioGroup aria-labelledby="repository-display-content-label" value={showAISummary ? 'ai' : 'original'} onValueChange={(value) => { if (value === 'ai' && !hasAnalyzedRepos) return; setShowAISummary(value === 'ai'); }} className="flex items-center space-x-3 sm:space-x-4">
-                <label onClick={() => { if (hasAnalyzedRepos) setShowAISummary(true); }} className={`flex items-center space-x-1.5 sm:space-x-2 ${hasAnalyzedRepos ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`} title={hasAnalyzedRepos ? t('repositoryList.show-ai-generated-analysis-summary') : t('repositoryList.no-ai-analysis-content-available')}>
-                  <RadioGroupItem value="ai" id="display-content-ai" aria-labelledby="display-content-ai-label" disabled={!hasAnalyzedRepos} />
-                  <span id="display-content-ai-label" className="text-xs font-medium text-foreground dark:text-muted-foreground sm:text-sm">{t('repositoryList.ai-analysis-2')}</span>
-                </label>
-                <label onClick={() => setShowAISummary(false)} className="flex cursor-pointer items-center space-x-1.5 sm:space-x-2" title={t('repositoryList.show-repository-original-description')}>
-                  <RadioGroupItem value="original" id="display-content-original" aria-labelledby="display-content-original-label" />
-                  <span id="display-content-original-label" className="text-xs font-medium text-foreground dark:text-muted-foreground sm:text-sm">{t('repositoryList.original')}</span>
-                </label>
-              </RadioGroup>
             </div>
           )}
 
         </div>
 
         {/* Statistics and view mode: the layout switch remains at the toolbar's far right. */}
-        <div className={`ml-auto flex w-full flex-col items-end gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 ${disableCardAnimations ? 'repository-list-syncing' : ''}`}>
-          <div className="text-xs text-muted-foreground dark:text-muted-foreground mt-0.5 sm:text-right tabular-nums">
-            <div className="flex items-center justify-between">
-              <div>
-                {t('repositoryList.showing-startindex-endindex-of-v3-repositories', { startIndex: startIndex, endIndex: endIndex, v3: filteredRepositories.length })}
-                {repositories.length !== filteredRepositories.length && (
-                  <span className="ml-2 text-primary dark:text-primary">
-                    {t('repositoryList.filtered-from-v1', { v1: repositories.length })}
-                  </span>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                {analyzedCount > 0 && (
-                  <span className="text-xs sm:text-sm">
-                    • {analyzedCount} {t('repositoryList.ai-analyzed')}
-                  </span>
-                )}
-                {failedCount > 0 && (
-                  <span className="text-xs sm:text-sm">
-                    • {failedCount} {t('repositoryList.analysis-failed')}
-                  </span>
-                )}
-                {unanalyzedCount > 0 && (
-                  <span className="text-xs sm:text-sm">
-                    • {unanalyzedCount} {t('repositoryList.unanalyzed')}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
+        <div className={`flex shrink-0 items-center gap-2 ${disableCardAnimations ? 'repository-list-syncing' : ''}`}>
           {!isLoading && (
             <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted p-0.5 dark:border-border dark:bg-muted/40" role="group" aria-label={t('repositoryList.repository-layout')}>
               <Button
@@ -737,34 +764,36 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
           )}
         </div>
       </div>
+      </RepositoryToolbarPortal>
 
       {/* Repository Grid with consistent card widths */}
+      <div className="flex min-w-0 items-start gap-4 [&>aside]:sticky [&>aside]:top-20" data-details-pinned={detailsPinned || undefined}>
       <div
-        className={repositoryViewMode === 'list'
-          ? 'space-y-2 min-h-[200px]'
-          : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-h-[200px]'}
+        className="min-w-0 flex-1"
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
       >
-        {visibleRepositories.map(repo => (
-          <RepositoryCard
-            key={repo.id}
-            repository={repo}
-            showAISummary={showAISummary}
-            searchQuery={searchFilters.query}
-            isSelected={selectedRepoIds.has(repo.id)}
-            onSelect={handleSelectRepo}
-            selectionMode={showBulkToolbar}
-            isExitingSelection={isExitingSelection}
-            allCategories={allCategories}
-            viewMode={repositoryViewMode}
-            onAskRepository={handleAskRepository}
-          />
-        ))}
+        {grouped ? <RepositoryGroups key={selectedCategory} categoryId={selectedCategory}
+          repositories={filteredRepositories} filtered={hasActiveNonQueryFilters} customSort={searchFilters.sortBy === 'custom'}
+          filterKey={JSON.stringify(filterResetKey)} viewMode={repositoryViewMode} renderRepository={renderRepository} />
+          : selectedCategory === 'pending' ? <PendingClassification repositories={filteredRepositories} visibleCount={visibleCount} categories={allCategories}
+            selectedIds={selectedRepoIds} onSelect={handleSelectRepo} onSelectAll={handleSelectAll} onAssigned={handleDeselectAll}
+            viewMode={repositoryViewMode} renderRepository={renderRepository} />
+            : <RepositoryGrid viewMode={repositoryViewMode}>{visibleRepositories.map(renderRepository)}</RepositoryGrid>}
+      </div>
+      {activeDetailRepository &&
+        <React.Suspense fallback={null}>
+          <LazyRepositoryDetailsPanel repository={repositories.find(repo => repo.id === activeDetailRepository.id) ?? activeDetailRepository}
+            onClose={() => { setActiveDetailRepository(null); setDetailsPinned(false); }}
+            onAskRepository={handleAskRepository} onPinnedChange={setDetailsPinned}
+            onPrevious={activeDetailIndex > 0 ? () => setActiveDetailRepository(detailRepositories[activeDetailIndex - 1]) : undefined}
+            onNext={activeDetailIndex >= 0 && activeDetailIndex < detailRepositories.length - 1 ? () => setActiveDetailRepository(detailRepositories[activeDetailIndex + 1]) : undefined} />
+        </React.Suspense>
+      }
       </div>
 
       {/* Sentinel for on-demand loading */}
-      {visibleCount < filteredRepositories.length && (
+      {!grouped && visibleCount < filteredRepositories.length && (
         <div ref={sentinelRef} className="h-8" />
       )}
 

@@ -327,7 +327,8 @@
     "show-only-repositories-pushed-within-the-last-12": "只顯示近 12 個月內有推送的倉庫",
     "pushed-in-12-months": "近 12 個月有推送",
     "show-only-repositories-without-a-declared-licens": "只顯示未聲明授權的倉庫",
-    "no-declared-license": "未聲明授權"
+    "no-declared-license": "未聲明授權",
+    "sort-custom": "自定义排序"
   },
   "searchDemo": {
     "search-feature-upgrade": "搜尋功能升級",

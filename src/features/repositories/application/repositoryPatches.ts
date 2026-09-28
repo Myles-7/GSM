@@ -35,8 +35,8 @@ export const applyAnalysisSuccess = (
   ai_summary: input.summary,
   ai_tags: input.tags,
   ai_platforms: input.platforms,
-  custom_category: input.category,
-  category_locked: input.categoryLocked,
+  custom_category: repository.category_id === undefined && !repository.category_locked ? input.category : repository.custom_category,
+  category_locked: repository.category_locked,
   analyzed_at: input.analyzedAt,
   analysis_failed: false,
   analysis_error: undefined,
@@ -83,6 +83,8 @@ export const restoreRepositoryFields = (
   if (config.category.enabled) {
     updatedRepository.custom_category = undefined;
     updatedRepository.category_locked = false;
+    updatedRepository.category_id = null;
+    updatedRepository.subcategory_id = null;
     if (config.category.target === 'original') {
       updatedRepository.ai_tags = undefined;
       updatedRepository.ai_platforms = undefined;
@@ -93,6 +95,8 @@ export const restoreRepositoryFields = (
   }
 
   const hasChanges = updatedRepository.custom_description !== repository.custom_description
+    || updatedRepository.category_id !== repository.category_id
+    || updatedRepository.subcategory_id !== repository.subcategory_id
     || updatedRepository.custom_tags !== repository.custom_tags
     || updatedRepository.custom_category !== repository.custom_category
     || updatedRepository.category_locked !== repository.category_locked

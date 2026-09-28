@@ -37,7 +37,7 @@ export interface WorkbenchProject {
   updatedAt: string;
   deletedAt?: string;
 }
-export type WorkbenchEditableFields = Pick<Repository, 'custom_category' | 'category_locked' | 'custom_tags' | 'custom_description'>;
+export type WorkbenchEditableFields = Pick<Repository, 'custom_category' | 'category_id' | 'subcategory_id' | 'category_locked' | 'custom_tags' | 'custom_description'>;
 export interface WorkbenchOperation {
   id: string;
   repository: Repository;

@@ -77,6 +77,8 @@ const throwIfAborted = (signal: AbortSignal): void => {
 };
 
 const snapshotEditable = (repository: Repository): WorkbenchEditableFields => ({
+  category_id: repository.category_id,
+  subcategory_id: repository.subcategory_id,
   custom_category: repository.custom_category,
   category_locked: repository.category_locked,
   custom_tags: repository.custom_tags ? [...repository.custom_tags] : repository.custom_tags,
@@ -89,8 +91,16 @@ const sameStringArray = (left: string[] | undefined, right: string[] | undefined
   return left.every((value, index) => value === right[index]);
 };
 
+// With stable IDs the category name is a derived projection, not edited metadata.
+// Legacy records still need name comparison because they have no ID authority.
+const sameCategory = (left: WorkbenchEditableFields, right: WorkbenchEditableFields): boolean => (
+  left.category_id === right.category_id
+  && (left.category_id !== undefined || left.custom_category === right.custom_category)
+);
+
 const sameEditable = (left: WorkbenchEditableFields, right: WorkbenchEditableFields): boolean => (
-  left.custom_category === right.custom_category
+  sameCategory(left, right)
+  && left.subcategory_id === right.subcategory_id
   && left.category_locked === right.category_locked
   && left.custom_description === right.custom_description
   && sameStringArray(left.custom_tags, right.custom_tags)
@@ -132,7 +142,7 @@ const existingCategories = () => {
   return getAllCategories(
     state.customCategories,
     state.language,
-    state.hiddenDefaultCategoryIds,
+    [],
     state.defaultCategoryOverrides,
   ).filter((category) => category.id !== 'all');
 };
@@ -340,11 +350,13 @@ const prepareOperation = async (
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'Repository personal metadata changed after this proposal was created' }, onUpdate);
     return false;
   }
-  if (!validateCategory(operation.after.custom_category)) {
+  if (operation.after.category_id !== undefined
+    ? operation.after.category_id !== null && !existingCategories().some(category => category.id === operation.after.category_id)
+    : !validateCategory(operation.after.custom_category)) {
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'The proposed category no longer exists' }, onUpdate);
     return false;
   }
-  const changesCategory = operation.before.custom_category !== operation.after.custom_category;
+  const changesCategory = !sameCategory(operation.before, operation.after);
   if ((changesCategory || operation.kind === 'unstar') && current.category_locked && !operation.overrideLocked) {
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'The repository category is locked; an explicit lock override is required' }, onUpdate);
     return false;
@@ -429,7 +441,7 @@ const executeUpdate = async (
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'Repository metadata changed immediately before the update was applied' }, onUpdate);
     return false;
   }
-  useAppStore.getState().updateRepository({ ...current, ...operation.after, last_edited: now() });
+  useAppStore.getState().updateRepository({ ...current, ...operation.after, last_edited: now() }, { overrideCategoryLock: operation.overrideLocked });
   await markOperation(proposal, operation.id, { status: 'success' }, onUpdate);
   return true;
 };
@@ -514,6 +526,11 @@ const reconcileRunningRestore = async (
     }
     const snapshot = snapshotEditable(current);
     if (sameEditable(snapshot, operation.before)) {
+      const targetConflict = restoreOrganizationConflict(operation);
+      if (targetConflict) {
+        await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}${targetConflict}` }, onUpdate);
+        return 'blocked';
+      }
       await markOperation(proposal, operation.id, { status: 'restored' }, onUpdate);
       return 'complete';
     }
@@ -558,6 +575,21 @@ const reconcileRunningRestore = async (
   return 'retry';
 };
 
+const restoreOrganizationConflict = (operation: WorkbenchOperation): string | null => {
+  const { category_id: categoryId, subcategory_id: groupId } = operation.before;
+  if (categoryId !== undefined && categoryId !== null && !existingCategories().some(category => category.id === categoryId)) {
+    return 'Original category no longer exists';
+  }
+  if (categoryId === undefined && !validateCategory(operation.before.custom_category)) {
+    return 'Original legacy category no longer exists';
+  }
+  if (groupId) {
+    const group = useAppStore.getState().subcategories?.find(item => item.id === groupId);
+    if (!group || group.parentId !== categoryId) return 'Original group no longer exists in the original category';
+  }
+  return null;
+};
+
 const restoreUpdate = async (
   proposal: WorkbenchProposal,
   operation: WorkbenchOperation,
@@ -574,13 +606,26 @@ const restoreUpdate = async (
     await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}Repository metadata no longer matches the successful workbench update` }, onUpdate);
     return false;
   }
+  const targetConflict = restoreOrganizationConflict(operation);
+  if (targetConflict) {
+    await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}${targetConflict}` }, onUpdate);
+    return false;
+  }
   await markOperation(proposal, operation.id, { status: 'running', error: RESTORE_RUNNING_MARKER }, onUpdate);
   const latest = currentRepositoryFor(operation);
-  if (!latest || !sameEditable(snapshotEditable(latest), operation.after)) {
+  if (!latest || !sameEditable(snapshotEditable(latest), operation.after) || restoreOrganizationConflict(operation) ||
+    String(useAppStore.getState().user?.id ?? '') !== proposal.ownerId) {
     await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}Repository metadata changed immediately before restore` }, onUpdate);
     return false;
   }
-  useAppStore.getState().updateRepository({ ...latest, ...operation.before, last_edited: now() });
+  useAppStore.getState().updateRepository({ ...latest, ...operation.before, last_edited: now() }, {
+    overrideCategoryLock: operation.overrideLocked, restoreSubcategory: true,
+  });
+  const restored = currentRepositoryFor(operation);
+  if (!restored || !sameEditable(snapshotEditable(restored), operation.before)) {
+    await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}Restored metadata did not match the original snapshot` }, onUpdate);
+    return false;
+  }
   await markOperation(proposal, operation.id, { status: 'restored' }, onUpdate);
   return true;
 };
@@ -727,6 +772,8 @@ export async function proposeWorkbenchOperations(input: {
         const category = categoriesById.get(suggestion.categoryId!);
         if (!category) throw new Error(`AI returned an unavailable category ID: ${suggestion.categoryId}`);
         after.custom_category = category.name;
+        after.category_id = category.id;
+        if (before.category_id !== category.id) after.subcategory_id = null;
       }
       if ('customTags' in suggestion) {
         after.custom_tags = suggestion.customTags === null
@@ -738,7 +785,7 @@ export async function proposeWorkbenchOperations(input: {
       }
       after.category_locked = before.category_locked;
       if (sameEditable(before, after)) continue;
-      const changesCategory = before.custom_category !== after.custom_category;
+      const changesCategory = !sameCategory(before, after);
       operations.push({
         id: makeId('workbench-op'),
         repository,

@@ -327,7 +327,8 @@
     "show-only-repositories-pushed-within-the-last-12": "過去12か月以内にプッシュされたリポジトリのみ表示",
     "pushed-in-12-months": "12か月以内にプッシュ",
     "show-only-repositories-without-a-declared-licens": "ライセンス未宣言のリポジトリのみ表示",
-    "no-declared-license": "ライセンス未宣言"
+    "no-declared-license": "ライセンス未宣言",
+    "sort-custom": "Custom order"
   },
   "searchDemo": {
     "search-feature-upgrade": "検索機能のアップグレード",

@@ -32,7 +32,8 @@ export const validateCategoryName = (
  * 归一化标签数组：去除前后空白并过滤空白项，避免空白标签匹配任意分类
  */
 const normalizeTags = (tags: string[] | undefined): string[] => {
-  return (tags || []).map(tag => tag.trim()).filter(tag => tag.length > 0);
+  return (Array.isArray(tags) ? tags : []).filter((tag): tag is string => typeof tag === 'string')
+    .map(tag => tag.trim()).filter(tag => tag.length > 0);
 };
 
 /**
@@ -57,6 +58,7 @@ export const getEffectiveTags = (repo: Repository): string[] => {
  * 基于AI标签匹配分类关键词
  */
 export const getAICategory = (repo: Repository, allCategories: Category[]): string => {
+  if (repo.category_id !== undefined) return allCategories.find(category => category.id === repo.category_id)?.name ?? '';
   if (!repo.ai_tags || repo.ai_tags.length === 0) return '';
 
   for (const category of allCategories) {
@@ -79,6 +81,7 @@ export const getAICategory = (repo: Repository, allCategories: Category[]): stri
  * 获取默认分类（基于仓库信息传统匹配）
  */
 export const getDefaultCategory = (repo: Repository, allCategories: Category[]): string => {
+  if (repo.category_id !== undefined) return allCategories.find(category => category.id === repo.category_id)?.name ?? '';
   for (const category of allCategories) {
     if (category.id === 'all') continue;
 
@@ -169,6 +172,7 @@ export const matchesCategory = (
   mode: CategoryMatchMode = 'legacy'
 ): boolean => {
   if (category.id === 'all') return true;
+  if (repo.category_id !== undefined) return repo.category_id === category.id;
 
   // 仅锁定的手动分类（或显式清空）参与精确匹配；
   // 未锁定的 custom_category 是 AI 分析写入的结果，应按标签重新匹配
@@ -257,6 +261,9 @@ export const resolveCategoryAssignment = (
   aiTags: string[] | undefined,
   allCategories: Category[]
 ): string | undefined => {
+  if (repository.category_id !== undefined) {
+    return allCategories.find(category => category.id === repository.category_id)?.name ?? '';
+  }
   // 验证分类是否仍然有效（存在于当前分类列表中）
   const isValidCategory = (name: string | undefined): boolean => {
     if (!name) return false;

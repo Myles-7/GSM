@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../db/connection.js';
+import { repositoryOrganizationDto, writeRepositoryOrganization } from '../services/repositoryOrganization.js';
 
 const router = Router();
 
@@ -33,6 +34,7 @@ function toLicenseSpdxId(license: unknown): string | null {
 /** Transform a database row into the API response shape, parsing JSON columns. */
 function transformRepo(row: Record<string, unknown>) {
   return {
+    ...repositoryOrganizationDto(row),
     id: row.id,
     name: row.name,
     full_name: row.full_name,
@@ -220,6 +222,7 @@ router.put('/api/repositories', (req, res) => {
 
       let count = 0;
       for (const repo of repositories) {
+        const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(repo.id) as Record<string, unknown> | undefined;
         const owner = repo.owner as { login?: string; avatar_url?: string } | undefined;
         // 仅当 payload 显式提供 license 字段时才覆盖已存储值；省略（旧客户端/旧备份）则保留。
         const licenseProvided = Object.prototype.hasOwnProperty.call(repo, 'license') ? 1 : 0;
@@ -245,6 +248,7 @@ router.put('/api/repositories', (req, res) => {
           typeof repo.vector_indexed_license === 'string' ? repo.vector_indexed_license || null : null,
           { licenseProvided }
         );
+        writeRepositoryOrganization(db, repo, previous);
         count++;
       }
       return count;
@@ -309,13 +313,20 @@ router.patch('/api/repositories/:id', (req, res) => {
       }
     }
 
-    if (setClauses.length === 0) {
+    const organizationFields = ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details'];
+    if (setClauses.length === 0 && !organizationFields.some(key => key in updates)) {
       res.status(400).json({ error: 'No valid fields to update', code: 'NO_VALID_FIELDS' });
       return;
     }
 
-    values.push(id);
-    db.prepare(`UPDATE repositories SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+    db.transaction(() => {
+      const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      if (setClauses.length) {
+        values.push(id);
+        db.prepare(`UPDATE repositories SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
+      }
+      writeRepositoryOrganization(db, { ...updates, id }, previous);
+    })();
 
     const row = db.prepare('SELECT * FROM repositories WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) {

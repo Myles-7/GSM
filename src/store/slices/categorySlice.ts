@@ -3,9 +3,17 @@ import type { AppStoreSlice } from '../types';
 import { defaultCategories } from '../schema';
 import { getAllCategories, getCategoryNameVariants, sortCategoriesByOrder } from '../helpers/categoryHelpers';
 import { categoryName } from '../../constants/categoryI18n';
+import { normalizeOrder, organizationCategories, organizationSnapshot } from '../helpers/repositoryOrganization';
 
 export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'addCustomCategory'
+  | 'addSubcategory'
+  | 'updateSubcategory'
+  | 'deleteSubcategory'
+  | 'moveRepositoryToSubcategory'
+  | 'reorderSubcategories'
+  | 'reorderRepositories'
+  | 'assignRepositoryCategory'
   | 'updateCustomCategory'
   | 'updateDefaultCategory'
   | 'resetDefaultCategory'
@@ -22,14 +30,54 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
   | 'updateAssetFilter'
   | 'deleteAssetFilter'
 >> = (set) => ({
-      // Category actions
-      addCustomCategory: (category) => set((state) => ({
-        customCategories: [...state.customCategories, { ...category, isCustom: true }]
+      addSubcategory: (input) => set(state => organizationSnapshot(state, {
+        subcategories: [...state.subcategories, { ...input, id: crypto.randomUUID() }],
       })),
+      updateSubcategory: (id, updates) => set(state => {
+        if (updates.name !== undefined && !updates.name.trim()) return state;
+        return organizationSnapshot(state, {
+          subcategories: state.subcategories.map(group => group.id === id ? { ...group, ...updates } : group),
+        });
+      }),
+      deleteSubcategory: (id) => set(state => organizationSnapshot(state, {
+        subcategories: state.subcategories.filter(group => group.id !== id),
+      })),
+      moveRepositoryToSubcategory: (repoId, subcategoryId) => set(state => {
+        const repo = state.repositories.find(item => item.id === repoId);
+        const group = state.subcategories.find(item => item.id === subcategoryId);
+        if (!repo || (subcategoryId !== null && (!group || group.parentId !== repo.category_id))) return state;
+        return organizationSnapshot(state, {
+          repositories: state.repositories.map(item => item.id === repoId ? { ...item, subcategory_id: subcategoryId } : item),
+        });
+      }),
+      reorderSubcategories: (ids) => set(state => ({
+        subcategoryOrder: normalizeOrder([...ids, ...state.subcategoryOrder], state.subcategories.map(group => group.id)),
+      })),
+      reorderRepositories: (ids) => set(state => ({
+        repositoryOrder: normalizeOrder([...ids, ...state.repositoryOrder], state.repositories.map(repo => repo.id)),
+      })),
+      assignRepositoryCategory: (repoId, categoryId) => set(state => {
+        if (categoryId !== null && !organizationCategories(state).some(category => category.id === categoryId)) return state;
+        const repo = state.repositories.find(item => item.id === repoId);
+        if (!repo || (repo.category_locked && repo.category_id !== categoryId)) return state;
+        return organizationSnapshot(state, {
+          repositories: state.repositories.map(item => item.id === repoId ? {
+            ...item, category_id: categoryId,
+            subcategory_id: item.category_id === categoryId ? item.subcategory_id : null,
+            custom_category: categoryId === null ? '' : item.custom_category,
+            last_edited: new Date().toISOString(),
+          } : item),
+        });
+      }),
+      // Category actions
+      addCustomCategory: (category) => set((state) => {
+        if (organizationCategories(state).some(item => item.id === category.id) || category.id === 'all' || category.id === 'pending') return state;
+        return organizationSnapshot(state, { customCategories: [...state.customCategories, { ...category, isCustom: true }] });
+      }),
       updateCustomCategory: (id, updates) => set((state) => {
         const targetCategory = state.customCategories.find(category => category.id === id);
         const nextCategories = state.customCategories.map(category =>
-          category.id === id ? { ...category, ...updates } : category
+          category.id === id ? { ...category, ...updates, id: category.id } : category
         );
 
         if (!targetCategory || !updates.name || updates.name === targetCategory.name) {
@@ -37,20 +85,15 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         }
 
         const nextRepositories = state.repositories.map(repo =>
-          repo.custom_category === targetCategory.name
+          repo.category_id === id || (repo.category_id === undefined && repo.custom_category === targetCategory.name)
             ? { ...repo, custom_category: updates.name, last_edited: new Date().toISOString() }
             : repo
         );
 
-        return {
+        return organizationSnapshot(state, {
           customCategories: nextCategories,
           repositories: nextRepositories,
-          searchResults: state.searchResults.map(repo =>
-            repo.custom_category === targetCategory.name
-              ? { ...repo, custom_category: updates.name, last_edited: new Date().toISOString() }
-              : repo
-          )
-        };
+        });
       }),
       updateDefaultCategory: (id, updates) => set((state) => {
         const defaultCat = defaultCategories.find(c => c.id === id);
@@ -115,20 +158,15 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         // Avoid self-rewrite when newName already matches the displayed default name.
 
         const nextRepositories = state.repositories.map(repo =>
-          currentNameVariants.includes(repo.custom_category || '')
+          repo.category_id === id || (repo.category_id === undefined && currentNameVariants.includes(repo.custom_category || ''))
             ? { ...repo, custom_category: newName, last_edited: new Date().toISOString() }
             : repo
         );
 
-        return {
+        return organizationSnapshot(state, {
           defaultCategoryOverrides: nextOverrides,
           repositories: nextRepositories,
-          searchResults: state.searchResults.map(repo =>
-            currentNameVariants.includes(repo.custom_category || '')
-              ? { ...repo, custom_category: newName, last_edited: new Date().toISOString() }
-              : repo
-          )
-        };
+        });
       }),
       resetDefaultCategory: (id) => set((state) => {
         const defaultCat = defaultCategories.find(c => c.id === id);
@@ -150,20 +188,15 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         const overriddenNameVariants = getCategoryNameVariants(originalName, overriddenName);
 
         const nextRepositories = state.repositories.map(repo =>
-          overriddenNameVariants.includes(repo.custom_category || '')
+          repo.category_id === id || (repo.category_id === undefined && overriddenNameVariants.includes(repo.custom_category || ''))
             ? { ...repo, custom_category: originalName, last_edited: new Date().toISOString() }
             : repo
         );
 
-        return {
+        return organizationSnapshot(state, {
           defaultCategoryOverrides: nextOverrides,
           repositories: nextRepositories,
-          searchResults: state.searchResults.map(repo =>
-            overriddenNameVariants.includes(repo.custom_category || '')
-              ? { ...repo, custom_category: originalName, last_edited: new Date().toISOString() }
-              : repo
-          )
-        };
+        });
       }),
       resetDefaultCategoryNameIcon: (id) => set((state) => {
         const defaultCat = defaultCategories.find(c => c.id === id);
@@ -193,20 +226,15 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         const overriddenNameVariants = getCategoryNameVariants(originalName, overriddenName);
 
         const nextRepositories = state.repositories.map(repo =>
-          overriddenNameVariants.includes(repo.custom_category || '')
+          repo.category_id === id || (repo.category_id === undefined && overriddenNameVariants.includes(repo.custom_category || ''))
             ? { ...repo, custom_category: originalName, last_edited: new Date().toISOString() }
             : repo
         );
 
-        return {
+        return organizationSnapshot(state, {
           defaultCategoryOverrides: nextOverrides,
           repositories: nextRepositories,
-          searchResults: state.searchResults.map(repo =>
-            overriddenNameVariants.includes(repo.custom_category || '')
-              ? { ...repo, custom_category: originalName, last_edited: new Date().toISOString() }
-              : repo
-          )
-        };
+        });
       }),
       resetDefaultCategoryKeywords: (id) => set((state) => {
         const override = state.defaultCategoryOverrides[id];
@@ -236,21 +264,16 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         }
 
         const clearedRepositories = state.repositories.map(repo =>
-          repo.custom_category === targetCategory.name
-            ? { ...repo, custom_category: undefined, category_locked: false, last_edited: new Date().toISOString() }
+          repo.category_id === id || (repo.category_id === undefined && repo.custom_category === targetCategory.name)
+            ? { ...repo, category_id: null, subcategory_id: null, last_edited: new Date().toISOString() }
             : repo
         );
 
-        return {
+        return organizationSnapshot(state, {
           customCategories: state.customCategories.filter(category => category.id !== id),
           repositories: clearedRepositories,
-          searchResults: state.searchResults.map(repo =>
-            repo.custom_category === targetCategory.name
-              ? { ...repo, custom_category: undefined, category_locked: false, last_edited: new Date().toISOString() }
-              : repo
-          ),
           selectedCategory: nextSelectedCategory
-        };
+        });
       }),
       hideDefaultCategory: (id) => set((state) => ({
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds.includes(id)

@@ -149,7 +149,7 @@ describe('useBulkRepositoryActions', () => {
     await act(async () => {
       await result.current.categorize([categorized], '工具');
     });
-    expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({ id: categorized.id, custom_category: undefined }));
+    expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({ id: categorized.id, category_id: 'tools', custom_category: '工具' }));
     expect(mocks.forceSyncToBackend).toHaveBeenCalledTimes(1);
 
     vi.clearAllMocks();

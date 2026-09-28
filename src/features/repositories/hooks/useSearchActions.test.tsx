@@ -617,8 +617,8 @@ describe('useSearchActions.syncStars', () => {
     expect(written[0].custom_tags).toContain('MyList');
     // list 名命中同名本地分类 → 设分类并加锁
     expect(written[0].custom_category).toBe('MyList');
-    expect(written[0].category_locked).toBe(true);
-    expect(written[0].last_edited).toEqual(expect.any(String));
+    expect(written[0].category_id).toBe('custom-1');
+    expect(written[0].category_locked).toBeUndefined();
 
     const setOrder = storeState.setRepositories.mock.invocationCallOrder[0];
     const syncOrder = mocks.forceSyncToBackend.mock.invocationCallOrder[0];
@@ -797,7 +797,7 @@ describe('useSearchActions pure helpers', () => {
     expect(categoryByLowerName.has('none')).toBe(false);
   });
 
-  it('applyListsToRepositories tags, locks by category and respects pre-existing locks', () => {
+  it('applyListsToRepositories tags, assigns unique IDs and preserves existing locks', () => {
     const categoryByLowerName = new Map([['web apps', 'Web Apps']]);
     const repositories = [
       baseRepo({ id: 1, full_name: 'owner/locked-early', category_locked: true, custom_category: 'Web Apps' }),
@@ -807,14 +807,25 @@ describe('useSearchActions pure helpers', () => {
       { id: 'l1', name: 'Web Apps', isPrivate: false, items: ['owner/locked-early', 'owner/normal'] },
       { id: 'l2', name: 'Second List', isPrivate: false, items: ['owner/normal'] },
     ];
-    const { repositories: mapped, appliedTagsCount } = applyListsToRepositories(repositories, lists, categoryByLowerName);
+    const { repositories: mapped, appliedTagsCount } = applyListsToRepositories(repositories, lists, categoryByLowerName,
+      [{ id: 'web', name: 'Web Apps', icon: '', keywords: [] }]);
 
     // 预存在锁定：仅追加标签，不改分类/锁定
     expect(mapped[0]).toMatchObject({ custom_tags: ['Web Apps'], custom_category: 'Web Apps', category_locked: true });
     expect(mapped[0].last_edited).toBeUndefined();
     // 正常仓库：第一个 list 命中分类 → 设分类并加锁；第二个 list 时仓库已被锁定 → 仅追加标签
-    expect(mapped[1]).toMatchObject({ custom_tags: ['Web Apps', 'Second List'], custom_category: 'Web Apps', category_locked: true });
-    expect(mapped[1].last_edited).toEqual(expect.any(String));
+    expect(mapped[1]).toMatchObject({ custom_tags: ['Web Apps', 'Second List'], custom_category: 'Web Apps', category_id: 'web' });
+    expect(mapped[1].category_locked).toBeUndefined();
     expect(appliedTagsCount).toEqual({ 'Web Apps': 2, 'Second List': 1 });
+  });
+
+  it('keeps assigned and explicitly pending repositories unchanged during Lists sync', () => {
+    const categories = [{ id: 'web', name: 'Web Apps', icon: '', keywords: [] }];
+    const lists = [{ id: 'l1', name: 'Web Apps', isPrivate: false, items: ['owner/repo-one'] }];
+    for (const category_id of ['another-category', null]) {
+      const original = baseRepo({ id: 1, full_name: 'owner/repo-one', category_id, category_locked: false });
+      const result = applyListsToRepositories([original], lists, new Map([['web apps', 'Web Apps']]), categories);
+      expect(result.repositories[0]).toMatchObject({ category_id, category_locked: false, custom_tags: ['Web Apps'] });
+    }
   });
 });

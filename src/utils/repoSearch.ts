@@ -94,9 +94,14 @@ function getSortValue(repo: Repository, sortBy: SearchFilters['sortBy']): number
 export function sortRepositories<T extends Repository>(
   repos: T[],
   sortBy: SearchFilters['sortBy'] = 'stars',
-  sortOrder: SearchFilters['sortOrder'] = 'desc'
+  sortOrder: SearchFilters['sortOrder'] = 'desc',
+  repositoryOrder: number[] = [],
 ): T[] {
   const sorted = [...repos];
+  if (sortBy === 'custom') {
+    const ranks = new Map(repositoryOrder.map((id, index) => [id, index]));
+    return sorted.sort((a, b) => (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity));
+  }
   sorted.sort((a, b) => {
     const aValue = getSortValue(a, sortBy);
     const bValue = getSortValue(b, sortBy);
@@ -108,6 +113,7 @@ export function sortRepositories<T extends Repository>(
 }
 
 export interface ApplyFiltersOptions {
+  repositoryOrder?: number[];
   releaseSubscriptions?: Set<number> | number[];
   allCategories?: Category[];
   /** When true, skip isEdited filter that needs categories */
@@ -230,7 +236,7 @@ export function applyRepoFilters<T extends Repository>(
 
   const sortBy = searchFilters.sortBy ?? 'stars';
   const sortOrder = searchFilters.sortOrder ?? 'desc';
-  return sortRepositories(filtered, sortBy, sortOrder);
+  return sortRepositories(filtered, sortBy, sortOrder, options.repositoryOrder);
 }
 
 /**
@@ -254,7 +260,7 @@ export function hasActiveSearchFilters(filters: SearchFilters): boolean {
     filters.healthArchived !== undefined ||
     filters.healthRecentActivity !== undefined ||
     filters.healthHasLicense !== undefined ||
-    filters.sortBy !== 'stars' ||
+    (filters.sortBy !== 'stars' && filters.sortBy !== 'custom') ||
     filters.sortOrder !== 'desc'
   );
 }
@@ -274,6 +280,10 @@ export function searchRepositories<T extends Repository>(
   if (input.category && input.category !== 'all') {
     const cat = input.category;
     result = result.filter((repo) => {
+      if (repo.category_id !== undefined) {
+        const category = options.allCategories?.find(item => item.id === cat || item.name === cat);
+        return repo.category_id === (category?.id ?? cat);
+      }
       const custom = repo.custom_category;
       if (custom) return custom === cat;
       // loose match on custom_category only when no AI category resolution available

@@ -1,5 +1,6 @@
 
 import { useT } from '../../../i18n/useT';
+import { incomingOrganizationSnapshot } from '../../../store/helpers/repositoryOrganization';
 import { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Category } from '../../../types';
@@ -136,6 +137,9 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
           activeWebDAVConfig: state.activeWebDAVConfig,
           hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
           categoryOrder: state.categoryOrder,
+          subcategories: useAppStore.getState().subcategories,
+          subcategoryOrder: useAppStore.getState().subcategoryOrder,
+          repositoryOrder: useAppStore.getState().repositoryOrder,
           customCategories: state.customCategories,
           assetFilters: state.assetFilters,
           defaultCategoryOverrides: state.defaultCategoryOverrides,
@@ -178,7 +182,7 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
         backend.fetchWebDAVConfigs(),
         backend.fetchSettings(),
       ]);
-      state.setRepositories(repoData.repositories, { allowEmpty: true });
+      useAppStore.setState(current => incomingOrganizationSnapshot(current, settingsData, repoData.repositories));
       state.setReleases(releaseData.releases, { allowEmpty: true });
       state.setAIConfigs(aiConfigData);
       state.setWebDAVConfigs(webdavConfigData);

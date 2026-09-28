@@ -6,6 +6,7 @@ import type { AIConfig, WebDAVConfig } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { WebDAVService } from '../../../services/webdavService';
+import { incomingOrganizationSnapshot } from '../../../store/helpers/repositoryOrganization';
 
 export interface BackupActions {
   activeConfig: WebDAVConfig | undefined;
@@ -72,6 +73,11 @@ export const useBackupActions = (): BackupActions => {
         repositories: state.repositories,
         releases: state.releases,
         customCategories: state.customCategories,
+        subcategories: useAppStore.getState().subcategories,
+        subcategoryOrder: useAppStore.getState().subcategoryOrder,
+        repositoryOrder: useAppStore.getState().repositoryOrder,
+        categoryOrder: useAppStore.getState().categoryOrder,
+        defaultCategoryOverrides: useAppStore.getState().defaultCategoryOverrides,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
         aiConfigs: state.aiConfigs.map((config) => ({
           ...config,
@@ -143,7 +149,8 @@ export const useBackupActions = (): BackupActions => {
       }
       const backupData = JSON.parse(content) as Record<string, unknown>;
       const backupIncludedKeys = backupData.includeKeysInBackup ?? true;
-      if (Array.isArray(backupData.repositories)) state.setRepositories(backupData.repositories as typeof state.repositories, { allowEmpty: true });
+      useAppStore.setState(current => incomingOrganizationSnapshot(current, backupData,
+        Array.isArray(backupData.repositories) ? backupData.repositories as typeof current.repositories : undefined));
       if (Array.isArray(backupData.releases)) state.setReleases(backupData.releases as typeof state.releases, { allowEmpty: true });
 
       try {
@@ -158,29 +165,6 @@ export const useBackupActions = (): BackupActions => {
         }
       } catch (error) {
         console.warn('恢复 Release 订阅与已读状态时发生问题：', error);
-      }
-
-      try {
-        for (const category of useAppStore.getState().customCategories) {
-          if (category?.id) state.deleteCustomCategory(category.id);
-        }
-        if (Array.isArray(backupData.customCategories)) {
-          for (const category of backupData.customCategories) {
-            if (category && typeof category === 'object' && 'id' in category && 'name' in category) {
-              state.addCustomCategory({ ...(category as Parameters<typeof state.addCustomCategory>[0]), isCustom: true });
-            }
-          }
-        }
-        for (const categoryId of useAppStore.getState().hiddenDefaultCategoryIds) {
-          if (typeof categoryId === 'string') state.showDefaultCategory(categoryId);
-        }
-        if (Array.isArray(backupData.hiddenDefaultCategoryIds)) {
-          for (const categoryId of backupData.hiddenDefaultCategoryIds) {
-            if (typeof categoryId === 'string') state.hideDefaultCategory(categoryId);
-          }
-        }
-      } catch (error) {
-        console.warn('恢复自定义分类时发生问题：', error);
       }
 
       try {

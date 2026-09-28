@@ -5,6 +5,8 @@ import { normalizeAssetFilters } from '../utils/assetFilters';
 import { createGitHubApiService } from './githubApiFactory';
 import { logger } from './logger';
 import type { Repository } from '../types';
+import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
+import { hasActiveSearchFilters } from '../utils/repoSearch';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
 // the store subscription would trigger a push TO backend. This flag blocks that.
@@ -307,7 +309,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
     // otherwise it was deleted locally during the fetch and must stay
     // deleted — and is still absent from the store now.
     if (_hasPendingLocalChanges) {
-      if (reposResult.status === 'fulfilled') {
+      if (reposResult.status === 'fulfilled' && settingsResult.status === 'fulfilled') {
         const repositoriesNow = useAppStore.getState().repositories;
         const knownBeforeFetch = new Set(repositoriesBeforeFetch.map(repo => repo.id));
         const knownNow = new Set(repositoriesNow.map(repo => repo.id));
@@ -315,7 +317,17 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
           !knownBeforeFetch.has(repo.id) && !knownNow.has(repo.id)
         );
         if (arrivedRemotely.length > 0) {
-          useAppStore.getState().setRepositories([...repositoriesNow, ...arrivedRemotely]);
+          useAppStore.setState(current => {
+            const remote = incomingOrganizationSnapshot(current, settingsResult.value, arrivedRemotely);
+            // Keep local decisions while bringing along definitions required by
+            // newly arrived remote records before the queued full push.
+            const customCategories = [...current.customCategories, ...(remote.customCategories ?? [])
+              .filter(category => !current.customCategories.some(local => local.id === category.id))];
+            const subcategories = [...current.subcategories, ...(remote.subcategories ?? [])
+              .filter(group => !current.subcategories.some(local => local.id === group.id))];
+            return incomingOrganizationSnapshot(current, { customCategories, subcategories },
+              [...current.repositories, ...remote.repositories!]);
+          });
         }
         // A completed fetch — an empty list included — proves the store is
         // complete against the server, so its queued push is safe to drain.
@@ -390,6 +402,13 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       }
     }
 
+    // Membership and its definitions form one snapshot. Never acknowledge only
+    // half of it: the next successful poll must retry both payloads together.
+    if (reposResult.status !== 'fulfilled' || settingsResult.status !== 'fulfilled') {
+      changed.repos = false;
+      changed.settings = false;
+    }
+
     // Only update store if backend data actually changed
     if (!Object.values(changed).some(Boolean)) {
       _isSyncingFromBackendActive = false;
@@ -401,9 +420,10 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       setRepositorySyncVisualState(true);
     }
     const state = useAppStore.getState();
+    let organizationApplied = false;
 
     // Update store then commit hash — hash only changes if setter succeeds
-    if (changed.repos && reposResult.status === 'fulfilled') {
+    if ((changed.repos || changed.settings) && reposResult.status === 'fulfilled' && settingsResult.status === 'fulfilled') {
       const backendRepos = reposResult.value.repositories;
       const localRepos = state.repositories;
       // Empty backend payloads never wipe local analysis during background
@@ -415,12 +435,16 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
         const merged = options.force
           ? backendRepos
           : mergeRepositoriesPreservingLocalMetadata(backendRepos, localRepos);
-        state.setRepositories(merged, options.force ? { allowEmpty: true } : undefined);
+        useAppStore.setState(current => ({
+          ...incomingOrganizationSnapshot(current, settingsResult.value, merged),
+          ...(!options.force && hasActiveSearchFilters(current.searchFilters) ? { searchResults: current.searchResults } : {}),
+        }));
+        organizationApplied = true;
         // Commit the RAW backend hash, not the merged one. The merge preserves
         // local-only metadata (e.g. vector_indexed_at) the backend never stores,
         // so hashing `merged` here made the next poll's backend hash differ
         // forever — re-applying setRepositories every poll cycle.
-        _lastHash.repos = hashes.repos;
+        _lastHash.repos = repositoryPayloadHash(backendRepos);
       }
     }
     if (changed.releases && releasesResult.status === 'fulfilled') {
@@ -512,7 +536,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       }
     }
     // Sync active selections from settings
-    if (changed.settings && settingsResult.status === 'fulfilled') {
+    if (changed.settings && settingsResult.status === 'fulfilled' && organizationApplied) {
       const settings = settingsResult.value;
       if (typeof settings.activeAIConfig === 'string' || settings.activeAIConfig === null) {
         state.setActiveAIConfig(settings.activeAIConfig as string | null);
@@ -537,23 +561,8 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
           }
         }
       }
-      if (Array.isArray(settings.categoryOrder)) {
-        useAppStore.setState({ categoryOrder: settings.categoryOrder.filter((id: unknown): id is string => typeof id === 'string') });
-      }
-      if (Array.isArray(settings.customCategories)) {
-        useAppStore.setState({ customCategories: settings.customCategories });
-      }
       if (Array.isArray(settings.assetFilters)) {
         useAppStore.setState({ assetFilters: normalizeAssetFilters(settings.assetFilters) });
-      }
-      if (
-        settings.defaultCategoryOverrides !== null
-        && typeof settings.defaultCategoryOverrides === 'object'
-        && !Array.isArray(settings.defaultCategoryOverrides)
-      ) {
-        useAppStore.setState({
-          defaultCategoryOverrides: settings.defaultCategoryOverrides as typeof state.defaultCategoryOverrides,
-        });
       }
       if (settings.releaseSourceSettings && typeof settings.releaseSourceSettings === 'object') {
         state.setReleaseSourceSettings(settings.releaseSourceSettings as typeof state.releaseSourceSettings);
@@ -653,6 +662,9 @@ async function pushToBackend(): Promise<boolean> {
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
         categoryOrder: state.categoryOrder,
+        subcategories: state.subcategories,
+        subcategoryOrder: state.subcategoryOrder,
+        repositoryOrder: state.repositoryOrder,
         customCategories: state.customCategories,
         assetFilters: state.assetFilters,
         defaultCategoryOverrides: state.defaultCategoryOverrides,
@@ -687,6 +699,9 @@ async function pushToBackend(): Promise<boolean> {
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
         categoryOrder: state.categoryOrder,
+        subcategories: state.subcategories,
+        subcategoryOrder: state.subcategoryOrder,
+        repositoryOrder: state.repositoryOrder,
         customCategories: state.customCategories,
         assetFilters: state.assetFilters,
         defaultCategoryOverrides: state.defaultCategoryOverrides,
@@ -767,6 +782,9 @@ export function startAutoSync(): () => void {
       state.activeEmbeddingConfig !== prevState.activeEmbeddingConfig ||
       state.hiddenDefaultCategoryIds !== prevState.hiddenDefaultCategoryIds ||
       state.categoryOrder !== prevState.categoryOrder ||
+      state.subcategories !== prevState.subcategories ||
+      state.subcategoryOrder !== prevState.subcategoryOrder ||
+      state.repositoryOrder !== prevState.repositoryOrder ||
       state.customCategories !== prevState.customCategories ||
       state.assetFilters !== prevState.assetFilters ||
       state.defaultCategoryOverrides !== prevState.defaultCategoryOverrides ||

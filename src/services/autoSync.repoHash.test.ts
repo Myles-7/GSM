@@ -181,6 +181,7 @@ describe('syncFromBackend two-pull loop (Issue #304 end-to-end)', () => {
   const backendPayload = [createRepository(1, { ai_summary: 'from backend' })];
 
   beforeEach(() => {
+    resetSyncHashes();
     vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: backendPayload, total: 1 });
     vi.mocked(backend.fetchReleases).mockResolvedValue({ releases: [], total: 0 });
     vi.mocked(backend.fetchAIConfigs).mockResolvedValue([]);
@@ -241,6 +242,53 @@ describe('syncFromBackend two-pull loop (Issue #304 end-to-end)', () => {
 
     expect(useAppStore.getState().repositories).toHaveLength(1);
     expect(useAppStore.getState().repositories[0].ai_summary).toBe('keep-me');
+  });
+
+  it('normalizes remote repositories only after their category/group snapshot is available', async () => {
+    const repository = createRepository(1, { category_id: 'remote', subcategory_id: 'remote-group' });
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: [repository], total: 1 });
+    vi.mocked(backend.fetchSettings).mockResolvedValue({
+      customCategories: [{ id: 'remote', name: 'Remote', icon: 'folder', keywords: [], isCustom: true }],
+      subcategories: [{ id: 'remote-group', parentId: 'remote', name: 'Group', icon: 'folder' }],
+      subcategoryOrder: ['remote-group'], repositoryOrder: [1],
+    });
+    await syncFromBackend();
+    expect(useAppStore.getState().repositories[0]).toMatchObject({ category_id: 'remote', subcategory_id: 'remote-group' });
+    expect(useAppStore.getState().subcategoryOrder).toEqual(['remote-group']);
+    expect(useAppStore.getState().repositoryOrder).toEqual([1]);
+  });
+
+  it.each(['repositories', 'settings'] as const)('defers the entire organization and retries unchanged payloads when %s fails', async (failed) => {
+    const localCategory = { id: 'local', name: 'Local', icon: 'folder', keywords: [], isCustom: true };
+    const remoteCategory = { ...localCategory, id: 'remote', name: 'Remote' };
+    const localRepo = createRepository(1, { category_id: 'local', subcategory_id: 'local-group', category_locked: true });
+    useAppStore.setState({
+      repositories: [localRepo], searchResults: [localRepo],
+      customCategories: [localCategory],
+      subcategories: [{ id: 'local-group', parentId: 'local', name: 'Group', icon: 'folder' }],
+      subcategoryOrder: ['local-group'], repositoryOrder: [1],
+    });
+    const before = useAppStore.getState();
+    const remoteRepo = { ...localRepo, category_id: 'remote', subcategory_id: 'remote-group' };
+    vi.mocked(backend.fetchRepositories).mockResolvedValue({ repositories: [remoteRepo], total: 1 });
+    vi.mocked(backend.fetchSettings).mockResolvedValue({
+      customCategories: [remoteCategory],
+      subcategories: [{ id: 'remote-group', parentId: 'remote', name: 'Remote group', icon: 'folder' }],
+      subcategoryOrder: ['remote-group'], repositoryOrder: [1],
+    });
+    if (failed === 'repositories') vi.mocked(backend.fetchRepositories).mockRejectedValueOnce(new Error('offline'));
+    else vi.mocked(backend.fetchSettings).mockRejectedValueOnce(new Error('offline'));
+    await syncFromBackend();
+    expect(useAppStore.getState().repositories).toBe(before.repositories);
+    expect(useAppStore.getState().customCategories).toBe(before.customCategories);
+    expect(useAppStore.getState().subcategories).toBe(before.subcategories);
+
+    await syncFromBackend();
+    expect(useAppStore.getState().repositories[0]).toMatchObject({ category_id: 'remote', subcategory_id: 'remote-group' });
+    expect(useAppStore.getState().customCategories).toEqual([remoteCategory]);
+    const recovered = useAppStore.getState();
+    await syncFromBackend();
+    expect(useAppStore.getState().repositories).toBe(recovered.repositories);
   });
 
   it('force pull applies backend repositories even when a local debounce is pending', async () => {
@@ -524,9 +572,13 @@ describe('backend pushes requested during another sync', () => {
   it('keeps remotely arrived repositories when local edits queue a push after the pull', async () => {
     const fetch = deferred<{ repositories: Repository[]; total: number }>();
     vi.mocked(backend.fetchRepositories).mockReturnValueOnce(fetch.promise);
+    vi.mocked(backend.fetchSettings).mockResolvedValueOnce({
+      customCategories: [{ id: 'arrived', name: 'Arrived', icon: 'folder', keywords: [], isCustom: true }],
+      subcategories: [{ id: 'arrived-group', parentId: 'arrived', name: 'Group', icon: 'folder' }],
+    });
     const pull = syncFromBackend();
     useAppStore.getState().addRepository(createRepository(2));
-    fetch.resolve({ repositories: [createRepository(1), createRepository(3)], total: 2 });
+    fetch.resolve({ repositories: [createRepository(1), createRepository(3, { category_id: 'arrived', subcategory_id: 'arrived-group' })], total: 2 });
     await pull;
 
     const fullNames = useAppStore.getState().repositories.map(repo => repo.full_name);
@@ -539,6 +591,7 @@ describe('backend pushes requested during another sync', () => {
     const pushedNames = pushed.map(repo => repo.full_name);
     expect(pushedNames).toContain('owner/repo-2');
     expect(pushedNames).toContain('owner/repo-3');
+    expect(pushed.find(repo => repo.id === 3)).toMatchObject({ category_id: 'arrived', subcategory_id: 'arrived-group' });
   });
 
   it('does not resurrect repositories deleted locally during the pull', async () => {
@@ -554,8 +607,9 @@ describe('backend pushes requested during another sync', () => {
     expect(fullNames).toContain('owner/repo-3');
   });
 
-  it('does not queue a push when the repositories fetch fails during local edits', async () => {
-    vi.mocked(backend.fetchRepositories).mockRejectedValueOnce(new Error('offline'));
+  it.each(['repositories', 'settings'] as const)('does not queue a push when the %s fetch fails during local edits', async (failed) => {
+    if (failed === 'repositories') vi.mocked(backend.fetchRepositories).mockRejectedValueOnce(new Error('offline'));
+    else vi.mocked(backend.fetchSettings).mockRejectedValueOnce(new Error('offline'));
     const pull = syncFromBackend();
     useAppStore.getState().addRepository(createRepository(2));
     await pull;

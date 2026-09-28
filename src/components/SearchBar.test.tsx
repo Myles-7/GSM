@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchBar } from './SearchBar';
 import { useAppStore } from '../store/useAppStore';
@@ -201,7 +202,8 @@ describe('SearchBar', () => {
       expect(setSearchResults).toHaveBeenLastCalledWith([
         expect.objectContaining({ name: 'nested-rain' }),
       ]);
-      expect(screen.getByText('实时搜索模式 - 匹配仓库名称')).toBeInTheDocument();
+      expect(currentState.setSearchFilters).toHaveBeenCalledWith({ query: 'rain' });
+      expect(input).toHaveValue('rain');
     } finally {
       vi.useRealTimers();
     }
@@ -283,7 +285,8 @@ describe('SearchBar', () => {
       fireEvent.click(suggestionItem);
 
       expect(input).toHaveValue('TypeScript');
-      expect(screen.getByText('实时搜索模式 - 匹配仓库名称')).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(currentState.setSearchResults).toHaveBeenCalledWith(expect.any(Array));
     } finally {
       vi.useRealTimers();
     }
@@ -328,7 +331,8 @@ describe('SearchBar', () => {
     ]);
   });
 
-  it('dispatches the global history open event from the 问答历史 button', () => {
+  it('dispatches the global history open event from the compact more menu', async () => {
+    const user = userEvent.setup();
     currentState = createStoreState({});
     mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
     const dispatchSpy = vi.fn();
@@ -336,10 +340,28 @@ describe('SearchBar', () => {
 
     try {
       render(<SearchBar />);
-      fireEvent.click(screen.getByRole('button', { name: '问答历史' }));
+      await user.click(screen.getByRole('button', { name: /更多操作|organization.moreActions/ }));
+      await user.click(screen.getByRole('menuitem', { name: '问答历史' }));
       expect(dispatchSpy).toHaveBeenCalledTimes(1);
     } finally {
       window.removeEventListener('gsm:open-global-chat-history', dispatchSpy);
     }
+  });
+
+  it('disables direction in custom order and clearing filters preserves that order', () => {
+    const setSearchFilters = vi.fn();
+    currentState = createStoreState({
+      searchFilters: { ...defaultSearchFilters, sortBy: 'custom', languages: ['Python'] },
+      setSearchFilters,
+    });
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => (selector ? selector(currentState) : currentState)) as unknown as typeof useAppStore);
+    render(<SearchBar />);
+    expect(screen.getByRole('button', { name: '按降序排列' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部' }));
+    const reset = setSearchFilters.mock.calls[setSearchFilters.mock.calls.length - 1]?.[0];
+    expect(reset).not.toHaveProperty('sortBy');
+    expect(reset).not.toHaveProperty('sortOrder');
+    expect(reset.languages).toEqual([]);
+    expect(document.getElementById('repository-toolbar-actions')).not.toBeNull();
   });
 });

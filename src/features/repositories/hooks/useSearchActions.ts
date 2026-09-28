@@ -106,21 +106,17 @@ export const planListCategories = (
   return { toCreate, categoryByLowerName };
 };
 
-// SearchBar 807-868：preExistingLocked 集 + 打标签/设分类/加锁循环 + last_edited。
+// Lists contribute suggestions and tags; established membership and locks remain local decisions.
 export const applyListsToRepositories = (
   repositories: Repository[],
   lists: GitHubList[],
   categoryByLowerName: Map<string, string>,
+  categories: Category[] = [],
 ): { repositories: Repository[]; appliedTagsCount: Record<string, number> } => {
   const listRepoMap = new Map(repositories.map(repo => [repo.full_name.toLowerCase(), repo]));
   const appliedTagsCount: Record<string, number> = {};
 
-  // DEC-4：只判定锁定状态。
-  // 区分"本次同步开始前已存在"的锁定与"本次运行中新产生"的锁定：
-  // - 预存在的锁定：不覆盖其分类与锁定，但仍追加本次命中的 list 名为
-  //   custom_tags（修复 #273：否则一旦仓库被锁过，之后云端 list 的任何
-  //   变化都被跳过，导致"无法将云端 list 拉取到本地"）。
-  // - 本次运行中被前面的 list 刚锁定：保留已分配的分类/锁定，继续追加后续 list 的标签
+  // Existing locked legacy records must be migrated from their original classification.
   const preExistingLocked = new Set(
     repositories
       .filter(r => r.category_locked)
@@ -141,7 +137,7 @@ export const applyListsToRepositories = (
 
       // 预存在锁定：不覆盖其分类与锁定，仅追加 list 名为标签，让云端
       // list 关系仍能反映到本地（修复 #273）。
-      if (preExistingLocked.has(key)) {
+      if (preExistingLocked.has(key) || repo.category_id !== undefined) {
         // 仅当标签确有变化才写回，避免无谓的 last_edited 抖动
         if (customTags.length !== (repo.custom_tags?.length ?? 0)) {
           listRepoMap.set(key, { ...repo, custom_tags: customTags });
@@ -150,29 +146,7 @@ export const applyListsToRepositories = (
         continue;
       }
 
-      // 本次运行中刚被锁定的仓库：保留已分配的分类与锁定，仅追加标签
-      if (repo.category_locked) {
-        listRepoMap.set(key, { ...repo, custom_tags: customTags });
-        appliedCount++;
-        continue;
-      }
-
-      // 若 list 名对应某个本地分类：设置分类并加锁；否则仅加标签（多分类靠标签匹配）
-      const listMatchesCategory = categoryByLowerName.has(list.name.toLowerCase());
-      const updatedRepo: Repository = listMatchesCategory
-        ? {
-            ...repo,
-            custom_tags: customTags,
-            custom_category: categoryByLowerName.get(list.name.toLowerCase()),
-            category_locked: true,
-            last_edited: new Date().toISOString(),
-          }
-        : {
-            ...repo,
-            custom_tags: customTags,
-          };
-
-      listRepoMap.set(key, updatedRepo);
+      listRepoMap.set(key, { ...repo, custom_tags: customTags });
       appliedCount++;
     }
     if (appliedCount > 0) {
@@ -181,9 +155,20 @@ export const applyListsToRepositories = (
   }
 
   return {
-    repositories: repositories.map(repo =>
-      listRepoMap.get(repo.full_name.toLowerCase()) || repo
-    ),
+    repositories: repositories.map(repo => {
+      const updated = listRepoMap.get(repo.full_name.toLowerCase()) || repo;
+      if (repo.category_id !== undefined || repo.category_locked || categories.length === 0) return updated;
+      const names = lists.filter(list => list.items.some(name => name.toLowerCase() === repo.full_name.toLowerCase()))
+        .map(list => categoryByLowerName.get(list.name.toLowerCase()));
+      const candidates = [...new Set(categories.filter(category => names.includes(category.name)).map(category => category.id))];
+      if (!names.length) return updated;
+      return {
+        ...updated, category_id: candidates.length === 1 ? candidates[0] : null,
+        subcategory_id: null, category_candidates: candidates,
+        category_legacy: repo.category_legacy ?? { custom_category: repo.custom_category, category_locked: repo.category_locked },
+        custom_category: candidates.length === 1 ? categories.find(category => category.id === candidates[0])?.name : repo.custom_category,
+      };
+    }),
     appliedTagsCount,
   };
 };
@@ -224,7 +209,6 @@ export const useSearchActions = (): SearchActions => {
     user,
     addCustomCategory,
     customCategories,
-    hiddenDefaultCategoryIds,
     defaultCategoryOverrides,
   } = useAppStore(useShallow((state) => ({
     repositories: state.repositories,
@@ -241,7 +225,6 @@ export const useSearchActions = (): SearchActions => {
     user: state.user,
     addCustomCategory: state.addCustomCategory,
     customCategories: state.customCategories,
-    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
   })));
 
@@ -501,7 +484,7 @@ export const useSearchActions = (): SearchActions => {
           const lists = await listsApi.getUserLists(login);
 
           // allCategories 与 View 的 useMemo 同源同值（getAllCategories 四参口径）
-          const allCategories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides);
+          const allCategories = getAllCategories(customCategories, language, [], defaultCategoryOverrides);
           // 为云端存在、但本地无同名分类的 list 自动创建自定义分类。
           // 修复"GitHub list 有很多新分类但本地从没拉到过"——原逻辑只贴 custom_tags
           // 标签，不建分类，导致左侧分类树永远只有历史分类。
@@ -515,7 +498,7 @@ export const useSearchActions = (): SearchActions => {
           const createdCategoriesCount = toCreate.length;
 
           const { repositories: listAppliedRepositories, appliedTagsCount: counts } =
-            applyListsToRepositories(finalRepositories, lists, categoryByLowerName);
+            applyListsToRepositories(finalRepositories, lists, categoryByLowerName, [...allCategories, ...toCreate]);
           finalRepositories = listAppliedRepositories;
           Object.assign(appliedTagsCount, counts);
 
@@ -563,7 +546,7 @@ export const useSearchActions = (): SearchActions => {
     } finally {
       setSyncingStars(false);
     }
-  }, [githubToken, setSyncingStars, syncMode, user, t, toast, addCustomCategory, customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, setRepositories, setLastSync]);
+  }, [githubToken, setSyncingStars, syncMode, user, t, toast, addCustomCategory, customCategories, language, defaultCategoryOverrides, setRepositories, setLastSync]);
 
   return useMemo(() => ({
     isSearching,

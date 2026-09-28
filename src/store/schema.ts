@@ -27,7 +27,7 @@ export const initialSearchFilters: SearchFilters = {
   languages: [],
   platforms: [],
   licenses: [],
-  sortBy: 'stars',
+  sortBy: 'custom',
   sortOrder: 'desc',
   isAnalyzed: undefined,
   isSubscribed: undefined,
@@ -78,6 +78,9 @@ export type PersistedAppState = Partial<
     | 'hiddenDefaultCategoryIds'
     | 'defaultCategoryOverrides'
     | 'categoryOrder'
+    | 'subcategories'
+    | 'subcategoryOrder'
+    | 'repositoryOrder'
     | 'collapsedSidebarCategoryCount'
     | 'categoryMatchMode'
     | 'assetFilters'

@@ -13,6 +13,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useCategorySyncActions } from '../features/repositories/hooks/useCategorySyncActions';
 import { computeCustomCategory, getAICategory, getDefaultCategory } from '../utils/categoryUtils';
 import { deferOutsideDismiss } from './modalDismiss';
+import { useDialog } from '../hooks/useDialog';
 
 interface RepositoryEditModalProps {
   isOpen: boolean;
@@ -72,6 +73,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
     defaultCategoryOverrides: state.defaultCategoryOverrides,
   })));
   const { forceSyncToBackend } = useCategorySyncActions();
+  const { confirm } = useDialog();
 
   const [formData, setFormData] = useState({
     description: '',
@@ -80,6 +82,8 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
     categoryLocked: false
   });
   const [newTag, setNewTag] = useState('');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const initialCategoryIdRef = useRef<string | null>(null);
 
   // 记录初始值，用于检测是否有修改
   const initialDataRef = useRef({
@@ -110,6 +114,9 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
 
   // 获取仓库当前所属的分类
   const getCurrentCategory = useCallback((repo: Repository) => {
+    if (repo.category_id !== undefined) {
+      return allCategories.find(category => category.id === repo.category_id)?.name ?? '';
+    }
     // 如果有自定义分类，直接返回
     if (repo.custom_category) {
       return repo.custom_category;
@@ -171,7 +178,9 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
 
     // 分类来源
     let categorySource: DataSource;
-    if (repo.custom_category && repo.custom_category.trim() !== '') {
+    if (repo.category_id !== undefined) {
+      categorySource = repo.category_id === null ? 'none' : 'custom';
+    } else if (repo.custom_category && repo.custom_category.trim() !== '') {
       categorySource = 'custom';
     } else if (getAICategory(repo, allCategories) !== '') {
       categorySource = 'ai';
@@ -263,6 +272,11 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
       };
 
       setFormData(initialData);
+      const resolvedId = repository.category_id !== undefined
+        ? repository.category_id
+        : allCategories.find(category => category.id !== 'all' && category.name === initialData.category)?.id ?? null;
+      setCategoryId(resolvedId);
+      initialCategoryIdRef.current = resolvedId;
       initialDataRef.current = JSON.parse(JSON.stringify(initialData));
   }, [repository, isOpen, allCategories, determineSource, getEffectiveDisplayContent, getCurrentCategory]);
 
@@ -381,6 +395,15 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
     const aiCat = getAICategory(repository, allCategories);
     const defaultCat = getDefaultCategory(repository, allCategories);
     const currentCat = formData.category;
+    const categoryChanged = categoryId !== initialCategoryIdRef.current;
+    if (categoryChanged && repository.category_locked) {
+      const approved = await confirm(
+        t('organization.changeLockedCategory'),
+        t('organization.changeLockedCategoryBody', { name: repository.full_name }),
+        { type: 'warning' },
+      );
+      if (!approved) return;
+    }
 
     // 锁定是独立设置
     if (formData.categoryLocked && currentCat) {
@@ -398,10 +421,20 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
       }
     }
 
+    if (categoryChanged) {
+      updatedRepo.category_id = categoryId;
+      updatedRepo.subcategory_id = null;
+      updatedRepo.custom_category = currentCat || '';
+    } else if (repository.category_id !== undefined) {
+      updatedRepo.category_id = repository.category_id;
+      updatedRepo.custom_category = currentCat || '';
+      updatedRepo.category_locked = formData.categoryLocked;
+    }
+
     // 更新编辑时间
     updatedRepo.last_edited = new Date().toISOString();
 
-    updateRepository(updatedRepo);
+    updateRepository(updatedRepo, { overrideCategoryLock: categoryChanged && repository.category_locked === true });
     await forceSyncToBackend();
     onClose();
   };
@@ -460,7 +493,8 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
    * 同时考虑表单值变化和编辑意图变化
    */
   const hasChanges = useMemo(() => {
-    const formChanged = formData.description !== initialDataRef.current.description ||
+    const formChanged = categoryId !== initialCategoryIdRef.current ||
+           formData.description !== initialDataRef.current.description ||
            JSON.stringify(formData.tags) !== JSON.stringify(initialDataRef.current.tags) ||
            formData.category !== initialDataRef.current.category ||
            formData.categoryLocked !== initialDataRef.current.categoryLocked;
@@ -472,7 +506,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
                           editIntent.category !== initialEditIntentRef.current.category;
 
     return formChanged || intentChanged;
-  }, [formData, editIntent]);
+  }, [formData, editIntent, categoryId]);
 
   /**
    * 计算保存后的自定义状态
@@ -580,6 +614,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
     if (!repository) return;
     const aiCat = getAICategory(repository, allCategories);
     if (aiCat) {
+      setCategoryId(allCategories.find(category => category.name === aiCat)?.id ?? null);
       setFormData(prev => ({ ...prev, category: aiCat, categoryLocked: false }));
       setEditIntent(prev => ({ ...prev, category: 'reset-to-ai' }));
     }
@@ -593,6 +628,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
     if (!repository) return;
     const defaultCat = getDefaultCategory(repository, allCategories);
     if (defaultCat) {
+      setCategoryId(allCategories.find(category => category.name === defaultCat)?.id ?? null);
       setFormData(prev => ({ ...prev, category: defaultCat, categoryLocked: false }));
       setEditIntent(prev => ({ ...prev, category: 'reset-to-original' }));
     }
@@ -603,6 +639,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
    * 设置编辑意图为 'clear'，保存时会保存空值
    */
   const clearCategory = () => {
+    setCategoryId(null);
     setFormData(prev => ({ ...prev, category: '', categoryLocked: false }));
     setEditIntent(prev => ({ ...prev, category: 'clear' }));
   };
@@ -873,16 +910,17 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
             )}
           </div>
 
-          <Select value={formData.category || 'none'} onValueChange={(newCategory) => {
-            if (newCategory !== 'none' && newCategory.trim().toLowerCase() === 'none') return;
-            const nextCategory = newCategory === 'none' ? '' : newCategory;
+          <Select value={categoryId || 'none'} onValueChange={(newCategory) => {
+            const nextId = newCategory === 'none' ? null : newCategory;
+            const nextCategory = allCategories.find(category => category.id === nextId)?.name ?? '';
+            setCategoryId(nextId);
             setFormData(prev => ({ ...prev, category: nextCategory, categoryLocked: nextCategory ? prev.categoryLocked : false }));
             setEditIntent(prev => ({ ...prev, category: 'keep-custom' }));
           }}>
             <SelectTrigger aria-label={t('repositoryEditModal.category')} className={inputClass}><SelectValue placeholder={t('repositoryEditModal.select-category')} /></SelectTrigger>
             <SelectContent>
               <SelectItem value="none">{t('repositoryEditModal.select-category')}</SelectItem>
-              {allCategories.filter(cat => cat.id !== 'all' && cat.name.trim().toLowerCase() !== 'none').map(category => <SelectItem key={category.id} value={category.name}>{category.icon} {category.name}</SelectItem>)}
+              {allCategories.filter(cat => cat.id !== 'all' && cat.name.trim().toLowerCase() !== 'none').map(category => <SelectItem key={category.id} value={category.id}>{category.icon} {category.name}</SelectItem>)}
             </SelectContent>
           </Select>
 

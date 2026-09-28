@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../db/connection.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { config } from '../config.js';
+import { writeRepositoryOrganization } from '../services/repositoryOrganization.js';
 
 const router = Router();
 
@@ -166,6 +167,7 @@ router.post('/api/sync/import', (req, res) => {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const r of repos) {
+          const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(r.id) as Record<string, unknown> | undefined;
           // 验证必需的字段
           if (!r.id || typeof r.id !== 'number') {
             throw new Error(`Invalid repository data: missing or invalid id`);
@@ -210,6 +212,7 @@ router.post('/api/sync/import', (req, res) => {
             // 触发一次重索引回填指纹），合预期。
             vectorIndexedLicense
           );
+          writeRepositoryOrganization(db, r, previous);
         }
         counts.repositories = repos.length;
       }
@@ -373,7 +376,7 @@ router.post('/api/sync/import', (req, res) => {
           if (key === 'github_token' && value && typeof value === 'string') {
             settingsStmt.run(key, encrypt(value, config.encryptionKey));
           } else {
-            settingsStmt.run(key, (value as string) ?? null);
+            settingsStmt.run(key, value !== null && typeof value === 'object' ? JSON.stringify(value) : (value as string) ?? null);
           }
           settingsCount++;
         }

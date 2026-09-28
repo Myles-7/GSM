@@ -626,7 +626,7 @@ describe('useAppStore repository performance guards', () => {
     // The stale searchResults reference is kept so the filtered card (and its
     // open edit modal) stays mounted; SearchBar recomputes results afterwards.
     expect(useAppStore.getState().searchResults).toBe(previousSearchResults);
-    expect(useAppStore.getState().repositories).toBe(refreshed);
+    expect(useAppStore.getState().repositories.map(repo => repo.id)).toEqual(refreshed.map(repo => repo.id));
   });
 
   it('preserves an active search result set when only a license filter is active', () => {
@@ -659,7 +659,8 @@ describe('useAppStore repository performance guards', () => {
     const refreshed = [repo, createRepository(2)];
     useAppStore.getState().setRepositories(refreshed);
 
-    expect(useAppStore.getState().searchResults).toBe(refreshed);
+    expect(useAppStore.getState().searchResults).toBe(useAppStore.getState().repositories);
+    expect(useAppStore.getState().searchResults.map(repo => repo.id)).toEqual(refreshed.map(repo => repo.id));
   });
 
   it('preserves an active search result set when addRepository runs (Issue #304)', () => {

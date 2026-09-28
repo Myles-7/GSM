@@ -9,6 +9,7 @@ import { buildListsPushPlan, validateListsPushPlan, GITHUB_LISTS_MAX_COUNT, GITH
 import { hasActiveSearchFilters } from '../../utils/repoSearch';
 import { areRepositoryRecordsEqual, replaceRepositoryInList } from '../helpers/repositoryRecords';
 import { shouldPreserveExisting } from '../helpers/accountWorkspace';
+import { normalizeOrder, normalizeRepositoryUpdate } from '../helpers/repositoryOrganization';
 
 export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setRepositories'
@@ -38,8 +39,11 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           logger.warn('store.setRepositories', 'Refusing empty overwrite of local repositories');
           return state;
         }
+        const previous = new Map(state.repositories.map(repo => [repo.id, repo]));
+        repositories = repositories.map(repo => normalizeRepositoryUpdate(repo, previous.get(repo.id), state));
         return {
           repositories,
+          repositoryOrder: normalizeOrder(state.repositoryOrder, repositories.map(repo => repo.id)),
           // Background sync must not wipe an active search result set: replacing
           // it with the full list shrinks the visible slice and unmounts the card
           // being edited (closing its edit modal). SearchBar recomputes results
@@ -47,7 +51,10 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           searchResults: hasActiveSearchFilters(state.searchFilters) ? state.searchResults : repositories,
         };
       }),
-      updateRepository: (repo) => set((state) => {
+      updateRepository: (repo, options) => set((state) => {
+        const previous = state.repositories.find(item => item.id === repo.id);
+        if (previous && areRepositoryRecordsEqual(previous, repo)) return state;
+        repo = normalizeRepositoryUpdate(repo, previous, state, true, options?.overrideCategoryLock, options?.restoreSubcategory);
         const repositoriesResult = replaceRepositoryInList(state.repositories, repo);
         const searchResultsResult = state.searchResults === state.repositories
           ? repositoriesResult
@@ -64,13 +71,22 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           repositories: repositoriesResult.repositories,
           searchResults: searchResultsResult.repositories,
           similarView: similarResultsResult
-            ? { ...state.similarView!, similarResults: similarResultsResult.repositories }
+            ? {
+              ...state.similarView!, similarResults: similarResultsResult.repositories,
+              originalSearchResults: replaceRepositoryInList(state.similarView!.originalSearchResults, repo).repositories,
+            }
             : state.similarView,
         };
       }),
       updateRepositoriesMetadata: (updates) => set((state) => {
         if (!updates.length) return state;
-        const patchMap = new Map(updates.map((u) => [u.id, u.patch]));
+        const patchMap = new Map<number, Partial<Repository>>();
+        for (const update of updates) {
+          const previous = state.repositories.find(repo => repo.id === update.id);
+          patchMap.set(update.id, previous
+            ? normalizeRepositoryUpdate({ ...previous, ...update.patch }, previous, state, true)
+            : update.patch);
+        }
 
         const applyPatches = (list: Repository[]): { repositories: Repository[]; changed: boolean } => {
           let changed = false;
@@ -105,7 +121,10 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           repositories: repositoriesResult.repositories,
           searchResults: searchResultsResult.repositories,
           similarView: state.similarView
-            ? { ...state.similarView, similarResults: similarResultsResult.repositories }
+            ? {
+              ...state.similarView, similarResults: similarResultsResult.repositories,
+              originalSearchResults: applyPatches(state.similarView.originalSearchResults).repositories,
+            }
             : state.similarView,
         };
       }),
@@ -125,6 +144,11 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
             custom_tags: updatedRepositories[existingRepoIndex].custom_tags,
             custom_category: updatedRepositories[existingRepoIndex].custom_category,
             category_locked: updatedRepositories[existingRepoIndex].category_locked,
+            category_id: updatedRepositories[existingRepoIndex].category_id,
+            subcategory_id: updatedRepositories[existingRepoIndex].subcategory_id,
+            category_candidates: updatedRepositories[existingRepoIndex].category_candidates,
+            category_legacy: updatedRepositories[existingRepoIndex].category_legacy,
+            ai_details: repo.ai_details ?? updatedRepositories[existingRepoIndex].ai_details,
             last_edited: updatedRepositories[existingRepoIndex].last_edited,
             subscribed_to_releases: updatedRepositories[existingRepoIndex].subscribed_to_releases,
           };
@@ -140,8 +164,10 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           updatedRepositories = [...state.repositories, { ...repo, id: newId }];
         }
 
+        updatedRepositories = updatedRepositories.map(item => normalizeRepositoryUpdate(item, state.repositories.find(old => old.id === item.id), state));
         return {
           repositories: updatedRepositories,
+          repositoryOrder: normalizeOrder(state.repositoryOrder, updatedRepositories.map(item => item.id)),
           // Same guard as setRepositories: while search filters are active the
           // visible list is searchResults, and swapping in the full list would
           // unmount filtered cards (closing their edit modal). SearchBar
@@ -353,6 +379,7 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
 
         return {
           repositories: state.repositories.filter(r => r.id !== repoId),
+          repositoryOrder: state.repositoryOrder.filter(id => id !== repoId),
           searchResults: state.searchResults.filter(r => r.id !== repoId),
           similarView: state.similarView
             ? { ...state.similarView, similarResults: state.similarView.similarResults.filter(r => r.id !== repoId) }

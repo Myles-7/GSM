@@ -54,7 +54,7 @@ export interface AppActions {
 
   // Repository actions
   setRepositories: (repos: Repository[], options?: { allowEmpty?: boolean }) => void;
-  updateRepository: (repo: Repository) => void;
+  updateRepository: (repo: Repository, options?: { overrideCategoryLock?: boolean; restoreSubcategory?: boolean }) => void;
   /** 批量更新多个仓库的指定字段，保留当前过滤的 searchResults 不被重置 */
   updateRepositoriesMetadata: (updates: { id: number; patch: Partial<Repository> }[]) => void;
   addRepository: (repo: Repository) => void;
@@ -150,6 +150,14 @@ export interface AppActions {
   markAllForksAsRead: () => void;
 
   // Category actions
+  addSubcategory: (subcategory: { parentId: string; name: string; icon: string }) => void;
+  updateSubcategory: (id: string, updates: { name?: string; icon?: string }) => void;
+  deleteSubcategory: (id: string) => void;
+  moveRepositoryToSubcategory: (repoId: number, subcategoryId: string | null) => void;
+  reorderSubcategories: (ids: string[]) => void;
+  reorderRepositories: (ids: number[]) => void;
+  /** Locked records require an explicit unlock approved by the UI first. */
+  assignRepositoryCategory: (repoId: number, categoryId: string | null) => void;
   addCustomCategory: (category: Category) => void;
   updateCustomCategory: (id: string, updates: Partial<Category>) => void;
   updateDefaultCategory: (id: string, updates: Partial<Category>) => void;

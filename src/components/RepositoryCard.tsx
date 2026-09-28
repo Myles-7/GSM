@@ -29,6 +29,7 @@ import { applyPluginActionResult } from '../plugins/applyPluginActionResult';
 import { useDialog } from '../hooks/useDialog';
 import { pluginClient } from '../plugins/pluginClient';
 import type { RegisteredPluginAction } from '../plugins/types';
+import { readRepositoryDetails } from '../features/repositories/application/repositoryDetailsSchema';
 
 type DialogContentPointerDownOutsideHandler = NonNullable<
   React.ComponentProps<typeof DialogContent>['onPointerDownOutside']
@@ -145,6 +146,7 @@ interface RepositoryCardProps {
   allCategories: Category[];
   viewMode?: 'grid' | 'list';
   onAskRepository?: (repository: Repository) => void;
+  onViewDetails?: (repository: Repository) => void;
 }
 
 const PluginRepositoryActionItems: React.FC<{
@@ -181,25 +183,9 @@ const PluginRepositoryActionItems: React.FC<{
 };
 
 const MAX_CACHE_SIZE = 500;
-const ACTION_SLOT_WIDTH = 32;
-const ACTION_SLOT_GAP = 6;
-const ACTION_SLOT_STRIDE = ACTION_SLOT_WIDTH + ACTION_SLOT_GAP;
-const BASE_OVERFLOW_ACTION_COUNT = 7;
 
 const highlightCache = new Map<string, React.ReactNode>();
 
-const countVisibleOverflowActions = (
-  width: number,
-  primaryActionCount: number,
-  hasPersistentMenu: boolean,
-): number => {
-  if (width === 0) return primaryActionCount;
-  const capacity = Math.max(1, Math.floor((width + ACTION_SLOT_GAP) / ACTION_SLOT_STRIDE));
-  if (hasPersistentMenu) {
-    return Math.max(0, Math.min(primaryActionCount, capacity - 1));
-  }
-  return capacity >= primaryActionCount ? primaryActionCount : Math.max(0, capacity - 1);
-};
 
 const mutedIconButtonClass =
   'bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground';
@@ -208,8 +194,6 @@ interface OverflowActionRowProps {
   actionRowRef: React.Ref<HTMLDivElement>;
   testId: string;
   className: string;
-  visibleActionCount: number;
-  primaryActionCount: number;
   selectionMode: boolean;
   onAskRepository?: (repository: Repository) => void;
   repository: Repository;
@@ -223,7 +207,6 @@ interface OverflowActionRowProps {
   vectorSearchAvailable?: boolean;
   isFindingSimilar?: boolean;
   onFindSimilar?: () => void;
-  persistFindSimilarInMenu?: boolean;
   pluginActions: RegisteredPluginAction[];
   isActionsMenuOpen?: boolean;
   onActionsMenuOpenChange?: (open: boolean) => void;
@@ -233,6 +216,7 @@ interface OverflowActionRowProps {
   onEdit: () => void;
   editButtonTitle: string;
   onViewReleases: () => void;
+  onReadme: () => void;
   onUnstar: () => void;
   menuAlign?: 'start' | 'end';
   onMenuPointerDownOutside?: (target: Node) => void;
@@ -243,8 +227,6 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
   actionRowRef,
   testId,
   className,
-  visibleActionCount,
-  primaryActionCount,
   selectionMode,
   onAskRepository,
   repository,
@@ -258,7 +240,6 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
   vectorSearchAvailable = false,
   isFindingSimilar = false,
   onFindSimilar,
-  persistFindSimilarInMenu = false,
   pluginActions,
   isActionsMenuOpen,
   onActionsMenuOpenChange,
@@ -268,43 +249,22 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
   onEdit,
   editButtonTitle,
   onViewReleases,
+  onReadme,
   onUnstar,
   menuAlign = 'start',
   onMenuPointerDownOutside,
   t,
 }) => {
-  const askSlot = onAskRepository ? 1 : 0;
-  const showAnalyze = visibleActionCount >= 1;
-  const showAsk = Boolean(onAskRepository) && visibleActionCount >= 2;
-  const showSubscribe = visibleActionCount >= 2 + askSlot;
-  const showEdit = visibleActionCount >= 3 + askSlot;
-  const showReleases = visibleActionCount >= 4 + askSlot;
-  const showDocs = visibleActionCount >= 5 + askSlot;
-  const showGithub = visibleActionCount >= 6 + askSlot;
-  const showUnstar = visibleActionCount >= 7 + askSlot;
-  const showFindSimilarInMenu = Boolean(vectorSearchAvailable && onFindSimilar && (persistFindSimilarInMenu || visibleActionCount < primaryActionCount));
-  const showOverflowMenu = visibleActionCount < primaryActionCount || pluginActions.length > 0 || showFindSimilarInMenu;
+  const showFindSimilarInMenu = Boolean(vectorSearchAvailable && onFindSimilar);
   const menuOpenProps = onActionsMenuOpenChange
     ? { open: isActionsMenuOpen, onOpenChange: onActionsMenuOpenChange }
     : {};
 
   return (
     <div ref={actionRowRef} data-testid={testId} className={className}>
-      {showAnalyze ? (
-        <SelectionAwareButton
-          onClick={onAnalyze}
-          disabled={isAnalyzing}
-          selectionMode={selectionMode}
-          className={mutedIconButtonClass}
-          title={aiButtonTitle}
-          aria-label={aiButtonTitle}
-        >
-          {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
-        </SelectionAwareButton>
-      ) : null}
-      {showAsk ? (
         <SelectionAwareButton
           onClick={onAsk}
+          disabled={!onAskRepository}
           selectionMode={selectionMode}
           className={mutedIconButtonClass}
           title={t('repositoryCard.ask-this-repository')}
@@ -312,79 +272,18 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
         >
           <MessageSquareText className="w-4 h-4" />
         </SelectionAwareButton>
-      ) : null}
-      {showSubscribe ? (
-        <SelectionAwareButton
-          onClick={onToggleReleaseSubscription}
-          selectionMode={selectionMode}
-          className={isSubscribed
-            ? 'bg-primary text-primary-foreground shadow-sm'
-            : mutedIconButtonClass}
-          title={isSubscribed ? t('repositoryCard.unsubscribe-from-releases-2') : t('repositoryCard.subscribe-to-releases-2')}
-          aria-label={isSubscribed ? t('repositoryCard.unsubscribe-from-releases-2') : t('repositoryCard.subscribe-to-releases-2')}
-          aria-pressed={isSubscribed}
-        >
-          {isSubscribed ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-        </SelectionAwareButton>
-      ) : null}
-      {showEdit ? (
-        <SelectionAwareButton
-          onClick={onEdit}
-          selectionMode={selectionMode}
-          variant="edit"
-          title={editButtonTitle}
-          aria-label={t('repositoryCard.edit-repository-info')}
-        >
-          <Edit3 className="w-4 h-4" />
-        </SelectionAwareButton>
-      ) : null}
-      {showReleases ? (
-        <SelectionAwareButton
-          onClick={onViewReleases}
-          selectionMode={selectionMode}
-          className={mutedIconButtonClass}
-          title={t('repositoryCard.view-releases')}
-          aria-label={t('repositoryCard.view-releases')}
-        >
-          <PackageOpen className="w-4 h-4" />
-        </SelectionAwareButton>
-      ) : null}
-      {showDocs ? (
-        <a
-          href={docsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(event) => selectionMode && event.preventDefault()}
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${mutedIconButtonClass} ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
-          title={t('repositoryCard.view-on-deepwiki-2')}
-        >
-          <BookOpen className="w-4 h-4" />
-        </a>
-      ) : null}
-      {showGithub ? (
         <a
           href={githubUrl}
           target="_blank"
           rel="noopener noreferrer"
+          aria-disabled={selectionMode || undefined}
+          tabIndex={selectionMode ? -1 : undefined}
           onClick={(event) => selectionMode && event.preventDefault()}
           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${mutedIconButtonClass} ${selectionMode ? 'pointer-events-none opacity-50' : ''}`}
           title={t('repositoryCard.view-on-github-2')}
         >
           <ExternalLink className="w-4 h-4" />
         </a>
-      ) : null}
-      {showUnstar ? (
-        <SelectionAwareButton
-          onClick={onUnstar}
-          disabled={unstarring}
-          selectionMode={selectionMode}
-          variant="unstar"
-          title={t('repositoryCard.unstar')}
-        >
-          <StarOff className={`w-4 h-4 ${unstarring ? 'animate-pulse' : ''}`} />
-        </SelectionAwareButton>
-      ) : null}
-      {showOverflowMenu ? (
         <DropdownMenu {...menuOpenProps}>
           <DropdownMenuTrigger asChild>
             <Button
@@ -410,58 +309,36 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
               }
             }}
           >
-            {showAnalyze ? null : (
-              <DropdownMenuItem disabled={isAnalyzing} onSelect={() => void onAnalyze()}>
+            <DropdownMenuItem onSelect={onReadme}>
+              <BookOpen className="mr-2 h-3.5 w-3.5" />
+              {t('details.readme')}
+            </DropdownMenuItem>
+              <DropdownMenuItem title={aiButtonTitle} disabled={isAnalyzing} onSelect={() => void onAnalyze()}>
                 {isAnalyzing ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Bot className="mr-2 h-3.5 w-3.5" />}
                 {t('repositoryCard.analyze-with-ai-2')}
               </DropdownMenuItem>
-            )}
-            {onAskRepository && !showAsk ? (
-              <DropdownMenuItem onSelect={() => onAsk?.()}>
-                <MessageSquareText className="mr-2 h-3.5 w-3.5" />
-                {t('repositoryCard.ask-this-repository')}
-              </DropdownMenuItem>
-            ) : null}
-            {showSubscribe ? null : (
               <DropdownMenuItem onSelect={onToggleReleaseSubscription}>
                 {isSubscribed ? <Bell className="mr-2 h-3.5 w-3.5" /> : <BellOff className="mr-2 h-3.5 w-3.5" />}
                 {isSubscribed ? t('repositoryCard.unsubscribe-from-releases') : t('repositoryCard.subscribe-to-releases')}
               </DropdownMenuItem>
-            )}
-            {showEdit ? null : (
-              <DropdownMenuItem onSelect={onEdit}>
+              <DropdownMenuItem title={editButtonTitle} onSelect={onEdit}>
                 <Edit3 className="mr-2 h-3.5 w-3.5" />
                 {t('repositoryCard.edit-repository-info')}
               </DropdownMenuItem>
-            )}
-            {showReleases ? null : (
               <DropdownMenuItem onSelect={onViewReleases}>
                 <PackageOpen className="mr-2 h-3.5 w-3.5" />
                 {t('repositoryCard.view-releases')}
               </DropdownMenuItem>
-            )}
-            {showDocs ? null : (
               <DropdownMenuItem asChild>
                 <a href={docsUrl} target="_blank" rel="noopener noreferrer">
                   <BookOpen className="mr-2 h-3.5 w-3.5" />
                   {t('repositoryCard.view-on-deepwiki')}
                 </a>
               </DropdownMenuItem>
-            )}
-            {showGithub ? null : (
-              <DropdownMenuItem asChild>
-                <a href={githubUrl} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="mr-2 h-3.5 w-3.5" />
-                  {t('repositoryCard.view-on-github')}
-                </a>
-              </DropdownMenuItem>
-            )}
-            {showUnstar ? null : (
               <DropdownMenuItem className="text-destructive focus:text-destructive" disabled={unstarring} onSelect={() => void onUnstar()}>
                 <StarOff className={`mr-2 h-3.5 w-3.5 ${unstarring ? 'animate-pulse' : ''}`} />
                 {t('repositoryCard.unstar')}
               </DropdownMenuItem>
-            )}
             {showFindSimilarInMenu ? (
               <DropdownMenuItem disabled={isFindingSimilar} onSelect={() => onFindSimilar?.()}>
                 {isFindingSimilar ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Search className="mr-2 h-3.5 w-3.5" />}
@@ -477,7 +354,6 @@ const OverflowActionRow: React.FC<OverflowActionRowProps> = ({
             ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
-      ) : null}
     </div>
   );
 };
@@ -497,11 +373,18 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   allCategories,
   viewMode = 'grid',
   onAskRepository,
+  onViewDetails,
 }) => {
     const t = useT('repositories');
   const language = useAppStore((state) => state.language);
+  const cachedReleases = useAppStore((state) => state.releases);
+  const latestRelease = useMemo(() => cachedReleases?.filter((release) => release.repository.id === repository.id)
+    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0], [cachedReleases, repository.id]);
   // 卡片可见字段（开发守则 §14）：未提供时按默认（显示）处理
   const cardFields = useAppStore((state) => state.repositoryCardFields);
+  const softwareForms = useMemo(() => showAISummary && isRepositoryCardFieldVisible(cardFields, 'tags')
+    ? [...new Set(readRepositoryDetails(repository.ai_details)?.software_forms || [])].slice(0, 2)
+    : [], [showAISummary, cardFields, repository.ai_details]);
   const showDescription = isRepositoryCardFieldVisible(cardFields, 'description');
   const pluginActions = usePluginActions('repository-card');
   const {
@@ -527,45 +410,16 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   const releaseSheetOutsideDismissedAtRef = useRef<number | null>(null);
   const editModalOutsideDismissedAtRef = useRef<number | null>(null);
   const overflowActionRowRef = useRef<HTMLDivElement>(null);
-  const primaryOverflowActionCount = BASE_OVERFLOW_ACTION_COUNT + (onAskRepository ? 1 : 0);
-  const [visibleOverflowActionCount, setVisibleOverflowActionCount] = useState(primaryOverflowActionCount);
 
   const restoreReadmeTriggerFocus = useCallback(() => {
     cardRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    if (viewMode !== 'list' || selectionMode) {
+    if (selectionMode) {
       setIsActionsMenuOpen(false);
     }
   }, [viewMode, selectionMode]);
-
-  useEffect(() => {
-    const updateVisibleActionCount = () => {
-      const width = overflowActionRowRef.current?.clientWidth ?? 0;
-      // A zero width occurs during hidden/JSDOM rendering; retain all actions
-      // until a real layout measurement is available.
-      if (width === 0) {
-        setVisibleOverflowActionCount(primaryOverflowActionCount);
-        return;
-      }
-      const hasPersistentMenu =
-        pluginActions.actions.length > 0 ||
-        (viewMode === 'list' && vectorSearchAvailable);
-      setVisibleOverflowActionCount(
-        countVisibleOverflowActions(width, primaryOverflowActionCount, hasPersistentMenu),
-      );
-    };
-
-    updateVisibleActionCount();
-    const observer = new ResizeObserver(updateVisibleActionCount);
-    if (overflowActionRowRef.current) observer.observe(overflowActionRowRef.current);
-    window.addEventListener('resize', updateVisibleActionCount);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', updateVisibleActionCount);
-    };
-  }, [viewMode, primaryOverflowActionCount, pluginActions.actions.length, selectionMode, vectorSearchAvailable]);
 
   // 高亮搜索关键词的工具函数 - 使用缓存优化
   const highlightSearchTerm = useCallback((text: string, searchTerm: string): React.ReactNode => {
@@ -992,8 +846,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       return;
     }
 
-    setReadmeModalOpen(true);
-  }, [selectionMode, onSelect, repository.id, isActionsMenuOpen]);
+    if (onViewDetails) onViewDetails(repository);
+    else setReadmeModalOpen(true);
+  }, [selectionMode, onSelect, repository, isActionsMenuOpen, onViewDetails]);
 
   // 处理鼠标按下事件，阻止焦点变化导致页面滚动
   const handleMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -1019,10 +874,11 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       if (selectionMode && onSelect) {
         onSelect(repository.id);
       } else {
-        setReadmeModalOpen(true);
+        if (onViewDetails) onViewDetails(repository);
+        else setReadmeModalOpen(true);
       }
     }
-  }, [selectionMode, onSelect, repository.id, isModalOpen]);
+  }, [selectionMode, onSelect, repository, isModalOpen, onViewDetails]);
 
   // 使用 useMemo 缓存卡片类名，避免重复计算
   const cardClassName = useMemo(() => {
@@ -1074,7 +930,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         
         {/* 拖拽按钮 - 右上角 - 手机和平板端隐藏 */}
         {viewMode === 'list' && (
-          <div className="ml-auto flex min-w-0 flex-1 items-start justify-end gap-1.5">
+          <div className="ml-auto flex max-w-[60%] flex-wrap items-start justify-end gap-1.5">
             {displayContent.isCustomized && (
               <span className="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium bg-muted dark:bg-muted/40 text-muted-foreground dark:text-muted-foreground">
                 <Edit3 className="w-3 h-3" />
@@ -1097,13 +953,10 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 {t('repositoryCard.not-analyzed')}
               </span>
             )}
-            {!selectionMode ? (
               <OverflowActionRow
                 actionRowRef={overflowActionRowRef}
                 testId="list-action-row"
-                className="flex min-w-0 flex-1 items-center justify-end gap-1.5 overflow-hidden"
-                visibleActionCount={visibleOverflowActionCount}
-                primaryActionCount={primaryOverflowActionCount}
+                className="flex shrink-0 items-center justify-end gap-1.5"
                 selectionMode={selectionMode}
                 onAskRepository={onAskRepository}
                 repository={repository}
@@ -1117,7 +970,6 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 vectorSearchAvailable={vectorSearchAvailable}
                 isFindingSimilar={isFindingSimilar}
                 onFindSimilar={handleFindSimilar}
-                persistFindSimilarInMenu
                 pluginActions={pluginActions.actions}
                 isActionsMenuOpen={isActionsMenuOpen}
                 onActionsMenuOpenChange={setIsActionsMenuOpen}
@@ -1127,6 +979,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 onEdit={() => setEditModalOpen(true)}
                 editButtonTitle={displayContent.isCustomized ? t('repositoryCard.customized-edit-repository-info') : t('repositoryCard.edit-repository-info')}
                 onViewReleases={() => setReleaseSheetOpen(true)}
+                onReadme={() => setReadmeModalOpen(true)}
                 onUnstar={handleUnstar}
                 menuAlign="end"
                 onMenuPointerDownOutside={(target) => {
@@ -1136,7 +989,6 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 }}
                 t={t}
               />
-            ) : null}
           </div>
         )}
 
@@ -1196,8 +1048,6 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           actionRowRef={overflowActionRowRef}
           testId="grid-action-row"
           className="mb-4 flex w-full items-center justify-start gap-1.5 overflow-hidden"
-          visibleActionCount={visibleOverflowActionCount}
-          primaryActionCount={primaryOverflowActionCount}
           selectionMode={selectionMode}
           onAskRepository={onAskRepository}
           repository={repository}
@@ -1209,13 +1059,24 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           isSubscribed={isSubscribed}
           unstarring={unstarring}
           pluginActions={pluginActions.actions}
+          isActionsMenuOpen={isActionsMenuOpen}
+          onActionsMenuOpenChange={setIsActionsMenuOpen}
           onAnalyze={handleAIAnalyze}
           onAsk={onAskRepository ? () => onAskRepository(repository) : undefined}
           onToggleReleaseSubscription={toggleReleaseSubscription}
           onEdit={() => setEditModalOpen(true)}
           editButtonTitle={t('repositoryCard.edit-repository-info')}
           onViewReleases={() => setReleaseSheetOpen(true)}
+          onReadme={() => setReadmeModalOpen(true)}
+          vectorSearchAvailable={vectorSearchAvailable}
+          isFindingSimilar={isFindingSimilar}
+          onFindSimilar={handleFindSimilar}
           onUnstar={handleUnstar}
+          onMenuPointerDownOutside={(target) => {
+            if (cardRef.current?.contains(target)) {
+              menuDismissedByPointerDownRef.current = true;
+            }
+          }}
           t={t}
         />
       ) : null}
@@ -1232,8 +1093,8 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
             <p
               tabIndex={0}
               className={viewMode === 'list'
-                ? 'text-sm leading-6 text-muted-foreground dark:text-muted-foreground line-clamp-2 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground'
-                : 'text-foreground dark:text-muted-foreground text-[13px] leading-[1.625] line-clamp-3 mb-2 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground rounded-md px-1 -mx-1 hover:bg-muted dark:hover:bg-card/[0.02]'}
+                ? 'text-sm leading-6 text-muted-foreground dark:text-muted-foreground line-clamp-4 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground'
+                : 'text-foreground dark:text-muted-foreground text-[13px] leading-[1.625] line-clamp-4 mb-2 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground rounded-md px-1 -mx-1 hover:bg-muted dark:hover:bg-card/[0.02]'}
             >
               {highlightSearchTerm(displayContent.content, searchQuery)}
             </p>
@@ -1288,7 +1149,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       {/* Tags - 未AI分析时显示Topics，AI分析后显示AI标签 */}
       {isRepositoryCardFieldVisible(cardFields, 'tags') && displayTags.tags.length > 0 && (
         <div className={`flex flex-wrap ${viewMode === 'list' ? 'gap-1' : 'gap-2 mb-4'}`}>
-          {displayTags.tags.map((tagItem, index) => (
+          {displayTags.tags.slice(0, 3).map((tagItem, index) => (
             <span
               key={`tag-${index}`}
               className={`linear-card-tag font-medium ${viewMode === 'list' ? 'px-1.5 py-0.5 text-xs' : 'px-2 py-1 text-xs'}`}
@@ -1300,6 +1161,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       )}
 
       {/* Platform Icons */}
+      {softwareForms.length > 0 && <div className="flex flex-wrap gap-1" aria-label={t('details.softwareForms')}>
+        {softwareForms.map((form) => <span key={form} data-software-form={form} className="linear-card-tag px-1.5 py-0.5 text-xs">{t(`details.forms.${form}`)}</span>)}
+      </div>}
       {viewMode === 'grid' && displayPlatforms.length > 0 && (
         <div className="flex items-center space-x-2 mb-4">
           <span className="text-xs text-muted-foreground dark:text-muted-foreground">
@@ -1368,28 +1232,14 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           <div className="relative flex min-w-0 items-center gap-1.5 leading-none">
             {isRepositoryCardFieldVisible(cardFields, 'lastUpdated') && (
             <>
-            <Calendar className={`w-4 h-4 flex-shrink-0 transition-opacity duration-150 ${viewMode === 'grid' && vectorSearchAvailable && !selectionMode ? 'group-hover:opacity-0' : ''}`} />
-            <span className={`truncate transition-opacity duration-150 ${viewMode === 'grid' && vectorSearchAvailable && !selectionMode ? 'group-hover:opacity-0' : ''}`}>
+            <Calendar className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate">
               {t('repositoryCard.last-pushed-time', { time: formatDistanceToNow(new Date(repository.pushed_at || repository.updated_at), { addSuffix: true, locale: getDateFnsLocale(language) }) })}
             </span>
             </>
             )}
 
-            {viewMode === 'grid' && vectorSearchAvailable && !selectionMode && (
-              <Button
-                variant="ghost"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleFindSimilar();
-                }}
-                disabled={isFindingSimilar}
-                className="absolute -inset-y-1 left-0 flex h-auto items-center space-x-1 text-primary dark:text-primary font-medium opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-visible:pointer-events-auto transition-opacity duration-150 hover:underline disabled:cursor-not-allowed disabled:hover:no-underline"
-                title={t('repositoryCard.find-similar-repositories-2')}
-              >
-                {isFindingSimilar ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                <span>{t('repositoryCard.find-similar')}</span>
-              </Button>
-            )}
+            {latestRelease && <span className="inline-flex min-w-0 items-center gap-1 text-xs" title={latestRelease.tag_name}><PackageOpen className="h-3.5 w-3.5 shrink-0" /><span className="max-w-24 truncate">{latestRelease.tag_name}</span></span>}
           </div>
 
 
@@ -1497,9 +1347,13 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.repository.ai_summary === nextProps.repository.ai_summary &&
     prevProps.repository.ai_tags === nextProps.repository.ai_tags &&
     prevProps.repository.ai_platforms === nextProps.repository.ai_platforms &&
+    prevProps.repository.ai_details === nextProps.repository.ai_details &&
     prevProps.repository.custom_description === nextProps.repository.custom_description &&
     prevProps.repository.custom_tags === nextProps.repository.custom_tags &&
     prevProps.repository.custom_category === nextProps.repository.custom_category &&
+    prevProps.repository.category_id === nextProps.repository.category_id &&
+    prevProps.repository.subcategory_id === nextProps.repository.subcategory_id &&
+    prevProps.repository.category_candidates === nextProps.repository.category_candidates &&
     prevProps.repository.category_locked === nextProps.repository.category_locked &&
     prevProps.repository.description === nextProps.repository.description &&
     prevProps.repository.topics === nextProps.repository.topics &&
@@ -1515,6 +1369,7 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.isExitingSelection === nextProps.isExitingSelection &&
     prevProps.viewMode === nextProps.viewMode &&
     prevProps.onAskRepository === nextProps.onAskRepository &&
+    prevProps.onViewDetails === nextProps.onViewDetails &&
     allCategoriesEqual
   );
 });

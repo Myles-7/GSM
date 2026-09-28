@@ -327,7 +327,8 @@
     "show-only-repositories-pushed-within-the-last-12": "只显示近 12 个月内有推送的仓库",
     "pushed-in-12-months": "近 12 个月有推送",
     "show-only-repositories-without-a-declared-licens": "只显示未声明许可证的仓库",
-    "no-declared-license": "未声明许可证"
+    "no-declared-license": "未声明许可证",
+    "sort-custom": "自定义排序"
   },
   "searchDemo": {
     "search-feature-upgrade": "搜索功能升级",
