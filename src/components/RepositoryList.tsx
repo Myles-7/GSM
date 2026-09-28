@@ -2,7 +2,9 @@ import { useT } from "../i18n/useT";
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { Bot, LayoutGrid, List, SearchX, X } from 'lucide-react';
+import { Bot, FolderTree, LayoutGrid, List, SearchX, X } from 'lucide-react';
+import { useAIOrganization } from '../features/repositories/hooks/useAIOrganization';
+import { AIOrganizationPanel } from '../features/repositories/components/AIOrganizationPanel';
 import { RepositoryCard } from './RepositoryCard';
 import { SimilarViewBanner } from './SimilarViewBanner';
 import { GlobalChatHistorySheet } from './GlobalChatHistorySheet';
@@ -223,6 +225,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     filteredRepositories.filter(repo => selectedRepoIds.has(repo.id)),
     [filteredRepositories, selectedRepoIds]
   );
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const organization = useAIOrganization({ filteredRepositories, selectedRepositoryIds: [...selectedRepoIds], categoryId: selectedCategory });
 
   // 使用 useMemo 缓存统计计数，避免每次渲染重新计算
   const repositoryStats = useMemo(() => {
@@ -561,6 +565,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
 
     return (
       <>
+        <RepositoryToolbarPortal><Button variant="ghost" size="sm" onClick={() => setOrganizationOpen(true)}><FolderTree className="mr-1 h-4 w-4" />{t('aiOrganization.title')}</Button></RepositoryToolbarPortal>
+        <AIOrganizationPanel open={organizationOpen} onOpenChange={setOrganizationOpen} controller={organization} />
         <div className="ui-empty-state flex flex-col items-center px-6 py-14 text-center">
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <SearchX className="h-5 w-5" aria-hidden="true" />
@@ -651,6 +657,9 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       <RepositoryToolbarPortal>
       <div className="flex shrink-0 items-center justify-end gap-1" data-repository-toolbar>
         <div className="flex items-center gap-1">
+          <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs" onClick={() => setOrganizationOpen(true)} title={t('aiOrganization.title')}>
+            <FolderTree className="h-4 w-4" />{t('aiOrganization.title')}
+          </Button>
 
           {/* AI Analysis Select */}
           <DropdownMenu>
@@ -722,6 +731,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
         </div>
       </div>
       </RepositoryToolbarPortal>
+      <AIOrganizationPanel open={organizationOpen} onOpenChange={setOrganizationOpen} controller={organization} />
 
       {/* Repository Grid with consistent card widths */}
       <div className="flex min-w-0 items-start gap-4 [&>aside]:sticky [&>aside]:top-20" data-details-pinned={detailsPinned || undefined}>

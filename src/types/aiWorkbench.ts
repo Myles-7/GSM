@@ -1,4 +1,5 @@
 import type { Repository } from './index';
+import type { OrganizationDraft } from './aiOrganization';
 
 export type WorkbenchScope = 'github' | 'selected' | 'project' | 'library';
 export type WorkbenchDepth = 'quick' | 'standard' | 'deep';
@@ -58,6 +59,7 @@ export interface WorkbenchProposal {
   updatedAt: string;
   operations: WorkbenchOperation[];
   syncError?: string;
+  organization?: OrganizationDraft;
 }
 export interface WorkbenchSessionData {
   scope: WorkbenchScope;

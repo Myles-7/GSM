@@ -1,3 +1,4 @@
+import { organizationDraftSchema } from './aiOrganizationSchema';
 import type {
   RepositoryChatMessage,
   RepositoryChatSession,
@@ -286,7 +287,7 @@ const MESSAGE_KEYS = ['id', 'sessionId', 'role', 'content', 'status', 'evidenceI
 const TOOL_EVENT_KEYS = ['id', 'sessionId', 'messageId', 'toolName', 'status', 'paramSummary', 'stage', 'round', 'detail', 'durationMs', 'resultSize', 'evidenceId', 'createdAt'] as const;
 const EVIDENCE_KEYS = ['id', 'source', 'repoFullName', 'refSha', 'path', 'lineStart', 'lineEnd', 'url', 'contentHash', 'excerpt', 'retrievedAt'] as const;
 const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'repositories', 'createdAt', 'updatedAt', 'deletedAt'] as const;
-const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError'] as const;
+const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
 const OPERATION_KEYS = ['id', 'repository', 'kind', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
 const EDITABLE_KEYS = ['custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
 const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches'] as const;
@@ -594,6 +595,7 @@ const validateProposal = (value: unknown, label: string, ownerId: string): Workb
     asOptionalString(operationRecord.error, `${operationLabel}.error`, MAX_TEXT);
   });
   asOptionalString(record.syncError, `${label}.syncError`, MAX_TEXT);
+  if (record.organization !== undefined) organizationDraftSchema.parse(record.organization);
   return record as unknown as WorkbenchProposal;
 };
 
@@ -743,6 +745,7 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
   const projects = backup.projects.map((project) => ({ ...project, id: projectIds.get(project.id) ?? project.id }));
   const proposals = backup.proposals.map((proposal) => ({
     ...proposal,
+    ...(proposal.organization ? { organization: { ...proposal.organization, status: 'imported' as const, entries: proposal.organization.entries.map(entry => ({ ...entry, selected: false })) } } : {}),
     id: proposalIds.get(proposal.id) ?? proposal.id,
     sessionId: sessionIds.get(proposal.sessionId) ?? proposal.sessionId,
     operations: proposal.operations.map((operation) => ({
@@ -1044,7 +1047,8 @@ export const repositoryChatStorage = {
     const retentionCutoff = now - normalizeRetentionDays(retentionDays) * 24 * 60 * 60 * 1000;
     const trashCutoff = now - TRASH_RETENTION_MS;
     const runningSessionIds = new Set(snapshot.proposals
-      .filter((proposal) => proposal.ownerId === ownerId && proposal.operations.some((operation) => operation.status === 'running'))
+      .filter((proposal) => proposal.ownerId === ownerId && (proposal.operations.some((operation) => operation.status === 'running')
+        || (proposal.organization && ['generating', 'applying', 'restoring'].includes(proposal.organization.status))))
       .map((proposal) => proposal.sessionId));
     const ownedSessions = snapshot.sessions.filter((session) => session.ownerId === ownerId);
     const toTrash = ownedSessions.filter((session) => {

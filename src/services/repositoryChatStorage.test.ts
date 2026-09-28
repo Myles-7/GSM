@@ -351,6 +351,30 @@ describe('repositoryChatStorage local fallback', () => {
     await expect(repositoryChatStorage.getSession('orphan-session-import-1')).resolves.toBeNull();
   });
 
+  it('round-trips organization drafts as inert history and rejects invalid classification references', async () => {
+    const ownerId = 'organization-owner';
+    const session = { ...createSession('organization-session', 0, '2026-09-28T00:00:00.000Z'), ownerId, kind: 'workbench' as const };
+    const proposal = createProposal('organization-proposal', ownerId, session.id);
+    proposal.operations = [];
+    proposal.organization = {
+      version: 1, revision: 1, scope: { name: 'pending', repositoryIds: [1] }, instruction: 'Organize', configId: 'model',
+      maxNewSubcategories: 6, structureReady: true, categories: [{ id: 'new-category', name: 'Tools', icon: 'folder', parentId: null, isNew: true }],
+      entries: [{ repositoryId: 1, before: { categoryId: null, subcategoryId: null, locked: false }, categoryId: 'new-category', subcategoryId: null,
+        disposition: 'move', reason: 'Tool', selected: true, overrideLocked: false, manual: false, status: 'pending' }],
+      batches: [{ repositoryIds: [1], status: 'complete' }], status: 'ready', createdCategoryIds: [],
+    };
+    await repositoryChatStorage.saveSession(session);
+    await repositoryChatStorage.saveProposal(proposal);
+    const backup = await repositoryChatStorage.exportWorkbench(ownerId);
+    await repositoryChatStorage.importWorkbench(ownerId, backup);
+    const imported = (await repositoryChatStorage.listProposals(ownerId)).find(p => p.id !== proposal.id)!;
+    expect(imported.organization).toMatchObject({ status: 'imported', entries: [{ selected: false, categoryId: 'new-category' }] });
+    const invalid = structuredClone(backup) as { proposals: WorkbenchProposal[] };
+    invalid.proposals[0].organization!.entries[0].subcategoryId = 'invalid-child';
+    await expect(repositoryChatStorage.importWorkbench(ownerId, invalid)).rejects.toThrow();
+    expect(await repositoryChatStorage.listProposals(ownerId)).toHaveLength(2);
+  });
+
   it('rejects malformed and foreign backups before writing any records', async () => {
     const ownerId = 'owner-a';
     await repositoryChatStorage.saveSession({

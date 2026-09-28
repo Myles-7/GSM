@@ -1,5 +1,6 @@
 
 import type { AppStoreSlice } from '../types';
+import { organizationTransaction } from '../helpers/aiOrganizationTransaction';
 import { defaultCategories } from '../schema';
 import { getAllCategories, getCategoryNameVariants, sortCategoriesByOrder } from '../helpers/categoryHelpers';
 import { categoryName } from '../../constants/categoryI18n';
@@ -8,6 +9,7 @@ import { normalizeOrder, organizationCategories, organizationSnapshot } from '..
 export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'addCustomCategory'
   | 'addSubcategory'
+  | 'applyAIOrganization'
   | 'updateSubcategory'
   | 'deleteSubcategory'
   | 'moveRepositoryToSubcategory'
@@ -30,6 +32,7 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
   | 'updateAssetFilter'
   | 'deleteAssetFilter'
 >> = (set) => ({
+      applyAIOrganization: (transaction) => set(state => organizationTransaction(state, transaction)),
       addSubcategory: (input) => set(state => organizationSnapshot(state, {
         subcategories: [...state.subcategories, { ...input, id: crypto.randomUUID() }],
       })),

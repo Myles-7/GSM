@@ -16,6 +16,7 @@ import type {
   WorkbenchProject, WorkbenchProposal, WorkbenchRequirements, WorkbenchSessionData,
 } from '../../../types/aiWorkbench';
 import { AIService } from '../../../services/aiService';
+import { runOrganizationGeneration } from '../../../services/aiOrganizationWorkflow';
 
 const HISTORY_EVENT = 'gsm:global-chat-history-changed';
 const ACTIVE_KEY = 'gsm:ai-workbench-session';
@@ -91,6 +92,14 @@ export function useAIWorkbench() {
     if (id) sessionStorage.setItem(ACTIVE_KEY, id);
     else sessionStorage.removeItem(ACTIVE_KEY);
   }, []);
+  useEffect(() => {
+    const onSelect = (event: Event) => {
+      const id = (event as CustomEvent<unknown>).detail;
+      if (typeof id === 'string') select(id);
+    };
+    window.addEventListener('gsm:select-workbench-session', onSelect);
+    return () => window.removeEventListener('gsm:select-workbench-session', onSelect);
+  }, [select]);
 
   const guard = useCallback(async (action: () => Promise<unknown>) => {
     try { setError(''); await action(); if (mounted.current) await refresh(); }
@@ -166,6 +175,15 @@ export function useAIWorkbench() {
     if (task.running) throw new Error(t('workbench.busy'));
     const record = active ?? await createSession();
     if (record.deletedAt || record.archived) throw new Error(t('workbench.restoreFirst'));
+    const organization = (await storage.listProposals(ownerId, record.id)).filter(p => p.organization)
+      .sort((a, b) => b.organization!.revision - a.organization!.revision)[0];
+    if (organization) {
+      await runOrganizationGeneration({ sessionId: record.id, previous: organization,
+        repositories: useAppStore.getState().repositories.filter(r => organization.organization!.scope.repositoryIds.includes(r.id)),
+        scopeName: organization.organization!.scope.name, configId: settings.chatConfigId ?? organization.organization!.configId,
+        instruction: question.trim(), maxNewSubcategories: organization.organization!.maxNewSubcategories });
+      return;
+    }
     const context = record.workbench ?? data;
     await withTask(record, async (signal, stage) => {
       const history = await storage.listMessages(record.id);

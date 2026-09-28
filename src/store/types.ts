@@ -1,4 +1,5 @@
 import type { StoreApi } from 'zustand';
+import type { OrganizationTransaction } from '../types/aiOrganization';
 import type { AppLanguage } from '../i18n/languages';
 import type {
   AppState,
@@ -151,6 +152,7 @@ export interface AppActions {
 
   // Category actions
   addSubcategory: (subcategory: { parentId: string; name: string; icon: string }) => void;
+  applyAIOrganization: (transaction: OrganizationTransaction) => void;
   updateSubcategory: (id: string, updates: { name?: string; icon?: string }) => void;
   deleteSubcategory: (id: string) => void;
   moveRepositoryToSubcategory: (repoId: number, subcategoryId: string | null) => void;

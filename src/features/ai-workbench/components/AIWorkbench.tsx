@@ -4,6 +4,8 @@ import {
   MoreHorizontal, PanelLeft, PanelRight, Pin, Plus, RotateCcw, Send, Square, Star, Trash2, Upload, X,
 } from 'lucide-react';
 import { useAIWorkbench } from '../hooks/useAIWorkbench';
+import { useAIOrganization } from '../../repositories/hooks/useAIOrganization';
+import { AIOrganizationPanel } from '../../repositories/components/AIOrganizationPanel';
 import { useT } from '../../../i18n/useT';
 import type { RepositoryChatSession } from '../../../types/repositoryChat';
 import type { WorkbenchCandidate, WorkbenchProject, WorkbenchProposal } from '../../../types/aiWorkbench';
@@ -98,6 +100,9 @@ function OperationPreview({ proposal, disabled, onExecute }: {
 
 export function AIWorkbench() {
   const w = useAIWorkbench();
+  const organization = useAIOrganization({ filteredRepositories: w.repositories, selectedRepositoryIds: [], categoryId: 'all', sessionId: w.activeId ?? undefined });
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const organizationT = useT('repositories');
   const t = useT('chat');
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -299,7 +304,12 @@ export function AIWorkbench() {
               {w.data.requirements && !readonly && <RequirementsEditor key={w.activeId} value={w.data.requirements} disabled={busy}
                 depth={w.data.depth} searchedValue={w.data.searchBatches[w.data.searchBatches.length - 1]?.requirements}
                 onSearch={async (r) => { setTab('results'); setRightOpen(true); await w.search(r); }} />}
-              {w.proposals.map((p) => <OperationPreview key={p.id} proposal={p} disabled={busy || readonly} onExecute={(value, restore) => void w.guard(() => w.execute(value, restore))} />)}
+              {w.proposals.map((p) => p.organization ? <section key={p.id} className="border-y border-border py-3">
+                <p className="text-sm font-medium">{organizationT('aiOrganization.title')} · {organizationT('aiOrganization.revision', { count: p.organization.revision })}</p>
+                <p className="my-2 text-xs text-muted-foreground">{organizationT('aiOrganization.rangeCount', { count: p.organization.entries.length })}</p>
+                <Button variant="outline" size="sm" onClick={() => { organization.selectVersion(p.id); setOrganizationOpen(true); }}>{organizationT('aiOrganization.preview')}</Button>
+              </section> : <OperationPreview key={p.id} proposal={p} disabled={busy || readonly} onExecute={(value, restore) => void w.guard(() => w.execute(value, restore))} />)}
+              <AIOrganizationPanel open={organizationOpen} onOpenChange={setOrganizationOpen} controller={organization} />
               <div ref={bottomRef} />
             </div>
           </div>

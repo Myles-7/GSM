@@ -62,6 +62,7 @@ const searchFilters = {
 };
 
 const storeState = {
+  repositories: [repository],
   githubToken: null,
   aiConfigs: [],
   activeAIConfig: null,
