@@ -1,4 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { BookOpen, History, Save } from 'lucide-react';
+import { useAppStore } from '../store/useAppStore';
+import { useBatchStarHistory } from '../features/repositories/hooks/useBatchStarHistory';
+import { BatchStarImportReadme, type BatchReadmeRepository } from './BatchStarImportReadme';
 import { useT } from '../i18n/useT';
 import { useBatchStarImport } from '../features/repositories/hooks/useBatchStarImport';
 import { Button } from './ui/button';
@@ -20,10 +24,33 @@ interface BatchStarImportDialogProps {
 export function BatchStarImportDialog({ isOpen, onClose }: BatchStarImportDialogProps) {
   const t = useT('repositories');
   const [text, setText] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [editingText, setEditingText] = useState<string>();
+  const [readmeRepository, setReadmeRepository] = useState<BatchReadmeRepository | null>(null);
+  const { accountId, generation, history, historyError, record, edit } = useBatchStarHistory();
   const {
     rows, duplicateCount, inputError, isResolving, isStarring, syncError,
-    preview, toggleRow, selectAll, invertSelection, clearPreview, starSelected,
+    preview, toggleRow, selectAll, invertSelection, clearPreview, starSelected, cancel,
   } = useBatchStarImport();
+  useEffect(() => {
+    setText('');
+    setEditingText(undefined);
+    setHistoryOpen(false);
+    setReadmeRepository(null);
+  }, [accountId, generation]);
+  useEffect(() => useAppStore.subscribe((next, previous) => {
+    if (next.user?.id !== previous.user?.id || next.githubToken !== previous.githubToken) {
+      setText('');
+      setEditingText(undefined);
+      setReadmeRepository(null);
+    }
+  }), []);
+  useEffect(() => {
+    if (!isOpen) {
+      cancel();
+      setReadmeRepository(null);
+    }
+  }, [isOpen, cancel]);
   const selectedCount = rows.filter(row => row.status === 'ready' && row.selected).length;
   const starredCount = rows.filter(row => row.status === 'starred').length;
   // Keep partial batches open; page translation never locks business actions.
@@ -39,8 +66,9 @@ export function BatchStarImportDialog({ isOpen, onClose }: BatchStarImportDialog
   };
 
   return (
+    <>
     <Modal
-      isOpen={isOpen}
+      isOpen={isOpen && !readmeRepository}
       onClose={() => { if (!locked) onClose(); }}
       title={t('batchStar.title')}
       maxWidth="max-w-3xl"
@@ -68,12 +96,37 @@ export function BatchStarImportDialog({ isOpen, onClose }: BatchStarImportDialog
         placeholder={t('batchStar.placeholder')}
         className="min-h-32 resize-y"
       />
-      <div className="mt-3 flex items-center gap-3">
-        <Button variant="outline" disabled={busy || !text.trim()} onClick={() => void preview(text)}>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <Button variant="outline" disabled={busy || !text.trim()} onClick={() => {
+          if (record(text, editingText)) setEditingText(text);
+          void preview(text);
+        }}>
           {isResolving ? t('batchStar.checking') : t('batchStar.preview')}
         </Button>
+        <Button variant="outline" disabled={busy} aria-expanded={historyOpen} onClick={() => setHistoryOpen(value => !value)}>
+          <History className="h-4 w-4" aria-hidden />
+          {t('batchStar.history', { defaultValue: 'Paste history' })}
+        </Button>
+        {editingText !== undefined && <Button variant="outline" disabled={busy || !text.trim()} onClick={() => {
+          if (edit(editingText, text)) setEditingText(text);
+        }}>
+          <Save className="h-4 w-4" aria-hidden />
+          {t('batchStar.save-history', { defaultValue: 'Save history changes' })}
+        </Button>}
         {duplicateCount > 0 && <span className="text-sm text-muted-foreground">{t('batchStar.duplicates', { count: duplicateCount })}</span>}
       </div>
+      {historyError && <p role="alert" className="mt-3 text-sm text-destructive">
+        {t('batchStar.history-error', { defaultValue: 'Could not read or save paste history.' })}
+      </p>}
+      {historyOpen && <section className="mt-3 space-y-2" aria-label={t('batchStar.history', { defaultValue: 'Paste history' })}>
+        {history.length === 0 && <p className="text-sm text-muted-foreground">{t('batchStar.history-empty', { defaultValue: 'No paste history yet' })}</p>}
+        {history.map(entry => <button type="button" key={entry.text} disabled={busy}
+          className="block w-full rounded-md border border-border p-3 text-left hover:bg-muted"
+          onClick={() => { setText(entry.text); setEditingText(entry.text); clearPreview(); }}>
+          <time dateTime={new Date(entry.generatedAt).toISOString()} className="text-xs text-muted-foreground">{new Date(entry.generatedAt).toLocaleString()}</time>
+          <span className="mt-1 block whitespace-pre-wrap break-all line-clamp-2">{entry.text}</span>
+        </button>)}
+      </section>}
       {inputError && <p role="alert" className="mt-3 text-sm text-destructive">{errorLabels[inputError] ?? inputError}</p>}
       {syncError && <p role="alert" className="mt-3 text-sm text-destructive">{t('batchStar.sync-failed')}: {syncError}</p>}
       {rows.length > 0 && (
@@ -124,6 +177,18 @@ export function BatchStarImportDialog({ isOpen, onClose }: BatchStarImportDialog
                         <p className="mt-1 text-xs text-muted-foreground">{row.detail.language || '—'} · ★ {row.detail.stargazers_count.toLocaleString()}</p>
                       </>
                     )}
+                    {row.candidate.repositoryFullName && row.candidate.status !== 'invalid' && <Button variant="ghost" size="sm" disabled={locked}
+                      aria-label={t('batchStar.view-readme', { name: label, defaultValue: 'View README for {{name}}' })}
+                      onClick={() => {
+                        const fullName = row.detail?.full_name ?? row.candidate.repositoryFullName;
+                        setReadmeRepository(row.detail ?? {
+                          full_name: fullName, html_url: `https://github.com/${fullName}`,
+                          owner: { login: fullName.split('/')[0], avatar_url: '' },
+                        });
+                      }}>
+                      <BookOpen className="h-4 w-4" aria-hidden />
+                      README
+                    </Button>}
                     {row.error && <p className="mt-1 break-all text-xs text-destructive">{row.error}</p>}
                   </div>
                 </div>
@@ -133,5 +198,8 @@ export function BatchStarImportDialog({ isOpen, onClose }: BatchStarImportDialog
         </div>
       )}
     </Modal>
+    {isOpen && readmeRepository && <BatchStarImportReadme key={readmeRepository.full_name}
+      repository={readmeRepository} onClose={() => setReadmeRepository(null)} />}
+    </>
   );
 }

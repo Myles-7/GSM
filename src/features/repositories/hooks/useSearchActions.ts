@@ -13,6 +13,7 @@ import type { GitHubList } from '../../../services/githubListsApi';
 import type { VectorQueryResult } from '../../../services/vectorSearchService';
 import { isReservedCategoryName } from '../../../utils/categoryUtils';
 import { performBasicTextSearch } from '../../../utils/repoSearch';
+import { inspectRepositoryIdentities, preserveUnconfirmedLegacyRepositories } from '../../../utils/repositoryIdentity';
 
 // ===== 提纯纯函数（来源逐字对应 SearchBar 基线行号） =====
 
@@ -40,8 +41,9 @@ export const mergeStarredRepositories = (
   newRepos: Repository[],
   storeRepos: Repository[],
 ): Repository[] => {
+  inspectRepositoryIdentities(storeRepos, newRepos);
   const existingRepoMap = new Map(storeRepos.map(repo => [repo.id, repo]));
-  return newRepos.map(newRepo => {
+  return preserveUnconfirmedLegacyRepositories(newRepos.map(newRepo => {
     const existing = existingRepoMap.get(newRepo.id);
     if (existing) {
       return {
@@ -72,7 +74,7 @@ export const mergeStarredRepositories = (
       };
     }
     return newRepo;
-  });
+  }), storeRepos);
 };
 
 // SearchBar 774-799：构造"list 名(小写) → 本地分类"映射并为云端 list 规划缺失的自定义分类。
@@ -526,6 +528,7 @@ export const useSearchActions = (): SearchActions => {
     try {
       const githubApi = createGitHubApiService(githubToken);
       const newRepositories = await githubApi.getAllStarredRepositories();
+      if (useAppStore.getState().user?.id !== user?.id || useAppStore.getState().githubToken !== githubToken) return;
 
       const storeRepos = useAppStore.getState().repositories;
       const mergedRepositories = mergeStarredRepositories(newRepositories, storeRepos);

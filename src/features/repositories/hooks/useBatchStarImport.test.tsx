@@ -1,18 +1,29 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useBatchStarImport } from './useBatchStarImport';
+import { GitHubTokenPermissionError } from '../../../services/githubApi';
 
 const mocks = vi.hoisted(() => ({
   token: 'token',
+  accountId: 1,
+  listeners: new Set<(next: { user: { id: number }; githubToken: string }, previous: { user: { id: number }; githubToken: string }) => void>(),
   addRepository: vi.fn(),
   getRepositoryDetails: vi.fn(),
   isRepositoryStarred: vi.fn(),
   starRepository: vi.fn(),
   forceSyncToBackend: vi.fn(),
 }));
+const state = () => ({
+  githubToken: mocks.token, user: { id: mocks.accountId }, language: 'en',
+  addRepository: mocks.addRepository,
+});
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: (selector: (state: unknown) => unknown) => selector({
-    githubToken: mocks.token, addRepository: mocks.addRepository,
+  useAppStore: Object.assign((selector: (value: unknown) => unknown) => selector(state()), {
+    getState: () => state(),
+    subscribe: (listener: (next: { user: { id: number }; githubToken: string }, previous: { user: { id: number }; githubToken: string }) => void) => {
+      mocks.listeners.add(listener);
+      return () => mocks.listeners.delete(listener);
+    },
   }),
 }));
 vi.mock('../../../services/githubApiFactory', () => ({ createGitHubApiService: () => mocks }));
@@ -30,6 +41,7 @@ describe('useBatchStarImport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.token = 'token';
+    mocks.accountId = 1;
     mocks.getRepositoryDetails.mockImplementation(async (owner, name) => detail(owner, name));
     mocks.isRepositoryStarred.mockResolvedValue(false);
     mocks.starRepository.mockResolvedValue(undefined);
@@ -68,7 +80,7 @@ describe('useBatchStarImport', () => {
     expect(result.current.duplicateCount).toBe(1);
     act(() => result.current.toggleRow(0));
     await act(() => result.current.starSelected());
-    expect(mocks.starRepository).toHaveBeenCalledWith('new-owner', 'repo');
+    expect(mocks.starRepository).toHaveBeenCalledWith('new-owner', 'repo', expect.any(AbortSignal));
   });
 
   it('records partial success and syncs only successfully starred repositories', async () => {
@@ -122,7 +134,7 @@ describe('useBatchStarImport', () => {
     expect(result.current.rows[0].detail?.description).toBe('A repository');
     expect(result.current).not.toHaveProperty('toggleTranslations');
     await act(() => result.current.starSelected());
-    expect(mocks.starRepository).toHaveBeenCalledWith('owner', 'repo');
+    expect(mocks.starRepository).toHaveBeenCalledWith('owner', 'repo', expect.any(AbortSignal));
   });
 
   it('preserves same-language descriptions too', async () => {
@@ -141,5 +153,64 @@ describe('useBatchStarImport', () => {
     expect(result.current.rows[0].detail?.full_name).toBe('owner/other');
     act(() => result.current.clearPreview());
     expect(result.current.rows).toEqual([]);
+  });
+
+  const switchAccount = (id: number) => {
+    const previous = state();
+    mocks.accountId = id;
+    mocks.listeners.forEach(listener => listener(state(), previous));
+  };
+
+  it('rejects late preview results and old actions after an away-and-back switch without intermediate rendering', async () => {
+    let resolve!: (value: ReturnType<typeof detail>) => void;
+    mocks.getRepositoryDetails.mockReturnValueOnce(new Promise(value => { resolve = value; }));
+    const { result } = renderHook(() => useBatchStarImport());
+    const oldPreview = result.current.preview;
+    let pending!: Promise<void>;
+    act(() => { pending = oldPreview('https://github.com/owner/repo'); });
+    act(() => { switchAccount(2); switchAccount(1); });
+    await act(async () => { resolve(detail('owner', 'repo')); await pending; });
+    expect(result.current.rows).toEqual([]);
+    expect(mocks.isRepositoryStarred).not.toHaveBeenCalled();
+    await act(() => oldPreview('https://github.com/owner/old'));
+    expect(mocks.getRepositoryDetails).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add or sync a late Star result into an account that left and returned', async () => {
+    let resolve!: () => void;
+    mocks.starRepository.mockReturnValueOnce(new Promise<void>(value => { resolve = value; }));
+    const { result } = renderHook(() => useBatchStarImport());
+    await act(() => result.current.preview('https://github.com/owner/repo'));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.starSelected(); });
+    act(() => { switchAccount(2); switchAccount(1); });
+    await act(async () => { resolve(); await pending; });
+    expect(mocks.addRepository).not.toHaveBeenCalled();
+    expect(mocks.forceSyncToBackend).not.toHaveBeenCalled();
+    expect(result.current.rows).toEqual([]);
+  });
+
+  it('passes the actual GitHub ID and rejects invalid IDs without Star writes', async () => {
+    mocks.getRepositoryDetails.mockResolvedValueOnce({ ...detail('owner', 'repo'), id: 987654 });
+    const { result } = renderHook(() => useBatchStarImport());
+    await act(() => result.current.preview('https://github.com/owner/repo'));
+    await act(() => result.current.starSelected());
+    expect(mocks.addRepository).toHaveBeenCalledWith(expect.objectContaining({ id: 987654 }));
+    mocks.getRepositoryDetails.mockResolvedValueOnce({ ...detail('owner', 'invalid'), id: 0 });
+    await act(() => result.current.preview('https://github.com/owner/invalid'));
+    await act(() => result.current.starSelected());
+    expect(result.current.rows[0].status).toBe('unavailable');
+    expect(mocks.starRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [new GitHubTokenPermissionError(), 'Starring'],
+    [Object.assign(new Error('limit'), { status: 403, retryAfterMs: 1000 }), 'rate limited'],
+    [new TypeError('Failed to fetch'), 'connection'],
+  ])('keeps permission, rate and network errors distinct', async (error, expected) => {
+    mocks.getRepositoryDetails.mockRejectedValueOnce(error);
+    const { result } = renderHook(() => useBatchStarImport());
+    await act(() => result.current.preview('https://github.com/owner/repo'));
+    expect(result.current.rows[0].error).toContain(expected);
   });
 });

@@ -13,8 +13,19 @@ const mocks = vi.hoisted(() => ({
   pageStatus: 'idle', pageEnabled: false, setPageEnabled: vi.fn(), retry: vi.fn(),
   preview: vi.fn(), toggleRow: vi.fn(), selectAll: vi.fn(), invertSelection: vi.fn(),
   clearPreview: vi.fn(), starSelected: vi.fn(),
+  history: [] as { text: string; generatedAt: number }[], record: vi.fn(), edit: vi.fn(), cancel: vi.fn(),
 }));
 vi.mock('../features/repositories/hooks/useBatchStarImport', () => ({ useBatchStarImport: () => mocks }));
+vi.mock('../store/useAppStore', () => ({
+  useAppStore: Object.assign(vi.fn(), { subscribe: () => () => undefined }),
+}));
+vi.mock('../features/repositories/hooks/useBatchStarHistory', () => ({
+  useBatchStarHistory: () => ({ ...mocks, accountId: 1, generation: 0, historyError: false }),
+}));
+vi.mock('./BatchStarImportReadme', () => ({
+  BatchStarImportReadme: ({ repository, onClose }: { repository: { full_name: string }; onClose: () => void }) =>
+    <div role="dialog" aria-label="README">{repository.full_name}<button onClick={onClose}>Back to import</button></div>,
+}));
 vi.mock('../i18n/useT', () => ({ useT: () => (key: string, params?: Record<string, unknown>) => `${key}${params?.name ? ` ${params.name}` : ''}` }));
 vi.mock('../hooks/usePageTranslation', () => ({
   usePageTranslation: () => ({
@@ -38,6 +49,7 @@ describe('BatchStarImportDialog', () => {
     mocks.pageStatus = 'idle';
     mocks.pageEnabled = false;
     mocks.rows = [row()];
+    mocks.history = [];
   });
 
   it('previews pasted text without starring until the user confirms', async () => {
@@ -143,5 +155,30 @@ describe('BatchStarImportDialog', () => {
     expect(screen.getByRole('checkbox')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'batchStar.close' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'batchStar.starring' })).toBeDisabled();
+  });
+
+  it('loads and edits exact history text without previewing or starring', async () => {
+    const user = userEvent.setup();
+    mocks.history = [{ text: '  https://github.com/owner/repo\n中文  ', generatedAt: 1 }];
+    render(<BatchStarImportDialog isOpen onClose={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'batchStar.history' }));
+    await user.click(screen.getByText(/https:\/\/github.com\/owner\/repo/).closest('button')!);
+    expect(screen.getByRole('textbox')).toHaveValue(mocks.history[0].text);
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.starSelected).not.toHaveBeenCalled();
+    await user.type(screen.getByRole('textbox'), ' edited');
+    await user.click(screen.getByRole('button', { name: 'batchStar.save-history' }));
+    expect(mocks.edit).toHaveBeenCalledWith(mocks.history[0].text, `${mocks.history[0].text} edited`);
+  });
+
+  it('opens the shared README wrapper and restores the selection on return', async () => {
+    const user = userEvent.setup();
+    render(<BatchStarImportDialog isOpen onClose={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'batchStar.view-readme owner/repo' }));
+    expect(screen.getByRole('dialog', { name: 'README' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Back to import' }));
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(mocks.starSelected).not.toHaveBeenCalled();
   });
 });

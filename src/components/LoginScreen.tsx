@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { APP_LANGUAGES, type AppLanguage } from '../i18n/languages';
 import { PageTranslationButton } from './PageTranslationButton';
+import { GitHubTokenPermissions } from './GitHubTokenPermissions';
 
 export const LoginScreen: React.FC = () => {
   const { authenticateWithGitHub, configuredBackendUrl, restoreBackendSession, setupBackendGitHubToken, syncBackendData, syncTokenToBackend } = useLoginActions();
@@ -429,19 +430,8 @@ export const LoginScreen: React.FC = () => {
             </Button>
           </div>
 
-          {loginMode === 'github' && <div className="mt-6 rounded-md border border-border bg-muted/50 p-4">
-            <h3 className="mb-2 text-sm font-medium text-foreground">{t('loginScreen.how-to-create-a-github-token')}</h3>
-            <ol className="space-y-1 text-xs leading-5 text-muted-foreground">
-              <li>1. {t('loginScreen.go-to-github-settings-developer-settings-persona')}</li>
-              <li>2. {t('loginScreen.click-generate-new-token-classic')}</li>
-              <li>3. {t('loginScreen.select-scopes')} <strong translate="no">repo</strong>、<strong translate="no">user</strong> {t('loginScreen.and')} <strong translate="no">gist</strong></li>
-              <li>4. {t('loginScreen.copy-the-generated-token-and-paste-it-above')}</li>
-            </ol>
-            <div className="mt-3">
-              <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-primary hover:underline">
-                {t('loginScreen.create-token-on-github')}
-              </a>
-            </div>
+          {(loginMode === 'github' || backendStep === 'githubToken') && <div className="mt-6 border-t border-border pt-4">
+            <GitHubTokenPermissions />
           </div>}
 
           <Button

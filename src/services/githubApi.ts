@@ -24,6 +24,7 @@ import {
 import { logger } from './logger';
 import { waitForRequest, withDeadline } from '../utils/requestDeadline';
 import { isReadmeCandidateItem, type GitHubReadmeCandidateItem } from '../utils/readmeVariants';
+import { extractInertRssHtml } from '../utils/inertRssHtml';
 
 interface GitHubContentResponse {
   content?: string;
@@ -258,6 +259,15 @@ const GITHUB_API_BASE = 'https://api.github.com';
 // Sentinel message for the 401 thrown above; callers match on it to tell a
 // confirmed auth failure apart from network/rate-limit/5xx errors.
 export const GITHUB_TOKEN_INVALID_ERROR = 'GitHub token expired or invalid';
+
+/** The accepted token lacks permission for this specific operation. */
+export class GitHubTokenPermissionError extends Error {
+  readonly status = 403;
+  constructor() {
+    super('Resource not accessible by personal access token');
+    this.name = 'GitHubTokenPermissionError';
+  }
+}
 // Sentinel for 401s produced by the backend proxy's own auth middleware (its
 // body carries code: 'UNAUTHORIZED'). Kept distinct from the GitHub sentinel
 // so callers can tell a stale backend API key from a dead GitHub token.
@@ -476,13 +486,24 @@ export class GitHubApiService {
         throw new Error(GITHUB_TOKEN_INVALID_ERROR);
       }
       const retryAfter = response.headers.get('Retry-After');
-      if (response.status === 429 || (response.status === 403 && (remaining === '0' || retryAfter !== null))) {
+      const forbiddenBody = response.status === 403
+        ? await response.clone().json().catch(() => null) as { message?: unknown } | null : null;
+      const forbiddenMessage = typeof forbiddenBody?.message === 'string' ? forbiddenBody.message : '';
+      if (response.status === 429 || (response.status === 403
+        && (remaining === '0' || retryAfter !== null || /rate limit|abuse detection/i.test(forbiddenMessage)))) {
         const resetAt = this.rateLimits.get(responseResource)?.reset || 0;
         const retryMs = retryAfter === null ? 0 : /^\d+(?:\.\d+)?$/.test(retryAfter)
           ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0;
         const retryAfterMs = Math.max(retryMs, remaining === '0' ? resetAt - Date.now() : 0, 1000);
         this.retryUntil.set(resource, Date.now() + retryAfterMs);
         throw Object.assign(new Error('GitHub API rate limit exceeded'), { status: response.status, retryAfterMs });
+      }
+
+      if (response.status === 403) {
+        if (/^Resource not accessible by (?:personal access token|integration)[.!]?$/i.test(forbiddenMessage.trim())) {
+          logger.warn('githubApi', 'API request failed: token permission', { method, endpoint, status: response.status, durationMs });
+          throw new GitHubTokenPermissionError();
+        }
       }
 
       // 5xx 视为可重试的瞬时故障；其余 4xx 直接抛出（重试无意义）。
@@ -1525,16 +1546,16 @@ export class GitHubApiService {
     });
   }
 
-  async starRepository(owner: string, repo: string): Promise<void> {
+  async starRepository(owner: string, repo: string, signal?: AbortSignal): Promise<void> {
     await this.makeRequest<void>(`/user/starred/${owner}/${repo}`, {
       method: 'PUT',
-    });
+    }, signal);
   }
 
   /** GitHub returns 204 for a starred repository and 404 when it is not starred. */
-  async isRepositoryStarred(owner: string, repo: string): Promise<boolean> {
+  async isRepositoryStarred(owner: string, repo: string, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.makeRequest<void>(`/user/starred/${owner}/${repo}`);
+      await this.makeRequest<void>(`/user/starred/${owner}/${repo}`, {}, signal);
       return true;
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('GitHub API error: 404 ')) {
@@ -1618,11 +1639,8 @@ export class GitHubApiService {
         // description 元素是 README 渲染内容，不是仓库描述；
         // 仅用于下方提取 stars/forks 标记，绝不写入 repo.description
         const descriptionEl = item.querySelector('description');
-        let readmeText = descriptionEl?.textContent || '';
-        // 解码 HTML 实体
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = readmeText;
-        readmeText = tempDiv.textContent || tempDiv.innerText || readmeText;
+        // Parse embedded HTML inertly; no image, frame or CSS resource requests.
+        let readmeText = extractInertRssHtml(descriptionEl?.textContent || '').text;
         // 清理多余空白
         readmeText = readmeText.replace(/\s+/g, ' ').trim();
 
@@ -1843,11 +1861,7 @@ export class GitHubApiService {
         // RSS 的 description 元素是 README 渲染内容，不是仓库描述；
         // 仅用于下方提取 stars/forks 标记，绝不写入 repo.description
         const descriptionEl = item.querySelector('description');
-        let readmeText = descriptionEl?.textContent || '';
-        // Decode HTML entities and strip HTML tags
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = readmeText;
-        readmeText = tempDiv.textContent || tempDiv.innerText || '';
+        let readmeText = extractInertRssHtml(descriptionEl?.textContent || '').text;
         // Clean up extra whitespace
         readmeText = readmeText.replace(/\s+/g, ' ').trim();
 
