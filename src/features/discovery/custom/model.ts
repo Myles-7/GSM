@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { Repository } from '../../../types';
 import type { RepositoryDetailsAnalysis } from '../../../types/repositoryDetails';
+import type { RepositoryIdentityMapping } from '../../../utils/repositoryIdentity';
+import {
+  remapParticipantRepositoryIds, remapParticipantRepositoryList, validateParticipantMappings,
+  type RepositoryIdentityParticipantResult,
+} from '../../../services/repositoryIdentityParticipants';
 
 const text = z.string().trim().min(1).max(240);
 const term = z.string().trim().min(1).max(80).regex(/^[\p{L}\p{N} .+#/-]+$/u);
@@ -162,6 +167,87 @@ export interface DiscoveryAnalysisRecord {
   updatedAt: number;
 }
 export const emptyData = (): CustomDiscoveryData => ({ channels: [], editions: [], cache: {} });
+
+function remapAssessments(items: CandidateAssessment[], mappings: ReadonlyArray<RepositoryIdentityMapping>): CandidateAssessment[] {
+  const repositories = remapParticipantRepositoryList(items.map(item => item.repo), mappings);
+  const result = items.map((item, index) => repositories[index] === item.repo ? item : { ...item, repo: repositories[index] });
+  return result.some((item, index) => item !== items[index]) ? result : items;
+}
+
+function rekeyIdentityCache<T>(cache: Record<string, T>, mappings: ReadonlyArray<RepositoryIdentityMapping>, analysis = false): Record<string, T> {
+  const result: Record<string, T> = {};
+  let changed = false;
+  for (const [key, value] of Object.entries(cache)) {
+    let next = key;
+    if (analysis) {
+      const parts: unknown = JSON.parse(key);
+      if (!Array.isArray(parts) || typeof parts[0] !== 'number') throw new Error('INVALID_DISCOVERY_ANALYSIS_IDENTITY');
+      const mapping = mappings.find(item => item.oldId === parts[0]);
+      if (mapping) {
+        if ((value as DiscoveryAnalysisRecord).status === 'running') throw new Error('PAUSE_RUNNING_DISCOVERY_ANALYSIS');
+        next = JSON.stringify([mapping.newId, ...parts.slice(1)]);
+      }
+    } else {
+      const mapping = mappings.find(item => String(item.oldId) === key);
+      if (mapping) next = String(mapping.newId);
+    }
+    if (Object.prototype.hasOwnProperty.call(result, next) || (next !== key && Object.prototype.hasOwnProperty.call(cache, next))) {
+      throw new Error('CUSTOM_DISCOVERY_IDENTITY_CACHE_COLLISION');
+    }
+    changed ||= next !== key;
+    result[next] = value;
+  }
+  return changed ? result : cache;
+}
+
+/** Edition assessments retain their historical reasoning/evidence; only the repository locator changes. */
+export function remapCustomDiscoveryRepositoryIdentityData(
+  data: CustomDiscoveryData,
+  mappings: ReadonlyArray<RepositoryIdentityMapping>,
+): RepositoryIdentityParticipantResult {
+  validateParticipantMappings(mappings);
+  if (!mappings.length) return { changed: 0 };
+  if (data.lease && data.lease.expires > Date.now()) throw new Error('PAUSE_RUNNING_CUSTOM_DISCOVERY');
+  let changed = 0;
+  const channels = data.channels.map(channel => {
+    const read = remapParticipantRepositoryIds(channel.read, mappings);
+    const blocked = remapParticipantRepositoryIds(channel.blocked, mappings);
+    const recommended = rekeyIdentityCache(channel.recommended, mappings);
+    if (read === channel.read && blocked === channel.blocked && recommended === channel.recommended) return channel;
+    changed++;
+    return { ...channel, read, blocked, recommended };
+  });
+  const editions = data.editions.map(edition => {
+    const entries = remapAssessments(edition.entries, mappings);
+    const pending = remapAssessments(edition.pending, mappings);
+    remapParticipantRepositoryList([...entries, ...pending].map(item => item.repo), []);
+    if (entries === edition.entries && pending === edition.pending) return edition;
+    changed++;
+    return { ...edition, entries, pending };
+  });
+  const cache = rekeyIdentityCache(data.cache, mappings);
+  const analyses = data.analyses ? rekeyIdentityCache(data.analyses, mappings, true) : undefined;
+  if (cache !== data.cache) changed++;
+  if (analyses !== data.analyses) changed++;
+  if (changed) Object.assign(data, { channels, editions, cache, ...(analyses ? { analyses } : {}) });
+  return { changed };
+}
+
+/** The coordinator can replace the account-matched runtime candidates after pausing their producer. */
+export function remapCustomDiscoveryCandidates<T extends { items: CandidateAssessment[] }>(
+  candidates: Record<string, T>,
+  mappings: ReadonlyArray<RepositoryIdentityMapping>,
+): Record<string, T> {
+  validateParticipantMappings(mappings);
+  let changed = false;
+  const result = Object.fromEntries(Object.entries(candidates).map(([key, candidate]) => {
+    const items = remapAssessments(candidate.items, mappings);
+    if (items === candidate.items) return [key, candidate];
+    changed = true;
+    return [key, { ...candidate, items }];
+  }));
+  return changed ? result : candidates;
+}
 export const localDay = (date = new Date()): string =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 export const isDue = (channel: CustomDiscoveryChannel, now = new Date()): boolean =>

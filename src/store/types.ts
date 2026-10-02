@@ -46,8 +46,11 @@ import type {
 } from '../types';
 import type { ThemePresetId } from '../constants/themePresets';
 import type { GitHubListsApiService } from '../services/githubListsApi';
+import type { ExternalFeedKind } from '../types/externalFeed';
 
 export interface AppActions {
+  addExternalDiscoveryChannel: (name: string, sourceUrl: string, kind?: ExternalFeedKind, expectedAccountId?: number) => boolean;
+  removeExternalDiscoveryChannel: (id: DiscoveryChannelId) => void;
   // Auth actions
   setUser: (user: GitHubUser | null) => void;
   setGitHubToken: (token: string | null) => void;

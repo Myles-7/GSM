@@ -10,6 +10,7 @@ import { hasActiveSearchFilters } from '../../utils/repoSearch';
 import { areRepositoryRecordsEqual, replaceRepositoryInList } from '../helpers/repositoryRecords';
 import { shouldPreserveExisting } from '../helpers/accountWorkspace';
 import { normalizeOrder, normalizeRepositoryUpdate } from '../helpers/repositoryOrganization';
+import { isValidRepositoryId } from '../../utils/repositoryIdentity';
 
 export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setRepositories'
@@ -129,14 +130,15 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
         };
       }),
       addRepository: (repo) => set((state) => {
-        // 检查是否已存在相同 full_name 的仓库
-        const existingRepoIndex = state.repositories.findIndex(r => r.full_name === repo.full_name);
+        if (!isValidRepositoryId(repo.id)) throw new Error('INVALID_GITHUB_REPOSITORY_ID');
+        const existingRepoIndex = state.repositories.findIndex(r => r.id === repo.id);
         let updatedRepositories;
 
         if (existingRepoIndex >= 0) {
           // 如果存在，更新现有仓库（保留ID）
           updatedRepositories = [...state.repositories];
           updatedRepositories[existingRepoIndex] = {
+            ...updatedRepositories[existingRepoIndex],
             ...repo,
             id: updatedRepositories[existingRepoIndex].id,
             // 保留自定义编辑的内容
@@ -153,15 +155,8 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
             subscribed_to_releases: updatedRepositories[existingRepoIndex].subscribed_to_releases,
           };
         } else {
-          // 如果不存在，添加新仓库（生成新ID）
-          // 使用 timestamp + random 确保唯一性，避免并发时的竞态条件
-          const timestamp = Date.now();
-          const random = Math.floor(Math.random() * 10000);
-          const maxExistingId = state.repositories.length > 0
-            ? Math.max(...state.repositories.map(r => r.id))
-            : 0;
-          const newId = Math.max(timestamp, maxExistingId + 1) + random;
-          updatedRepositories = [...state.repositories, { ...repo, id: newId }];
+          // A same-name synthetic row is retained until cross-store identity is confirmed.
+          updatedRepositories = [...state.repositories, repo];
         }
 
         updatedRepositories = updatedRepositories.map(item => normalizeRepositoryUpdate(item, state.repositories.find(old => old.id === item.id), state));

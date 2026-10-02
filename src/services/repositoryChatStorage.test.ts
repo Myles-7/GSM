@@ -434,21 +434,24 @@ describe('repositoryChatStorage local fallback', () => {
     expect(listener).toHaveBeenCalledTimes(3);
   });
 
-  it('rejects fallback writes when localStorage persistence is unavailable', async () => {
+  it('fails closed when the persistent identity gate cannot be checked', async () => {
     // 直接把 window.localStorage 换成抛错桩：不同平台的 jsdom 对 Storage 原型/
     // 实例方法的实现有差异，逐方法 spy 在 CI（Linux）上不可靠。
     const storageError = () => { throw new DOMException('storage is unavailable'); };
     const throwingStorage = {
       getItem: storageError,
-      setItem: storageError,
-      removeItem: storageError,
-      clear: storageError,
+      setItem: vi.fn(storageError),
+      removeItem: vi.fn(storageError),
+      clear: vi.fn(storageError),
       key: storageError,
       get length() { throw new DOMException('storage is unavailable'); },
     };
     Object.defineProperty(window, 'localStorage', { configurable: true, value: throwingStorage });
 
     await expect(repositoryChatStorage.saveSession(createSession('cannot-persist', 1, '2026-08-26T00:00:00.000Z')))
-      .rejects.toThrow('unable to persist fallback snapshot');
+      .rejects.toThrow(/^REPOSITORY_IDENTITY_STORAGE_UNAVAILABLE$/);
+    expect(throwingStorage.setItem).not.toHaveBeenCalled();
+    expect(throwingStorage.removeItem).not.toHaveBeenCalled();
+    expect(throwingStorage.clear).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import type { ThemePresetId } from '../constants/themePresets';
+import type { ExternalDiscoveryChannel, ExternalDiscoveryChannelId, ExternalFeedConfiguration } from './externalFeed';
 import type { AppLanguage } from '../i18n/languages';
 
 import type { RepositoryCardFields } from './repositoryCardFields';
@@ -495,6 +496,7 @@ export const defaultHeaderMenuConfig: HeaderMenuItem[] = [
 ];
 
 export interface AccountWorkspace {
+  externalDiscoveryChannels?: ExternalDiscoveryChannel[];
   subcategories?: import('./repositoryOrganization').RepositorySubcategory[];
   subcategoryOrder?: string[];
   repositoryOrder?: number[];
@@ -757,7 +759,8 @@ export type SortBy = 'BestMatch' | 'MostStars' | 'MostForks';
 
 export type SortOrder = 'Descending' | 'Ascending';
 
-export type DiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'x-tweet' | 'telegram' | 'weekly' | 'search' | 'code-search';
+export type BuiltinDiscoveryChannelId = 'trending' | 'hot-release' | 'most-popular' | 'topic' | 'x-tweet' | 'telegram' | 'weekly' | 'search' | 'code-search';
+export type DiscoveryChannelId = BuiltinDiscoveryChannelId | ExternalDiscoveryChannelId;
 
 export type DiscoveryChannelIcon = 'trending' | 'rocket' | 'star' | 'tag' | 'tweet' | 'telegram' | 'weekly' | 'search';
 
@@ -827,7 +830,7 @@ export interface TelegramRef {
   createdAt: string;
 }
 
-export interface DiscoveryChannel {
+export interface DiscoveryChannel extends ExternalFeedConfiguration {
   id: DiscoveryChannelId;
   name: string;
   nameEn: string;

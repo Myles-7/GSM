@@ -11,6 +11,8 @@ import type {
   WorkbenchSessionData,
 } from '../types/aiWorkbench';
 import type { Repository } from '../types';
+import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
+import type { RepositoryIdentityParticipantResult, WorkbenchRepositoryIdentitySnapshot } from './repositoryIdentityParticipants';
 
 const DB_NAME = 'gsm-repository-chat-db';
 const DB_VERSION = 2;
@@ -56,6 +58,8 @@ const persistedFallbackMode = () => {
 };
 let useFallbackStorage = !canUseIndexedDb() || persistedFallbackMode();
 const enableFallbackStorage = (): boolean => {
+  if (useFallbackStorage && persistedFallbackMode()) return true;
+  assertRepositoryIdentityWritable();
   if (typeof window === 'undefined') {
     useFallbackStorage = true;
     return true;
@@ -97,7 +101,8 @@ const readFallback = (): FallbackSnapshot => {
   }
 };
 
-const writeFallback = (snapshot: FallbackSnapshot): void => {
+const writeFallback = (snapshot: FallbackSnapshot, source: 'local' | 'identity-migration' = 'local'): void => {
+  if (source !== 'identity-migration') assertRepositoryIdentityWritable();
   if (typeof window === 'undefined') {
     throw new Error('[repository-chat] localStorage is unavailable for fallback persistence');
   }
@@ -170,18 +175,42 @@ const requestValue = <T>(request: IDBRequest<T>): Promise<T> => new Promise((res
 });
 
 const runTransaction = async <T>(storeNames: StoreName | StoreName[], mode: IDBTransactionMode, operation: (stores: Record<StoreName, IDBObjectStore>) => Promise<T>): Promise<T> => {
+  if (mode === 'readwrite') assertRepositoryIdentityWritable();
   const db = await openDb();
   try {
+    if (mode === 'readwrite') assertRepositoryIdentityWritable();
     const names = Array.isArray(storeNames) ? storeNames : [storeNames];
     const transaction = db.transaction(names, mode);
-    const stores = Object.fromEntries(STORE_NAMES.map((name) => [name, transaction.objectStoreNames.contains(name) ? transaction.objectStore(name) : undefined])) as Record<StoreName, IDBObjectStore>;
-    const value = await operation(stores);
-    await new Promise<void>((resolve, reject) => {
+    const completion = new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error('Repository chat transaction failed'));
       transaction.onabort = () => reject(transaction.error ?? new Error('Repository chat transaction aborted'));
     });
-    return value;
+    void completion.catch(() => {});
+    const stores = Object.fromEntries(STORE_NAMES.map((name) => {
+      if (!transaction.objectStoreNames.contains(name)) return [name, undefined];
+      const store = transaction.objectStore(name);
+      if (mode !== 'readwrite') return [name, store];
+      return [name, new Proxy(store, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            if (['put', 'add', 'delete', 'clear'].includes(String(key))) assertRepositoryIdentityWritable();
+            return value.apply(target, args);
+          };
+        },
+      })];
+    })) as Record<StoreName, IDBObjectStore>;
+    try {
+      const value = await operation(stores);
+      await completion;
+      return value;
+    } catch (error) {
+      try { transaction.abort(); } catch { /* The transaction may already be finished. */ }
+      await completion.catch(() => {});
+      throw error;
+    }
   } finally {
     db.close();
   }
@@ -824,6 +853,109 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
 };
 
 export const repositoryChatStorage = {
+  /** A single-DB identity transaction. Validation failures never trigger fallback or partial writes. */
+  async mutateRepositoryIdentityReferences(
+    ownerId: string,
+    change: (snapshot: WorkbenchRepositoryIdentitySnapshot) => RepositoryIdentityParticipantResult,
+  ): Promise<RepositoryIdentityParticipantResult> {
+    if (!ownerId.trim()) throw new Error('WORKBENCH_OWNER_REQUIRED');
+    if (useFallbackStorage || !canUseIndexedDb()) {
+      const raw = window.localStorage.getItem(FALLBACK_KEY);
+      if (!raw) return { changed: 0 };
+      const snapshot = JSON.parse(raw) as FallbackSnapshot;
+      if (!snapshot || !['sessions', 'projects', 'proposals'].every(name => Array.isArray(snapshot[name as keyof FallbackSnapshot]))) {
+        throw new Error('INVALID_WORKBENCH_IDENTITY_SNAPSHOT');
+      }
+      const result = change(snapshot);
+      if (result.changed) {
+        writeFallback(snapshot, 'identity-migration');
+      }
+      return result;
+    }
+    const db = await openDb();
+    try {
+      return await new Promise<RepositoryIdentityParticipantResult>((resolve, reject) => {
+        const names = ['sessions', 'projects', 'proposals'] as const;
+        const tx = db.transaction([...names], 'readwrite');
+        const snapshot = {} as WorkbenchRepositoryIdentitySnapshot;
+        let result: RepositoryIdentityParticipantResult;
+        let failure: unknown;
+        let remaining = names.length;
+        tx.oncomplete = () => {
+          if (result.changed) notifyGlobalHistoryChanged();
+          resolve(result);
+        };
+        tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('Workbench identity transaction aborted'));
+        for (const name of names) {
+          const request = tx.objectStore(name).getAll();
+          request.onsuccess = () => {
+            Object.assign(snapshot, { [name]: request.result });
+            if (--remaining) return;
+            try {
+              const before = {
+                sessions: snapshot.sessions, projects: snapshot.projects, proposals: snapshot.proposals,
+              };
+              result = change(snapshot);
+              if (!result.changed) return;
+              for (const store of names) {
+                snapshot[store].forEach((row, index) => {
+                  if (row !== before[store][index]) tx.objectStore(store).put(row);
+                });
+              }
+            } catch (error) { failure = error; tx.abort(); }
+          };
+        }
+      });
+    } finally { db.close(); }
+  },
+  async backupRepositoryIdentityReferences(ownerId: string): Promise<WorkbenchRepositoryIdentitySnapshot> {
+    if (!ownerId.trim()) throw new Error('WORKBENCH_OWNER_REQUIRED');
+    let snapshot: WorkbenchRepositoryIdentitySnapshot;
+    if (useFallbackStorage || !canUseIndexedDb()) {
+      const raw = window.localStorage.getItem(FALLBACK_KEY);
+      snapshot = raw ? JSON.parse(raw) : { sessions: [], projects: [], proposals: [] };
+      if (!snapshot || !['sessions', 'projects', 'proposals'].every(name => Array.isArray(snapshot[name as keyof WorkbenchRepositoryIdentitySnapshot]))) {
+        throw new Error('INVALID_WORKBENCH_IDENTITY_SNAPSHOT');
+      }
+    } else {
+      snapshot = await runTransaction(['sessions', 'projects', 'proposals'], 'readonly', async stores => ({
+        sessions: await requestValue(stores.sessions.getAll()) as RepositoryChatSession[],
+        projects: await requestValue(stores.projects.getAll()) as WorkbenchProject[],
+        proposals: await requestValue(stores.proposals.getAll()) as WorkbenchProposal[],
+      }));
+    }
+    return {
+      sessions: snapshot.sessions.filter(row => row.ownerId === ownerId),
+      projects: snapshot.projects.filter(row => row.ownerId === ownerId),
+      proposals: snapshot.proposals.filter(row => row.ownerId === ownerId),
+    };
+  },
+  async restoreRepositoryIdentityReferences(ownerId: string, backup: WorkbenchRepositoryIdentitySnapshot): Promise<void> {
+    const names = ['sessions', 'projects', 'proposals'] as const;
+    for (const name of names) {
+      if (!Array.isArray(backup[name]) || backup[name].some(row => row.ownerId !== ownerId)) {
+        throw new Error('WORKBENCH_IDENTITY_BACKUP_OWNER_CONFLICT');
+      }
+    }
+    if (!names.some(name => backup[name].length)) return;
+    await this.mutateRepositoryIdentityReferences(ownerId, current => {
+      let changed = 0;
+      for (const name of names) {
+        const rows = [...current[name]] as Array<RepositoryChatSession | WorkbenchProject | WorkbenchProposal>;
+        for (const original of backup[name]) {
+          const index = rows.findIndex(row => row.id === original.id);
+          if (index >= 0 && rows[index].ownerId !== ownerId) throw new Error('WORKBENCH_IDENTITY_BACKUP_OWNER_CONFLICT');
+          if (index >= 0 && JSON.stringify(rows[index]) === JSON.stringify(original)) continue;
+          if (index >= 0) rows[index] = original;
+          else rows.push(original);
+          changed++;
+        }
+        // Preserve the pre-change array so the transactional writer can detect replacements.
+        Object.assign(current, { [name]: [...rows] });
+      }
+      return { changed };
+    });
+  },
   /** Stable-ID projection from account-bound home sync. Unlike backup import, never remaps IDs. */
   async applyHomeProjection(ownerId: string, records: Array<{ collection: string; id: string; data: Record<string, unknown> | null; deleted?: boolean }>): Promise<void> {
     const merge = (snapshot: FallbackSnapshot): FallbackSnapshot => {

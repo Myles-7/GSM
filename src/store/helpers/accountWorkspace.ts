@@ -9,7 +9,9 @@ import type {
   ReleaseSourceSettings,
   Repository,
   SyncMode,
+  DiscoveryChannel,
 } from '../../types';
+import { normalizeExternalDiscoveryChannels } from '../../services/externalFeedConfig';
 import { defaultReleaseSourceSettings } from '../../types';
 import { normalizeReleaseSourceSettings } from '../../utils/releaseSources';
 import type { RepositoryOrganization } from '../../types/repositoryOrganization';
@@ -45,6 +47,7 @@ export interface AccountWorkspaceRuntime extends RepositoryOrganization {
 }
 
 export interface AccountWorkspaceSource extends Partial<RepositoryOrganization> {
+  discoveryChannels?: DiscoveryChannel[];
   repositories: Repository[];
   lastSync: string | null;
   gists: Gist[];
@@ -93,6 +96,7 @@ export const normalizeAccountWorkspaces = (value: unknown): Record<string, Accou
       const record = workspace as Record<string, unknown>;
       return [[key, {
         ...empty,
+        externalDiscoveryChannels: normalizeExternalDiscoveryChannels(record.externalDiscoveryChannels),
         repositories: Array.isArray(record.repositories) ? record.repositories : [],
         lastSync: typeof record.lastSync === 'string' ? record.lastSync : null,
         gists: Array.isArray(record.gists) ? record.gists : [],
@@ -142,6 +146,7 @@ export const normalizeAccountWorkspaces = (value: unknown): Record<string, Accou
 };
 
 export const emptyAccountWorkspace = (): AccountWorkspace => ({
+  externalDiscoveryChannels: [],
   repositories: [],
   lastSync: null,
   gists: [],
@@ -166,6 +171,7 @@ export const emptyAccountWorkspace = (): AccountWorkspace => ({
 });
 
 export const captureAccountWorkspace = (state: AccountWorkspaceSource): AccountWorkspace => ({
+  externalDiscoveryChannels: normalizeExternalDiscoveryChannels(state.discoveryChannels),
   repositories: state.repositories,
   lastSync: state.lastSync,
   gists: state.gists,

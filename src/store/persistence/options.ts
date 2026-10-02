@@ -17,12 +17,13 @@ import {
   PersistedAppState,
 } from '../schema';
 import { normalizePersistedState } from '../normalizers/persistedState';
+import { normalizeDiscoveryChannels } from '../helpers/discoveryChannels';
 import { writeAuthMirror } from './authStorage';
 import { debouncedPersistStorage } from './storage';
 
 export const appPersistenceOptions: PersistOptions<AppStoreState, PersistedAppState> = {
   name: 'github-stars-manager',
-  version: 16,
+  version: 17,
   storage: debouncedPersistStorage as PersistStorage<PersistedAppState>,
 partialize: (state) => ({
   // 持久化用户信息和认证状态
@@ -246,21 +247,7 @@ state.selectedDiscoveryChannel = 'trending';
   if (state && (!state.discoveryChannels || !Array.isArray(state.discoveryChannels))) {
 state.discoveryChannels = defaultDiscoveryChannels;
   } else if (state && Array.isArray(state.discoveryChannels)) {
-const persistedChannels = state.discoveryChannels as unknown[];
-state.discoveryChannels = defaultDiscoveryChannels.map((defaultChannel) => {
-const persistedChannel = persistedChannels.find((channel) => {
-  return (channel as Record<string, unknown>)?.id === defaultChannel.id;
-}) as Record<string, unknown> | undefined;
-
-if (!persistedChannel) {
-  return defaultChannel;
-}
-
-return {
-...defaultChannel,
-enabled: persistedChannel.enabled !== false,
-};
-});
+state.discoveryChannels = normalizeDiscoveryChannels(state.discoveryChannels);
   }
   // 迁移订阅频道（版本 4→5：daily-dev → most-dev，新增 trending，补全 nameEn）
   const defaultChannelsMap = new Map(defaultSubscriptionChannels.map(ch => [ch.id, ch]));

@@ -9,6 +9,7 @@ export class HomeSync {
   private maintenance = false;
   private timer?: ReturnType<typeof setInterval>;
   private debounce?: ReturnType<typeof setTimeout>;
+  private detach?: () => void;
   private stopped = false;
   private failures = 0;
   private nextAutomaticSync = 0;
@@ -23,20 +24,32 @@ export class HomeSync {
   get identity() { return { workspaceId: this.capabilities.workspace!.id, githubUserId: this.capabilities.workspace!.githubUserId }; }
   private get query() { return new URLSearchParams({ workspaceId: this.identity.workspaceId, githubUserId: String(this.identity.githubUserId) }).toString(); }
   changed() {
+    if (this.stopped) return;
     this.publish({ status: 'pending' }); clearTimeout(this.debounce);
     this.debounce = setTimeout(() => { if (Date.now() >= this.nextAutomaticSync && document.visibilityState !== 'hidden') void this.sync(); }, 2000);
   }
   start() {
+    this.stop();
     this.stopped = false;
     const poll = () => { if (document.visibilityState !== 'hidden' && Date.now() >= this.nextAutomaticSync) void this.sync(); };
     const wake = () => { if (document.visibilityState !== 'hidden') { this.nextAutomaticSync = 0; void this.sync(); } };
     window.addEventListener('online', wake); document.addEventListener('visibilitychange', wake);
     this.timer = setInterval(poll, 15_000); wake();
-    return () => { this.stopped = true; clearInterval(this.timer); clearTimeout(this.debounce); window.removeEventListener('online', wake); document.removeEventListener('visibilitychange', wake); };
+    this.detach = () => { window.removeEventListener('online', wake); document.removeEventListener('visibilitychange', wake); };
+    return () => this.stop();
+  }
+  stop(): void {
+    this.stopped = true;
+    clearInterval(this.timer); clearTimeout(this.debounce);
+    this.detach?.(); this.detach = undefined;
+  }
+  /** Wait for the exact dispatched batch to finish its receipts; never release the identity gate. */
+  async drain(): Promise<void> {
+    await this.running;
   }
   sync(): Promise<void> {
     if (this.running) return this.running;
-    if (this.maintenance) return Promise.resolve();
+    if (this.maintenance || this.stopped) return Promise.resolve();
     const execute = () => this.perform();
     this.running = (async () => {
       if (typeof navigator !== 'undefined' && navigator.locks) await navigator.locks.request(`gsm-home-sync:${this.db.namespace}`, execute);
@@ -54,36 +67,48 @@ export class HomeSync {
       return await work();
     } finally {this.maintenance=false;}
   }
-  private async snapshot() {
+  private async snapshot(forIdentityMaintenance = false): Promise<boolean> {
     let snapshotId = ''; let offset = 0; let more = true; let cursor = 0;
     const rows: HomeRecord[] = [];
     while (more) {
+      if (this.stopped && !forIdentityMaintenance) return false;
       const page = await this.api.request<Page>(`/sync/v2/snapshot?${this.query}&limit=200&offset=${offset}${snapshotId ? `&snapshotId=${encodeURIComponent(snapshotId)}` : ''}`);
+      if (this.stopped && !forIdentityMaintenance) return false;
       rows.push(...page.records); cursor = page.cursor; snapshotId = page.snapshotId!; offset = page.nextOffset!; more = page.hasMore;
     }
     // Only publish the complete fixed-boundary snapshot; interrupted downloads leave the old cache intact.
     await this.db.applyRemote(rows, cursor, true);
+    return true;
+  }
+  async reloadSnapshotForIdentityMaintenance(): Promise<void> {
+    if (await this.db.metadata('inFlight') || (await this.db.pending()).length) throw new Error('IDENTITY_UNCONFIRMED_OPERATIONS');
+    await this.snapshot(true);
   }
   private async perform() {
     if (this.stopped || (typeof navigator !== 'undefined' && navigator.onLine === false)) { this.publish({ status: 'offline' }); return; }
     this.publish({ status: 'syncing', error: undefined });
     try {
-      if (!await this.db.metadata('initialized')) await this.snapshot();
+      const initialized = await this.db.metadata('initialized');
+      if (this.stopped) return;
+      if (!initialized && !await this.snapshot()) return;
       let more = true;
       while (more && !this.stopped) {
         const cursor = await this.db.metadata<number>('cursor') ?? 0;
+        if (this.stopped) return;
         let page: Page;
         try { page = await this.api.request<Page>(`/sync/v2/changes?${this.query}&cursor=${cursor}&limit=200`); }
         catch (error) {
-          if (error instanceof HomeApiError && ['CURSOR_EXPIRED', 'CURSOR_TOO_OLD'].includes(error.code)) { await this.snapshot(); continue; }
+          if (error instanceof HomeApiError && ['CURSOR_EXPIRED', 'CURSOR_TOO_OLD'].includes(error.code)) { if (!await this.snapshot()) return; continue; }
           throw error;
         }
+        if (this.stopped) return;
         await this.db.applyRemote(page.records, page.cursor); more = page.hasMore;
       }
       // Bound one turn while draining edits made during a request. Immutable in-flight batches
       // survive reload/network loss independently of the editable latest local version.
       for (let batchIndex = 0; batchIndex < 100 && !this.stopped; batchIndex++) {
         const { clientId, operations } = await this.db.nextBatch();
+        if (this.stopped) return;
         if (!operations.length) break;
         const response = await this.api.request<{ results: Array<{ opId: string; status: string; record?: HomeRecord; conflict?: { current: HomeRecord | null; reason?: string } }> }>('/sync/v2/operations', { ...this.identity, clientId, operations });
         if (response.results.length !== operations.length || operations.some(op => !response.results.some(item => item.opId === op.opId))) throw new Error('服务器返回不完整的操作确认；稍后将安全重试');
@@ -95,6 +120,7 @@ export class HomeSync {
         }
         await this.db.finishBatch(operations);
       }
+      if (this.stopped) return;
       const remaining = await this.db.pending(); const conflicts = remaining.filter(item => item.conflict !== undefined || item.rejected).length;
       const lastSync = new Date().toISOString(); await this.db.setMetadata('lastSync', lastSync);
       this.failures = 0; this.nextAutomaticSync = 0;

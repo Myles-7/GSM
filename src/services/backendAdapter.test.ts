@@ -232,3 +232,44 @@ describe('backendAdapter 后端 URL 安全策略', () => {
     expect(backend.isAvailable).toBe(true);
   });
 });
+
+describe('backendAdapter desktop health probes', () => {
+  const adapter = backend as unknown as BackendAdapterLike;
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(window.fetch).mockReset();
+    adapter._backendUrl = null;
+    localStorage.removeItem('github-stars-manager-backend-url');
+  });
+  function location(protocol: string, hostname = '') {
+    vi.stubGlobal('window', {
+      location: { protocol, origin: 'null', hostname }, fetch: window.fetch,
+      dispatchEvent: window.dispatchEvent.bind(window),
+    });
+  }
+  it.each(['file:', 'data:', 'app:', 'chrome-extension:'])('does not automatically probe %s', async protocol => {
+    location(protocol, 'localhost');
+    await backend.init();
+    expect(window.fetch).not.toHaveBeenCalled();
+    expect(backend.isAvailable).toBe(false);
+  });
+  it('keeps explicitly configured loopback HTTP backend on file origin', async () => {
+    location('file:');
+    vi.mocked(window.fetch).mockResolvedValue(makeHealthOkResponse());
+    await backend.init('http://localhost:3000');
+    expect(window.fetch).toHaveBeenCalledWith('http://localhost:3000/api/health', expect.anything());
+    expect(backend.isAvailable).toBe(true);
+  });
+  it('keeps a stored HTTPS backend on file origin', async () => {
+    location('file:');
+    localStorage.setItem('github-stars-manager-backend-url', 'https://backend.example.com/api');
+    vi.mocked(window.fetch).mockResolvedValue(makeHealthOkResponse());
+    await backend.init();
+    expect(window.fetch).toHaveBeenCalledWith('https://backend.example.com/api/health', expect.anything());
+  });
+  it('retains HTTP browser same-origin health detection', async () => {
+    vi.mocked(window.fetch).mockResolvedValue(makeHealthOkResponse());
+    await backend.init();
+    expect(window.fetch).toHaveBeenCalledWith('http://localhost/api/health', expect.anything());
+  });
+});

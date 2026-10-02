@@ -3,6 +3,31 @@ import { resetSyncHashes } from '../../services/autoSync';
 import type { AppStoreSlice } from '../types';
 import { accountIdKey, applyAccountWorkspace, captureAccountWorkspace, switchAccountWorkspace } from '../helpers/accountWorkspace';
 import { clearAuthMirror, writeAuthMirror, writeSessionBackendSecret } from '../persistence/authStorage';
+import { normalizeDiscoveryChannels, externalChannelSelection } from '../helpers/discoveryChannels';
+import { isExternalDiscoveryChannelId } from '../../services/externalFeedConfig';
+import type { AppStoreState } from '../types';
+
+const switchExternalFeeds = (state: AppStoreState, accountId: string | null): Partial<AppStoreState> => {
+  const channels = normalizeDiscoveryChannels([
+    ...state.discoveryChannels.filter(channel => !isExternalDiscoveryChannelId(channel.id)),
+    ...(accountId ? state.accountWorkspaces[accountId]?.externalDiscoveryChannels ?? [] : []),
+  ]);
+  const builtinsOnly = <T,>(map: Record<string, T>): Record<string, T> =>
+    Object.fromEntries(Object.entries(map).filter(([id]) => !isExternalDiscoveryChannelId(id)));
+  return {
+    discoveryChannels: channels,
+    selectedDiscoveryChannel: externalChannelSelection(channels, state.selectedDiscoveryChannel),
+    discoveryRepos: builtinsOnly(state.discoveryRepos),
+    discoveryLastRefresh: builtinsOnly(state.discoveryLastRefresh),
+    discoveryIsLoading: builtinsOnly(state.discoveryIsLoading),
+    discoveryIsLoadingMore: builtinsOnly(state.discoveryIsLoadingMore),
+    discoveryLoadMoreError: builtinsOnly(state.discoveryLoadMoreError),
+    discoveryHasMore: builtinsOnly(state.discoveryHasMore),
+    discoveryNextPage: builtinsOnly(state.discoveryNextPage),
+    discoveryTotalCount: builtinsOnly(state.discoveryTotalCount),
+    discoveryScrollPositions: builtinsOnly(state.discoveryScrollPositions),
+  };
+};
 
 export const createAuthSlice: AppStoreSlice<Pick<import('../types').AppActions, 'setUser' | 'setGitHubToken' | 'setBackendApiSecret' | 'logout'>> = (set, get) => ({
       setUser: (user) => {
@@ -17,6 +42,7 @@ export const createAuthSlice: AppStoreSlice<Pick<import('../types').AppActions, 
             isAuthenticated: true,
             accountWorkspaces: switched.accountWorkspaces,
             ...(switched.workspace ?? {}),
+            ...(previousAccountId !== nextAccountId ? switchExternalFeeds(current, nextAccountId) : {}),
           });
         } else {
           set({ user, isAuthenticated: !!user });
@@ -57,6 +83,7 @@ export const createAuthSlice: AppStoreSlice<Pick<import('../types').AppActions, 
           isAuthenticated: false,
           accountWorkspaces,
           ...applyAccountWorkspace(undefined),
+          ...switchExternalFeeds(current, null),
         });
       },
 

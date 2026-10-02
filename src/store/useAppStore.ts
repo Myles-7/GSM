@@ -12,6 +12,7 @@ import { createPreferenceSlice } from './slices/preferenceSlice';
 import { createRepositorySlice } from './slices/repositorySlice';
 import { createTimelineSlice } from './slices/timelineSlice';
 import type { AppStoreState } from './types';
+import { assertRepositoryIdentityWritable } from '../services/repositoryIdentityGate';
 
 export { getAllCategories, sortCategoriesByOrder } from './helpers/categoryHelpers';
 export { normalizePersistedState } from './normalizers/persistedState';
@@ -29,17 +30,27 @@ export {
  */
 export const useAppStore = create<AppStoreState>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      const guardedSet: typeof set = (...args) => { assertRepositoryIdentityWritable(); return set(...args); };
+      return ({
       ...createInitialState(),
-      ...createAuthSlice(set, get),
-      ...createRepositorySlice(set, get),
-      ...createGistSlice(set, get),
-      ...createConfigurationSlice(set, get),
-      ...createTimelineSlice(set, get),
-      ...createCategorySlice(set, get),
-      ...createPreferenceSlice(set, get),
-      ...createDiscoverySlice(set, get),
-    }),
+      ...createAuthSlice(guardedSet, get),
+      ...createRepositorySlice(guardedSet, get),
+      ...createGistSlice(guardedSet, get),
+      ...createConfigurationSlice(guardedSet, get),
+      ...createTimelineSlice(guardedSet, get),
+      ...createCategorySlice(guardedSet, get),
+      ...createPreferenceSlice(guardedSet, get),
+      ...createDiscoverySlice(guardedSet, get),
+      setHasHydrated: hasHydrated => set({ hasHydrated }),
+    }); },
     appPersistenceOptions,
   ),
 );
+const identityInternalSetState = useAppStore.setState;
+useAppStore.setState = (...args) => {
+  assertRepositoryIdentityWritable();
+  return identityInternalSetState(...args);
+};
+/** Restricted synchronous checkpoint path; never an async global writer bypass. */
+export const setIdentityMigrationStoreState = (patch: Partial<AppStoreState>) => identityInternalSetState(patch);

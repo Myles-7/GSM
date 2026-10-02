@@ -195,7 +195,7 @@ describe('PR-07 Store modularization compatibility', () => {
       rpcDownloadConfig: { enabled: true, host: 'rpc.example.com', port: 6800, secret: 'rpc-secret' },
     });
 
-    expect(options.version).toBe(16);
+    expect(options.version).toBe(17);
     expect(Object.keys(persisted)).toEqual(currentPersistedKeys);
     expect(persisted.analyzingGistIds).toEqual(['gist-1']);
     expect(persisted.proxyConfig).toMatchObject({ password: 'proxy-password' });
@@ -249,7 +249,7 @@ describe('PR-07 Store modularization compatibility', () => {
     } as never);
     const once = options.merge(snapshot, actualStore.useAppStore.getInitialState());
     const twice = options.merge(options.partialize(once), actualStore.useAppStore.getInitialState());
-    expect(options.version).toBe(16);
+    expect(options.version).toBe(17);
     expect(twice.assetFilters).toEqual([{
       id: 'personal', name: 'Personal', keywords: ['zip'],
       includeRepos: ['Owner/Repo'], alwaysExcludeRepos: ['Owner/Blocked'],

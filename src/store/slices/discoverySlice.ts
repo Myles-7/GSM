@@ -5,6 +5,8 @@ import { normalizeTelegramChannelInput } from '../../utils/telegramFollows';
 import { saveEncryptedXAuthViaDesktop, clearEncryptedXAuthViaDesktop } from '../../services/electronProxy';
 import { logger } from '../../services/logger';
 import { recordTrendingSnapshot } from '../../utils/trendingSnapshots';
+import { isExternalDiscoveryChannelId, MAX_EXTERNAL_FEEDS, normalizeExternalDiscoveryChannels } from '../../services/externalFeedConfig';
+import { externalChannelSelection } from '../helpers/discoveryChannels';
 
 export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setSelectedDiscoveryChannel'
@@ -38,7 +40,39 @@ export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActi
   | 'removeTelegramFollow'
   | 'appendDiscoveryRepos'
   | 'recordTrendingSnapshot'
->> = (set) => ({
+  | 'addExternalDiscoveryChannel'
+  | 'removeExternalDiscoveryChannel'
+>> = (set, get) => ({
+    addExternalDiscoveryChannel: (name, sourceUrl, kind, expectedAccountId) => {
+      const state = get();
+      if (!state.user || (expectedAccountId !== undefined && state.user.id !== expectedAccountId)) return false;
+      const id = `external:${crypto.randomUUID()}` as const;
+      const [channel] = normalizeExternalDiscoveryChannels([{ id, name, sourceUrl, sourceKind: kind, enabled: true }]);
+      const existing = state.discoveryChannels.filter(item => isExternalDiscoveryChannelId(item.id));
+      if (!channel || existing.length >= MAX_EXTERNAL_FEEDS || existing.some(item => item.sourceUrl === channel.sourceUrl)) return false;
+      set({ discoveryChannels: [...state.discoveryChannels, channel] });
+      return true;
+    },
+    removeExternalDiscoveryChannel: (id) => set(state => {
+      if (!isExternalDiscoveryChannelId(id)) return state;
+      const channels = state.discoveryChannels.filter(channel => channel.id !== id);
+      const without = <T,>(map: Record<string, T>): Record<string, T> => {
+        const next = { ...map }; delete next[id]; return next;
+      };
+      return {
+        discoveryChannels: channels,
+        selectedDiscoveryChannel: externalChannelSelection(channels, state.selectedDiscoveryChannel),
+        discoveryRepos: without(state.discoveryRepos),
+        discoveryLastRefresh: without(state.discoveryLastRefresh),
+        discoveryIsLoading: without(state.discoveryIsLoading),
+        discoveryIsLoadingMore: without(state.discoveryIsLoadingMore),
+        discoveryLoadMoreError: without(state.discoveryLoadMoreError),
+        discoveryHasMore: without(state.discoveryHasMore),
+        discoveryNextPage: without(state.discoveryNextPage),
+        discoveryTotalCount: without(state.discoveryTotalCount),
+        discoveryScrollPositions: without(state.discoveryScrollPositions),
+      };
+    }),
     // Discovery actions
     setSelectedDiscoveryChannel: (selectedDiscoveryChannel) => set((state) => ({
       selectedDiscoveryChannel,

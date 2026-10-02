@@ -17,7 +17,7 @@ describe('home backend migration', () => {
       initializeTasks(db);
       expect(db.prepare('SELECT custom_description FROM repositories WHERE id=1').get()).toEqual({ custom_description: 'Keep my edit' });
       expect(db.prepare("SELECT value FROM settings WHERE key='github_token'").get()).toEqual({ value: 'encrypted-value' });
-      expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 3 });
+      expect(db.prepare('SELECT MAX(version) AS version FROM schema_version').get()).toEqual({ version: 4 });
     } finally { db.close(); }
   });
 });

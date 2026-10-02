@@ -8,6 +8,7 @@ import type { Repository } from '../types';
 import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
 import { flushDesktopHome, getDesktopHomeSync } from '../home/desktop';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
+import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
 // the store subscription would trigger a push TO backend. This flag blocks that.
@@ -262,6 +263,7 @@ export async function syncLocalGitHubTokenToBackend(
  * Silent: errors logged to console only.
  */
 export async function syncFromBackend(options: { force?: boolean } = {}): Promise<void> {
+  try { assertRepositoryIdentityWritable(); } catch { return; }
   if (getDesktopHomeSync()) { await flushDesktopHome(); return; }
   if (!backend.isAvailable) return;
   if (!options.force && (
@@ -605,6 +607,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
  * Queued callers wait for a push containing the latest local state.
  */
 export async function syncToBackend(): Promise<boolean> {
+  try { assertRepositoryIdentityWritable(); } catch { return false; }
   if (getDesktopHomeSync()) { await flushDesktopHome(); return true; }
   if (!backend.isAvailable) return true;
   if (_isSyncingFromBackendActive) {
@@ -768,6 +771,7 @@ export function startAutoSync(): () => void {
   _hasPendingLocalChanges = false;
   // 1. Subscribe to local changes → push to backend (2s debounce)
   const unsubscribe = useAppStore.subscribe((state, prevState) => {
+    try { assertRepositoryIdentityWritable(); } catch { return; }
     if (_isSyncingFromBackend) return;
 
     const changed =

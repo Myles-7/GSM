@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
+import { identityWriteNeedsConfirmation, identityWriteNeedsUpgrade } from './repositoryIdentity.js';
 
 export const COLLECTIONS = ['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions'] as const;
 export type Collection = typeof COLLECTIONS[number];
@@ -133,6 +134,16 @@ function projectLegacy(db: Database.Database, record: SyncRecord) {
     }
   }
 }
+export function writeCanonicalRecord(db: Database.Database, input: Pick<SyncRecord, 'collection'|'id'|'data'|'deleted'>): SyncRecord {
+  const current = getRecord(db, input.collection, input.id);
+  const record: SyncRecord = { ...input, version: (current?.version ?? 0) + 1, seq: 0 };
+  const row = db.prepare('INSERT INTO sync_v2_changes(record,created_at) VALUES(?,?)').run('{}', Date.now());
+  record.seq = Number(row.lastInsertRowid);
+  db.prepare('UPDATE sync_v2_changes SET record=? WHERE seq=?').run(JSON.stringify(record), record.seq);
+  db.prepare('INSERT INTO sync_v2_records VALUES(?,?,?,?,?,?) ON CONFLICT(collection,id) DO UPDATE SET data=excluded.data,version=excluded.version,seq=excluded.seq,deleted=excluded.deleted').run(record.collection,record.id,JSON.stringify(record.data),record.version,record.seq,Number(record.deleted));
+  projectLegacy(db, record);
+  return record;
+}
 export function pushOperations(db: Database.Database, input: { workspaceId: string; githubUserId: number; clientId: string; operations: Operation[] }) {
   assertWorkspace(db, input.workspaceId, input.githubUserId);
   if (!identifier(input.clientId) || !Array.isArray(input.operations) || input.operations.length > 500) throw new SyncError('INVALID_BATCH');
@@ -148,17 +159,15 @@ export function pushOperations(db: Database.Database, input: { workspaceId: stri
       const current = getRecord(db, op.collection, op.id);
       const locked = op.source === 'ai' && current?.data && (current.data.locked || current.data.category_locked || current.data.categoryLocked || current.data.userLocked);
       let result;
-      if ((current?.version ?? 0) !== op.baseVersion || locked) {
-        const conflict = { id: randomUUID(), reason: locked ? 'USER_LOCKED' : 'VERSION_MISMATCH', incoming: op, current };
+      const identityUpgrade = identityWriteNeedsUpgrade(db, input.workspaceId, op.collection, op.id, op.data);
+      const identityConfirmation = op.kind === 'put' && identityWriteNeedsConfirmation(db, op.collection, op.id, op.data);
+      const configUpgrade = op.collection === 'discovery_config' && (current?.data?.schemaVersion === 2 && op.data?.schemaVersion !== 2);
+      if ((current?.version ?? 0) !== op.baseVersion || locked || identityUpgrade || identityConfirmation || configUpgrade) {
+        const conflict = { id: randomUUID(), reason: identityUpgrade ? 'REPOSITORY_IDENTITY_UPGRADE_REQUIRED' : identityConfirmation ? 'REPOSITORY_IDENTITY_CONFIRMATION_REQUIRED' : configUpgrade ? 'DISCOVERY_CONFIG_UPGRADE_REQUIRED' : locked ? 'USER_LOCKED' : 'VERSION_MISMATCH', incoming: op, current };
         db.prepare('INSERT INTO sync_v2_conflicts VALUES(?,?,?,?,?,?)').run(conflict.id, op.collection, op.id, JSON.stringify(op), JSON.stringify(current), Date.now());
         result = { opId: op.opId, status: 'conflict', conflict };
       } else {
-        const record: SyncRecord = { collection: op.collection, id: op.id, version: (current?.version ?? 0) + 1, seq: 0, deleted: op.kind === 'delete', data: op.kind === 'delete' ? null : op.data! };
-        const row = db.prepare('INSERT INTO sync_v2_changes(record,created_at) VALUES(?,?)').run('{}', Date.now());
-        record.seq = Number(row.lastInsertRowid);
-        db.prepare('UPDATE sync_v2_changes SET record=? WHERE seq=?').run(JSON.stringify(record), record.seq);
-        db.prepare('INSERT INTO sync_v2_records VALUES(?,?,?,?,?,?) ON CONFLICT(collection,id) DO UPDATE SET data=excluded.data,version=excluded.version,seq=excluded.seq,deleted=excluded.deleted').run(record.collection, record.id, JSON.stringify(record.data), record.version, record.seq, Number(record.deleted));
-        projectLegacy(db, record);
+        const record = writeCanonicalRecord(db, { collection: op.collection, id: op.id, deleted: op.kind === 'delete', data: op.kind === 'delete' ? null : op.data! });
         result = { opId: op.opId, status: 'applied', record };
       }
       db.prepare('INSERT INTO sync_v2_operations VALUES(?,?,?,?)').run(input.clientId, op.opId, hash, JSON.stringify(result));

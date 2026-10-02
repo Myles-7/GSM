@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppState } from '../types';
 import type { HomeRecord } from './types';
-import { desktopDiscoveryStoreRecords, customDiscoveryRecords, discoveryStoreProjection, projectCustomDiscovery, applyDiscoveryProjection, exportCustomDiscovery, migrateDesktopDiscovery } from './discoveryDesktop';
+import { desktopDiscoveryStoreRecords, customDiscoveryRecords, discoveryStoreProjection, projectCustomDiscovery, applyDiscoveryProjection, exportCustomDiscovery, migrateDesktopDiscovery, mergeDesktopDiscoveryConfig } from './discoveryDesktop';
 import { HomeDatabase } from './database';
 import { emptyData } from '../features/discovery/custom/model';
 import { makeChannel, makeEdition } from '../features/discovery/custom/fixtures.test-support';
@@ -10,6 +10,41 @@ import { loadData, transact } from '../features/discovery/custom/storage';
 const state = (): AppState => ({ discoveryChannels: [{ id: 'trending', enabled: true, name: 'Trending' }, { id: 'x-tweets', enabled: true, name: 'X' }], selectedDiscoveryChannel: 'trending', xTweetFollows: [{ handle: 'User', addedAt: '2026-09-28' }], telegramFollows: [{ channel: 'News', addedAt: '2026-09-28' }], trendingSnapshots: [{ period: 'daily', platform: 'All', capturedAt: '2026-09-28T12:00:00Z', entries: [{ repositoryFullName: 'org/repo', rank: 1, stars: 2 }] }], xTweetAuth: { authToken: 'secret-auth', ct0: 'secret-cookie' }, githubToken: 'secret-github', backendApiSecret: 'secret-backend' } as unknown as AppState);
 const record = (collection: HomeRecord['collection'], id: string, data: HomeRecord['data'], deleted = false): HomeRecord => ({ collection, id, data, deleted, version: 4 });
 describe('desktop discovery synchronization', () => {
+  it('retains unknown canonical config and channel fields after projection and local editing', () => {
+    const canonical = record('discovery_config', 'default', { schemaVersion: 2, futureSetting: { mode: 'keep' },
+      channels: [{ id: 'trending', enabled: true, futureChannel: { keep: 1 } },
+        { id: 'external:feed', name: 'Feed', enabled: true, sourceUrl: 'https://feed.example/feed.json',
+          sourceKind: 'rss', futureFeed: ['keep'] }] });
+    const projected = { ...state(), ...discoveryStoreProjection(state(), [canonical]) };
+    const before = desktopDiscoveryStoreRecords(projected)[0].data;
+    projected.discoveryChannels = projected.discoveryChannels.map(channel => channel.id === 'trending'
+      ? { ...channel, enabled: false } : channel.id === 'external:feed' ? { ...channel, sourceKind: undefined } : channel);
+    const next = desktopDiscoveryStoreRecords(projected)[0].data;
+    const merged = mergeDesktopDiscoveryConfig(next, canonical, before);
+    expect(merged.futureSetting).toEqual({ mode: 'keep' });
+    const channels = merged.channels as Array<Record<string, unknown>>;
+    expect(channels.find(channel => channel.id === 'trending')).toMatchObject({ enabled: false, futureChannel: { keep: 1 } });
+    expect(channels.find(channel => channel.id === 'external:feed')).toMatchObject({ futureFeed: ['keep'] });
+    expect(channels.find(channel => channel.id === 'external:feed')).not.toHaveProperty('sourceKind');
+    expect((canonical.data?.channels as Array<Record<string, unknown>>)[1].sourceKind).toBe('rss');
+  });
+  it('never unions deleted channels back in, including a stale desktop projection of a remote deletion', () => {
+    const external = { id: 'external:old', name: 'Old', enabled: true, sourceUrl: 'https://feed.example/old.json', futureFeed: 1 };
+    const before = { schemaVersion: 2, channels: [{ id: 'trending', enabled: true }, external] };
+    const canonical = record('discovery_config', 'default', { ...before, futureSetting: 'keep' });
+    const localDeletion = mergeDesktopDiscoveryConfig({ schemaVersion: 2, channels: [{ id: 'trending', enabled: false }] }, canonical, before);
+    expect(localDeletion.channels).toEqual([{ id: 'trending', enabled: false }]);
+    const remoteDeletion = record('discovery_config', 'default', { schemaVersion: 2, futureSetting: 'keep',
+      channels: [{ id: 'trending', enabled: true }] });
+    const staleEdit = mergeDesktopDiscoveryConfig({ ...before, channels: [{ id: 'trending', enabled: false }, external] }, remoteDeletion, before);
+    expect(staleEdit.channels).toEqual([{ id: 'trending', enabled: false }]);
+    expect(staleEdit.futureSetting).toBe('keep');
+    const added = { ...external, id: 'external:new' };
+    expect((mergeDesktopDiscoveryConfig({ ...before, channels: [...before.channels, added] }, remoteDeletion, before).channels as Array<{ id: string }>)
+      .map(channel => channel.id)).toEqual(['trending', 'external:new']);
+    expect((mergeDesktopDiscoveryConfig(before, record('discovery_config', 'default', null, true), before).channels as Array<{ id: string }>)
+      .map(channel => channel.id)).toEqual(['trending']);
+  });
   it('exports stable source and history IDs, supported settings only, and no credentials', () => {
     const rows = desktopDiscoveryStoreRecords(state());
     expect(rows.map(row => row.id)).toEqual(['default', 'source:x:user', 'source:telegram:news', 'trending:daily:All:2026-09-28']);

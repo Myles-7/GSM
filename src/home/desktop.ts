@@ -1,7 +1,7 @@
 import { useAppStore } from '../store/useAppStore';
 import { backend } from '../services/backendAdapter';
 import { repositoryChatStorage } from '../services/repositoryChatStorage';
-import { desktopDiscoveryStoreRecords, exportCustomDiscovery, discoveryStoreProjection, applyDiscoveryProjection, migrateDesktopDiscovery } from './discoveryDesktop';
+import { desktopDiscoveryStoreRecords, exportCustomDiscovery, discoveryStoreProjection, applyDiscoveryProjection, migrateDesktopDiscovery, mergeDesktopDiscoveryConfig } from './discoveryDesktop';
 import { migrateDesktopXCredentials } from './desktopXCredentials';
 import { loadEncryptedXAuthViaDesktop } from '../services/electronProxy';
 import { HomeApi } from './api';
@@ -121,7 +121,15 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
       const before = new Map(baseline.map(row => [recordKey(row), row]));
       for (const row of next) {
         const old = before.get(recordKey(row));
-        if (JSON.stringify(old?.data) !== JSON.stringify(row.data)) await sync.db.edit(row.collection, row.id, row.data);
+        if (JSON.stringify(old?.data) !== JSON.stringify(row.data)) {
+          let data = row.data;
+          if (row.collection === 'discovery_config' && row.id === 'default') {
+            const canonical = (await sync.db.allRecords()).find(item => item.collection === 'discovery_config' && item.id === 'default');
+            data = mergeDesktopDiscoveryConfig(data, canonical, old?.data ?? undefined);
+          }
+          if (active !== sync) return;
+          await sync.db.edit(row.collection, row.id, data);
+        }
         before.delete(recordKey(row));
       }
       if (previous) for (const row of before.values()) await sync.db.edit(row.collection, row.id, null);
@@ -180,7 +188,14 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   cleanup = () => { stop(); unsubscribe(); unstore(); window.removeEventListener('gsm:global-chat-history-changed', onChat); window.removeEventListener('gsm:custom-discovery-changed', onDiscovery); };
   return true;
 }
-export function stopDesktopHome() { cleanup?.(); cleanup = null; active = null; notify(); }
+export function stopDesktopHome() { active?.stop(); cleanup?.(); cleanup = null; active = null; notify(); }
+export async function pauseDesktopHomeForIdentity(): Promise<HomeSync | null> {
+  const sync = active;
+  stopDesktopHome();
+  await sync?.drain();
+  await captureTail; await projectionTail;
+  return sync;
+}
 export async function flushDesktopHome(): Promise<boolean> {
   if (!active) return false;
   await captureTail; await active.sync();

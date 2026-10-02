@@ -1,11 +1,131 @@
 import 'fake-indexeddb/auto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HomeDatabase } from './database';
 import type { HomeRecord } from './types';
+import { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } from '../services/repositoryIdentityGate';
 
 const row = (version: number, name = 'server'): HomeRecord => ({ collection: 'repositories', id: '1', version, seq: version, data: { name } });
 const database = () => new HomeDatabase(crypto.randomUUID());
 describe('durable home outbox', () => {
+  it('blocks public edits, imports, conflict resolution and task claims while frozen, but permits exact ACK completion', async () => {
+    const db = database();
+    await db.applyRemote([row(1)], 1, true);
+    await db.edit('repositories', '1', { name: 'sent' });
+    const batch = await db.nextBatch();
+    const task = { requestId: 'original', kind: 'chat' };
+    await db.claimTaskRequest(task);
+    const unsent = database();
+    await unsent.edit('repositories', '2', { name: 'not dispatched' });
+    const backup = JSON.stringify({ format: 'gsm-mobile-backup', version: 1,
+      workspaceId: 'home', githubUserId: 42, createdAt: '2026-10-02', records: [], pending: [] });
+    holdRepositoryIdentityWrites('42', 'home-test');
+    try {
+      const frozen = 'REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED';
+      await expect(db.edit('repositories', '1', { name: 'blocked' })).rejects.toThrow(frozen);
+      await expect(db.importBackup(backup, { workspaceId: 'home', githubUserId: 42 })).rejects.toThrow(frozen);
+      await expect(db.resolve('repositories:1', true)).rejects.toThrow(frozen);
+      await expect(db.claimTaskRequest({ requestId: 'new', kind: 'chat' })).rejects.toThrow(frozen);
+      await expect(unsent.nextBatch()).rejects.toThrow(frozen);
+      expect(await unsent.metadata('inFlight')).toBeUndefined();
+      expect(await db.nextBatch()).toEqual(batch);
+      await db.acknowledge(batch.operations[0], row(2, 'sent'));
+      await db.finishBatch(batch.operations);
+      await db.confirmTaskRequest('original');
+      expect(await db.pending()).toEqual([]);
+      expect(await db.metadata('inFlight')).toBeUndefined();
+      expect(await db.metadata('unconfirmedTask')).toBeUndefined();
+      expect((await db.list())[0].data?.name).toBe('sent');
+    } finally { releaseRepositoryIdentityWrites('42'); }
+  });
+  it.each(['edit', 'import', 'resolve', 'claim'] as const)('rechecks the gate after opening the database for %s', async action => {
+    const db = database();
+    await db.edit('repositories', '1', { name: 'keep' });
+    const before = await db.pending();
+    const backup = await db.exportBackup({ workspaceId: 'home', githubUserId: 42 });
+    const open = (db as unknown as { open(): Promise<IDBDatabase> }).open.bind(db);
+    const spy = vi.spyOn(db as unknown as { open(): Promise<IDBDatabase> }, 'open').mockImplementation(async () => {
+      const opened = await open();
+      holdRepositoryIdentityWrites('42', 'home-open-test');
+      return opened;
+    });
+    try {
+      const work = action === 'edit' ? db.edit('repositories', '1', { name: 'late' })
+        : action === 'import' ? db.importBackup(backup, { workspaceId: 'home', githubUserId: 42 })
+          : action === 'resolve' ? db.resolve('repositories:1', false)
+            : db.claimTaskRequest({ requestId: 'late' });
+      await expect(work).rejects.toThrow('REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED');
+    } finally { spy.mockRestore(); releaseRepositoryIdentityWrites('42'); }
+    expect(await db.pending()).toEqual(before);
+    expect(await db.metadata('unconfirmedTask')).toBeUndefined();
+  });
+  it('aborts an edit transaction if the gate closes during its outbox read', async () => {
+    const db = database();
+    await db.applyRemote([row(1)], 1, true);
+    const get = IDBObjectStore.prototype.get;
+    const spy = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query) {
+      const request = get.call(this, query);
+      if (this.name === 'outbox') request.addEventListener('success', () => holdRepositoryIdentityWrites('42', 'home-read-test'));
+      return request;
+    });
+    try {
+      await expect(db.edit('repositories', '1', { name: 'late' })).rejects.toThrow('REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED');
+    } finally { spy.mockRestore(); releaseRepositoryIdentityWrites('42'); }
+    expect(await db.pending()).toEqual([]);
+    expect((await db.list())[0].data?.name).toBe('server');
+  });
+  it.each(['import', 'resolve', 'claim'] as const)('aborts %s when frozen during an IDB read', async action => {
+    const db = database();
+    await db.applyRemote([row(1)], 1, true);
+    await db.edit('repositories', '1', { name: 'keep' });
+    const before = await db.pending();
+    const backup = await db.exportBackup({ workspaceId: 'home', githubUserId: 42 });
+    const get = IDBObjectStore.prototype.get;
+    const getAll = IDBObjectStore.prototype.getAll;
+    const freeze = () => holdRepositoryIdentityWrites('42', 'home-transaction-test');
+    const getSpy = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query) {
+      const request = get.call(this, query);
+      if ((action === 'resolve' && this.name === 'shadow')
+        || (action === 'claim' && this.name === 'meta' && query === 'unconfirmedTask')) {
+        request.addEventListener('success', freeze);
+      }
+      return request;
+    });
+    const allSpy = vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = getAll.apply(this, args);
+      if (action === 'import' && this.name === 'outbox') request.addEventListener('success', freeze);
+      return request;
+    });
+    try {
+      const work = action === 'import' ? db.importBackup(backup, { workspaceId: 'home', githubUserId: 42 })
+        : action === 'resolve' ? db.resolve('repositories:1', false) : db.claimTaskRequest({ requestId: 'late' });
+      await expect(work).rejects.toThrow('REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED');
+    } finally { getSpy.mockRestore(); allSpy.mockRestore(); releaseRepositoryIdentityWrites('42'); }
+    expect(await db.pending()).toEqual(before);
+    expect((await db.list())[0].data?.name).toBe('keep');
+    expect(await db.metadata('unconfirmedTask')).toBeUndefined();
+  });
+  it.each([false, true])('does not return a task claim for dispatch when frozen at transaction completion (retry=%s)', async retry => {
+    const db = database();
+    const original = { requestId: 'original', kind: 'chat' };
+    await db.metadata('unconfirmedTask');
+    if (retry) await db.claimTaskRequest(original);
+    const transaction = IDBDatabase.prototype.transaction;
+    const spy = vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (
+      this: IDBDatabase, stores, mode, options,
+    ) {
+      const tx = transaction.call(this, stores, mode, options);
+      if (mode === 'readwrite') tx.addEventListener('complete', () => holdRepositoryIdentityWrites('42', 'home-commit-test'));
+      return tx;
+    });
+    try {
+      await expect(db.claimTaskRequest(retry ? { ...original, requestId: 'retry' } : original))
+        .rejects.toThrow('REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED');
+      spy.mockRestore();
+      expect(await db.metadata('unconfirmedTask')).toEqual(original);
+      await db.confirmTaskRequest('original');
+      expect(await db.metadata('unconfirmedTask')).toBeUndefined();
+    } finally { spy.mockRestore(); releaseRepositoryIdentityWrites('42'); }
+  });
   it('refuses a category edit derived from a stale record version without replacing current data', async () => {
     const db = database();
     await db.applyRemote([{ collection: 'organization', id: 'default', version: 5, data: { name: 'current' } }], 5, true);

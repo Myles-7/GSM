@@ -30,6 +30,7 @@ let latestPersistName: string | null = null;
 let latestPersistValue: StorageValue<unknown> | null = null;
 let persistWriteVersion = 0;
 let persistFlushListenersRegistered = false;
+let persistWrites: Promise<void> = Promise.resolve();
 
 const cancelPendingPersistTasks = (): void => {
   if (persistTimeoutId) {
@@ -58,7 +59,7 @@ const writePersistSnapshot = (
     const str = JSON.stringify(value);
     const stringifyMs = Math.round(performance.now() - startedAt);
     const writeStartedAt = performance.now();
-    void Promise.resolve(indexedDBStorage.setItem(name, str))
+    persistWrites = persistWrites.catch(() => undefined).then(() => indexedDBStorage.setItem(name, str))
       .then(() => {
         const writeMs = Math.round(performance.now() - writeStartedAt);
         if (writeMs > 50) {
@@ -76,7 +77,9 @@ const writePersistSnapshot = (
           writeMs,
           bytes: str.length,
         });
+        throw error;
       });
+    void persistWrites.catch(() => undefined);
     if (stringifyMs > 50) {
       logger.warn('store.persist', 'Large state stringify completed', {
         source,
@@ -152,3 +155,7 @@ const debouncedPersistStorage: PersistStorage<unknown> = {
 };
 
 export { debouncedPersistStorage };
+export async function flushAppStorePersistence(): Promise<void> {
+  flushPendingPersistSnapshot();
+  await persistWrites;
+}

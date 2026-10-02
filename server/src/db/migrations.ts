@@ -3,6 +3,7 @@ import { initializeSchema } from './schema.js';
 import { logger } from '../services/logger.js';
 import { initializeSyncV2 } from '../services/syncV2.js';
 import { initializeTasks } from '../services/taskRunner.js';
+import { initializeIdentityMigration } from '../services/repositoryIdentity.js';
 
 const migrations: Record<number, (db: Database.Database) => void> = {
   1: (db) => {
@@ -15,6 +16,7 @@ const migrations: Record<number, (db: Database.Database) => void> = {
     initializeSyncV2(db);
     initializeTasks(db);
   },
+  4: initializeIdentityMigration,
 };
 
 export function runMigrations(db: Database.Database): void {

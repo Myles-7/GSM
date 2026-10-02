@@ -4,17 +4,45 @@ import type { Collection, HomeRecord } from './types';
 import { loadData, transact } from '../features/discovery/custom/storage';
 import { planSchema, type CustomDiscoveryData, type CustomDiscoveryChannel, type ChannelDailyEdition } from '../features/discovery/custom/model';
 import { normalizeTrendingSnapshot } from '../utils/trendingSnapshots';
+import { normalizeDiscoveryChannels, externalChannelSelection } from '../store/helpers/discoveryChannels';
+import { isExternalDiscoveryChannelId } from '../services/externalFeedConfig';
 
 export type DiscoverySeed = { collection: Collection; id: string; data: Record<string, unknown> };
 const json = (value: unknown): Record<string, unknown> => JSON.parse(JSON.stringify(value));
 export const editionId = (edition: Pick<ChannelDailyEdition, 'channelId' | 'date' | 'revision'>) => `${edition.channelId}:${edition.date}:${edition.revision}`;
 export function desktopDiscoveryStoreRecords(state: AppState): DiscoverySeed[] {
   return [
-    ...(Array.isArray(state.discoveryChannels) ? [{ collection: 'discovery_config' as const, id: 'default', data: { channels: state.discoveryChannels.map(({ id, name, nameEn, icon, description, enabled }) => ({ id, name, nameEn, icon, description, enabled })) } }] : []),
+    ...(Array.isArray(state.discoveryChannels) ? [{ collection: 'discovery_config' as const, id: 'default', data: { schemaVersion: 2, channels: state.discoveryChannels.map(({ id, name, nameEn, icon, description, enabled, sourceUrl, sourceKind }) => ({ id, name, nameEn, icon, description, enabled, sourceUrl, sourceKind })) } }] : []),
     ...(state.xTweetFollows ?? []).map(follow => ({ collection: 'discovery_subscriptions' as const, id: `source:x:${follow.handle.toLowerCase()}`, data: { kind: 'x', handle: follow.handle, addedAt: follow.addedAt, enabled: true } })),
     ...(state.telegramFollows ?? []).map(follow => ({ collection: 'discovery_subscriptions' as const, id: `source:telegram:${follow.channel.toLowerCase()}`, data: { kind: 'telegram', handle: follow.channel, addedAt: follow.addedAt, enabled: true } })),
     ...(state.trendingSnapshots ?? []).map(snapshot => ({ collection: 'discovery_history' as const, id: `trending:${snapshot.period}:${snapshot.platform}:${snapshot.capturedAt.slice(0, 10)}`, data: { ...json(snapshot), type: 'trending' } })),
   ].map(row => ({ ...row, data: json(row.data) }));
+}
+
+/** Preserve opaque fields only on retained IDs, never union removed channels back in. */
+export function mergeDesktopDiscoveryConfig(
+  next: Record<string, unknown>, canonical?: HomeRecord, previous?: Record<string, unknown>,
+): Record<string, unknown> {
+  const current = canonical?.deleted ? {} : canonical?.data ?? {};
+  const channels = (value: unknown): Array<Record<string, unknown> & { id: string }> =>
+    Array.isArray(value) ? value.filter((item): item is Record<string, unknown> & { id: string } =>
+      !!item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string') : [];
+  const retained = new Map(channels(current.channels).map(channel => [channel.id, channel]));
+  const previousIds = new Set(channels(previous?.channels).map(channel => channel.id));
+  const authoritative = canonical?.deleted || current.schemaVersion === 2;
+  const knownFields = ['id', 'name', 'nameEn', 'icon', 'description', 'enabled', 'sourceUrl', 'sourceKind'];
+  return {
+    ...current, ...next,
+    channels: channels(next.channels)
+      .filter(channel => !authoritative || !isExternalDiscoveryChannelId(channel.id)
+        || retained.has(channel.id) || !previousIds.has(channel.id))
+      .map(channel => {
+        const merged = { ...retained.get(channel.id), ...channel };
+        // Omitted known optional fields are intentional edits (e.g. RSS -> JSON).
+        for (const field of knownFields) if (!Object.prototype.hasOwnProperty.call(channel, field)) delete merged[field];
+        return merged;
+      }),
+  };
 }
 export function customDiscoveryRecords(data: CustomDiscoveryData): DiscoverySeed[] {
   return [
@@ -30,11 +58,16 @@ export function discoveryStoreProjection(state: AppState, records: HomeRecord[])
   const patch: Partial<AppState> = {};
   const config = records.find(row => row.collection === 'discovery_config' && row.id === 'default' && !row.deleted)?.data;
   if (Array.isArray(config?.channels) && Array.isArray(state.discoveryChannels)) {
+    if (config.schemaVersion === 2) {
+      patch.discoveryChannels = normalizeDiscoveryChannels(config.channels);
+      patch.selectedDiscoveryChannel = externalChannelSelection(patch.discoveryChannels, state.selectedDiscoveryChannel);
+    } else {
     patch.discoveryChannels = state.discoveryChannels.map(channel => { const remote = (config.channels as Array<Record<string, unknown>>).find(item => item.id === channel.id); return remote && typeof remote.enabled === 'boolean' ? { ...channel, enabled: remote.enabled } : channel; });
     const order = (config.channels as Array<Record<string,unknown>>).map(channel=>channel.id);
     patch.discoveryChannels.sort((a,b)=>{const left=order.indexOf(a.id),right=order.indexOf(b.id);return (left<0?order.length:left)-(right<0?order.length:right);});
     if (!patch.discoveryChannels.some(channel => channel.enabled)) patch.discoveryChannels = state.discoveryChannels;
     if (!patch.discoveryChannels.some(channel => channel.id === state.selectedDiscoveryChannel && channel.enabled)) patch.selectedDiscoveryChannel = patch.discoveryChannels.find(channel => channel.enabled)?.id ?? state.selectedDiscoveryChannel;
+    }
   }
   for (const kind of ['x', 'telegram'] as const) {
     const source = records.filter(row => row.collection === 'discovery_subscriptions' && row.id.startsWith(`source:${kind}:`));

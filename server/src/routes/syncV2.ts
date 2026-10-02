@@ -7,6 +7,7 @@ import { decrypt } from '../services/crypto.js';
 import { discoveryAvailability } from './discovery.js';
 import { taskKinds } from '../services/taskModel.js';
 import { assertWorkspace, bootstrapWorkspace, COLLECTIONS, getWorkspace, getRecord, pullChanges, pushOperations, snapshotPage, SyncError } from '../services/syncV2.js';
+import { applyIdentityMigration, IdentityMigrationError, previewIdentityMigration, restoreIdentityMigration } from '../services/repositoryIdentity.js';
 
 export interface GithubIdentity { id: number; login: string }
 const verificationCache = new WeakMap<Database.Database, { hash: string; expiresAt: number; identity: GithubIdentity }>();
@@ -56,8 +57,8 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
       if (options.requireSecret !== false && !config.apiSecret) throw new SyncError('API_SECRET_REQUIRED', 503);
       await fn(req, res, database());
     } catch (err) {
-      const known = err instanceof SyncError;
-      res.status(known ? err.status : 500).json({ error: known ? err.code : 'Sync operation failed', code: known ? err.code : 'SYNC_INTERNAL_ERROR' });
+      const known = err instanceof SyncError || err instanceof IdentityMigrationError;
+      res.status(err instanceof SyncError ? err.status : err instanceof IdentityMigrationError ? 409 : 500).json({ error: known ? err.code : 'Sync operation failed', code: known ? err.code : 'SYNC_INTERNAL_ERROR' });
     }
   };
   const identity = async (db: Database.Database, workspaceId: unknown, githubUserId: unknown) => {
@@ -102,6 +103,13 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
   router.post(['/api/sync/v2/operations', '/api/sync/v2/push'], handle(async (req, res, db) => {
     await identity(db, req.body?.workspaceId, req.body?.githubUserId);
     res.json(pushOperations(db, req.body));
+  }));
+  router.post('/api/sync/v2/identity', handle(async (req, res, db) => {
+    await identity(db, req.body?.workspaceId, req.body?.githubUserId);
+    if (req.body?.phase === 'preview') res.json(previewIdentityMigration(db, req.body));
+    else if (req.body?.phase === 'apply') res.json(applyIdentityMigration(db, req.body));
+    else if (req.body?.phase === 'restore') res.json(restoreIdentityMigration(db, req.body));
+    else throw new SyncError('IDENTITY_PHASE_REQUIRED');
   }));
   router.get(['/api/sync/v2/changes', '/api/sync/v2/pull'], handle(async (req, res, db) => {
     await identity(db, req.query.workspaceId, req.query.githubUserId);

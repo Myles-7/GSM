@@ -19,6 +19,7 @@ import { normalizeTelegramFollows } from '../../utils/telegramFollows';
 import { sortRepositories } from '../../utils/repoSearch';
 import type { AppStoreState } from '../types';
 import { normalizeAccountWorkspaces } from '../helpers/accountWorkspace';
+import { normalizeDiscoveryChannels } from '../helpers/discoveryChannels';
 import { readAuthMirror } from '../persistence/authStorage';
 import { normalizeRepositoryOrganization, organizationCategories, recoverLocalCategorySnapshot } from '../helpers/repositoryOrganization';
 import {
@@ -44,22 +45,8 @@ export const normalizePersistedState = (
   for (const key of ['translationEngine', 'autoTranslateRepoDescription']) {
     delete (safePersisted as Record<string, unknown>)[key];
   }
-  const defaultDiscoveryChannelIds = new Set(defaultDiscoveryChannels.map((channel) => channel.id));
   const persistedDiscoveryChannels = (safePersisted as Record<string, unknown>).discoveryChannels;
-  const normalizedDiscoveryChannels = defaultDiscoveryChannels.map((defaultChannel) => {
-    const persistedChannel = Array.isArray(persistedDiscoveryChannels)
-      ? persistedDiscoveryChannels.find((channel: unknown) =>
-          (channel as Record<string, unknown>)?.id === defaultChannel.id
-        ) as Record<string, unknown> | undefined
-      : undefined;
-    return {
-      ...defaultChannel,
-      enabled: persistedChannel?.enabled !== false,
-    };
-  });
-  if (!normalizedDiscoveryChannels.some(channel => channel.enabled)) {
-    normalizedDiscoveryChannels[0] = { ...normalizedDiscoveryChannels[0], enabled: true };
-  }
+  const normalizedDiscoveryChannels = normalizeDiscoveryChannels(persistedDiscoveryChannels);
   const authMirror = readAuthMirror();
 
   // Effective auth: persisted values win; the synchronous localStorage mirror
@@ -233,8 +220,7 @@ export const normalizePersistedState = (
     discoveryRepos: { 'trending': [], 'hot-release': [], 'most-popular': [], 'topic': [], 'x-tweet': [], 'telegram': [], 'weekly': [], 'search': [], 'code-search': [] } as Record<DiscoveryChannelId, DiscoveryRepo[]>,
     discoveryLastRefresh: { 'trending': null, 'hot-release': null, 'most-popular': null, 'topic': null, 'x-tweet': null, 'telegram': null, 'weekly': null, 'search': null, 'code-search': null },
     discoveryTotalCount: { 'trending': 0, 'hot-release': 0, 'most-popular': 0, 'topic': 0, 'x-tweet': 0, 'telegram': 0, 'weekly': 0, 'search': 0, 'code-search': 0 },
-    selectedDiscoveryChannel: defaultDiscoveryChannelIds.has(safePersisted.selectedDiscoveryChannel as DiscoveryChannelId)
-      && normalizedDiscoveryChannels.some(channel => channel.id === safePersisted.selectedDiscoveryChannel && channel.enabled)
+    selectedDiscoveryChannel: normalizedDiscoveryChannels.some(channel => channel.id === safePersisted.selectedDiscoveryChannel && channel.enabled)
       ? safePersisted.selectedDiscoveryChannel as DiscoveryChannelId
       : normalizedDiscoveryChannels.find(channel => channel.enabled)?.id ?? defaultDiscoveryChannels[0].id,
     // discoveryIsLoading 不持久化，始终重置为 false（防止旧数据格式异常）

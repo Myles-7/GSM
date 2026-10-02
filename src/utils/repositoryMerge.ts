@@ -1,4 +1,5 @@
 import type { Repository } from '../types';
+import { preserveUnconfirmedLegacyRepositories } from './repositoryIdentity';
 
 const LOCAL_REPOSITORY_FIELDS: Array<keyof Repository> = [
   'analysis_error',
@@ -16,6 +17,10 @@ const LOCAL_REPOSITORY_FIELDS: Array<keyof Repository> = [
   'category_locked',
   'last_edited',
   'vector_indexed_at',
+  'vector_indexed_identity',
+  'vector_indexed_generation',
+  'vector_indexed_content_hash',
+  'vector_indexed_license',
   // GitHub 原生状态字段：后端不存储，但 Repository Health / 筛选依赖它们。
   // 必须同时出现在 CLIENT_ONLY_REPOSITORY_FIELDS（不参与后端同步指纹），
   // 否则每次拉取都会把它们清空并触发一次多余的「已变化」判定。
@@ -39,6 +44,9 @@ export const CLIENT_ONLY_REPOSITORY_FIELDS: ReadonlySet<keyof Repository> = new 
   'analysis_error',
   'has_fetched_releases',
   'last_release_fetch_time',
+  'vector_indexed_identity',
+  'vector_indexed_generation',
+  'vector_indexed_content_hash',
   // 见 LOCAL_REPOSITORY_FIELDS 中的同名字段：成对出现，缺一不可。
   'archived',
   'disabled',
@@ -68,7 +76,7 @@ export function mergeRepositoriesPreservingLocalMetadata(
 ): Repository[] {
   const localRepositoryMap = new Map(localRepositories.map(repo => [repo.id, repo]));
 
-  return incomingRepositories.map(incomingRepository => {
+  return preserveUnconfirmedLegacyRepositories(incomingRepositories.map(incomingRepository => {
     const localRepository = localRepositoryMap.get(incomingRepository.id);
     if (!localRepository) {
       return incomingRepository;
@@ -89,5 +97,5 @@ export function mergeRepositoriesPreservingLocalMetadata(
     }
 
     return mergedRepository;
-  });
+  }), localRepositories);
 }

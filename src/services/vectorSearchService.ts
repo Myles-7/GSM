@@ -14,6 +14,14 @@ import {
   type VectorIndexGeneration, type VectorIndexScope,
 } from './vectorIndexIdentity';
 export { EMBEDDING_FORMAT_VERSION } from './vectorIndexIdentity';
+import type { RepositoryIdentityMapping } from '../utils/repositoryIdentity';
+import { validateParticipantMappings } from './repositoryIdentityParticipants';
+import {
+  equalRepositoryIdentityVectors, migratedRepositoryIdentityVector, validateVectorRepositoryIdentityBackup,
+  vectorRepositoryIdentityIds, assertRestorableRepositoryIdentitySnapshot,
+  type RemoteRepositoryIdentityVector, type VectorRepositoryIdentityBackup,
+} from './vectorRepositoryIdentityStorage';
+export type { VectorRepositoryIdentityBackup, RemoteRepositoryIdentityVector } from './vectorRepositoryIdentityStorage';
 
 // ============================================================
 // EmbeddingClient
@@ -227,6 +235,8 @@ export interface VectorizeStatus {
   dimensions: number;
   indexName?: string;
   protocolVersion?: number;
+  identityStorage?: boolean;
+  identityRestoreCheck?: boolean;
 }
 
 type VectorSearchServiceConfig = Pick<VectorSearchConfig, 'workerUrl' | 'authToken'> & Partial<VectorSearchConfig>;
@@ -269,6 +279,135 @@ export class VectorSearchService {
   private requireScope(): VectorIndexScope {
     if (!this.scope) throw new Error('Vector generation required. Rebuild the vector index.');
     return this.scope;
+  }
+
+  private requireRepositoryIdentityScope(): VectorIndexScope {
+    const scope = this.requireScope();
+    const active = this.config.activeIndex;
+    const target = new URL(this.workerUrl);
+    if (target.username || target.password || target.search || target.hash
+      || !active || active.namespace !== scope.namespace || active.identityHash !== scope.identityHash
+      || active.identity.dimensions !== scope.dimensions
+      || active.identity.target !== target.href.replace(/\/+$/, '')) {
+      throw new Error('Current active vector generation required for repository identity storage');
+    }
+    return scope;
+  }
+
+  private async checkRepositoryIdentityStorage(): Promise<void> {
+    const scope = this.requireRepositoryIdentityScope();
+    const status = await this.getStatus();
+    if (status.identityStorage !== true || status.identityRestoreCheck !== true || status.protocolVersion !== VECTOR_PROTOCOL_VERSION) {
+      throw new Error('Update the Worker: repository identity storage and restore preflight capabilities required; migration blocked');
+    }
+    if (status.dimensions !== scope.dimensions) throw new Error('Vector identity storage dimensions conflict');
+  }
+
+  /** Save this credential-free snapshot in the durable coordinator journal before mutation. */
+  async backupRepositoryIdentities(mappings: ReadonlyArray<RepositoryIdentityMapping>): Promise<VectorRepositoryIdentityBackup> {
+    validateParticipantMappings(mappings);
+    if (mappings.length > 500) throw new Error('VECTOR_IDENTITY_MAPPING_LIMIT_500');
+    const scope = this.requireRepositoryIdentityScope();
+    const backup: VectorRepositoryIdentityBackup = {
+      version: 1, workerUrl: this.workerUrl, scope: { ...scope },
+      mappings: mappings.map(mapping => ({ ...mapping })), records: [],
+    };
+    if (!mappings.length) return backup;
+    await this.checkRepositoryIdentityStorage();
+    const response = await this.request<Pick<VectorRepositoryIdentityBackup, 'records'>>('/identity-snapshot', {
+      method: 'POST', body: JSON.stringify({ scope, ids: vectorRepositoryIdentityIds(mappings) }),
+    });
+    backup.records = response.records;
+    validateVectorRepositoryIdentityBackup(backup, this.workerUrl, scope, mappings);
+    return backup;
+  }
+
+  private async waitForRepositoryIdentitySnapshot(backup: VectorRepositoryIdentityBackup, restore: boolean): Promise<void> {
+    const expected = new Map(backup.records.map(record => [record.id, record.vector]));
+    if (!restore) {
+      for (const mapping of backup.mappings) {
+        const source = expected.get(String(mapping.oldId));
+        if (!source) continue;
+        expected.set(String(mapping.oldId), null);
+        expected.set(String(mapping.newId), migratedRepositoryIdentityVector(backup.scope, mapping, source));
+      }
+    }
+    for (let attempt = 0; attempt < 30; attempt++) {
+      this.requireRepositoryIdentityScope();
+      const response = await this.request<{ records: VectorRepositoryIdentityBackup['records'] }>('/identity-snapshot', {
+        method: 'POST', body: JSON.stringify({ scope: backup.scope, ids: vectorRepositoryIdentityIds(backup.mappings) }),
+      });
+      if (Array.isArray(response.records) && response.records.length === expected.size
+        && new Set(response.records.map(record => record.id)).size === expected.size
+        && response.records.every(record => expected.has(record.id)
+          && equalRepositoryIdentityVectors(record.vector, expected.get(record.id)!))) return;
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error('Vector identity storage deletion is not confirmed; retain the durable backup and resume migration');
+  }
+
+  private async mutateRepositoryIdentities(
+    mappings: ReadonlyArray<RepositoryIdentityMapping>, backup: VectorRepositoryIdentityBackup, restore: boolean,
+  ): Promise<{ changed: number }> {
+    const scope = this.requireRepositoryIdentityScope();
+    validateVectorRepositoryIdentityBackup(backup, this.workerUrl, scope, mappings);
+    if (!mappings.length) return { changed: 0 };
+    await this.checkRepositoryIdentityStorage();
+    const path = restore ? '/identity-restore' : '/identity-rekey';
+    const copied = await this.request<{
+      changed: number; complete?: boolean; mutationId?: string; entries: Array<{ id: string; contentHash: string }>;
+    }>(path, { method: 'POST', body: JSON.stringify({ scope, mappings, backup, phase: 'copy' }) });
+    if (copied.complete && copied.changed === 0) {
+      await this.waitForRepositoryIdentitySnapshot(backup, restore);
+      return { changed: 0 };
+    }
+    if (!Number.isSafeInteger(copied.changed) || copied.changed < 1 || !copied.mutationId || !copied.entries?.length) {
+      throw new Error('Worker did not acknowledge the vector identity copy; durable backup retained');
+    }
+    const expected = new Map<string, RemoteRepositoryIdentityVector>();
+    for (const mapping of mappings) {
+      const source = backup.records.find(record => record.id === String(mapping.oldId))?.vector;
+      if (source) {
+        const vector = restore ? source : migratedRepositoryIdentityVector(scope, mapping, source);
+        expected.set(vector.id.slice(scope.namespace.length + 1), vector);
+      }
+    }
+    if (new Set(copied.entries.map(entry => entry.id)).size !== copied.entries.length
+      || copied.entries.some(entry => expected.get(entry.id)?.metadata.content_hash !== entry.contentHash)) {
+      throw new Error('Worker returned conflicting vector identity verification entries');
+    }
+    this.lastMutationId = copied.mutationId;
+    await this.verifyGeneration(copied.entries);
+    this.requireRepositoryIdentityScope();
+    await this.request(path, {
+      method: 'POST', body: JSON.stringify({ scope, mappings, backup, phase: 'delete', mutationId: copied.mutationId }),
+    });
+    await this.waitForRepositoryIdentitySnapshot(backup, restore);
+    return { changed: copied.changed };
+  }
+
+  async rekeyRepositoryIdentities(
+    mappings: ReadonlyArray<RepositoryIdentityMapping>, backup: VectorRepositoryIdentityBackup,
+  ): Promise<{ changed: number }> {
+    return this.mutateRepositoryIdentities(mappings, backup, false);
+  }
+
+  async restoreRepositoryIdentities(backup: VectorRepositoryIdentityBackup): Promise<void> {
+    await this.checkRestoreRepositoryIdentities(backup);
+    await this.mutateRepositoryIdentities(backup.mappings, backup, true);
+  }
+
+  /** Read-only cross-participant preflight; restore also rechecks server-side before mutation. */
+  async checkRestoreRepositoryIdentities(backup: VectorRepositoryIdentityBackup): Promise<void> {
+    const scope = this.requireRepositoryIdentityScope();
+    validateVectorRepositoryIdentityBackup(backup, this.workerUrl, scope, backup.mappings);
+    if (!backup.mappings.length) return;
+    await this.checkRepositoryIdentityStorage();
+    const response = await this.request<{ ready: boolean; records: VectorRepositoryIdentityBackup['records'] }>('/identity-restore-check', {
+      method: 'POST', body: JSON.stringify({ scope, mappings: backup.mappings, backup }),
+    });
+    if (response.ready !== true) throw new Error('VECTOR_IDENTITY_RESTORE_NOT_READY');
+    assertRestorableRepositoryIdentitySnapshot(backup, response.records);
   }
 
   private validateVector(values: number[]): void {

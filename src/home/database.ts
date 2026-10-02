@@ -1,6 +1,7 @@
 import type { Collection, HomeOperation, HomeRecord, PendingOperation } from './types';
 import { z } from 'zod';
 import { PendingTaskRequestError } from './taskSubmission';
+import { assertRepositoryIdentityWritable } from '../services/repositoryIdentityGate';
 
 const collectionSchema = z.enum(['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions']);
 const recordSchema = z.object({ collection: collectionSchema, id: z.string().min(1), data: z.record(z.string(), z.unknown()).nullable(), version: z.number().int().nonnegative(), deleted: z.boolean().optional(), seq: z.number().int().nonnegative().optional() });
@@ -28,6 +29,16 @@ const complete = (tx: IDBTransaction): Promise<void> => new Promise((resolve, re
 export class HomeDatabase {
   private opening?: Promise<IDBDatabase>;
   constructor(readonly namespace: string) {}
+  private assertWritable(tx?: IDBTransaction, done?: Promise<void>): void {
+    try { assertRepositoryIdentityWritable(); }
+    catch (error) {
+      if (tx) {
+        void done?.catch(() => {});
+        tx.abort();
+      }
+      throw error;
+    }
+  }
   private open(): Promise<IDBDatabase> {
     return this.opening ??= new Promise((resolve, reject) => {
       const request = indexedDB.open(`gsm-home-v2-${encodeURIComponent(this.namespace)}`, 1);
@@ -72,13 +83,16 @@ export class HomeDatabase {
     return {createdAt:backup.createdAt,records:backup.records.length,pending:backup.pending.length,collections:backup.records.reduce<Record<string,number>>((counts,row)=>({...counts,[row.collection]:(counts[row.collection]??0)+1}),{}),localExperience:backup.localExperience};
   }
   async importBackup(text: string, identity: BackupIdentity): Promise<BackupExperience | undefined> {
+    this.assertWritable();
     this.previewBackup(text,identity);
     const backup = backupSchema.parse(JSON.parse(backupJson(JSON.parse(text))));
-    const db = await this.open(); const tx = db.transaction(['records', 'shadow', 'outbox', 'meta'], 'readwrite'); const done = complete(tx);
+    const db = await this.open(); this.assertWritable();
+    const tx = db.transaction(['records', 'shadow', 'outbox', 'meta'], 'readwrite'); const done = complete(tx);
     const [inFlight, task, localPending] = await Promise.all([
       result(tx.objectStore('meta').get('inFlight')), result(tx.objectStore('meta').get('unconfirmedTask')),
       result(tx.objectStore('outbox').getAll()) as Promise<PendingOperation[]>,
     ]);
+    this.assertWritable(tx, done);
     if (inFlight || task) { await done; throw new Error('有尚未确认的同步或任务提交，请先恢复确认后再导入'); }
     for (const row of backup.records) tx.objectStore('records').put(row, key(row.collection, row.id));
     // Local edits always win; preserve operation IDs and base versions for safe replay/conflicts.
@@ -109,9 +123,12 @@ export class HomeDatabase {
     const meta = tx.objectStore('meta');
     const previous = await result(meta.get('inFlight')) as { clientId: string; operations: HomeOperation[] } | undefined;
     if (previous) { await done; return previous; }
+    this.assertWritable(tx, done);
     let clientId = await result(meta.get('clientId')) as string | undefined;
-    if (!clientId) { clientId = crypto.randomUUID(); meta.put(clientId, 'clientId'); }
+    this.assertWritable(tx, done);
     const pending = await result(tx.objectStore('outbox').getAll()) as PendingOperation[];
+    this.assertWritable(tx, done);
+    if (!clientId) { clientId = crypto.randomUUID(); meta.put(clientId, 'clientId'); }
     const operations = pending.filter(item => item.conflict === undefined && !item.rejected).slice(0, 100).map(item => ({ opId: item.opId, collection: item.collection, id: item.id, baseVersion: item.baseVersion, kind: item.kind, ...(item.data ? { data: item.data } : {}), source: item.source }));
     const batch = { clientId, operations };
     if (operations.length) meta.put(batch, 'inFlight');
@@ -123,8 +140,11 @@ export class HomeDatabase {
     if (JSON.stringify(pending?.operations) === JSON.stringify(operations)) tx.objectStore('meta').delete('inFlight'); await done;
   }
   async claimTaskRequest(request: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const db = await this.open(); const tx = db.transaction('meta', 'readwrite'); const done = complete(tx);
+    this.assertWritable();
+    const db = await this.open(); this.assertWritable();
+    const tx = db.transaction('meta', 'readwrite'); const done = complete(tx);
     const previous = await result(tx.objectStore('meta').get('unconfirmedTask')) as Record<string, unknown> | undefined;
+    this.assertWritable(tx, done);
     if (previous !== undefined) {
       if (!previous || typeof previous !== 'object' || Array.isArray(previous) || typeof previous.requestId !== 'string' || !previous.requestId) {
         await done;
@@ -133,10 +153,13 @@ export class HomeDatabase {
       const oldPayload = { ...previous }; delete oldPayload.requestId;
       const newPayload = { ...request }; delete newPayload.requestId;
       await done;
+      this.assertWritable();
       if (JSON.stringify(oldPayload) !== JSON.stringify(newPayload)) throw new PendingTaskRequestError(previous);
       return previous;
     }
-    tx.objectStore('meta').put(request, 'unconfirmedTask'); await done; return request;
+    tx.objectStore('meta').put(request, 'unconfirmedTask'); await done;
+    this.assertWritable();
+    return request;
   }
   async confirmTaskRequest(requestId: unknown): Promise<void> {
     if (typeof requestId !== 'string' || !requestId) return;
@@ -153,10 +176,14 @@ export class HomeDatabase {
     tx.objectStore('meta').put(value, name); await done;
   }
   async edit(collection: Collection, id: string, data: Record<string, unknown> | null, source: 'user' | 'ai' = 'user', expectedVersion?: number): Promise<void> {
-    const db = await this.open(); const tx = db.transaction(['records', 'shadow', 'outbox'], 'readwrite'); const done = complete(tx);
+    this.assertWritable();
+    const db = await this.open(); this.assertWritable();
+    const tx = db.transaction(['records', 'shadow', 'outbox'], 'readwrite'); const done = complete(tx);
     const recordKey = key(collection, id);
     const pending = await result(tx.objectStore('outbox').get(recordKey)) as PendingOperation | undefined;
+    this.assertWritable(tx, done);
     const shadow = await result(tx.objectStore('shadow').get(recordKey)) as HomeRecord | undefined;
+    this.assertWritable(tx, done);
     if (expectedVersion !== undefined && expectedVersion !== (shadow?.version ?? 0)) { await done; throw new Error('资料版本已改变，请刷新或处理同步冲突后重试'); }
     const operation: PendingOperation = {
       key: recordKey, opId: crypto.randomUUID(), collection, id, baseVersion: pending?.baseVersion ?? shadow?.version ?? 0,
@@ -206,10 +233,14 @@ export class HomeDatabase {
     await done;
   }
   async resolve(recordKey: string, keepLocal: boolean): Promise<void> {
-    const db = await this.open(); const tx = db.transaction(['records', 'outbox', 'shadow'], 'readwrite'); const done = complete(tx);
+    this.assertWritable();
+    const db = await this.open(); this.assertWritable();
+    const tx = db.transaction(['records', 'outbox', 'shadow'], 'readwrite'); const done = complete(tx);
     const item = await result(tx.objectStore('outbox').get(recordKey)) as PendingOperation | undefined;
+    this.assertWritable(tx, done);
     if (!item) { await done; return; }
     const remote = item.conflict !== undefined ? item.conflict : await result(tx.objectStore('shadow').get(recordKey)) as HomeRecord | undefined;
+    this.assertWritable(tx, done);
     if (remote) tx.objectStore('shadow').put(remote, recordKey); else tx.objectStore('shadow').delete(recordKey);
     if (keepLocal) {
       const operation = { ...item }; delete operation.conflict; delete operation.rejected;

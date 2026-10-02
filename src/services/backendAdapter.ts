@@ -116,10 +116,11 @@ class BackendAdapter {
     }
     try {
       const configuredUrl = preferredUrl ? normalizeBackendUrl(preferredUrl) : readStoredBackendUrl();
+      const canProbeOrigin = ['http:', 'https:'].includes(window.location.protocol);
       const urls = preferredUrl
         ? (configuredUrl ? [configuredUrl] : [])
-        : (configuredUrl ? [configuredUrl] : [window.location.origin + '/api']);
-      if (!preferredUrl && !configuredUrl && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+        : (configuredUrl ? [configuredUrl] : (canProbeOrigin ? [window.location.origin + '/api'] : []));
+      if (canProbeOrigin && !preferredUrl && !configuredUrl && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
         urls.push('http://localhost:3000/api');
       }
 
