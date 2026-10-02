@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "recordedOn": "2026-09-27",
   "timeZone": "Asia/Shanghai",
   "status": "validated-local-release",
@@ -30,6 +30,34 @@
     "baselineTag": "personal-P0.1.0",
     "recoveryTag": "recovery/pre-v0.8.4"
   },
+  "selectiveMigrations": [
+    {
+      "id": "P0.2.0-v0.8.5-selected",
+      "status": "pending-validation",
+      "sourceTag": "v0.8.5",
+      "sourceCommit": "245ee3107e8a2ba849ee6e04ffdd920d6e35ecea",
+      "targetPersonalVersion": "P0.2.0",
+      "completeUpstreamBaselineAdvanced": false,
+      "checkpoint": "e26c52efbaec31cf93abad995f38dc5dcd55a3cc",
+      "recoveryTag": "recovery/pre-P0.2.0",
+      "plan": "upgrades/v0.8.5-development-plan.md",
+      "ledger": "upgrades/P0.2.0-migration-ledger.md",
+      "dataVersions": { "appStore": { "from": 16, "to": 17, "status": "planned" } },
+      "items": [
+        { "pr": 414, "scope": "README preview and account-scoped paste history", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 415, "scope": "asset-level matching and matched/show-all links", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 416, "scope": "desktop IPC, inline test credentials, timeout/cancel", "excluded": "browser/backend DAV proxy", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 417, "scope": "token guide and permission errors", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 418, "scope": "true IDs and confirmed cross-store identity recovery", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 419, "scope": "direct JSON/RSS/Atom external feeds", "excluded": "CORS proxy and custom-discovery relocation", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 420, "scope": "modal protocol and Repo Info Card with personal AI consent/journal", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 421, "scope": "appearance, card checkmarks, plugin name and local vector pending panel", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 422, "scope": "health, Markdown, RSS, MIME images, sanitized snapshot budget", "status": "pending", "personalCommits": [], "evidence": [] },
+        { "pr": 412, "status": "excluded", "reason": "package slimming/build restructuring outside agreed scope" },
+        { "pr": 413, "status": "excluded", "reason": "CI caching outside agreed scope; PR is not an ancestor of source tag" }
+      ]
+    }
+  ],
   "local": {
     "packageVersion": "0.8.4",
     "intendedBranch": "personal/main",

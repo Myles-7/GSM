@@ -1,5 +1,7 @@
 # Android 与家庭后端交付状态（2026-09-29）
 
+> 归档说明（2026-10-02）：此处 APK/Capacitor 构建方式属于已退役原生路线，不再作为 P0.2.0 交付入口。保留历史记录与安全文件，不恢复移动端专用工程。
+
 ## 构建方式
 
 Android 应用使用 Capacitor 8、独立移动端入口 `src/mobile/main.tsx` 和 `vite.mobile.config.ts`。`node scripts/build-mobile.mjs` 编译 `dist-mobile/mobile.html`，重命名为 Capacitor 所需的 `index.html`，然后调用本地 Capacitor CLI 同步 Android 工程，不通过 npx 自动下载未锁定版本。

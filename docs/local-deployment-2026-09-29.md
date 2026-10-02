@@ -1,6 +1,6 @@
 # 本机安装记录（2026-09-29）
 
-本记录补充 android-home-delivery.md 的开发阶段报告，描述已完成的真实电脑部署。手机真机、异网和整机重启验收仍单独记录，不以本机测试替代。
+本记录补充[历史交付记录](personal/archive/android-native/android-home-delivery.md)，描述已完成的真实电脑部署。Android 原生路线已退役，手机继续通过网页使用；异网和整机重启验收仍单独记录，不以本机测试替代。
 
 ## 安装及启动
 
