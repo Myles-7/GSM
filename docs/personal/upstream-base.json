@@ -46,7 +46,10 @@
     "liveStarOrPaidAIExecuted": false,
     "remoteVectorWorkerDeployed": false,
     "singleUsageDirectory": true,
-    "implementationWorktree": "archived by Codex after publication; not a runtime dependency"
+    "implementationWorktree": "archived by Codex after publication; not a runtime dependency",
+    "rootDependenciesRestoredFromLock": true,
+    "postArchiveRealProfileValidation": "passed with 62 repositories, Store v17 and Home outbox 0",
+    "legacyBackendUpdaterRetired": true
   },
   "publication": {
     "verifiedOn": "2026-10-02",
