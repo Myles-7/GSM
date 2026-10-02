@@ -13,10 +13,12 @@ P0.2.0，完整上游基线和应用 package 仍为 0.8.4，固定开发地址�
 `upgrades/v0.8.5-development-plan.md`、`upgrades/P0.2.0-migration-ledger.md`、
 `upgrades/P0.2.0-validation.md` 和 `upstream-base.json`；个人功能列表见 `features.md`。
 
-P0.2.0 源码保留在隔离分支 `codex/selective-v0.8.5-p0.2.0-implementation`，
-工作区为 `C:/Users/Li Cheng Xin/.codex/worktrees/gsm-p020-selective/GSM`。
-原目录/启动入口尚未切换，原数据没有自动迁移。开始使用真实数据前先按共同恢复说明
-建立静默一致备份；不要仅凭撤销代码回滚重键后的数据。
+P0.2.0 已快进合入 `D:/桌面/GSM`，日常只需这个目录和已有 `GSM-桌面端.lnk`。
+常用入口加载构建后的 file-origin；5174 是保留的独立开发入口，不能混用两套存储。
+原账号、仓库 AI/分类及 Workbench 历史已通过实际生产界面验证；常用 Store 为 v17，
+本机服务为 migration 4，身份 dry-run 无候选，未执行历史重键或远端向量部署。
+完整记录见 [本机交付](upgrades/P0.2.0-rollout.md)。恢复材料不属于运行依赖；
+以后若实际重键，不要仅凭撤销代码回滚数据。
 
 以下段落保留为最初记录的历史上下文，其中 403、未初始化等限制已经解除，
 不代表当前状态。

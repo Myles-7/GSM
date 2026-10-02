@@ -76,6 +76,9 @@ docs/wiki/
 /home-backend/
 /.deployment-staging/
 /GSM-桌面端.lnk
+/data/
+/server/data/backups/
+/output/home-backend/
 
 # Isolated selective-migration test profiles and generated caches
 /.identity-participant-test-cache/
