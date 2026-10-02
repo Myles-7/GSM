@@ -1,0 +1,28 @@
+{
+  "namespace": "discovery",
+  "en": {
+    "externalFeeds": {
+      "add": "Add External Feed",
+      "close": "Close",
+      "name": "Feed name",
+      "url": "Public HTTPS URL",
+      "kind": "Feed format",
+      "checking": "Checking feed...",
+      "remove": "Remove {{name}}",
+      "invalid": "Enter a name and a public HTTPS feed URL.",
+      "account": "Sign in before adding a feed.",
+      "duplicate": "This feed already exists or the 10-feed limit was reached.",
+      "errors": {
+        "invalid-url": "A feed must use a public HTTPS URL without credentials.",
+        "invalid-format": "The feed format or a repository link is invalid.",
+        "too-many-repositories": "A JSON feed may contain at most 30 repositories.",
+        "too-large": "The feed exceeds 128000 bytes.",
+        "unreadable": "Could not read the feed. Check its URL and browser CORS permissions.",
+        "http": "The feed request failed or was redirected.",
+        "no-repositories": "No GitHub repository links were found in the feed.",
+        "no-details": "None of the feed repositories could be loaded from GitHub.",
+        "timeout": "The feed request timed out after 15 seconds."
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "namespace": "app",
+  "en": {
+    "settingsPanel": {
+      "appearance": "Appearance",
+      "plugin-management": "Plugin Management",
+      "plugins": "Plugin Management"
+    },
+    "generalPanel": {
+      "token-permission-guide": "Token setup guide"
+    },
+    "vectorSearchSettings": {
+      "local-pending": "Locally known pending",
+      "local-pending-count": "{{count}} locally known pending",
+      "scan-candidates": "Incremental scan candidates",
+      "save-before-indexing": "Unsaved embedding or index settings"
+    }
+  },
+  "zh": {
+    "settingsPanel": {
+      "appearance": "外观设置",
+      "plugin-management": "插件管理",
+      "plugins": "插件管理"
+    },
+    "generalPanel": {
+      "token-permission-guide": "查看 Token 配置指引"
+    },
+    "vectorSearchSettings": {
+      "local-pending": "本地已知待处理",
+      "local-pending-count": "{{count}} 个本地已知待处理",
+      "scan-candidates": "增量扫描候选",
+      "save-before-indexing": "嵌入模型或索引设置尚未保存"
+    }
+  }
+}

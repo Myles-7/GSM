@@ -1,15 +1,22 @@
 # 个人版仓库与基线记录
 
-记录日期：2026-09-27（Asia/Shanghai）。
+记录日期：2026-10-02（Asia/Shanghai）。
 
 ## 当前迁移状态
 
 已建立完整上游 Git 历史及两个 Remote，现有个人改动记录为 P0.1.0
 （`20f861a5d8174db67ba4541c93158e6d9cf0bef4`），父提交是 v0.8.3。
 恢复标签为 `recovery/pre-v0.8.4`。这属于根据源码差异重建历史，不是恢复原始个人提交。
-v0.8.4 已通过验收，个人交付版本为 P0.1.1，固定开发地址为
-`http://127.0.0.1:5174`。固定目标、验收与交付结论以 `upgrades/v0.8.4.md` 和
-`upstream-base.json` 为准；个人功能列表见 `features.md`。
+v0.8.4 完整升级已通过验收，随后仅移植 v0.8.5 的已选改动，当前本地交付为
+P0.2.0，完整上游基线和应用 package 仍为 0.8.4，固定开发地址仍为
+`http://127.0.0.1:5174`。选择性范围、提交与验收结论见
+`upgrades/v0.8.5-development-plan.md`、`upgrades/P0.2.0-migration-ledger.md`、
+`upgrades/P0.2.0-validation.md` 和 `upstream-base.json`；个人功能列表见 `features.md`。
+
+P0.2.0 源码保留在隔离分支 `codex/selective-v0.8.5-p0.2.0-implementation`，
+工作区为 `C:/Users/Li Cheng Xin/.codex/worktrees/gsm-p020-selective/GSM`。
+原目录/启动入口尚未切换，原数据没有自动迁移。开始使用真实数据前先按共同恢复说明
+建立静默一致备份；不要仅凭撤销代码回滚重键后的数据。
 
 以下段落保留为最初记录的历史上下文，其中 403、未初始化等限制已经解除，
 不代表当前状态。

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "recordedOn": "2026-09-27",
+  "recordedOn": "2026-10-02",
   "timeZone": "Asia/Shanghai",
   "status": "validated-local-release",
   "repositories": {
@@ -15,13 +15,21 @@
   },
   "upstreamVersion": "0.8.4",
   "upstreamCommit": "ade5901c20c1a98512b3a09bce0ff176d16079d8",
-  "personalVersion": "P0.1.1",
-  "personalCommit": "2406b00de044a67ea6a4b572ee7e532e09bb4c29",
+  "personalVersion": "P0.2.0",
+  "personalCommit": "121069916a0ec82dee05a36b7c84d273d06bec8b",
   "personalCommitScope": "validated source commit; delivery tag also includes subsequent records",
-  "deliveryTag": "personal-P0.1.1",
-  "upgradeDate": "2026-09-27",
-  "upgradeBranch": "upgrade/upstream-v0.8.4",
+  "deliveryTag": "personal-P0.2.0",
+  "upgradeDate": "2026-10-02",
+  "upgradeBranch": "codex/selective-v0.8.5-p0.2.0-implementation",
+  "upgradeKind": "selective-forward-port",
   "upstreamMergeCommit": "393ae26edad8e58bc357d14cbd36a4032a8bddd0",
+  "upstreamMergeCommitScope": "last complete upstream merge, v0.8.4; unchanged by P0.2.0",
+  "previousPersonalRelease": {
+    "personalVersion": "P0.1.1",
+    "personalCommit": "2406b00de044a67ea6a4b572ee7e532e09bb4c29",
+    "deliveryTag": "personal-P0.1.1",
+    "validatedOn": "2026-09-27"
+  },
   "desktopDevUrl": "http://127.0.0.1:5174",
   "historyReconstruction": {
     "method": "full upstream history, read-tree without worktree replacement, personal differences committed on v0.8.3",
@@ -33,34 +41,91 @@
   "selectiveMigrations": [
     {
       "id": "P0.2.0-v0.8.5-selected",
-      "status": "pending-validation",
+      "status": "validated-local",
       "sourceTag": "v0.8.5",
       "sourceCommit": "245ee3107e8a2ba849ee6e04ffdd920d6e35ecea",
       "targetPersonalVersion": "P0.2.0",
+      "validatedOn": "2026-10-02",
+      "validatedSourceCommit": "121069916a0ec82dee05a36b7c84d273d06bec8b",
+      "validation": "upgrades/P0.2.0-validation.md",
+      "acceptanceScope": "isolated Windows Electron and automated local fixtures; no original-data migration, remote deployment, live Star or paid AI",
+      "originalCheckoutReplaced": false,
       "completeUpstreamBaselineAdvanced": false,
       "checkpoint": "e26c52efbaec31cf93abad995f38dc5dcd55a3cc",
       "recoveryTag": "recovery/pre-P0.2.0",
       "plan": "upgrades/v0.8.5-development-plan.md",
       "ledger": "upgrades/P0.2.0-migration-ledger.md",
-      "dataVersions": { "appStore": { "from": 16, "to": 17, "status": "planned" } },
+      "dataVersions": {
+        "appStore": { "from": 16, "to": 17, "status": "validated-with-isolated-fixtures" },
+        "server": { "fromMigration": 3, "toMigration": 4, "scope": "forward-only identity aliases and journals" },
+        "workbench": { "schemaVersionChanged": false },
+        "customDiscovery": { "schemaVersionChanged": false },
+        "homeClient": { "schemaVersionChanged": false },
+        "vector": { "scope": "existing active generation; identity capabilities required; not remotely deployed" }
+      },
       "items": [
-        { "pr": 414, "scope": "README preview and account-scoped paste history", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 415, "scope": "asset-level matching and matched/show-all links", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 416, "scope": "desktop IPC, inline test credentials, timeout/cancel", "excluded": "browser/backend DAV proxy", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 417, "scope": "token guide and permission errors", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 418, "scope": "true IDs and confirmed cross-store identity recovery", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 419, "scope": "direct JSON/RSS/Atom external feeds", "excluded": "CORS proxy and custom-discovery relocation", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 420, "scope": "modal protocol and Repo Info Card with personal AI consent/journal", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 421, "scope": "appearance, card checkmarks, plugin name and local vector pending panel", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 422, "scope": "health, Markdown, RSS, MIME images, sanitized snapshot budget", "status": "pending", "personalCommits": [], "evidence": [] },
-        { "pr": 412, "status": "excluded", "reason": "package slimming/build restructuring outside agreed scope" },
+        {
+          "pr": 414, "sourceCommit": "a2d3e71e9539bc84779ea1e63f9b7880d2acf1ab",
+          "scope": "README preview and account-scoped paste history", "status": "validated-local",
+          "personalCommits": ["080c11e3f7285e30ff071cc7b03fbc3c9e55378c", "121069916a0ec82dee05a36b7c84d273d06bec8b"],
+          "evidence": ["src/components/BatchStarImportReadme.test.tsx", "src/features/repositories/hooks/useBatchStarHistory.test.tsx", "src/features/repositories/hooks/useBatchStarImport.test.tsx"]
+        },
+        {
+          "pr": 415, "sourceCommit": "0c3d27e1af6b37d9ecc74f5cff5958dd59196dc3",
+          "scope": "asset-level matching and matched/show-all links", "status": "validated-local",
+          "personalCommits": ["6bcd6f5df5500b889cb79de5f7c53cbd8bd88479", "121069916a0ec82dee05a36b7c84d273d06bec8b"],
+          "evidence": ["src/utils/assetFilters.test.ts", "src/utils/releaseFilterLinks.test.ts", "src/components/RepositoryReleaseSheet.test.tsx", "src/components/ReleaseTimeline.test.tsx"]
+        },
+        {
+          "pr": 416, "sourceCommit": "155d71516c475689f4dfa4ebe88998cab15b5aee",
+          "scope": "desktop IPC, inline test credentials, timeout/cancel", "excluded": "browser/backend DAV proxy", "status": "validated-local",
+          "personalCommits": ["9e3d15e68aa9c54165fc846aa0ad31f8d7a20a23"],
+          "evidence": ["electron/webdavIpc.test.js", "electron/webdavIpc.fixture-runner.cjs", "src/services/webdavService.test.ts", "upgrades/P0.2.0-validation.md"]
+        },
+        {
+          "pr": 417, "sourceCommit": "e60d034322d25787b8d9896fefb180e4fcafc371",
+          "scope": "token guide and permission errors", "status": "validated-local",
+          "personalCommits": ["080c11e3f7285e30ff071cc7b03fbc3c9e55378c", "947a89a1767a17d32769cd60a3ca60f64c35aa09", "121069916a0ec82dee05a36b7c84d273d06bec8b"],
+          "evidence": ["src/components/GitHubTokenPermissions.test.tsx", "src/services/githubApi.permissions.test.ts", "src/features/repositories/hooks/useBatchStarImport.test.tsx"]
+        },
+        {
+          "pr": 418, "sourceCommit": "7f24f75b0a3d914173a91a2e91e7fbe0af428167",
+          "scope": "true IDs and explicitly confirmed cross-store identity recovery; no automatic name-only merge", "status": "validated-local",
+          "personalCommits": ["305ec88427470cbebdd0600507a634fcecc88d83", "080c11e3f7285e30ff071cc7b03fbc3c9e55378c", "947a89a1767a17d32769cd60a3ca60f64c35aa09"],
+          "evidence": ["src/store/selectiveMigration.test.ts", "src/services/repositoryIdentityMigration.test.ts", "src/services/repositoryIdentityParticipants.test.ts", "server/tests/services/repositoryIdentity.test.ts", "cloudflare-worker/src/identityStorage.test.ts", "upgrades/P0.2.0-data-recovery.md"]
+        },
+        {
+          "pr": 419, "sourceCommit": "247aaa9ca21517e26a6b235502cb946cbe5ff614",
+          "scope": "direct JSON/RSS/Atom external feeds and compatible Home projections", "excluded": "CORS proxy and custom-discovery relocation", "status": "validated-local",
+          "personalCommits": ["305ec88427470cbebdd0600507a634fcecc88d83", "35890baae8c5402092c5c01b5248cf7fa3b04257", "121069916a0ec82dee05a36b7c84d273d06bec8b"],
+          "evidence": ["src/services/externalDiscoveryFeed.test.ts", "src/services/externalFeedParsers.test.ts", "src/features/discovery/hooks/useExternalFeedLoading.test.tsx", "src/home/desktop.identity.test.ts", "src/home/discoveryDesktop.test.ts"]
+        },
+        {
+          "pr": 420, "sourceCommit": "b5e75f891d7a0311e607670bcb798f8a85073470",
+          "scope": "modal protocol and Repo Info Card with personal AI consent/journal", "status": "validated-local",
+          "personalCommits": ["9e3d15e68aa9c54165fc846aa0ad31f8d7a20a23", "3e91a15753f890c2bcb431baad2110956ba19492"],
+          "evidence": ["electron/plugins/pluginIpc.test.js", "src/components/PluginPageViewer.test.tsx", "electron/plugins/nativePluginIntegrationSmoke.cjs", "electron/p020AppSmoke.cjs", "upgrades/P0.2.0-validation.md"]
+        },
+        {
+          "pr": 421, "sourceCommit": "211d3e2097041947617738cb2abb162ab7f952a5",
+          "scope": "appearance, card checkmarks, plugin name and local vector pending panel", "status": "validated-local",
+          "personalCommits": ["305ec88427470cbebdd0600507a634fcecc88d83", "947a89a1767a17d32769cd60a3ca60f64c35aa09", "121069916a0ec82dee05a36b7c84d273d06bec8b"],
+          "evidence": ["src/components/settings/AppearancePanel.test.tsx", "src/components/settings/VectorIndexOperationsPanel.test.tsx", "src/utils/localVectorPending.test.ts", "electron/p020AppSmoke.cjs"]
+        },
+        {
+          "pr": 422, "sourceCommit": "6ce2d976cdba617b75c0c2ef3bdb01f7daf18596",
+          "scope": "health, Markdown, RSS, MIME images, sanitized snapshot budget", "status": "validated-local",
+          "personalCommits": ["305ec88427470cbebdd0600507a634fcecc88d83", "9e3d15e68aa9c54165fc846aa0ad31f8d7a20a23"],
+          "evidence": ["src/components/MarkdownRenderer.test.tsx", "src/utils/inertRssHtml.test.ts", "src/utils/imageDownload.test.ts", "electron/plugins/pluginCatalog.test.js", "electron/webdavIpc.fixture-runner.cjs"]
+        },
+        { "pr": 412, "sourceCommit": "d507649fc2576d09715813ad1a35083849dde379", "status": "excluded", "reason": "package slimming/build restructuring outside agreed scope" },
         { "pr": 413, "status": "excluded", "reason": "CI caching outside agreed scope; PR is not an ancestor of source tag" }
       ]
     }
   ],
   "local": {
     "packageVersion": "0.8.4",
-    "intendedBranch": "personal/main",
+    "intendedBranch": "codex/selective-v0.8.5-p0.2.0-implementation",
     "gitInitialized": true,
     "remotesConfigured": true,
     "fullHistoryFetched": true,

@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "instructions": "Copy upstreamKeys from the fixed tag into each listed language/namespace, then deep-merge additions. Do not replace entire locale files. Central integration owns src/locales.",
+  "source": "v0.8.5 / 245ee3107e8a2ba849ee6e04ffdd920d6e35ecea",
+  "languages": ["en", "zh", "ja", "es", "pt-BR", "ru", "zh-TW", "fr", "de", "ko"],
+  "upstreamKeys": {
+    "login": [
+      "loginScreen.token-permissions-title",
+      "loginScreen.token-permissions-check",
+      "loginScreen.token-permissions-tab-finegrained",
+      "loginScreen.token-permissions-tab-classic",
+      "loginScreen.token-permissions-feature-star",
+      "loginScreen.token-permissions-feature-gists",
+      "loginScreen.token-permissions-feature-star-lists",
+      "loginScreen.token-permissions-feature-fork-sync",
+      "loginScreen.token-permissions-feature-workflows",
+      "loginScreen.token-permissions-feature-fork-workflows",
+      "loginScreen.token-permissions-fine-star",
+      "loginScreen.token-permissions-fine-gists",
+      "loginScreen.token-permissions-fine-fork-sync",
+      "loginScreen.token-permissions-fine-workflows",
+      "loginScreen.token-permissions-classic-star",
+      "loginScreen.token-permissions-classic-gists",
+      "loginScreen.token-permissions-classic-star-lists",
+      "loginScreen.token-permissions-classic-fork-workflows"
+    ],
+    "repositories": [
+      "batchStar.history",
+      "batchStar.history-empty",
+      "batchStar.save-history",
+      "batchStar.history-error",
+      "batchStar.view-readme",
+      "batchStar.readme-load-error",
+      "batchStar.loading-readme",
+      "batchStar.token-permission-error"
+    ],
+    "releases": ["releaseCard.show-all-assets"]
+  },
+  "additions": {
+    "en": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub did not return a valid repository ID. This repository was not starred.",
+        "rate-limit-error": "GitHub has rate limited this request. Wait before trying again; changing token permissions will not fix it.",
+        "network-error": "Could not reach GitHub. Check your connection and try again."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Show matched assets" },
+        "repositoryReleaseSheet": { "no-matching-releases": "No releases match the selected asset filters." }
+      }
+    },
+    "zh": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub 未返回有效的仓库 ID，未对该仓库执行 Star。",
+        "rate-limit-error": "GitHub 已限制此请求频率，请稍后重试；修改 Token 权限不能解决限流。",
+        "network-error": "无法连接 GitHub，请检查网络后重试。"
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "只显示命中资产" },
+        "repositoryReleaseSheet": { "no-matching-releases": "没有 Release 命中所选资产过滤器。" }
+      }
+    },
+    "ja": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub から有効なリポジトリ ID が返されなかったため、Star を追加しませんでした。",
+        "rate-limit-error": "GitHub のレート制限に達しました。時間を置いて再試行してください。トークンの権限変更では解決しません。",
+        "network-error": "GitHub に接続できません。ネットワークを確認して再試行してください。"
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "一致するアセットのみ表示" },
+        "repositoryReleaseSheet": { "no-matching-releases": "選択したアセットフィルターに一致するリリースはありません。" }
+      }
+    },
+    "es": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub no devolvió un ID de repositorio válido. No se añadió la estrella.",
+        "rate-limit-error": "GitHub ha limitado la frecuencia de esta solicitud. Espera antes de volver a intentarlo; cambiar los permisos del token no lo solucionará.",
+        "network-error": "No se pudo conectar con GitHub. Comprueba tu conexión e inténtalo de nuevo."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Mostrar solo los archivos coincidentes" },
+        "repositoryReleaseSheet": { "no-matching-releases": "Ninguna versión coincide con los filtros de archivos seleccionados." }
+      }
+    },
+    "pt-BR": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "O GitHub não retornou um ID de repositório válido. Nenhuma estrela foi adicionada.",
+        "rate-limit-error": "O GitHub limitou a frequência desta solicitação. Aguarde antes de tentar novamente; alterar as permissões do token não resolverá.",
+        "network-error": "Não foi possível conectar ao GitHub. Verifique sua conexão e tente novamente."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Mostrar apenas os arquivos correspondentes" },
+        "repositoryReleaseSheet": { "no-matching-releases": "Nenhuma versão corresponde aos filtros de arquivos selecionados." }
+      }
+    },
+    "ru": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub не вернул действительный ID репозитория. Звезда не была добавлена.",
+        "rate-limit-error": "GitHub ограничил частоту запросов. Подождите и повторите попытку; изменение прав токена не устранит ограничение.",
+        "network-error": "Не удалось подключиться к GitHub. Проверьте соединение и повторите попытку."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Показать только совпавшие файлы" },
+        "repositoryReleaseSheet": { "no-matching-releases": "Нет релизов, соответствующих выбранным фильтрам файлов." }
+      }
+    },
+    "zh-TW": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub 未傳回有效的儲存庫 ID，未為該儲存庫新增 Star。",
+        "rate-limit-error": "GitHub 已限制此請求頻率，請稍後重試；修改 Token 權限無法解決限流。",
+        "network-error": "無法連線至 GitHub，請檢查網路後重試。"
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "只顯示符合的資產" },
+        "repositoryReleaseSheet": { "no-matching-releases": "沒有 Release 符合所選資產篩選器。" }
+      }
+    },
+    "fr": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub n'a pas renvoyé d'ID de dépôt valide. Aucune étoile n'a été ajoutée.",
+        "rate-limit-error": "GitHub a limité la fréquence de cette requête. Patientez avant de réessayer ; modifier les droits du jeton ne résoudra pas ce problème.",
+        "network-error": "Impossible de joindre GitHub. Vérifiez votre connexion et réessayez."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Afficher uniquement les fichiers correspondants" },
+        "repositoryReleaseSheet": { "no-matching-releases": "Aucune version ne correspond aux filtres de fichiers sélectionnés." }
+      }
+    },
+    "de": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub hat keine gültige Repository-ID zurückgegeben. Es wurde kein Star hinzugefügt.",
+        "rate-limit-error": "GitHub hat die Anfragerate begrenzt. Warten Sie vor einem erneuten Versuch; geänderte Token-Rechte lösen dieses Problem nicht.",
+        "network-error": "GitHub ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "Nur passende Dateien anzeigen" },
+        "repositoryReleaseSheet": { "no-matching-releases": "Keine Releases passen zu den ausgewählten Dateifiltern." }
+      }
+    },
+    "ko": {
+      "repositories": { "batchStar": {
+        "invalid-repository-id": "GitHub가 유효한 저장소 ID를 반환하지 않아 Star를 추가하지 않았습니다.",
+        "rate-limit-error": "GitHub가 요청 빈도를 제한했습니다. 잠시 후 다시 시도하세요. 토큰 권한을 변경해도 이 제한은 해결되지 않습니다.",
+        "network-error": "GitHub에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도하세요."
+      }},
+      "releases": {
+        "releaseCard": { "show-matched-assets": "일치하는 자산만 표시" },
+        "repositoryReleaseSheet": { "no-matching-releases": "선택한 자산 필터와 일치하는 릴리스가 없습니다." }
+      }
+    }
+  }
+}
