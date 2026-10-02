@@ -12,6 +12,7 @@ import {
   Database,
   Server,
   Package,
+  Palette,
   X,
   Trash2,
   Wifi,
@@ -29,6 +30,9 @@ import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { isElectron } from '../services/electronProxy';
 import { useBackendAvailability } from '../features/settings/hooks/useBackendAvailability';
+import { useLocalVectorPendingCount } from '../features/settings/hooks/useLocalVectorPendingCount';
+import { AppearancePanel } from './settings/AppearancePanel';
+import { VectorPendingBadge } from './settings/VectorPendingBadge';
 import {
   GeneralPanel,
   AIConfigPanel,
@@ -47,12 +51,13 @@ import {
   HtmlReadingPanel,
 } from './settings';
 
-type SettingsTab = 'general' | 'starSync' | 'ai' | 'webdav' | 'backup' | 'backend' | 'category' | 'menu' | 'data' | 'logs' | 'network' | 'vectorSearch' | 'mcp' | 'plugins' | 'htmlReading';
+type SettingsTab = 'general' | 'appearance' | 'starSync' | 'ai' | 'webdav' | 'backup' | 'backend' | 'category' | 'menu' | 'data' | 'logs' | 'network' | 'vectorSearch' | 'mcp' | 'plugins' | 'htmlReading';
 
 interface SettingsTabItem {
   id: SettingsTab;
   label: string;
   icon: React.ReactNode;
+  badge?: number;
 }
 
 interface SettingsPanelProps {
@@ -69,6 +74,7 @@ interface MobileTabNavProps {
 }
 
 const MobileTabNav: React.FC<MobileTabNavProps> = ({ tabs, activeTab, onTabChange }) => {
+  const t = useT('app');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Map<SettingsTab, HTMLButtonElement>>(new Map());
   const [indicatorStyle, setIndicatorStyle] = useState({ translateX: 0, width: 0 });
@@ -154,7 +160,7 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({ tabs, activeTab, onTabChang
 
   return (
     <div 
-      className="relative w-full border-b border-border dark:border-border bg-background/95 dark:bg-card/95 backdrop-blur-sm"
+      className="relative w-full overflow-hidden border-b border-border dark:border-border bg-background/95 dark:bg-card/95 backdrop-blur-sm"
     >
       {/* 滚动容器 */}
       <div
@@ -191,6 +197,7 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({ tabs, activeTab, onTabChang
           >
             <span className="h-4 w-4 shrink-0">{tab.icon}</span>
             <span className="whitespace-nowrap text-sm font-medium">{tab.label}</span>
+            {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
           </Button>
         ))}
       </div>
@@ -228,6 +235,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   const t = useT('app');
   const backendAvailable = useBackendAvailability();
+  const localVectorPendingCount = useLocalVectorPendingCount();
 
   const handleClose = () => {
     if (onClose) {
@@ -275,7 +283,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   // Valid SettingsTab values for runtime validation
   const VALID_TABS: ReadonlySet<string> = useMemo(
-    () => new Set(['general', 'starSync', 'ai', 'webdav', 'backup', 'backend', 'category', 'menu', 'data', 'logs', 'network', 'vectorSearch', 'mcp', 'plugins', 'htmlReading']),
+    () => new Set(['general', 'appearance', 'starSync', 'ai', 'webdav', 'backup', 'backend', 'category', 'menu', 'data', 'logs', 'network', 'vectorSearch', 'mcp', 'plugins', 'htmlReading']),
     []
   );
 
@@ -333,6 +341,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       icon: <Globe className="w-5 h-5" />,
     },
     {
+      id: 'appearance',
+      label: t('settingsPanel.appearance', { defaultValue: 'Appearance' }),
+      icon: <Palette className="w-5 h-5" />,
+    },
+    {
       id: 'starSync',
       label: t('settingsPanel.star-sync'),
       icon: <Star className="w-5 h-5" />,
@@ -384,13 +397,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     }] : []),
     ...(isElectron() ? [{
       id: 'plugins' as SettingsTab,
-      label: t('settingsPanel.plugins'),
+      label: t('settingsPanel.plugin-management', { defaultValue: 'Plugin Management' }),
       icon: <Plug className="w-5 h-5" />,
     }] : []),
     {
       id: 'vectorSearch' as SettingsTab,
       label: t('settingsPanel.vector-search'),
       icon: <Search className="w-5 h-5" />,
+      badge: localVectorPendingCount,
     },
     // MCP requires a long-lived process: backend or Electron main. Hide for pure SPA.
     ...((isElectron() || backendAvailable) ? [{
@@ -407,6 +421,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           return <HtmlReadingPanel />;
         case 'general':
           return <GeneralPanel t={t} />;
+        case 'appearance':
+          return <AppearancePanel t={t} />;
         case 'starSync':
           return <StarSyncPanel t={t} />;
         case 'ai':
@@ -490,7 +506,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       className="h-9 w-full justify-start gap-3 px-3 text-left"
                     >
                       {tab.icon}
-                      <span className="font-medium">{tab.label}</span>
+                      <span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
+                      {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
                     </Button>
                   ))}
                 </nav>
@@ -538,7 +555,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   className="h-auto w-full justify-start gap-3 px-4 py-3 text-left"
                 >
                   {tab.icon}
-                  <span className="font-medium">{tab.label}</span>
+                  <span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
+                  {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
                 </Button>
               ))}
             </nav>

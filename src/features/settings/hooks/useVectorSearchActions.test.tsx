@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
   setVectorSearchStatus: vi.fn(), updateRepositoriesMetadata: vi.fn(),
 }));
 vi.mock('../../../store/useAppStore', () => ({ useAppStore: mocks.useAppStore }));
-vi.mock('../../../services/vectorSearchService', () => ({
+vi.mock('../../../services/vectorSearchService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../services/vectorSearchService')>(),
   EMBEDDING_FORMAT_VERSION: 3,
   EmbeddingClient: class {},
   VectorSearchService: class {
@@ -141,6 +142,28 @@ describe('vector generation publication', () => {
     await act(async () => { await result.current.incrementalIndex(draft); });
     expect(mocks.indexAllRepos.mock.calls[0][3]).toMatchObject({ generation: active, incremental: true });
     expect(storeState.vectorSearchConfig.activeIndex).toBe(active);
+  });
+
+  it('keeps the candidate scan independent of locally known pending and the enabled badge', () => {
+    const active = storeState.vectorSearchConfig.activeIndex!;
+    storeState.repositories = [{
+      ...repository, vector_indexed_license: 'MIT',
+      vector_indexed_identity: active.identityHash, vector_indexed_generation: active.namespace,
+      vector_indexed_content_hash: 'a'.repeat(64),
+    }];
+    const { result, rerender } = renderHook(() => useVectorSearchActions());
+    expect(result.current.incrementalTargetCount).toBe(1);
+    expect(result.current.unindexedRepoCount).toBe(0);
+    storeState.repositories = [{ ...storeState.repositories[0], license: 'Apache-2.0' }];
+    rerender();
+    expect(result.current.incrementalTargetCount).toBe(1);
+    expect(result.current.unindexedRepoCount).toBe(1);
+    storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, enabled: false };
+    rerender();
+    expect(result.current.incrementalTargetCount).toBe(1);
+    expect(result.current.unindexedRepoCount).toBe(0);
+    expect(mocks.indexAllRepos).not.toHaveBeenCalled();
+    expect(mocks.capabilities).not.toHaveBeenCalled();
   });
 
   it('cancels while waiting for verification without publishing or clearing', async () => {

@@ -2,7 +2,6 @@
 import { TranslateFn } from '../../i18n/useT';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Switch } from '../ui/switch';
 import { NumberInput } from '../ui/NumberInput';
@@ -14,8 +13,6 @@ import {
   Loader2,
   CheckCircle,
   XCircle,
-  RefreshCw,
-  Square,
   ChevronDown,
   ChevronRight,
   Zap,
@@ -32,6 +29,7 @@ import { SliderInput } from '../ui/SliderInput';
 import { useDialog } from '../../hooks/useDialog';
 import { useVectorSearchActions } from '../../features/settings/hooks/useVectorSearchActions';
 import { hasCompatibleVectorIndex } from '../../services/vectorIndexIdentity';
+import { VectorIndexOperationsPanel } from './VectorIndexOperationsPanel';
 
 interface VectorSearchSettingsProps {
   t: TranslateFn;
@@ -56,7 +54,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
   const { toast } = useDialog();
   const {
     testingEmbedding, embeddingTestResult, testingWorker, workerTestResult,
-    incrementalTargetCount, testEmbedding, testWorker, rebuildIndex,
+    incrementalTargetCount, unindexedRepoCount, testEmbedding, testWorker, rebuildIndex,
     incrementalIndex, abortIndexing,
   } = useVectorSearchActions();
 
@@ -129,9 +127,16 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
   const handleRebuildIndex = () => rebuildIndex(draft());
   const handleIncrementalIndex = () => incrementalIndex(draft());
   const handleAbortIndexing = () => abortIndexing();
-  const { isIndexing, phase, phaseDone, phaseTotal, result: indexResult } = vectorIndexingState;
   const isConfigComplete = !!(activeConfig && formBaseUrl && formModel && (formApiType === 'ollama' || formApiKey) && formWorkerUrl && formAuthToken);
   const compatibleIndex = hasCompatibleVectorIndex(draft(), { ...draft(), activeIndex: vectorSearchConfig.activeIndex });
+  const settingsSaved = !!activeConfig
+    && activeEmbeddingConfig === vectorSearchConfig.embeddingConfigId
+    && activeConfig.apiType === formApiType && activeConfig.baseUrl === formBaseUrl
+    && activeConfig.apiKey === formApiKey && activeConfig.model === formModel
+    && activeConfig.dimensions === formDimensions
+    && vectorSearchConfig.workerUrl === formWorkerUrl && vectorSearchConfig.authToken === formAuthToken
+    && vectorSearchConfig.indexMode === formIndexMode
+    && vectorSearchConfig.readmeMaxChars === formReadmeMaxChars;
 
   return (
     <div className="space-y-6">
@@ -166,6 +171,19 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
           aria-label={t('vectorSearchSettings.enable-vector-search')}
         />
       </div>
+
+      <VectorIndexOperationsPanel
+        t={t}
+        state={vectorIndexingState}
+        configComplete={isConfigComplete}
+        settingsSaved={settingsSaved}
+        compatibleIndex={compatibleIndex}
+        candidateCount={incrementalTargetCount}
+        localPendingCount={unindexedRepoCount}
+        onRebuild={handleRebuildIndex}
+        onIncremental={handleIncrementalIndex}
+        onAbort={handleAbortIndexing}
+      />
 
       {/* Section 1: Embedding Model Config */}
       <div className="border border-border rounded-lg p-4 space-y-4">
@@ -322,11 +340,11 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         </div>
 
         {/* Test & Save */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             onClick={handleTestEmbedding}
             disabled={testingEmbedding || !formBaseUrl || !formModel}
-            className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex h-auto min-h-9 max-w-full items-center gap-2 whitespace-normal px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {testingEmbedding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
             {t('vectorSearchSettings.test-embedding-connection')}
@@ -402,11 +420,11 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         </div>
 
         {/* Test */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             onClick={handleTestWorker}
             disabled={testingWorker || !formWorkerUrl}
-            className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex h-auto min-h-9 max-w-full items-center gap-2 whitespace-normal px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {testingWorker ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
             {t('vectorSearchSettings.test-worker-connection')}
@@ -485,11 +503,11 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         </div>
       </div>
 
-      {/* Section 4: Actions */}
+      {/* Section 4: Index Content */}
       <div className="border border-border rounded-lg p-4 space-y-4">
         <h3 className="font-medium text-foreground dark:text-foreground flex items-center gap-2">
           <span className="text-xs bg-accent dark:bg-muted px-2 py-0.5 rounded">④</span>
-          {t('vectorSearchSettings.index-management')}
+          {t('vectorSearchSettings.index-content')}
         </h3>
 
         {/* 索引内容选择 */}
@@ -562,11 +580,6 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         )}
 
         {/* 保存索引配置 */}
-        {!compatibleIndex && (
-          <Alert>
-            <AlertDescription>{t('vectorSearchSettings.must-rebuild-index-after-changing-embedding-mode')}</AlertDescription>
-          </Alert>
-        )}
         <Button
           onClick={handleSaveWorkerConfig}
           variant={workerSaved ? 'default' : 'outline'}
@@ -575,70 +588,6 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
           {workerSaved ? `✓ ${t('vectorSearchSettings.saved')}` : t('vectorSearchSettings.save-index-config')}
         </Button>
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            onClick={handleRebuildIndex}
-            disabled={isIndexing || !isConfigComplete}
-            className="flex items-center gap-2 px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isIndexing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            {t('vectorSearchSettings.rebuild-vector-index')}
-          </Button>
-          <Button
-            onClick={handleIncrementalIndex}
-            disabled={isIndexing || !isConfigComplete || !compatibleIndex || incrementalTargetCount === 0}
-            className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-accent-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isIndexing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            {t('vectorSearchSettings.incremental-index')}
-            {incrementalTargetCount > 0 && (
-              <Badge className="ml-1">{incrementalTargetCount}</Badge>
-            )}
-          </Button>
-          {isIndexing && (
-            <Button
-              onClick={handleAbortIndexing}
-              variant="destructive"
-              className="h-9 gap-2 px-4 text-sm"
-            >
-              <Square className="w-4 h-4" />
-              {t('vectorSearchSettings.abort')}
-            </Button>
-          )}
-        </div>
-
-        {/* Progress */}
-        {isIndexing && phaseTotal > 0 && (
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm text-muted-foreground dark:text-muted-foreground">
-              <span>
-                {phase === 'readme' && `📖 ${t('vectorSearchSettings.fetching-readme')}`}
-                {phase === 'embedding' && `🧠 ${t('vectorSearchSettings.generating-embeddings')}`}
-                {phase === 'uploading' && `☁️ ${t('vectorSearchSettings.uploading-vectors')}`}
-                {!phase && `⏳ ${t('vectorSearchSettings.preparing')}`}
-              </span>
-              <span>
-                {phaseDone}/{phaseTotal} ({Math.round((phaseDone / phaseTotal) * 100)}%)
-              </span>
-            </div>
-            <div className="w-full bg-accent dark:bg-muted rounded-full h-2">
-              <div
-                className="bg-primary h-2 rounded-full transition-all"
-                style={{ width: `${(phaseDone / phaseTotal) * 100}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Result */}
-        {indexResult && (
-          <Alert variant={indexResult.errors > 0 && indexResult.indexed === 0 ? 'destructive' : 'default'}>
-            <AlertDescription>
-              {t('vectorSearchSettings.indexing-complete')}: {indexResult.indexed} {t('vectorSearchSettings.indexed')}, {indexResult.skipped} {t('vectorSearchSettings.skipped')}, {indexResult.errors} {t('vectorSearchSettings.errors')}
-              {indexResult.error && <div className="mt-1 text-xs">{indexResult.error}</div>}
-            </AlertDescription>
-          </Alert>
-        )}
       </div>
 
       {/* Section 5: Search Parameters */}
@@ -744,7 +693,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         <p className="text-sm text-muted-foreground dark:text-muted-foreground">
           {t('vectorSearchSettings.if-you-changed-the-embedding-model-different-dim')}
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             onClick={async () => {
               const cmd = 'npx wrangler vectorize delete github-stars';
@@ -755,7 +704,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
                 toast(t('vectorSearchSettings.failed-to-copy-delete-command'), 'error');
               }
             }}
-            className="rounded-md bg-accent px-4 py-2 text-sm text-accent-foreground hover:bg-muted hover:text-foreground"
+            className="h-auto min-h-9 max-w-full whitespace-normal rounded-md bg-accent px-4 py-2 text-sm text-accent-foreground hover:bg-muted hover:text-foreground"
           >
             {t('vectorSearchSettings.copy-delete-command')}
           </Button>
@@ -769,7 +718,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
                 toast(t('vectorSearchSettings.failed-to-copy-create-command'), 'error');
               }
             }}
-            className="rounded-md bg-accent px-4 py-2 text-sm text-accent-foreground hover:bg-muted hover:text-foreground"
+            className="h-auto min-h-9 max-w-full whitespace-normal rounded-md bg-accent px-4 py-2 text-sm text-accent-foreground hover:bg-muted hover:text-foreground"
           >
             {t('vectorSearchSettings.copy-create-command')}
           </Button>

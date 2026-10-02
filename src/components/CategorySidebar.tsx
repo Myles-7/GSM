@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Undo2,
   Inbox,
+  Search,
+  Plug,
 } from 'lucide-react';
 import { Category, Repository } from '../types';
 import { useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useAppStore';
@@ -20,6 +22,9 @@ import { useCategorySyncActions } from '../features/repositories/hooks/useCatego
 import { matchesCategory } from '../utils/categoryUtils';
 import { useDialog } from '../hooks/useDialog';
 import { assignConfirmedCategory } from '../features/repositories/components/repositoryCategoryAssignment';
+import { isElectron } from '../services/electronProxy';
+import { useLocalVectorPendingCount } from '../features/settings/hooks/useLocalVectorPendingCount';
+import { VectorPendingBadge } from './settings/VectorPendingBadge';
 
 interface CategorySidebarProps {
   repositories: Repository[];
@@ -46,6 +51,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     updateRepository,
     isSidebarCollapsed,
     setSidebarCollapsed,
+    setCurrentView,
   } = useAppStore(useShallow((state) => ({
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
@@ -60,12 +66,14 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     updateRepository: state.updateRepository,
     isSidebarCollapsed: state.isSidebarCollapsed,
     setSidebarCollapsed: state.setSidebarCollapsed,
+    setCurrentView: state.setCurrentView,
   })));
 
   const { toast, confirm } = useDialog();
   const { forceSyncToBackend } = useCategorySyncActions();
   const organizationT = useT('repositories');
   const t = useT('app');
+  const localVectorPendingCount = useLocalVectorPendingCount();
   // 仓库卡片拖拽中：驱动「全部分类」变为「取消分类」热区提示
   const isRepoDragging = useRepositoryDragStore((state) => state.isDragging);
 
@@ -327,6 +335,44 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     onCategorySelect(categoryId);
   };
 
+  const renderSettingsShortcuts = (collapsed: boolean) => {
+    const shortcuts = [
+      { tab: 'vectorSearch', label: t('settingsPanel.vector-search'), icon: Search },
+      ...(isElectron() ? [{
+        tab: 'plugins', label: t('settingsPanel.plugin-management', { defaultValue: 'Plugin Management' }), icon: Plug,
+      }] : []),
+    ];
+    return (
+      <nav aria-label={t('settingsPanel.settings-tabs')} className={`mt-3 border-t border-border pt-3 ${collapsed ? 'space-y-2' : 'flex flex-wrap gap-2 lg:block lg:space-y-1'}`}>
+        {shortcuts.map(({ tab, label, icon: Icon }) => (
+          <Button
+            key={tab}
+            variant="ghost"
+            size={collapsed ? 'icon' : 'sm'}
+            title={label}
+            aria-label={label}
+            aria-description={tab === 'vectorSearch' && localVectorPendingCount > 0
+              ? t('vectorSearchSettings.local-pending-count', { count: localVectorPendingCount, defaultValue: '{{count}} locally known pending' })
+              : undefined}
+            className={collapsed ? 'relative h-8 w-8' : 'h-auto min-h-9 gap-2 lg:w-full lg:justify-start'}
+            onClick={() => {
+              sessionStorage.setItem('gsm:pending-settings-tab', tab);
+              setCurrentView('settings');
+            }}
+          >
+            <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {!collapsed && <span className="min-w-0 whitespace-normal text-left">{label}</span>}
+            {tab === 'vectorSearch' && (
+              <span className={collapsed ? 'pointer-events-none absolute -right-3 -top-2' : 'ml-auto'}>
+                <VectorPendingBadge count={localVectorPendingCount} t={t} />
+              </span>
+            )}
+          </Button>
+        ))}
+      </nav>
+    );
+  };
+
   return (
     <>
       {/* 移动端：始终显示完整侧栏 */}
@@ -418,6 +464,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
               );
             })}
           </div>
+          {renderSettingsShortcuts(false)}
         </div>
       ) : (
         /* 桌面端：可折叠侧栏 - sticky定位，滚动时保持可见 */
@@ -694,6 +741,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                 </div>
               </div>
             )}
+            {renderSettingsShortcuts(isSidebarCollapsed)}
           </div>
         </div>
       )}

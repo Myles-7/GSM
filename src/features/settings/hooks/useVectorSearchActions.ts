@@ -11,6 +11,7 @@ import { createVectorGeneration, embeddingIdentity, hasCompatibleVectorIndex, re
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { useAppStore } from '../../../store/useAppStore';
 import { normalizeLicense } from '../../../utils/licenseFilter';
+import { countLocalVectorPending } from '../../../utils/localVectorPending';
 
 export interface EmbeddingDraft {
   apiType: EmbeddingApiType;
@@ -36,6 +37,7 @@ export interface VectorSearchActions {
   testingWorker: boolean;
   workerTestResult: { success: boolean; vectorCount: number; dimensions: number; error?: string } | null;
   incrementalTargetCount: number;
+  unindexedRepoCount: number;
   testEmbedding: (draft: EmbeddingDraft) => Promise<void>;
   testWorker: (draft: VectorWorkerDraft) => Promise<void>;
   rebuildIndex: (draft: VectorIndexDraft) => Promise<void>;
@@ -75,6 +77,10 @@ export const useVectorSearchActions = (): VectorSearchActions => {
     if (!activeConfig || !hasCompatibleVectorIndex(activeConfig, state.vectorSearchConfig)) return 0;
     return state.repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed).length;
   }, [activeConfig, state.repositories, state.vectorSearchConfig]);
+  const unindexedRepoCount = useMemo(
+    () => countLocalVectorPending(state.repositories, activeConfig, state.vectorSearchConfig),
+    [activeConfig, state.repositories, state.vectorSearchConfig],
+  );
 
   const testEmbedding = useCallback(async (draft: EmbeddingDraft) => {
     setTestingEmbedding(true);
@@ -215,6 +221,6 @@ export const useVectorSearchActions = (): VectorSearchActions => {
 
   return {
     testingEmbedding, embeddingTestResult, testingWorker, workerTestResult,
-    incrementalTargetCount, testEmbedding, testWorker, rebuildIndex, incrementalIndex, abortIndexing,
+    incrementalTargetCount, unindexedRepoCount, testEmbedding, testWorker, rebuildIndex, incrementalIndex, abortIndexing,
   };
 };

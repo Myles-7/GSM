@@ -73,6 +73,17 @@ describe('ThemeSettingsCard', () => {
     expect(mocks.state.setRepositoryCardField).toHaveBeenCalledWith('description', false);
   });
 
+  it('reserves a checkmark slot and keeps selected and unselected field labels accessible', () => {
+    mocks.state.repositoryCardFields = { ...DEFAULT_REPOSITORY_CARD_FIELDS, description: false };
+    render(<ThemeSettingsCard t={t} />);
+    const hidden = screen.getByRole('button', { name: '描述' });
+    expect(hidden).toHaveAttribute('aria-pressed', 'false');
+    expect(hidden.querySelector('[aria-hidden="true"]')).toHaveClass('text-transparent', 'h-4', 'w-4');
+    const selected = screen.getByRole('button', { name: '标签' });
+    expect(selected).toHaveAttribute('aria-pressed', 'true');
+    expect(selected.querySelector('[aria-hidden="true"]')).toHaveClass('bg-primary', 'h-4', 'w-4');
+  });
+
   it('renders every registered preset as a radio option', () => {
     render(<ThemeSettingsCard t={t} />);
     const presetGroup = screen.getByRole('radiogroup', { name: '主题配色' });

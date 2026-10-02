@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -30,6 +30,13 @@ vi.mock('../../services/electronProxy', () => ({
 }));
 vi.mock('../UpdateChecker', () => ({ UpdateChecker: () => null }));
 vi.mock('./ThemeSettingsCard', () => ({ ThemeSettingsCard: () => null }));
+vi.mock('./RepositoryIdentityMigrationPanel', () => ({
+  RepositoryIdentityMigrationPanel: () => (
+    <section aria-label="Identity migration">
+      <button>Dry Run</button><button>Apply Confirmed Mappings</button><button>Resume Migration</button>
+    </section>
+  ),
+}));
 vi.mock('../../features/settings/hooks/useGitHubTokenActions', () => ({
   useGitHubTokenActions: () => ({
     tokenInput: '',
@@ -43,10 +50,11 @@ import { makeT } from '../../i18n/useT';
 import { GeneralPanel } from './GeneralPanel';
 
 const t = makeT('zh', 'app');
+const loginT = makeT('zh', 'login');
 
 beforeEach(() => {
   vi.clearAllMocks();
-    Object.assign(mocks.state, { language: 'zh', setLanguage: vi.fn(), user: null });
+  Object.assign(mocks.state, { language: 'zh', setLanguage: vi.fn(), user: null });
 });
 
 describe('GeneralPanel desktop section', () => {
@@ -57,13 +65,11 @@ describe('GeneralPanel desktop section', () => {
     expect(screen.queryByLabelText('开机自动启动')).toBeNull();
   });
 
-  it('lets language cards fill the settings row instead of wrapping early', () => {
+  it('keeps appearance and language controls out of General', () => {
     mocks.isSupported.mockReturnValue(false);
     const { container } = render(<GeneralPanel t={t} />);
-    const languageGrid = container.querySelector('[aria-labelledby="language-settings-title"]');
-    expect(languageGrid?.className).toContain('w-full');
-    expect(languageGrid?.className).toContain('grid-cols-[repeat(auto-fit,minmax(10rem,1fr))]');
-    expect(languageGrid?.className).not.toContain('max-w-lg');
+    expect(container.querySelector('[aria-labelledby="language-settings-title"]')).toBeNull();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
   it('shows auto-launch and tray toggles in the Electron client', async () => {
@@ -74,5 +80,31 @@ describe('GeneralPanel desktop section', () => {
     expect(screen.getByLabelText('开机自动启动')).toBeTruthy();
     expect(screen.getByLabelText('关闭时最小化到托盘')).toBeTruthy();
     expect(screen.getByLabelText('最小化时隐藏到托盘')).toBeTruthy();
+  });
+
+  it('reuses the shared token permissions guide without exposing tokens', () => {
+    mocks.isSupported.mockReturnValue(false);
+    render(<GeneralPanel t={t} />);
+    fireEvent.click(screen.getByRole('button', {
+      name: t('generalPanel.token-permission-guide', { defaultValue: 'Token setup guide' }),
+    }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('tab', {
+      name: loginT('loginScreen.token-permissions-tab-finegrained', { defaultValue: 'Fine-grained' }),
+    })).toBeTruthy();
+    expect(within(dialog).getByRole('tab', {
+      name: loginT('loginScreen.token-permissions-tab-classic', { defaultValue: 'Classic' }),
+    })).toBeTruthy();
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+  });
+
+  it('embeds the main-owned migration section independently of Token and Appearance', () => {
+    mocks.isSupported.mockReturnValue(false);
+    render(<GeneralPanel t={t} />);
+    const section = screen.getByRole('region', { name: 'Identity migration' });
+    expect(within(section).getByRole('button', { name: 'Dry Run' })).toBeTruthy();
+    expect(within(section).getByRole('button', { name: 'Apply Confirmed Mappings' })).toBeTruthy();
+    expect(within(section).getByRole('button', { name: 'Resume Migration' })).toBeTruthy();
+    expect(within(section).queryByLabelText('GitHub Personal Access Token')).toBeNull();
   });
 });
