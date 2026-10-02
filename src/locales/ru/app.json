@@ -394,13 +394,15 @@
     "data-management": "Управление данными",
     "diagnostic-logs": "Журнал диагностики",
     "network": "Настройки сети",
-    "plugins": "плагин",
+    "plugins": "Plugin Management",
     "vector-search": "векторный поиск",
     "mcp-server": "MCP-сервис",
     "settings-content": "Установить контент",
     "settings": "настраивать",
     "close-settings": "Закрыть настройки",
-    "settings-tabs": "Настройка вкладок"
+    "settings-tabs": "Настройка вкладок",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "Просмотр",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "Проверьте, доступна ли новая версия",
     "contact-information": "Контактная информация",
     "if-you-encounter-any-issues-or-have-suggestions": "Если у вас возникнут какие-либо проблемы или у вас есть предложения во время использования, свяжитесь со мной следующими способами:",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "Включить ключи при резервном копировании/экспорте",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "Пожалуйста, обратитесь к подробному руководству по развертыванию.",
     "connection-successful-dimensions": "Соединение успешно выполнено – Размер: {{dimensions}}",
     "connection-failed-detail": "Не удалось подключиться: {{error}}",
-    "connection-successful-vectors": "Соединение успешно — вектор: {{vectorCount}}, размеры: {{dimensions}}"
+    "connection-successful-vectors": "Соединение успешно — вектор: {{vectorCount}}, размеры: {{dimensions}}",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "Конфигурация WebDAV",

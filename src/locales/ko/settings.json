@@ -129,5 +129,16 @@
   "generalPanel": {
     "account-token-hint": "현재 계정 {{login}}. 만료 후에는 로그아웃하지 않고도 여기에서 토큰을 직접 교체할 수 있습니다.",
     "token-hint": "만료 후에는 로그아웃하지 않고도 여기에서 토큰을 직접 교체할 수 있습니다."
+  },
+  "identityMigration": {
+    "title": "Repository Identity",
+    "preview": "Dry Run",
+    "resume": "Resume Migration",
+    "apply": "Apply Confirmed Mappings",
+    "paused": "Writes paused. Resume the original account and workspace, or restore all associated storage together.",
+    "warning": "Matching names do not prove identity. Confirm only after checking that the old name was not reused; ambiguous rows remain unchanged.",
+    "noCandidates": "No legacy identity candidates.",
+    "restore": "Restore Associated Storage",
+    "discard": "Discard Unapplied Preview"
   }
 }

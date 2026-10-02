@@ -70,7 +70,9 @@
     "ai-summary": "Обзор ИИ",
     "analyzing-update": "Анализ обновлений...",
     "failed-to-generate-summary-please-try-again": "Не удалось создать сводку. Повторите попытку.",
-    "download-count": "{{count}} загрузок"
+    "download-count": "{{count}} загрузок",
+    "show-all-assets": "Показать все ({{count}})",
+    "show-matched-assets": "Показать только совпавшие файлы"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "Анализ плагина не удался",
@@ -199,7 +201,8 @@
     "retry": "Попробуйте еще раз",
     "this-repository-has-no-releases": "В настоящее время в этом репозитории нет релиза.",
     "v1-live-releases-loaded": "{{v1}} Релизы были получены в режиме реального времени.",
-    "release-pagination": "Пейджинг релиза"
+    "release-pagination": "Пейджинг релиза",
+    "no-matching-releases": "Нет релизов, соответствующих выбранным фильтрам файлов."
   },
   "subscriptionRepoCard": {
     "no-description": "Описания пока нет",

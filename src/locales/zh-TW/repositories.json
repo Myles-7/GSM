@@ -27,7 +27,18 @@
     "failed": "Star 失敗",
     "starred": "已成功加入星號",
     "check-name": "請核對這個名稱",
-    "no-description": "暫無描述"
+    "no-description": "暫無描述",
+    "history": "貼上歷史",
+    "history-empty": "尚無貼上歷史",
+    "save-history": "儲存歷史修改",
+    "history-error": "無法讀取或儲存貼上歷史。",
+    "view-readme": "檢視 {{name}} 的 README",
+    "readme-load-error": "無法載入 README，請關閉後返回批次匯入。",
+    "loading-readme": "正在載入 README…",
+    "token-permission-error": "GitHub 拒絕了此 Token（403）。檢查或新增 Star 時，細緻權限 Token 需開啟 Starring 讀寫及儲存庫 Metadata 讀取；傳統 Token 需 public_repo（私有儲存庫用 repo）。",
+    "invalid-repository-id": "GitHub 未傳回有效的儲存庫 ID，未為該儲存庫新增 Star。",
+    "rate-limit-error": "GitHub 已限制此請求頻率，請稍後重試；修改 Token 權限無法解決限流。",
+    "network-error": "無法連線至 GitHub，請檢查網路後重試。"
   },
   "repositoryCard": {
     "failed-to-apply-plugin-result": "無法應用插件結果",

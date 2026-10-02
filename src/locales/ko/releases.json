@@ -70,7 +70,9 @@
     "ai-summary": "AI 요약",
     "analyzing-update": "업데이트 분석 중...",
     "failed-to-generate-summary-please-try-again": "요약을 생성하지 못했습니다. 다시 시도해 주세요.",
-    "download-count": "{{count}} 다운로드"
+    "download-count": "{{count}} 다운로드",
+    "show-all-assets": "전체 {{count}}개 표시",
+    "show-matched-assets": "일치하는 자산만 표시"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "플러그인 분석 실패",
@@ -199,7 +201,8 @@
     "retry": "다시 시도해 보세요",
     "this-repository-has-no-releases": "현재 이 저장소에는 릴리스가 없습니다.",
     "v1-live-releases-loaded": "{{v1}} 릴리스가 실시간으로 획득되었습니다.",
-    "release-pagination": "릴리스 페이징"
+    "release-pagination": "릴리스 페이징",
+    "no-matching-releases": "선택한 자산 필터와 일치하는 릴리스가 없습니다."
   },
   "subscriptionRepoCard": {
     "no-description": "아직 설명이 없습니다",

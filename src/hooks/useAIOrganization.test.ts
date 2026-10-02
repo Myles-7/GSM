@@ -6,6 +6,7 @@ import { workbenchRuntime } from '../services/aiWorkbenchService';
 import { useAIOrganization } from './useAIOrganization';
 import { useAIWorkbench } from '../features/ai-workbench/hooks/useAIWorkbench';
 import type { AppState, Repository } from '../types';
+import type { WorkbenchRequirements } from '../types/aiWorkbench';
 
 vi.unmock('../store/useAppStore');
 const mocks = vi.hoisted(() => ({ generate: vi.fn() }));
@@ -21,8 +22,16 @@ const repository: Repository = {
   created_at: date, updated_at: date, pushed_at: date, category_id: null, subcategory_id: null,
 };
 const input = { filteredRepositories: [repository], selectedRepositoryIds: [], categoryId: 'all' };
+const requirements: WorkbenchRequirements = {
+  purpose: 'Find developer tools', required: [], preferred: [], excluded: [], questions: [],
+  queries: ['developer tools'],
+};
 function reply({ user }: { user: string }) {
   const prompt = JSON.parse(user);
+  if (typeof prompt.task !== 'string') {
+    if (typeof prompt.question !== 'string') throw new Error('Unexpected AI fixture prompt');
+    return JSON.stringify(requirements);
+  }
   if (prompt.task.startsWith('Suggest')) return '{"categories":[]}';
   return JSON.stringify({ assignments: prompt.repositories.map((r: { id: number }) => ({
     repositoryId: r.id, categoryId: prompt.categories.find((c: { parentId: string | null }) => c.parentId === null).id,
@@ -41,6 +50,33 @@ beforeEach(() => {
   mocks.generate.mockImplementation(reply);
 });
 describe('organization conversation and task lifecycle', () => {
+  it('resumes a research session and prepares requirements without applying organization data', async () => {
+    const id = 'research-session';
+    const timestamp = new Date().toISOString();
+    await storage.saveSession({
+      id, ownerId: '77', kind: 'workbench', repoId: 0, repoFullName: '', sourceRefSha: '',
+      title: 'Research', createdAt: timestamp, updatedAt: timestamp,
+      workbench: { scope: 'github', depth: 'standard', selectedRepositories: [], searchBatches: [] },
+    });
+    sessionStorage.setItem('gsm:ai-workbench-session', id);
+    const repositories = useAppStore.getState().repositories;
+    const categories = useAppStore.getState().customCategories;
+    const subcategories = useAppStore.getState().subcategories;
+    const hook = renderHook(useAIWorkbench);
+    await waitFor(() => expect(hook.result.current.active?.id).toBe(id));
+    await act(async () => { await hook.result.current.send('Find developer tools'); });
+    expect(hook.result.current.error).toBe('');
+    await waitFor(() => expect(hook.result.current.active?.workbench?.requirements).toEqual(requirements));
+    expect(JSON.parse(mocks.generate.mock.calls[0][0].user)).toEqual({ question: 'Find developer tools' });
+    expect(await storage.listProposals('77', id)).toEqual([]);
+    expect((await storage.listMessages(id)).map(message => message.status)).toEqual(['complete', 'complete']);
+    expect((await storage.listWorkbenchSessions('77')).map(session => session.id)).toEqual([id]);
+    expect(useAppStore.getState().repositories).toEqual(repositories);
+    expect(useAppStore.getState().customCategories).toEqual(categories);
+    expect(useAppStore.getState().subcategories).toEqual(subcategories);
+    hook.unmount();
+  });
+
   it('creates a shared session without applying data and resumes the same session in workbench', async () => {
     const hook = renderHook(() => useAIOrganization(input));
     await act(async () => { await hook.result.current.generate(); });
@@ -51,7 +87,8 @@ describe('organization conversation and task lifecycle', () => {
     act(() => hook.result.current.continueInWorkbench());
     hook.unmount();
     const workbench = renderHook(useAIWorkbench);
-    await waitFor(() => expect(workbench.result.current.activeId).toBe(proposal.sessionId));
+    await waitFor(() => expect(workbench.result.current.active?.id).toBe(proposal.sessionId));
+    expect(workbench.result.current.proposals).toHaveLength(1);
     await act(async () => { await workbench.result.current.send('Use existing categories only'); });
     await waitFor(() => expect(workbench.result.current.proposals).toHaveLength(2));
     expect((await storage.listWorkbenchSessions('77')).map(s => s.id)).toEqual([proposal.sessionId]);

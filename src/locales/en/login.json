@@ -41,6 +41,24 @@
     "keep-local": "Keep local",
     "please-enter-a-valid-github-token": "Please enter a valid GitHub token",
     "signed-in-but-failed-to-save-github-token-to-bac": "Signed in, but failed to save GitHub token to backend. README and other backend proxy features may be unavailable.",
-    "failed-to-authenticate-please-check-your-token": "Failed to authenticate. Please check your token."
+    "failed-to-authenticate-please-check-your-token": "Failed to authenticate. Please check your token.",
+    "token-permissions-title": "GitHub token permissions",
+    "token-permissions-check": "Signing in checks your identity, not every permission. Missing permissions may only appear when you use a feature.",
+    "token-permissions-tab-finegrained": "Fine-grained",
+    "token-permissions-tab-classic": "Classic",
+    "token-permissions-feature-star": "Managing Stars",
+    "token-permissions-feature-gists": "Gists",
+    "token-permissions-feature-star-lists": "Star Lists",
+    "token-permissions-feature-fork-sync": "Fork sync",
+    "token-permissions-feature-workflows": "Workflow dispatch",
+    "token-permissions-feature-fork-workflows": "Fork sync / workflows",
+    "token-permissions-fine-star": "`Starring` read & write, `Metadata` read",
+    "token-permissions-fine-gists": "`Gists` write",
+    "token-permissions-fine-fork-sync": "`Contents` write",
+    "token-permissions-fine-workflows": "`Actions` write",
+    "token-permissions-classic-star": "`public_repo` (`repo` for private repositories)",
+    "token-permissions-classic-gists": "`gist`",
+    "token-permissions-classic-star-lists": "`user`",
+    "token-permissions-classic-fork-workflows": "`repo`"
   }
 }

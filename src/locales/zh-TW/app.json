@@ -394,13 +394,15 @@
     "data-management": "資料管理",
     "diagnostic-logs": "診斷日誌",
     "network": "網路設定",
-    "plugins": "外掛",
+    "plugins": "Plugin Management",
     "vector-search": "向量搜尋",
     "mcp-server": "MCP服務",
     "settings-content": "設定內容",
     "settings": "設定",
     "close-settings": "關閉設定",
-    "settings-tabs": "設定標籤頁"
+    "settings-tabs": "設定標籤頁",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "正在查看",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "檢查是否有新版本可用",
     "contact-information": "聯絡方式",
     "if-you-encounter-any-issues-or-have-suggestions": "如果您在使用過程中遇到任何問題或有建議，歡迎透過以下方式與我聯絡：",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "備份/匯出時包含金鑰",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "詳細部署指南請參考",
     "connection-successful-dimensions": "連結成功 — 維度: {{dimensions}}",
     "connection-failed-detail": "連結失敗：{{error}}",
-    "connection-successful-vectors": "連結成功 — 向量: {{vectorCount}}，維度: {{dimensions}}"
+    "connection-successful-vectors": "連結成功 — 向量: {{vectorCount}}，維度: {{dimensions}}",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "WebDAV配置",

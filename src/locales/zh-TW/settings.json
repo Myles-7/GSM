@@ -129,5 +129,16 @@
   "generalPanel": {
     "account-token-hint": "當前帳號 {{login}}。過期後可在此直接更換 token，不必登出登入。",
     "token-hint": "過期後可在此直接更換 token，不必登出登入。"
+  },
+  "identityMigration": {
+    "title": "Repository Identity",
+    "preview": "Dry Run",
+    "resume": "Resume Migration",
+    "apply": "Apply Confirmed Mappings",
+    "paused": "Writes paused. Resume the original account and workspace, or restore all associated storage together.",
+    "warning": "Matching names do not prove identity. Confirm only after checking that the old name was not reused; ambiguous rows remain unchanged.",
+    "noCandidates": "No legacy identity candidates.",
+    "restore": "Restore Associated Storage",
+    "discard": "Discard Unapplied Preview"
   }
 }

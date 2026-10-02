@@ -41,6 +41,24 @@
     "keep-local": "保留本地",
     "please-enter-a-valid-github-token": "請輸入有效的GitHub token",
     "signed-in-but-failed-to-save-github-token-to-bac": "已登錄，但 GitHub Token 未能保存到後端，README 等後端代理功能可能無法使用。",
-    "failed-to-authenticate-please-check-your-token": "認證失敗，請檢查您的token。"
+    "failed-to-authenticate-please-check-your-token": "認證失敗，請檢查您的token。",
+    "token-permissions-title": "GitHub Token 權限",
+    "token-permissions-check": "登入只驗證身分，不會檢查所有功能權限；權限不足可能在使用功能時才出現。",
+    "token-permissions-tab-finegrained": "細粒度 Token",
+    "token-permissions-tab-classic": "經典 Token",
+    "token-permissions-feature-star": "為儲存庫新增 Star",
+    "token-permissions-feature-gists": "Gist",
+    "token-permissions-feature-star-lists": "Star 清單",
+    "token-permissions-feature-fork-sync": "Fork 儲存庫同步",
+    "token-permissions-feature-workflows": "觸發工作流程",
+    "token-permissions-feature-fork-workflows": "Fork 同步 / 觸發工作流程",
+    "token-permissions-fine-star": "`Starring` 讀寫、`Metadata` 讀取",
+    "token-permissions-fine-gists": "`Gists` 寫入",
+    "token-permissions-fine-fork-sync": "`Contents` 寫入",
+    "token-permissions-fine-workflows": "`Actions` 寫入",
+    "token-permissions-classic-star": "`public_repo`（私有儲存庫用 `repo`）",
+    "token-permissions-classic-gists": "`gist`",
+    "token-permissions-classic-star-lists": "`user`",
+    "token-permissions-classic-fork-workflows": "`repo`"
   }
 }

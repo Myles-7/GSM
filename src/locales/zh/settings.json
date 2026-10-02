@@ -129,5 +129,16 @@
   "generalPanel": {
     "account-token-hint": "当前账号 {{login}}。过期后可在此直接更换 token，不必退出登录。",
     "token-hint": "过期后可在此直接更换 token，不必退出登录。"
+  },
+  "identityMigration": {
+    "title": "仓库身份恢复",
+    "preview": "生成迁移预览",
+    "resume": "继续未完成迁移",
+    "apply": "执行已确认映射",
+    "paused": "写入已暂停。请在原账号与工作区继续迁移，或共同恢复所有关联存储。",
+    "warning": "同名不能证明身份。请确认旧名称没有被其他仓库复用后再勾选；歧义记录保持不变。",
+    "noCandidates": "没有待确认的历史身份记录。",
+    "restore": "恢复关联存储",
+    "discard": "放弃未执行预览"
   }
 }

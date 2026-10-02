@@ -27,7 +27,18 @@
     "failed": "Markieren fehlgeschlagen",
     "starred": "Markiert",
     "check-name": "Diesen Namen prüfen",
-    "no-description": "Keine Beschreibung"
+    "no-description": "Keine Beschreibung",
+    "history": "Einfügeverlauf",
+    "history-empty": "Noch kein Einfügeverlauf",
+    "save-history": "Verlaufsänderungen speichern",
+    "history-error": "Der Verlauf konnte nicht gelesen oder gespeichert werden.",
+    "view-readme": "README von {{name}} anzeigen",
+    "readme-load-error": "README konnte nicht geladen werden. Schließen Sie diese Ansicht, um zum Stapelimport zurückzukehren.",
+    "loading-readme": "README wird geladen…",
+    "token-permission-error": "GitHub hat dieses Token abgewiesen (403). Zum Prüfen oder Setzen von Stars braucht ein fein abgestuftes Token Starring mit Lese-/Schreibzugriff und Metadata mit Lesezugriff; ein klassisches Token benötigt public_repo (für private Repositorys repo).",
+    "invalid-repository-id": "GitHub hat keine gültige Repository-ID zurückgegeben. Es wurde kein Star hinzugefügt.",
+    "rate-limit-error": "GitHub hat die Anfragerate begrenzt. Warten Sie vor einem erneuten Versuch; geänderte Token-Rechte lösen dieses Problem nicht.",
+    "network-error": "GitHub ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "repositoryCard": {
     "failed-to-apply-plugin-result": "Plugin-Ergebnisse können nicht angewendet werden",

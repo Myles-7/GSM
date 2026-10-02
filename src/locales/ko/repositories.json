@@ -27,7 +27,18 @@
     "failed": "별표 추가 실패",
     "starred": "별표 추가 완료",
     "check-name": "이 이름을 확인하세요",
-    "no-description": "설명 없음"
+    "no-description": "설명 없음",
+    "history": "붙여넣기 기록",
+    "history-empty": "아직 붙여넣기 기록이 없습니다",
+    "save-history": "기록 변경 사항 저장",
+    "history-error": "기록을 읽거나 저장하지 못했습니다.",
+    "view-readme": "{{name}}의 README 보기",
+    "readme-load-error": "README를 불러오지 못했습니다. 이 화면을 닫고 일괄 가져오기로 돌아가세요.",
+    "loading-readme": "README 불러오는 중…",
+    "token-permission-error": "GitHub가 이 토큰을 거부했습니다(403). Star 확인과 추가에는 세분화된 토큰의 Starring 읽기/쓰기 및 저장소 Metadata 읽기 권한이 필요합니다. 클래식 토큰은 public_repo(비공개 저장소는 repo)가 필요합니다.",
+    "invalid-repository-id": "GitHub가 유효한 저장소 ID를 반환하지 않아 Star를 추가하지 않았습니다.",
+    "rate-limit-error": "GitHub가 요청 빈도를 제한했습니다. 잠시 후 다시 시도하세요. 토큰 권한을 변경해도 이 제한은 해결되지 않습니다.",
+    "network-error": "GitHub에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도하세요."
   },
   "repositoryCard": {
     "failed-to-apply-plugin-result": "플러그인 결과를 적용할 수 없습니다.",

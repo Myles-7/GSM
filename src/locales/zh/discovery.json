@@ -149,6 +149,28 @@
     "streak-days": "连续 {{v1}} 天",
     "stars-gained": "自首次记录新增 {{v1}} stars",
     "first-seen": "榜首首次记录于{{v1}}"
+  },
+  "externalFeeds": {
+    "add": "添加外部订阅源",
+    "close": "关闭",
+    "name": "订阅源名称",
+    "url": "公开 HTTPS 地址",
+    "kind": "订阅源格式",
+    "checking": "正在校验订阅源…",
+    "remove": "删除 {{name}}",
+    "invalid": "请填写名称和公开 HTTPS 订阅源地址。",
+    "account": "请先登录再添加订阅源。",
+    "duplicate": "该源已存在，或已达到每账号 10 个源的上限。",
+    "errors": {
+      "invalid-url": "订阅源必须使用不含凭据的公开 HTTPS 地址。",
+      "invalid-format": "订阅源格式或仓库链接无效。",
+      "too-many-repositories": "JSON 订阅源最多包含 30 个仓库。",
+      "too-large": "订阅源超过 128000 bytes 上限。",
+      "unreadable": "无法读取订阅源，请检查地址与浏览器 CORS 权限。",
+      "http": "订阅源请求失败或发生重定向。",
+      "no-repositories": "订阅源中未找到 GitHub 仓库链接。",
+      "no-details": "无法从 GitHub 读取源中仓库的详情。",
+      "timeout": "订阅源请求已超过 15 秒。"
+    }
   }
-
 }

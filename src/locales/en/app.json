@@ -394,13 +394,15 @@
     "data-management": "Data Management",
     "diagnostic-logs": "Diagnostic Logs",
     "network": "Network",
-    "plugins": "Plugins",
+    "plugins": "Plugin Management",
     "vector-search": "Vector Search",
     "mcp-server": "MCP Server",
     "settings-content": "Settings content",
     "settings": "Settings",
     "close-settings": "Close settings",
-    "settings-tabs": "Settings tabs"
+    "settings-tabs": "Settings tabs",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "Viewing similar repositories of ",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "Check if a new version is available",
     "contact-information": "Contact Information",
     "if-you-encounter-any-issues-or-have-suggestions": "If you encounter any issues or have suggestions while using the app, feel free to contact me through:",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "Include keys in backup/export",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "For detailed instructions, see",
     "connection-successful-dimensions": "Connection successful — dimensions: {{dimensions}}",
     "connection-failed-detail": "Connection failed: {{error}}",
-    "connection-successful-vectors": "Connection successful — vectors: {{vectorCount}}, dimensions: {{dimensions}}"
+    "connection-successful-vectors": "Connection successful — vectors: {{vectorCount}}, dimensions: {{dimensions}}",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "WebDAV Configuration",

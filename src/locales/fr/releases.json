@@ -70,7 +70,9 @@
     "ai-summary": "Résumé de l'IA",
     "analyzing-update": "Analyse des mises à jour...",
     "failed-to-generate-summary-please-try-again": "La génération du résumé a échoué. Veuillez réessayer.",
-    "download-count": "{{count}} téléchargements"
+    "download-count": "{{count}} téléchargements",
+    "show-all-assets": "Afficher tous ({{count}})",
+    "show-matched-assets": "Afficher uniquement les fichiers correspondants"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "L'analyse du plugin a échoué",
@@ -199,7 +201,8 @@
     "retry": "Essayer à nouveau",
     "this-repository-has-no-releases": "Il n'y a actuellement aucune version dans ce référentiel.",
     "v1-live-releases-loaded": "{{v1}} Les versions ont été obtenues en temps réel",
-    "release-pagination": "Pagination des versions"
+    "release-pagination": "Pagination des versions",
+    "no-matching-releases": "Aucune version ne correspond aux filtres de fichiers sélectionnés."
   },
   "subscriptionRepoCard": {
     "no-description": "Pas encore de description",

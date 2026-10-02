@@ -394,13 +394,15 @@
     "data-management": "Gerenciamento de dados",
     "diagnostic-logs": "Registro de diagnóstico",
     "network": "Configurações de rede",
-    "plugins": "plug-in",
+    "plugins": "Plugin Management",
     "vector-search": "pesquisa vetorial",
     "mcp-server": "Serviço MCP",
     "settings-content": "Definir conteúdo",
     "settings": "configurar",
     "close-settings": "Fechar configurações",
-    "settings-tabs": "Configurar guias"
+    "settings-tabs": "Configurar guias",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "Visualizando",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "Verifique se uma nova versão está disponível",
     "contact-information": "Informações de contato",
     "if-you-encounter-any-issues-or-have-suggestions": "Se você encontrar algum problema ou tiver sugestões durante o uso, entre em contato comigo através dos seguintes métodos:",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "Incluir chaves ao fazer backup/exportar",
@@ -1196,7 +1199,11 @@
     "connection-successful-dimensions": "Conexão bem-sucedida - Dimensão: {{dimensions}}",
     "connection-failed-detail": "Falha na conexão: {{error}}",
     "connection-successful-vectors": "Conexão bem-sucedida — vetor: {{vectorCount}}, dimensões: {{dimensions}}",
-    "text": ")"
+    "text": ")",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "Configuração WebDAV",

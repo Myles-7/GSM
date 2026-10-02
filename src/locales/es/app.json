@@ -394,13 +394,15 @@
     "data-management": "Gestión de datos",
     "diagnostic-logs": "Registro de diagnóstico",
     "network": "Configuración de red",
-    "plugins": "complemento",
+    "plugins": "Plugin Management",
     "vector-search": "búsqueda vectorial",
     "mcp-server": "servicio MCP",
     "settings-content": "Establecer contenido",
     "settings": "configuración",
     "close-settings": "Cerrar configuración",
-    "settings-tabs": "Configurar pestañas"
+    "settings-tabs": "Configurar pestañas",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "Visita",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "Compruebe si hay una nueva versión disponible",
     "contact-information": "Información del contacto",
     "if-you-encounter-any-issues-or-have-suggestions": "Si encuentra algún problema o tiene sugerencias durante el uso, comuníquese conmigo a través de los siguientes métodos:",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "Incluir claves al realizar copias de seguridad/exportar",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "Consulte la guía de implementación detallada.",
     "connection-successful-dimensions": "Conexión exitosa - Dimensión: {{dimensions}}",
     "connection-failed-detail": "Error de conexión: {{error}}",
-    "connection-successful-vectors": "Conexión exitosa: vector: {{vectorCount}}, dimensiones: {{dimensions}}"
+    "connection-successful-vectors": "Conexión exitosa: vector: {{vectorCount}}, dimensiones: {{dimensions}}",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "Configuración WebDAV",

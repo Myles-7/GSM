@@ -27,7 +27,18 @@
     "failed": "Falha ao favoritar",
     "starred": "Favoritado",
     "check-name": "Confira este nome",
-    "no-description": "Sem descrição"
+    "no-description": "Sem descrição",
+    "history": "Histórico de textos",
+    "history-empty": "Ainda não há histórico",
+    "save-history": "Salvar alterações do histórico",
+    "history-error": "Não foi possível ler ou salvar o histórico.",
+    "view-readme": "Ver README de {{name}}",
+    "readme-load-error": "Não foi possível carregar o README. Feche esta tela para voltar à importação.",
+    "loading-readme": "Carregando README…",
+    "token-permission-error": "O GitHub recusou este token (403). Para consultar ou adicionar estrelas, ative Starring com leitura/escrita e Metadata com leitura em um token refinado, ou public_repo em um token clássico (repo para repositórios privados).",
+    "invalid-repository-id": "O GitHub não retornou um ID de repositório válido. Nenhuma estrela foi adicionada.",
+    "rate-limit-error": "O GitHub limitou a frequência desta solicitação. Aguarde antes de tentar novamente; alterar as permissões do token não resolverá.",
+    "network-error": "Não foi possível conectar ao GitHub. Verifique sua conexão e tente novamente."
   },
   "repositoryCard": {
     "failed-to-apply-plugin-result": "Não foi possível aplicar os resultados do plugin",

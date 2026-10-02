@@ -394,13 +394,15 @@
     "data-management": "Datenmanagement",
     "diagnostic-logs": "Diagnoseprotokoll",
     "network": "Netzwerkeinstellungen",
-    "plugins": "Plug-in",
+    "plugins": "Plugin Management",
     "vector-search": "Vektorsuche",
     "mcp-server": "MCP-Dienst",
     "settings-content": "Inhalte festlegen",
     "settings": "aufstellen",
     "close-settings": "Einstellungen schließen",
-    "settings-tabs": "Tabs einrichten"
+    "settings-tabs": "Tabs einrichten",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "Anzeigen",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "Prüfen Sie, ob eine neue Version verfügbar ist",
     "contact-information": "Kontaktinformationen",
     "if-you-encounter-any-issues-or-have-suggestions": "Wenn Sie während der Nutzung auf Probleme stoßen oder Vorschläge haben, kontaktieren Sie mich bitte über die folgenden Methoden:",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "Beziehen Sie beim Sichern/Exportieren Schlüssel mit ein",
@@ -1196,7 +1199,11 @@
     "connection-successful-dimensions": "Verbindung erfolgreich – Dimension: {{dimensions}}",
     "connection-failed-detail": "Verbindung fehlgeschlagen: {{error}}",
     "connection-successful-vectors": "Verbindung erfolgreich – Vektor: {{vectorCount}}, Abmessungen: {{dimensions}}",
-    "text": ")"
+    "text": ")",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "WebDAV-Konfiguration",

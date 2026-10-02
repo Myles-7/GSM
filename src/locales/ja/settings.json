@@ -129,5 +129,16 @@
   "generalPanel": {
     "account-token-hint": "現在のアカウント {{login}}。有効期限が切れたら、ログアウトせずにここでトークンを直接置き換えることができます。",
     "token-hint": "有効期限が切れたら、ログアウトせずにここでトークンを直接置き換えることができます。"
+  },
+  "identityMigration": {
+    "title": "Repository Identity",
+    "preview": "Dry Run",
+    "resume": "Resume Migration",
+    "apply": "Apply Confirmed Mappings",
+    "paused": "Writes paused. Resume the original account and workspace, or restore all associated storage together.",
+    "warning": "Matching names do not prove identity. Confirm only after checking that the old name was not reused; ambiguous rows remain unchanged.",
+    "noCandidates": "No legacy identity candidates.",
+    "restore": "Restore Associated Storage",
+    "discard": "Discard Unapplied Preview"
   }
 }

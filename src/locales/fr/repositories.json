@@ -27,7 +27,18 @@
     "failed": "Échec de l’ajout",
     "starred": "Étoile ajoutée",
     "check-name": "Vérifiez ce nom",
-    "no-description": "Aucune description"
+    "no-description": "Aucune description",
+    "history": "Historique des textes",
+    "history-empty": "Aucun historique pour le moment",
+    "save-history": "Enregistrer les modifications",
+    "history-error": "Impossible de lire ou d’enregistrer l’historique.",
+    "view-readme": "Voir le README de {{name}}",
+    "readme-load-error": "Impossible de charger le README. Fermez cette vue pour revenir à l’importation.",
+    "loading-readme": "Chargement du README…",
+    "token-permission-error": "GitHub a refusé ce jeton (403). Pour consulter ou ajouter des étoiles, activez Starring en lecture/écriture et Metadata en lecture avec un jeton à granularité fine, ou public_repo avec un jeton classique (repo pour les dépôts privés).",
+    "invalid-repository-id": "GitHub n'a pas renvoyé d'ID de dépôt valide. Aucune étoile n'a été ajoutée.",
+    "rate-limit-error": "GitHub a limité la fréquence de cette requête. Patientez avant de réessayer ; modifier les droits du jeton ne résoudra pas ce problème.",
+    "network-error": "Impossible de joindre GitHub. Vérifiez votre connexion et réessayez."
   },
   "repositoryCard": {
     "failed-to-apply-plugin-result": "Impossible d'appliquer les résultats du plugin",

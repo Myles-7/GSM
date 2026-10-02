@@ -129,5 +129,16 @@
   "generalPanel": {
     "account-token-hint": "Girokonto {{login}}. Nach Ablauf können Sie den Token hier direkt ersetzen, ohne sich abzumelden.",
     "token-hint": "Nach Ablauf können Sie den Token hier direkt ersetzen, ohne sich abzumelden."
+  },
+  "identityMigration": {
+    "title": "Repository Identity",
+    "preview": "Dry Run",
+    "resume": "Resume Migration",
+    "apply": "Apply Confirmed Mappings",
+    "paused": "Writes paused. Resume the original account and workspace, or restore all associated storage together.",
+    "warning": "Matching names do not prove identity. Confirm only after checking that the old name was not reused; ambiguous rows remain unchanged.",
+    "noCandidates": "No legacy identity candidates.",
+    "restore": "Restore Associated Storage",
+    "discard": "Discard Unapplied Preview"
   }
 }

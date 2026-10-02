@@ -394,13 +394,15 @@
     "data-management": "数据管理",
     "diagnostic-logs": "诊断日志",
     "network": "网络设置",
-    "plugins": "插件",
+    "plugins": "插件管理",
     "vector-search": "向量搜索",
     "mcp-server": "MCP服务",
     "settings-content": "设置内容",
     "settings": "设置",
     "close-settings": "关闭设置",
-    "settings-tabs": "设置标签页"
+    "settings-tabs": "设置标签页",
+    "appearance": "外观设置",
+    "plugin-management": "插件管理"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "正在查看 ",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "检查是否有新版本可用",
     "contact-information": "联系方式",
     "if-you-encounter-any-issues-or-have-suggestions": "如果您在使用过程中遇到任何问题或有建议，欢迎通过以下方式联系我：",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "查看 Token 配置指引"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "备份/导出时包含密钥",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "详细部署指南请参考",
     "connection-successful-dimensions": "连接成功 — 维度: {{dimensions}}",
     "connection-failed-detail": "连接失败：{{error}}",
-    "connection-successful-vectors": "连接成功 — 向量: {{vectorCount}}，维度: {{dimensions}}"
+    "connection-successful-vectors": "连接成功 — 向量: {{vectorCount}}，维度: {{dimensions}}",
+    "local-pending": "本地已知待处理",
+    "local-pending-count": "{{count}} 个本地已知待处理",
+    "scan-candidates": "增量扫描候选",
+    "save-before-indexing": "嵌入模型或索引设置尚未保存"
   },
   "webDAVPanel": {
     "webdav-configuration": "WebDAV配置",

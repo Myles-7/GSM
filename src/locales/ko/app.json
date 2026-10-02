@@ -394,13 +394,15 @@
     "data-management": "데이터 관리",
     "diagnostic-logs": "진단 로그",
     "network": "네트워크 설정",
-    "plugins": "플러그인",
+    "plugins": "Plugin Management",
     "vector-search": "벡터 검색",
     "mcp-server": "MCP 서비스",
     "settings-content": "콘텐츠 설정",
     "settings": "설정",
     "close-settings": "설정 닫기",
-    "settings-tabs": "탭 설정"
+    "settings-tabs": "탭 설정",
+    "appearance": "Appearance",
+    "plugin-management": "Plugin Management"
   },
   "similarViewBanner": {
     "viewing-similar-repositories-of": "보기",
@@ -908,7 +910,8 @@
     "check-if-a-new-version-is-available": "새 버전이 있는지 확인하세요.",
     "contact-information": "연락처 정보",
     "if-you-encounter-any-issues-or-have-suggestions": "사용 중 문제가 발생하거나 제안 사항이 있는 경우 다음 방법을 통해 저에게 연락해 주세요.",
-    "github": "GitHub"
+    "github": "GitHub",
+    "token-permission-guide": "Token setup guide"
   },
   "includeKeysToggle": {
     "include-keys-in-backup-export": "백업/내보내기 시 키 포함",
@@ -1196,7 +1199,11 @@
     "for-detailed-instructions-see": "자세한 배포 가이드를 참조하세요.",
     "connection-successful-dimensions": "연결 성공 - 측정기준: {{dimensions}}",
     "connection-failed-detail": "연결 실패: {{error}}",
-    "connection-successful-vectors": "연결 성공 — 벡터: {{vectorCount}}, 크기: {{dimensions}}"
+    "connection-successful-vectors": "연결 성공 — 벡터: {{vectorCount}}, 크기: {{dimensions}}",
+    "local-pending": "Locally known pending",
+    "local-pending-count": "{{count}} locally known pending",
+    "scan-candidates": "Incremental scan candidates",
+    "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
     "webdav-configuration": "WebDAV 구성",

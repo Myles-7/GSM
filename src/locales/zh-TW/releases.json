@@ -70,7 +70,9 @@
     "ai-summary": "AI 總結",
     "analyzing-update": "正在分析更新內容…",
     "failed-to-generate-summary-please-try-again": "總結生成失敗，請重試。",
-    "download-count": "{{count}} 次下載"
+    "download-count": "{{count}} 次下載",
+    "show-all-assets": "顯示全部 {{count}} 個",
+    "show-matched-assets": "只顯示符合的資產"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "插件分析失敗",
@@ -199,7 +201,8 @@
     "retry": "重試",
     "this-repository-has-no-releases": "該倉庫暫無 Release。",
     "v1-live-releases-loaded": "已即時取得 {{v1}} 條 Release",
-    "release-pagination": "Release 分頁"
+    "release-pagination": "Release 分頁",
+    "no-matching-releases": "沒有 Release 符合所選資產篩選器。"
   },
   "subscriptionRepoCard": {
     "no-description": "暫無描述",

@@ -70,7 +70,9 @@
     "ai-summary": "KI-Zusammenfassung",
     "analyzing-update": "Updates werden analysiert...",
     "failed-to-generate-summary-please-try-again": "Die Generierung der Zusammenfassung ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
-    "download-count": "{{count}} Downloads"
+    "download-count": "{{count}} Downloads",
+    "show-all-assets": "Alle {{count}} anzeigen",
+    "show-matched-assets": "Nur passende Dateien anzeigen"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "Die Plugin-Analyse ist fehlgeschlagen",
@@ -199,7 +201,8 @@
     "retry": "Versuchen Sie es erneut",
     "this-repository-has-no-releases": "Derzeit gibt es in diesem Repository kein Release.",
     "v1-live-releases-loaded": "{{v1}} Veröffentlichungen wurden in Echtzeit erhalten",
-    "release-pagination": "Paging freigeben"
+    "release-pagination": "Paging freigeben",
+    "no-matching-releases": "Keine Releases passen zu den ausgewählten Dateifiltern."
   },
   "subscriptionRepoCard": {
     "no-description": "Noch keine Beschreibung",
