@@ -4,18 +4,26 @@ Dim shell, files, root, logDir, logPath, nodePath, command, exitCode
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 root = files.GetParentFolderName(files.GetParentFolderName(WScript.ScriptFullName))
+On Error Resume Next
 shell.CurrentDirectory = root
 
 logDir = files.BuildPath(root, "logs")
 If Not files.FolderExists(logDir) Then files.CreateFolder(logDir)
 logPath = files.BuildPath(logDir, "desktop-" & files.GetTempName & ".log")
+If Err.Number <> 0 Then
+    MsgBox "Unable to initialize desktop startup logs." & vbCrLf & Err.Description, _
+        vbOKOnly + vbExclamation, "GitHub Stars Manager"
+    WScript.Quit 1
+End If
+On Error GoTo 0
 
-nodePath = "node"
+nodePath = files.BuildPath(root, "output\home-backend\runtime\node-v22.23.3-win-x64\node.exe")
+If Not files.FileExists(nodePath) Then nodePath = "node"
 If WScript.Arguments.Count > 0 Then nodePath = WScript.Arguments(0)
 
 ' The hidden console captures failures without leaving a terminal on the desktop.
 command = Quote(shell.ExpandEnvironmentStrings("%ComSpec%")) & " /d /s /c " & _
-    Quote(Quote(nodePath) & " " & Quote(files.BuildPath(root, "scripts\launch-desktop.mjs")) & _
+    Quote(Quote(nodePath) & " " & Quote(files.BuildPath(root, "scripts\start-home-desktop.cjs")) & _
     " > " & Quote(logPath) & " 2>&1")
 
 On Error Resume Next

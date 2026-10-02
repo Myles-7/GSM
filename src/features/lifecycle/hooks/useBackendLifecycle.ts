@@ -37,6 +37,7 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
     let cancelled = false;
 
     const initialize = async () => {
+      performance.mark?.('gsm:backend-initialize-start');
       try {
         await backend.init();
         if (backend.isAvailable && !cancelled) {
@@ -58,6 +59,7 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
         // Backend availability is optional. Preserve local-only application use.
         console.error('Failed to initialize backend:', error);
       } finally {
+        performance.mark?.('gsm:backend-initialize-finished');
         // Resolve the Electron MCP target after a successful or failed backend
         // probe so it can choose backend MCP or the local loopback bridge.
         if (!cancelled) {

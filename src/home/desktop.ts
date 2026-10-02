@@ -186,6 +186,7 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   const unsubscribe = sync.subscribe(() => { notify(); if (['synced','conflict'].includes(sync.view.status)) void project(sync); });
   const stop = sync.start();
   cleanup = () => { stop(); unsubscribe(); unstore(); window.removeEventListener('gsm:global-chat-history-changed', onChat); window.removeEventListener('gsm:custom-discovery-changed', onDiscovery); };
+  performance.mark?.('gsm:home-initialized');
   return true;
 }
 export function stopDesktopHome() { active?.stop(); cleanup?.(); cleanup = null; active = null; notify(); }

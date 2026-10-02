@@ -172,6 +172,12 @@ function App() {
   useAutoUpdateCheck();
   useBackendLifecycle(hasHydrated);
 
+  useEffect(() => {
+    if (!hasHydrated) return;
+    const frame = requestAnimationFrame(() => performance.mark?.('gsm:first-hydrated-frame'));
+    return () => cancelAnimationFrame(frame);
+  }, [hasHydrated]);
+
   // Restore persisted frontend debug level at startup so capture is active
   // app-wide, not only after DiagnosticLogsPanel mounts.
   useEffect(() => {

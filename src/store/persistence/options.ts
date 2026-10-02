@@ -431,6 +431,7 @@ backendApiSecret: typeof merged.backendApiSecret === 'string' ? merged.backendAp
   return merged;
 },
 onRehydrateStorage: (state) => {
+  performance.mark?.('gsm:store-hydration-start');
   const hydrationStart = Date.now();
   return (_rehydratedState, error) => {
 const elapsedMs = Date.now() - hydrationStart;
@@ -438,6 +439,7 @@ if (error) {
   logger.errorFromError('store.hydrate', 'Store hydration failed', error, { elapsedMs });
 } else {
   logger.info('store.hydrate', 'Store hydration complete', { elapsedMs });
+  performance.mark?.('gsm:store-hydrated');
 }
 state.setHasHydrated(true);
   };

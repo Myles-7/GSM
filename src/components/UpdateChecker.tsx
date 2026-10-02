@@ -1,7 +1,7 @@
 import { getIntlLocale } from '../i18n/format';
 import { useT } from "../i18n/useT";
-import React, { useState } from 'react';
-import { Calendar, Download, ExternalLink, Package, RefreshCw } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Calendar, ExternalLink, Package, RefreshCw } from 'lucide-react';
 import { useUpdateActions, type VersionInfo } from '../features/settings/hooks/useUpdateActions';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -16,46 +16,47 @@ interface UpdateCheckerProps {
 }
 
 export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable }) => {
-  const { language, setUpdateNotification } = useAppStore(useShallow((state) => ({
+  const { language } = useAppStore(useShallow((state) => ({
     language: state.language,
-    setUpdateNotification: state.setUpdateNotification,
   })));
   const { toast } = useDialog();
-  const { checkForUpdates: checkForUpdatesRemote, openDownloadUrl } = useUpdateActions();
+  const { checkUpstreamUpdates, openDownloadUrl } = useUpdateActions();
   const [isChecking, setIsChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<VersionInfo | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const { isScrolling: isChangelogScrolling, handleScroll: handleChangelogScroll } = useScrollbarFlash(showUpdateDialog);
 
   const t = useT('app');
 
-  const checkForUpdates = async (silent = false) => {
+  useEffect(() => () => { requestRef.current?.abort(); }, []);
+
+  const checkForUpdates = async () => {
+    if (requestRef.current) return;
+    const request = new AbortController();
+    requestRef.current = request;
     setIsChecking(true);
     setError(null);
+    setUpdateInfo(null);
+    setShowUpdateDialog(false);
     try {
-      const result = await checkForUpdatesRemote();
-      if (result.hasUpdate && result.latestVersion) {
-        setUpdateInfo(result.latestVersion);
-        setShowUpdateDialog(true);
-        onUpdateAvailable?.(result.latestVersion);
-        setUpdateNotification({
-          version: result.latestVersion.number,
-          releaseDate: result.latestVersion.releaseDate,
-          changelog: result.latestVersion.changelog,
-          downloadUrl: result.latestVersion.downloadUrl,
-          dismissed: false,
-        });
-      } else if (!silent) {
-        toast(t('updateChecker.you-are-already-using-the-latest-version'), 'info');
-      }
+      const result = await checkUpstreamUpdates(request.signal);
+      if (request.signal.aborted) return;
+      setUpdateInfo(result.latestVersion);
+      setShowUpdateDialog(true);
+      if (result.hasUpdate) onUpdateAvailable?.(result.latestVersion);
     } catch (error) {
+      if (request.signal.aborted) return;
       const errorMessage = t('updateChecker.failed-to-check-for-updates-please-check-your-ne');
       setError(errorMessage);
-      if (!silent) toast(errorMessage, 'error');
-      console.error('Update check failed:', error);
+      toast(errorMessage, 'error');
+      console.error('Upstream update check failed:', error);
     } finally {
-      setIsChecking(false);
+      if (!request.signal.aborted) {
+        requestRef.current = null;
+        setIsChecking(false);
+      }
     }
   };
 
@@ -77,8 +78,8 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
   return (
     <>
       <div className="flex flex-col items-start">
-        <Button type="button" onClick={() => checkForUpdates(false)} disabled={isChecking} className="gap-2">
-          {isChecking ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        <Button type="button" onClick={() => { void checkForUpdates(); }} disabled={isChecking} className="gap-2">
+          <RefreshCw className={cn('h-4 w-4', isChecking && 'animate-spin')} />
           <span>{isChecking ? t('updateChecker.checking') : t('updateChecker.check-for-updates')}</span>
         </Button>
 
@@ -90,7 +91,7 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
           <DialogHeader className="shrink-0 space-y-3 border-b border-border px-6 py-5 pr-12">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20"><Package className="h-6 w-6 text-primary" /></div>
-              <div><DialogTitle>{t('updateChecker.new-version-available')}</DialogTitle><DialogDescription>v{updateInfo?.number}</DialogDescription></div>
+              <div><DialogTitle>{t('updateChecker.new-version-available')} v{updateInfo?.number}</DialogTitle><DialogDescription>{t('generalPanel.check-if-a-new-version-is-available')}</DialogDescription></div>
             </div>
             {updateInfo && <div className="flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground"><Calendar className="h-4 w-4" /><span>{t('updateChecker.release-date')} {formatDate(updateInfo.releaseDate)}</span></div>}
           </DialogHeader>
@@ -108,7 +109,7 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({ onUpdateAvailable 
           )}
           <DialogFooter className="shrink-0 border-t border-border px-6 py-4">
             <Button type="button" onClick={handleDownload} className="gap-2"><ExternalLink className="h-4 w-4" /><span>{t('updateChecker.download-now')}</span></Button>
-            <Button type="button" variant="outline" onClick={() => setShowUpdateDialog(false)}>{t('updateChecker.later')}</Button>
+            <Button type="button" variant="outline" onClick={() => setShowUpdateDialog(false)}>{t('updateChecker.close')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

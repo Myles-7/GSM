@@ -14,9 +14,9 @@ export const UpdateNotificationBanner: React.FC = () => {
     language: state.language,
   })));
   const t = useT('app');
-  const { openDownloadUrl } = useUpdateActions();
+  const { notificationsEnabled, openDownloadUrl } = useUpdateActions();
 
-  if (!updateNotification || updateNotification.dismissed) return null;
+  if (!notificationsEnabled || !updateNotification || updateNotification.dismissed) return null;
 
   const handleDownload = () => {
     openDownloadUrl(updateNotification.downloadUrl);

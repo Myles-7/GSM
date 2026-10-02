@@ -1,3 +1,6 @@
+const { guardOutputPipe } = require('./outputPipeGuard');
+guardOutputPipe(process.stdout);
+guardOutputPipe(process.stderr);
 const { app, BrowserWindow, Menu, Tray, clipboard, ClipboardItem, nativeImage, nativeTheme, shell, globalShortcut, ipcMain, dialog, net, protocol, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -63,6 +66,8 @@ const startHidden = process.argv.includes('--hidden');
 // ── Single instance (#345): a second launch restores the existing window
 // instead of spawning a duplicate tray icon.
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+// This process owns no windows or jobs; exit before Chromium opens shared caches.
+if (!gotSingleInstanceLock) app.exit(0);
 
 protocol.registerSchemesAsPrivileged([{ scheme: PAGE_SCHEME, privileges: { standard: true, secure: true } }]);
 
@@ -170,6 +175,7 @@ function createWindow() {
       console.log('Loading application from:', indexPath);
       trustedPluginHostURL = pathToFileURL(indexPath).href;
       mainWindow.loadFile(indexPath).catch(error => {
+        if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
         console.error('Failed to load file:', error);
         // 加载失败时显示错误页面
         mainWindow.loadURL('data:text/html,<h1>Application Load Error</h1><p>Could not load the main application. Please restart the app.</p>');
@@ -1007,6 +1013,7 @@ registerWebdavIpc({
 
 const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlReading');
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock || isQuitting) return;
   const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
   registerHtmlReadingIpc({ ipcMain, isMainFrame: isMainPluginFrame, service, getWindow: () => mainWindow, powerMonitor: require('electron').powerMonitor });
 });
@@ -1026,15 +1033,14 @@ handlePluginIpc('plugins:searchWeb', async (_event, request) => {
   return getPluginManager().searchWeb(request);
 });
 
-if (!gotSingleInstanceLock) {
-  app.quit();
-} else {
+if (gotSingleInstanceLock) {
   app.on('second-instance', () => {
     restoreMainWindow();
   });
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock || isQuitting) return;
   protocol.handle(PAGE_SCHEME, (request) => {
     const resource = getPluginManager().readPageResource(request.url);
     if (!resource) return new Response('Not Found', { status: 404 });
@@ -1103,6 +1109,7 @@ app.on('will-quit', () => {
 });
 
 app.on('activate', () => {
+  if (!gotSingleInstanceLock || isQuitting) return;
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }

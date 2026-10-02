@@ -8,14 +8,24 @@ export interface VersionInfo {
 import { PROJECT_REPO_URL } from '../constants/project';
 import { version } from '../../package.json';
 import { logger } from './logger';
+import { withDeadline } from '../utils/requestDeadline';
+
+// Upstream releases are reference information, not updates for this personal build.
+export const UPDATE_POLICY = {
+  automaticChecks: false,
+  notifications: false,
+  requestTimeoutMs: 10_000,
+} as const;
 
 const REPO_OWNER = PROJECT_REPO_URL.split('/').slice(-2).join('/');
 const VERSION_INFO_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/main/versions/version-info.xml`;
 
 export interface UpdateCheckResult {
+  source: 'upstream';
+  installable: false;
   hasUpdate: boolean;
   currentVersion: string;
-  latestVersion?: VersionInfo;
+  latestVersion: VersionInfo;
 }
 
 export class UpdateService {
@@ -25,36 +35,36 @@ export class UpdateService {
     return version;
   }
 
-  static async checkForUpdates(): Promise<UpdateCheckResult> {
+  static async checkUpstreamUpdates(signal?: AbortSignal): Promise<UpdateCheckResult> {
     const currentVersion = this.getCurrentVersion();
 
     try {
-      const response = await fetch(this.REPO_URL);
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const xmlText = await response.text();
+      const xmlText = await withDeadline(async (requestSignal) => {
+        const response = await fetch(this.REPO_URL, { signal: requestSignal });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.text();
+      }, UPDATE_POLICY.requestTimeoutMs, signal);
       const versions = this.parseVersionXML(xmlText);
 
       if (versions.length === 0) {
-        return {
-          hasUpdate: false,
-          currentVersion
-        };
+        throw new Error('No valid upstream version information');
       }
 
-      // 获取最新版本（假设XML中版本按时间排序，最后一个是最新的）
-      const latestVersion = versions[versions.length - 1];
+      const latestVersion = versions.reduce((latest, candidate) =>
+        this.compareVersions(latest.number, candidate.number) < 0 ? candidate : latest);
       const hasUpdate = this.compareVersions(currentVersion, latestVersion.number) < 0;
 
       return {
+        source: 'upstream',
+        installable: false,
         hasUpdate,
         currentVersion,
-        latestVersion: hasUpdate ? latestVersion : undefined
+        latestVersion,
       };
     } catch (error) {
-      logger.error('update', '检查更新失败', error);
+      if (!signal?.aborted) logger.error('update', 'Upstream update check failed', error);
       throw error;
     }
   }
