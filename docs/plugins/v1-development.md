@@ -211,6 +211,7 @@ window.parent.postMessage({
   pageId: 'dashboard',
   requestId: 'request_1',
   token,
+  origin: window.location.origin,
   method: 'repositories.search',
   args: { query: 'react', limit: 20 },
 }, '*');
@@ -256,3 +257,20 @@ AI 请求正文不会写入调试日志；关闭页面会中止进行中的 AI �
 地址，联网请求不跟随重定向，并限制超时与响应大小。搜索词会发送给用户所配置的
 实例及其实际使用的搜索引擎，请不要在未经同意时把私有仓库、个人备注或密钥放进
 搜索词。`network:<domain>` 仅是 Manifest 保留声明，V1.3 不提供通用网络请求 API。
+
+## V1.4 Repository Modal Actions
+
+`repository-card` actions may declare `opensPage` pointing to a page in the same
+manifest. A plugin with only pages and opensPage actions needs no `main` or Worker.
+The modal supplies whitelisted repository facts, README and language. See
+`examples/plugins/repo-info-card` and [integration/security spec](v1.4-integration-spec.md).
+
+Every page request must include `origin: window.location.origin`; opaque or missing
+origins are rejected. Host init/responses target `plugin-page://<pluginId>` exactly.
+Normal JSON arguments are limited to 1 MiB UTF-8; image/file base64 arguments to
+10 MiB encoded JSON. Completed request IDs cannot be reused in the same session.
+
+`clipboard.write` accepts `{ text }`; `clipboard.writeImage` accepts `{ dataBase64 }`
+with `clipboard:write`. `downloads.saveFile` accepts `{ fileName, dataBase64 }`
+with `downloads:create`, and always asks for a native destination. Canceled saves
+return `{ canceled: true }`. Pages never receive a filesystem path, AI key or token.

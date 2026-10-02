@@ -4,9 +4,55 @@ import type {
   PluginOperationResult,
   RunPluginActionRequest,
   RunPluginActionResult,
+  PluginPageCapabilitySession,
 } from './types';
 import { aiTaskJournal } from '../services/aiTaskJournal';
 import { useAppStore } from '../store/useAppStore';
+
+const closedPage = () => ({
+  success: false as const, error: { code: 'PLUGIN_PAGE_CLOSED', message: 'Plugin page session expired' },
+});
+
+// Page AI is cancellable, unlike Worker actions. Track confirmation and execution together.
+async function trackPageAI<T extends { success: boolean }>(
+  session: PluginPageCapabilitySession, pluginName: string, signal: AbortSignal,
+  isCurrent: () => boolean, run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const state = useAppStore.getState();
+  const owner = state.user?.id;
+  const controller = new AbortController();
+  let rejectAbort: ((error: DOMException) => void) | undefined;
+  const abort = () => {
+    controller.abort();
+    rejectAbort?.(new DOMException('Plugin page closed', 'AbortError'));
+  };
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  const itemId = `${session.pageId}:${session.requestId}`;
+  const journal = owner === undefined ? null : aiTaskJournal.begin(String(owner), 'plugins',
+    [{ id: itemId, label: `${pluginName}: ${session.pageId}` }], state.activeAIConfig ?? undefined);
+  journal?.bind({ stop: abort });
+  journal?.item(itemId, 'running');
+  const off = useAppStore.subscribe((next, previous) => {
+    if (next.user?.id !== previous.user?.id || next.githubToken !== previous.githubToken) abort();
+  });
+  try {
+    if (controller.signal.aborted || !isCurrent()) throw new DOMException('Plugin page closed', 'AbortError');
+    const canceled = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const result = await Promise.race([run(controller.signal), canceled]);
+    if (controller.signal.aborted || !isCurrent()) throw new DOMException('Plugin page closed', 'AbortError');
+    journal?.item(itemId, result.success ? 'complete' : 'failed');
+    return result;
+  } catch (error) {
+    journal?.item(itemId, 'failed');
+    throw error;
+  } finally {
+    rejectAbort = undefined;
+    off();
+    signal.removeEventListener('abort', abort);
+    journal?.finish();
+  }
+}
 
 async function track<T extends { success: boolean }>(plugin: string, action: string, run: () => Promise<T>): Promise<T> {
   const owner = useAppStore.getState().user?.id;
@@ -40,6 +86,7 @@ function api(): ElectronPluginAPI | undefined {
 }
 
 export const pluginClient = {
+  trackPageAI,
   isSupported(): boolean {
     return typeof window !== 'undefined' && !!window.electronAPI?.plugins;
   },
@@ -55,9 +102,11 @@ export const pluginClient = {
     return api()?.enable(pluginId, grantedPermissions) ?? unavailable();
   },
   async disable(pluginId: string): Promise<PluginOperationResult> {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('plugin-page:revoke', { detail: pluginId }));
     return api()?.disable(pluginId) ?? unavailable();
   },
   async uninstall(pluginId: string, removePluginData?: boolean): Promise<PluginOperationResult> {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('plugin-page:revoke', { detail: pluginId }));
     return api()?.uninstall(pluginId, removePluginData) ?? unavailable();
   },
   async runAction(request: RunPluginActionRequest): Promise<RunPluginActionResult> {
@@ -93,10 +142,13 @@ export const pluginClient = {
     if (!pluginApi) return unavailableError();
     return pluginApi.getPage(pluginId, pageId);
   },
-  async requestPageCapability(request: Parameters<ElectronPluginAPI['requestPageCapability']>[0]): ReturnType<ElectronPluginAPI['requestPageCapability']> {
+  async requestPageCapability(request: Omit<Parameters<ElectronPluginAPI['requestPageCapability']>[0], 'sessionToken' | 'requestId'> &
+    Partial<Pick<PluginPageCapabilitySession, 'sessionToken' | 'requestId'>>): ReturnType<ElectronPluginAPI['requestPageCapability']> {
+    // Old hooks compile during the selective migration, but cannot use an unbound bridge.
+    if (!request.sessionToken || !request.requestId) return closedPage();
     const pluginApi = api();
     if (!pluginApi) return unavailableError();
-    return pluginApi.requestPageCapability(request);
+    return pluginApi.requestPageCapability(request as Parameters<ElectronPluginAPI['requestPageCapability']>[0]);
   },
   async getSearchEndpoint(): ReturnType<ElectronPluginAPI['getSearchEndpoint']> {
     return api()?.getSearchEndpoint() ?? { endpoint: null };
@@ -104,9 +156,11 @@ export const pluginClient = {
   async configureWebSearch(endpoint: string | null): ReturnType<ElectronPluginAPI['configureWebSearch']> {
     return api()?.configureWebSearch(endpoint) ?? unavailable();
   },
-  async searchWeb(request: Parameters<ElectronPluginAPI['searchWeb']>[0]): ReturnType<ElectronPluginAPI['searchWeb']> {
+  async searchWeb(request: Omit<Parameters<ElectronPluginAPI['searchWeb']>[0], 'sessionToken' | 'requestId'> &
+    Partial<Pick<PluginPageCapabilitySession, 'sessionToken' | 'requestId'>>): ReturnType<ElectronPluginAPI['searchWeb']> {
+    if (!request.sessionToken || !request.requestId) return closedPage();
     const pluginApi = api();
     if (!pluginApi) return unavailableError();
-    return pluginApi.searchWeb(request);
+    return pluginApi.searchWeb(request as Parameters<ElectronPluginAPI['searchWeb']>[0]);
   },
 };

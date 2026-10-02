@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Repo Info Card</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="index.js" defer></script>
+</head>
+<body>
+  <header><h1 id="repo-name">Repo Info Card</h1><p id="repo-description"></p></header>
+  <form id="picker" hidden>
+    <input id="query" aria-label="Repository search" maxlength="200">
+    <button type="submit">Search</button>
+    <select id="repositories" aria-label="Repository"></select>
+  </form>
+  <div class="toolbar">
+    <label>Canvas <select id="canvas"><option value="1x1">Square</option><option value="5x2">Wide</option><option value="3x4">Portrait</option></select></label>
+    <label>Palette <select id="palette"><option value="print">Print</option><option value="ink">Ink</option></select></label>
+    <button id="generate" type="button">Generate card</button>
+    <button id="copy-code" type="button" disabled>Copy HTML</button>
+    <button id="copy-image" type="button" disabled>Copy image</button>
+    <button id="save-image" type="button" disabled>Save image</button>
+  </div>
+  <p id="status" role="status"></p>
+  <nav aria-label="Preview zoom">
+    <button id="zoom-out" type="button" title="Zoom out" aria-label="Zoom out">-</button>
+    <button id="zoom-fit" type="button" title="Fit preview">Fit</button>
+    <button id="zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+    <output id="zoom-level">100%</output>
+  </nav>
+  <main id="preview-scroll"><div id="preview"></div></main>
+</body>
+</html>

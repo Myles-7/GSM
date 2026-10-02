@@ -1,6 +1,7 @@
 const pluginId = 'com.example.repo-health-page';
 const pageId = 'dashboard';
 let token = null;
+let hostOrigin = null;
 let nextRequestId = 0;
 let latestSearchId = 0;
 const pending = new Map();
@@ -11,7 +12,8 @@ function request(method, args) {
   return new Promise((resolve, reject) => {
     pending.set(requestId, { resolve, reject });
     window.parent.postMessage({
-      type: 'plugin-page:request', pluginId, pageId, requestId, token, method, args,
+      type: 'plugin-page:request', pluginId, pageId, requestId, token,
+      origin: window.location.origin, method, args,
     }, '*');
   });
 }
@@ -51,12 +53,19 @@ async function search() {
 window.addEventListener('message', (event) => {
   if (event.source !== window.parent || !event.data ||
     event.data.pluginId !== pluginId || event.data.pageId !== pageId) return;
-  if (event.data.type === 'plugin-page:init' && typeof event.data.token === 'string') {
+  if (hostOrigin !== null && event.origin !== hostOrigin) return;
+  if (event.data.type === 'plugin-page:init' && typeof event.data.token === 'string' && event.data.token) {
+    hostOrigin = event.origin;
+    if (token !== event.data.token) {
+      for (const handler of pending.values()) handler.reject(new Error('Page session changed'));
+      pending.clear();
+    }
     token = event.data.token;
     void search();
     return;
   }
-  if (event.data.type !== 'plugin-page:response' || event.data.token !== token) return;
+  if (event.data.type !== 'plugin-page:response' || event.data.token !== token ||
+    typeof event.data.requestId !== 'string') return;
   const handler = pending.get(event.data.requestId);
   if (!handler) return;
   pending.delete(event.data.requestId);
@@ -65,3 +74,9 @@ window.addEventListener('message', (event) => {
 });
 
 document.getElementById('search').addEventListener('click', () => void search());
+window.addEventListener('pagehide', () => {
+  latestSearchId++;
+  token = null;
+  for (const handler of pending.values()) handler.reject(new Error('Page closed'));
+  pending.clear();
+});

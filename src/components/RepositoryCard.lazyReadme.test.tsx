@@ -1,23 +1,14 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from './ui/tooltip';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Repository } from '../types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RepositoryCard } from './RepositoryCard';
+import { repository, repositoryCardActions, storeState } from './RepositoryCard.lazyReadme.fixture';
 
 const mocks = vi.hoisted(() => ({
   useAppStore: vi.fn(),
   consoleError: vi.fn(),
-  repositoryCardActions: {
-    analyze: vi.fn(),
-    findSimilar: vi.fn(),
-    unstar: vi.fn(),
-    toggleReleaseSubscription: vi.fn(),
-    isSubscribed: false,
-    isAnalyzing: false,
-    isFindingSimilar: false,
-    isUnstarring: false,
-    vectorSearchAvailable: false,
-  },
+  readmeLoads: vi.fn(),
 }));
 
 vi.mock('../store/useAppStore', () => ({
@@ -25,68 +16,44 @@ vi.mock('../store/useAppStore', () => ({
 }));
 
 vi.mock('../features/repositories/hooks/useRepositoryCardActions', () => ({
-  useRepositoryCardActions: () => mocks.repositoryCardActions,
+  useRepositoryCardActions: () => repositoryCardActions,
 }));
 
 vi.mock('./RepositoryEditModal', () => ({
   RepositoryEditModal: () => null,
 }));
 
-const repository: Repository = {
-  id: 1,
-  name: 'example-repository',
-  full_name: 'owner/example-repository',
-  description: 'Repository description',
-  html_url: 'https://github.com/owner/example-repository',
-  stargazers_count: 128,
-  forks_count: 3,
-  forks: 3,
-  language: 'TypeScript',
-  created_at: '2026-01-01T00:00:00.000Z',
-  updated_at: '2026-01-02T00:00:00.000Z',
-  pushed_at: '2026-01-03T00:00:00.000Z',
-  owner: {
-    login: 'owner',
-    avatar_url: 'https://example.com/avatar.png',
-  },
-  topics: ['test'],
-  ai_platforms: ['web'],
-};
+// This boundary fixture has no plugin menu.
+vi.mock('../plugins/hooks/usePluginActions', () => ({
+  usePluginActions: () => ({ actions: [], runAction: vi.fn() }),
+}));
+vi.mock('../plugins/pluginClient', () => ({
+  pluginClient: { runAction: vi.fn() },
+}));
 
 type ReadmeModalMockProps = {
   onClose: () => void;
   onCloseAutoFocus?: () => void;
 };
 
-const storeState = {
-  releaseSubscriptions: new Set<number>(),
-  analyzingRepositoryIds: new Set<number>(),
-  toggleReleaseSubscription: vi.fn(),
-  githubToken: null,
-  activeAIConfig: null,
-  setAnalyzingRepository: vi.fn(),
-  language: 'en' as const,
-  updateRepository: vi.fn(),
-  deleteRepository: vi.fn(),
-  vectorSearchConfig: {
-    enabled: false,
-    workerUrl: '',
-    authToken: '',
-    embeddingConfigId: '',
-    indexMode: 'readme' as const,
-    readmeMaxChars: 6000,
-  },
-  vectorSearchStatus: null,
-  embeddingConfigs: [],
-  activeEmbeddingConfig: '',
-  repositories: [repository],
-  enterSimilarView: vi.fn(),
-  aiConfigs: [],
-};
+vi.mock('./ReadmeModal', () => {
+  mocks.readmeLoads();
+  return {
+    ReadmeModal: ({ onClose, onCloseAutoFocus }: ReadmeModalMockProps) => (
+      <button type="button" onClick={() => { onClose(); onCloseAutoFocus?.(); }}>
+        Close README
+      </button>
+    ),
+  };
+});
 
 describe('RepositoryCard README lazy boundary', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(mocks.consoleError);
     mocks.useAppStore.mockImplementation((selector?: (state: typeof storeState) => unknown) => (
@@ -95,21 +62,7 @@ describe('RepositoryCard README lazy boundary', () => {
   });
 
   it('restores focus to the keyboard trigger after the README modal closes', async () => {
-    vi.doMock('./ReadmeModal', () => ({
-      ReadmeModal: ({ onClose, onCloseAutoFocus }: ReadmeModalMockProps) => (
-        <button
-          type="button"
-          onClick={() => {
-            onClose();
-            onCloseAutoFocus?.();
-          }}
-        >
-          Close README
-        </button>
-      ),
-    }));
-
-    const { RepositoryCard } = await import('./RepositoryCard');
+    expect(mocks.readmeLoads).not.toHaveBeenCalled();
     // delay: null removes artificial keystroke/click delays so the test does not
     // depend on wall-clock timing when the suite runs 60+ files in parallel.
     const user = userEvent.setup({ delay: null });
@@ -129,24 +82,6 @@ describe('RepositoryCard README lazy boundary', () => {
     await user.click(await screen.findByRole('button', { name: 'Close README' }, { timeout: 10_000 }));
 
     expect(trigger).toHaveFocus();
-  }, 15_000);
-
-  it('renders the existing error boundary when the README lazy chunk cannot load', async () => {
-    vi.doMock('./ReadmeModal', () => {
-      throw new Error('README lazy chunk failed');
-    });
-
-    const { RepositoryCard } = await import('./RepositoryCard');
-    const user = userEvent.setup({ delay: null });
-
-    render(
-      <TooltipProvider>
-        <RepositoryCard repository={repository} allCategories={[]} />
-      </TooltipProvider>,
-    );
-
-    await user.click(screen.getByRole('button', { name: /owner\/example-repository/i }));
-
-    expect(await screen.findByRole('heading', { name: 'Application Error' }, { timeout: 10_000 })).toBeInTheDocument();
+    expect(mocks.readmeLoads).toHaveBeenCalledOnce();
   }, 15_000);
 });

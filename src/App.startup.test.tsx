@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const storeState = {
+    user: { id: 1 },
     isAuthenticated: true,
     currentView: 'repositories',
     selectedCategory: 'all',
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     storeState,
+    storeListeners: new Set<(next: typeof storeState, previous: typeof storeState) => void>(),
     useAppStore: vi.fn((selector?: (state: typeof storeState) => unknown) =>
       selector ? selector(storeState) : storeState,
     ),
@@ -47,6 +49,10 @@ const mocks = vi.hoisted(() => {
 
 Object.assign(mocks.useAppStore, {
   getState: vi.fn(() => mocks.storeState),
+  subscribe: vi.fn((listener: (next: typeof mocks.storeState, previous: typeof mocks.storeState) => void) => {
+    mocks.storeListeners.add(listener);
+    return () => mocks.storeListeners.delete(listener);
+  }),
 });
 
 vi.mock('./store/useAppStore', () => ({ useAppStore: mocks.useAppStore }));
@@ -112,12 +118,16 @@ vi.mock('./components/UpdateNotificationBanner', () => ({ UpdateNotificationBann
 vi.mock('./components/ListsPushIndicator', () => ({ ListsPushIndicator: () => null }));
 
 import App from './App';
+import { pluginPageSession } from './plugins/pluginPageSession';
 
 describe('App backend initialization', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     mocks.storeState.currentView = 'repositories';
+    mocks.storeState.user = { id: 1 };
+    mocks.storeState.githubToken = 'ghp-local-token';
+    pluginPageSession.close();
     mocks.loadedViews.clear();
     mocks.backend.isAvailable = true;
     mocks.backend.init.mockResolvedValue(undefined);
@@ -146,6 +156,24 @@ describe('App backend initialization', () => {
     expect(mocks.backend.syncSettings).toHaveBeenCalledOnce();
     expect(mocks.syncFromBackend).toHaveBeenCalledOnce();
     expect(mocks.startAutoSync).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the production account-change subscription and removes it on unmount', async () => {
+    const { unmount } = render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.storeListeners.size).toBe(1);
+    await act(async () => {
+      pluginPageSession.open({ pluginId: 'com.example.page', pluginName: 'Fixture', pageId: 'one', pageTitle: 'Fixture' });
+    });
+    expect(pluginPageSession.getSnapshot()).not.toBeNull();
+    await act(async () => {
+      const previous = { ...mocks.storeState };
+      mocks.storeState.user = { id: 2 };
+      for (const listener of mocks.storeListeners) listener(mocks.storeState, previous);
+    });
+    expect(pluginPageSession.getSnapshot()).toBeNull();
+    unmount();
+    expect(mocks.storeListeners.size).toBe(0);
   });
 
   it('renders repositories before dormant views load, then resolves every lazy primary view after a view switch', async () => {

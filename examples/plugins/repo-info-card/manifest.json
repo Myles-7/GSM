@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "com.githubstarsmanager.repo-info-card",
+  "name": "Repo Info Card",
+  "version": "0.1.0",
+  "description": "Generate a repository info card with confirmed host AI, then copy or export it.",
+  "author": "GithubStarsManager",
+  "apiVersion": "1",
+  "permissions": ["repositories:read", "ai:invoke", "clipboard:write", "downloads:create"],
+  "contributes": {
+    "repositoryActions": [
+      {
+        "id": "generate-info-card",
+        "title": "Repo Info Card",
+        "placement": "repository-card",
+        "opensPage": "info-card"
+      }
+    ],
+    "pages": [{ "id": "info-card", "title": "Repository Info Card", "entry": "ui/index.html" }]
+  }
+}

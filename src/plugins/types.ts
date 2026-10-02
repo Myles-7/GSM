@@ -7,6 +7,7 @@ export interface PluginRepositoryAction {
   title: string;
   icon?: string;
   placement: PluginPlacement;
+  opensPage?: string;
 }
 
 export interface PluginManifest {
@@ -102,17 +103,22 @@ export interface ElectronPluginAPI {
     exporterId: string;
     repositories: Repository[];
   }) => Promise<{ success: true; result: { content: string; fileName: string; mimeType: string } } | { success: false; error: PluginError }>;
-  getPage: (pluginId: string, pageId: string) => Promise<{ success: true; url: string } | { success: false; error: PluginError }>;
-  requestPageCapability: (request: {
-    pluginId: string;
-    pageId: string;
+  getPage: (pluginId: string, pageId: string) => Promise<{ success: true; url: string; sessionToken: string } | { success: false; error: PluginError }>;
+  requestPageCapability: (request: PluginPageCapabilitySession & {
     method: string;
     args: Record<string, unknown>;
   }) => Promise<{ success: true; value: unknown } | { success: false; error: PluginError }>;
   getSearchEndpoint: () => Promise<{ endpoint: string | null }>;
   configureWebSearch: (endpoint: string | null) => Promise<PluginOperationResult>;
-  searchWeb: (request: { pluginId: string; pageId: string; args: { query: string; limit?: number } }) =>
+  searchWeb: (request: PluginPageCapabilitySession & { args: { query: string; limit?: number } }) =>
     Promise<{ success: true; value: Array<{ title: string; url: string; snippet: string }> } | { success: false; error: PluginError }>;
+}
+
+export interface PluginPageCapabilitySession {
+  pluginId: string;
+  pageId: string;
+  sessionToken: string;
+  requestId: string;
 }
 
 export interface RegisteredPluginAction extends PluginRepositoryAction {

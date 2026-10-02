@@ -29,6 +29,7 @@ import { applyPluginActionResult } from '../plugins/applyPluginActionResult';
 import { useDialog } from '../hooks/useDialog';
 import { pluginClient } from '../plugins/pluginClient';
 import type { RegisteredPluginAction } from '../plugins/types';
+import { openPluginPage } from '../plugins/pluginPageSession';
 import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
 import { RepositoryLanguageStars, RepositorySoftwareForms, repositoryListDescriptionClass, repositoryListSurfaceClass } from './RepositoryListPresentation';
 
@@ -162,6 +163,10 @@ const PluginRepositoryActionItems: React.FC<{
 
   const run = async (action: RegisteredPluginAction) => {
     try {
+      if (action.opensPage) {
+        openPluginPage({ pluginId:action.pluginId,pluginName:action.pluginName,pageId:action.opensPage,pageTitle:action.title,repository });
+        return;
+      }
       const operation = await pluginClient.runAction({
         pluginId: action.pluginId,
         actionId: action.id,
