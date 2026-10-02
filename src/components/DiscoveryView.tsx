@@ -2,7 +2,8 @@
 
 
 
-import { discoveryChannelName, discoveryPlatformName } from '../i18n/discoveryNames';
+import { discoveryPlatformName } from '../i18n/discoveryNames';
+import { discoveryChannelDisplayName as discoveryChannelName } from '../features/discovery/application/discoveryChannelDisplayName';
 import { useT } from '../i18n/useT';
 import type { AppLanguage } from '../i18n/languages';
 import { Button } from './ui/button';
@@ -33,6 +34,10 @@ import { selectCustomChannel, startCustomRun, useCustomDiscovery } from '../feat
 import type { CustomDiscoveryChannel } from '../features/discovery/custom/model';
 import { DiscoverySidebar } from './DiscoverySidebar';
 import { DiscoveryChannelMenu } from './DiscoveryChannelMenu';
+import { AddExternalFeed } from './AddExternalFeed';
+import { isExternalDiscoveryChannelId } from '../services/externalFeedConfig';
+import { startExternalFeedRequest } from '../features/discovery/application/externalFeedRequest';
+import type { ExternalDiscoveryChannelId } from '../types/externalFeed';
 import { TrendingHistoryPanel } from '../features/discovery/components/TrendingHistoryPanel';
 import { useTrendingSnapshotCapture } from '../features/discovery/hooks/useTrendingSnapshotCapture';
 import { SubscriptionRepoCard } from './SubscriptionRepoCard';
@@ -118,6 +123,8 @@ interface MobileTabNavProps {
   createChannelButton?: React.ReactNode;
   onChannelSelect: (channel: DiscoveryChannelId) => void;
   onToggleChannel: (channel: DiscoveryChannelId) => void;
+  onAddExternalFeed: () => void;
+  onRemoveExternalFeed: (channel: ExternalDiscoveryChannelId) => void;
   language: AppLanguage;
 }
 
@@ -127,6 +134,8 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
   selectedChannel, 
   onChannelSelect,
   onToggleChannel,
+  onAddExternalFeed,
+  onRemoveExternalFeed,
   language,
   customNavigation,
   createChannelButton
@@ -260,6 +269,8 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
           channels={allChannels}
           language={language}
           onToggleChannel={onToggleChannel}
+          onAddExternalFeed={onAddExternalFeed}
+          onRemoveExternalFeed={onRemoveExternalFeed}
           triggerClassName="h-11 w-11 shrink-0"
         />
       </div>
@@ -463,6 +474,9 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const customState = useCustomDiscovery();
   const customChannel = customState.data.channels.find(c => c.id === customState.selected && c.enabled);
   const [channelEditor, setChannelEditor] = useState<CustomDiscoveryChannel | 'new' | null>(null);
+  const [externalFeedOpen, setExternalFeedOpen] = useState(false);
+  const removeExternalFeed = useAppStore(state => state.removeExternalDiscoveryChannel);
+  const accountIdentity = useAppStore(state => `${state.user?.id ?? ''}\u0000${state.githubToken ?? ''}`);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const toggleDiscoveryChannel = useAppStore(state => state.toggleDiscoveryChannel);
   const {
@@ -526,6 +540,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const discoveryScrollPositionsRef = useRef<Record<string, number>>({});
   // 用于记录最近一次自动拉取的频道，防止空频道无限循环拉取
   const autoFetchChannelRef = useRef<string | null>(null);
+  useEffect(() => { autoFetchChannelRef.current = null; }, [accountIdentity]);
   const appliedTopicRef = useRef<{ topic: string | null; platform: DiscoveryPlatform } | null>(null);
 
   const isAnalyzingThisChannel = isAnalyzing && analysisProgress.total > 0;
@@ -599,7 +614,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
       autoFetchChannelRef.current = selectedDiscoveryChannel;
       refreshChannel(selectedDiscoveryChannel, 1, false);
     }
-  }, [selectedDiscoveryChannel, refreshChannel]);
+  }, [accountIdentity, selectedDiscoveryChannel, refreshChannel]);
 
   // 趋势时间范围改变时刷新数据
   useEffect(() => {
@@ -733,11 +748,19 @@ export const DiscoveryView: React.FC = React.memo(() => {
   ]);
 
   const refreshAll = useCallback(async () => {
-    const enabledChannels = safeDiscoveryChannels.filter(ch => ch.enabled && ch.id !== 'code-search');
-    for (const channel of enabledChannels) {
-      await refreshChannel(channel.id, 1, false);
+    const request = startExternalFeedRequest(useAppStore);
+    try {
+      const enabledChannels = safeDiscoveryChannels.filter(ch => ch.enabled && ch.id !== 'code-search');
+      for (const channel of enabledChannels) {
+        if (!request.isCurrent()) return;
+        await refreshChannel(channel.id, 1, false);
+      }
+      if (request.isCurrent()) {
+        await startCustomRun(useCustomDiscovery.getState().data.channels.filter(c => c.enabled && !c.paused).map(c => c.id));
+      }
+    } finally {
+      request.finish();
     }
-    await startCustomRun(useCustomDiscovery.getState().data.channels.filter(c => c.enabled && !c.paused).map(c => c.id));
   }, [safeDiscoveryChannels, refreshChannel]);
 
   const mobileChannels = useMemo(() => {
@@ -759,6 +782,8 @@ export const DiscoveryView: React.FC = React.memo(() => {
         customNavigation={<CustomChannelNavigation mobile />}
         createChannelButton={<CreateChannelButton onClick={() => setChannelEditor('new')} />}
         onToggleChannel={toggleDiscoveryChannel}
+        onAddExternalFeed={() => setExternalFeedOpen(true)}
+        onRemoveExternalFeed={removeExternalFeed}
         onChannelSelect={(channel) => {
           selectCustomChannel(null);
           if (channel === selectedDiscoveryChannel) {
@@ -783,6 +808,8 @@ export const DiscoveryView: React.FC = React.memo(() => {
           <DiscoverySidebar
             channels={safeDiscoveryChannels}
             onToggleChannel={toggleDiscoveryChannel}
+            onAddExternalFeed={() => setExternalFeedOpen(true)}
+            onRemoveExternalFeed={removeExternalFeed}
             selectedChannel={customChannel ? null : selectedDiscoveryChannel}
             customNavigation={<CustomChannelNavigation onCreate={() => setChannelEditor('new')} />}
             createChannelButton={<CreateChannelButton onClick={() => setChannelEditor('new')} />}
@@ -1318,6 +1345,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
                 </div>
                 <Button
                   onClick={() => {
+                    if (isExternalDiscoveryChannelId(selectedDiscoveryChannel)) {
+                      void refreshChannel(selectedDiscoveryChannel, 1, false);
+                      return;
+                    }
                     const nextPage = discoveryNextPage[selectedDiscoveryChannel];
                     if (nextPage) {
                       refreshChannel(selectedDiscoveryChannel, nextPage, true);
@@ -1377,6 +1408,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
         </div>}
       </div>
       {channelEditor && <CustomChannelEditor channel={channelEditor === 'new' ? undefined : channelEditor} onClose={() => setChannelEditor(null)} />}
+      {externalFeedOpen && <AddExternalFeed onClose={() => setExternalFeedOpen(false)} />}
     </div>
   );
 });

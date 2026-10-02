@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultDiscoveryChannels } from '../store/schema';
 import { DiscoveryChannelMenu } from './DiscoveryChannelMenu';
+import { makeT } from '../i18n/useT';
 
 describe('DiscoveryChannelMenu', () => {
   it('lets the user hide an unwanted channel', async () => {
@@ -30,5 +31,28 @@ describe('DiscoveryChannelMenu', () => {
 
     await user.click(screen.getByRole('button', { name: '管理发现频道' }));
     expect(screen.getByRole('menuitemcheckbox', { name: '趋势' })).toHaveAttribute('data-disabled');
+  });
+
+  it('adds and removes external feeds without exposing built-ins to deletion', async () => {
+    const t = makeT('zh', 'discovery');
+    const user = userEvent.setup();
+    const onAdd = vi.fn();
+    const onRemove = vi.fn();
+    const channels = [...defaultDiscoveryChannels, {
+      id: 'external:one' as const, name: 'External Feed', nameEn: 'External Feed',
+      icon: 'search' as const, description: '', enabled: true, sourceUrl: 'https://example.com/feed',
+    }];
+    render(<DiscoveryChannelMenu channels={channels} language="en" onToggleChannel={vi.fn()}
+      onAddExternalFeed={onAdd} onRemoveExternalFeed={onRemove} />);
+    await user.click(screen.getByRole('button', { name: '管理发现频道' }));
+    expect(screen.getByRole('menuitemcheckbox', { name: 'External Feed' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Remove Trending/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: t('externalFeeds.add', { defaultValue: 'Add External Feed' }) }));
+    expect(onAdd).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: '管理发现频道' }));
+    await user.click(screen.getByRole('menuitem', {
+      name: t('externalFeeds.remove', { defaultValue: 'Remove {{name}}', name: 'External Feed' }),
+    }));
+    expect(onRemove).toHaveBeenCalledWith('external:one');
   });
 });

@@ -1,4 +1,4 @@
-import { discoveryChannelName } from '../i18n/discoveryNames';
+import { discoveryChannelDisplayName as discoveryChannelName } from '../features/discovery/application/discoveryChannelDisplayName';
 import { useT } from "../i18n/useT";
 import type { AppLanguage } from '../i18n/languages';
 import React from 'react';
@@ -7,6 +7,7 @@ import { SiX, SiTelegram } from '@icons-pack/react-simple-icons';
 import type { DiscoveryChannel, DiscoveryChannelId, DiscoveryChannelIcon } from '../types';
 import { Button } from './ui/button';
 import { DiscoveryChannelMenu } from './DiscoveryChannelMenu';
+import type { ExternalDiscoveryChannelId } from '../types/externalFeed';
 
 const discoveryChannelIconMap: Record<DiscoveryChannelIcon, React.ComponentType<{ className?: string }>> = {
   trending: TrendingUp,
@@ -26,9 +27,11 @@ interface DiscoverySidebarProps {
   createChannelButton?: React.ReactNode;
   onChannelSelect: (channel: DiscoveryChannelId) => void;
   onToggleChannel: (channel: DiscoveryChannelId) => void;
+  onAddExternalFeed?: () => void;
+  onRemoveExternalFeed?: (channel: ExternalDiscoveryChannelId) => void;
   onRefreshAll: () => void;
-  isLoading: Record<DiscoveryChannelId, boolean>;
-  lastRefresh: Record<DiscoveryChannelId, string | null>;
+  isLoading: Partial<Record<DiscoveryChannelId, boolean>>;
+  lastRefresh: Partial<Record<DiscoveryChannelId, string | null>>;
   isAnalyzing: boolean;
   language: AppLanguage;
 }
@@ -38,6 +41,8 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
   selectedChannel,
   onChannelSelect,
   onToggleChannel,
+  onAddExternalFeed,
+  onRemoveExternalFeed,
   onRefreshAll,
   isLoading,
   lastRefresh,
@@ -77,6 +82,8 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
               channels={channels}
               language={language}
               onToggleChannel={onToggleChannel}
+              onAddExternalFeed={onAddExternalFeed}
+              onRemoveExternalFeed={onRemoveExternalFeed}
               triggerClassName="h-8 w-8"
             />
             <Button
@@ -112,13 +119,13 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                 }`}
               >
-                <span className="flex items-center gap-2.5">
-                  <ChannelIcon className="w-4 h-4" />
-                  <span className="font-medium text-sm">
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <ChannelIcon className="w-4 h-4 shrink-0" />
+                  <span className="truncate font-medium text-sm" title={channel.name}>
                     {discoveryChannelName(channel, language)}
                   </span>
                 </span>
-                <span className="flex items-center gap-2.5">
+                <span className="flex shrink-0 items-center gap-2.5">
                   {channelLoading && (
                     <Loader2 className="w-3 h-3 animate-spin text-primary" />
                   )}

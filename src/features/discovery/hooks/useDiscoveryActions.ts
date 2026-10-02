@@ -16,6 +16,8 @@ import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/ca
 import { getAllCategories } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { useAuthSessionGeneration } from '../../../hooks/useAuthSessionGeneration';
+import { isExternalDiscoveryChannelId } from '../../../services/externalFeedConfig';
+import { useExternalFeedLoading } from './useExternalFeedLoading';
 
 const getChannelRequestSignature = (state: ReturnType<typeof selectDiscoveryViewState>, channelId: DiscoveryChannelId) => {
   const common = [state.githubToken, state.discoveryPlatform];
@@ -43,6 +45,7 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
   const { toast } = useDialog();
   const { setAnalysisProgress } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const refreshExternalFeed = useExternalFeedLoading();
   const optimizerRef = useRef<AIAnalysisOptimizer | null>(null);
   const channelRequestVersionRef = useRef<Partial<Record<DiscoveryChannelId, number>>>({});
   const channelLoadingVersionRef = useRef<Record<string, number>>({});
@@ -72,6 +75,15 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
   }, [t]);
 
   const refreshChannel = useCallback(async (channelId: DiscoveryChannelId, page = 1, append = false) => {
+    if (isExternalDiscoveryChannelId(channelId)) {
+      const token = useAppStore.getState().githubToken;
+      if (!token) {
+        toast(tRef.current('useDiscoveryActions.github-token-not-found-please-login-again'), 'error');
+        return;
+      }
+      await refreshExternalFeed(channelId, createGitHubApiService(token));
+      return;
+    }
     const currentState = latestStateRef.current;
     if (!currentState.githubToken) {
       toast(tRef.current('useDiscoveryActions.github-token-not-found-please-login-again'), 'error');
@@ -229,7 +241,7 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
         else currentState.setDiscoveryLoading(channelId, false);
       }
     }
-  }, [captureSession, isCurrentSession, scrollContainerRef, toast]);
+  }, [captureSession, isCurrentSession, refreshExternalFeed, scrollContainerRef, toast]);
 
   const handleAnalyzePage = useCallback(async () => {
     const analysisState = latestStateRef.current;
