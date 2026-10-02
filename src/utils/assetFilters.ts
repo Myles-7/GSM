@@ -1,4 +1,5 @@
 import type { AssetFilter } from '../types';
+import { PRESET_FILTERS } from '../constants/presetFilters';
 import { normalizeRepoKey } from './releaseSources';
 
 /**
@@ -77,56 +78,86 @@ export const normalizeAssetFilters = (filters: unknown): AssetFilter[] => {
     .filter((filter): filter is AssetFilter => filter !== null);
 };
 
-/**
- * 判定单个过滤器是否命中一个 Release（对每个已启用过滤器独立求值，多过滤器间取 OR）：
- * 1. 仓库命中「始终排除」→ 不命中（排除优先，且早于 includeRepos 与关键词判断）；
- * 2. 仓库命中「始终包含」→ 命中（仅绕过本过滤器的关键词判断，绕不过本过滤器的排除）；
- * 3. 有资产规则时：包含关键词非空则匹配范围为全部下载链接名（含源码归档伪资产与
- *    Release 正文提取链接，`preset-source` 依赖此现状）；包含关键词为空则只匹配
- *    release.assets 的真实上传资产名——否则真实资产全被排除的 Release 仍可能被
- *    未排除的伪资产/正文链接命中，排除关键词无法隐藏该 Release；
- * 4. 无资产规则时：includeRepos 非空 → 不命中（白名单之外没有正向条件）；
- *    仅 alwaysExcludeRepos 非空 → 命中（其余仓库匹配）；两者皆空 → 不命中。
- *
- * lowerRepoKey / lowerAllLinkNames / lowerRealAssetNames 由调用方小写归一化；
- * 过滤器自身字段为原始值（仓库与关键词匹配均不区分大小写）。
- */
-export const filterMatchesRelease = (
+/** Strip automatic source archive suffixes only for matching; explicit source rules still work. */
+export const normalizeMatchedLinkName = (lowerName: string, isSourceCode: boolean): string =>
+  isSourceCode ? lowerName.replace(/\.(?:zip|tar\.gz)(?=\)$)/, '') : lowerName;
+
+export interface AssetFilterEvaluation {
+  matchesRelease: boolean;
+  /** Indices address the complete download list, including body and source links. */
+  matchedLinkIndexes: Set<number>;
+}
+
+/** Exclude before include; negative-only keyword rules require a surviving real asset.
+ * Only matching filters contribute indices into the complete normalized link list. */
+export const evaluateAssetFilter = (
   filter: Pick<AssetFilter, 'keywords'> & Partial<AssetFilter>,
   lowerRepoKey: string,
-  lowerAllLinkNames: string[],
-  lowerRealAssetNames: string[],
-): boolean => {
+  lowerAllLinkNames: readonly string[],
+  lowerRealAssetNames: readonly string[],
+): AssetFilterEvaluation => {
+  const none = { matchesRelease: false, matchedLinkIndexes: new Set<number>() };
+  const all = () => ({ matchesRelease: true, matchedLinkIndexes: new Set(lowerAllLinkNames.map((_, index) => index)) });
   if ((filter.alwaysExcludeRepos ?? []).some(name => normalizeRepoKey(name) === lowerRepoKey)) {
-    return false;
+    return none;
   }
   if ((filter.includeRepos ?? []).some(name => normalizeRepoKey(name) === lowerRepoKey)) {
-    return true;
+    return all();
   }
 
   // 防御未经过 normalizeAssetFilters 的数据：空字符串关键词经 includes("") 恒为
   // true，会让包含词击穿匹配、排除词隐藏全部 Release，这里先剔除。
-  const keywords = (filter.keywords ?? []).filter(keyword => keyword.trim().length > 0);
-  const excludeKeywords = (filter.excludeKeywords ?? []).filter(keyword => keyword.trim().length > 0);
+  const keywords = (filter.keywords ?? []).map(keyword => keyword.trim().toLowerCase()).filter(Boolean);
+  const excludeKeywords = (filter.excludeKeywords ?? []).map(keyword => keyword.trim().toLowerCase()).filter(Boolean);
   const hasKeywords = keywords.length > 0;
   const hasExcludeKeywords = excludeKeywords.length > 0;
 
   if (hasKeywords || hasExcludeKeywords) {
     const matchScope = hasKeywords ? lowerAllLinkNames : lowerRealAssetNames;
-    const assetHit = matchScope.some(lowerLinkName =>
-      (!hasKeywords || keywords.some(keyword => lowerLinkName.includes(keyword.toLowerCase()))) &&
-      !excludeKeywords.some(keyword => lowerLinkName.includes(keyword.toLowerCase()))
-    );
-    if (assetHit) return true;
+    const hits = (name: string) => (!hasKeywords || keywords.some(keyword => name.includes(keyword)))
+      && !excludeKeywords.some(keyword => name.includes(keyword));
+    if (!matchScope.some(hits)) return none;
+    return { matchesRelease: true, matchedLinkIndexes: new Set(lowerAllLinkNames.flatMap((name, index) => hits(name) ? [index] : [])) };
   }
 
   if (!hasKeywords && !hasExcludeKeywords) {
     // 仓库白名单（includeRepos）存在时不命中其之外的仓库；仅排除列表是有意
     // 支持的负向仓库过滤器：除排除仓库外的仓库均命中（第 2 节规则 7）
     if ((filter.includeRepos ?? []).length === 0 && (filter.alwaysExcludeRepos ?? []).length > 0) {
-      return true;
+      return all();
     }
   }
 
-  return false;
+  return none;
 };
+
+/** Compatibility for consumers that only need Release visibility. */
+export const filterMatchesRelease = (
+  filter: Pick<AssetFilter, 'keywords'> & Partial<AssetFilter>,
+  lowerRepoKey: string,
+  lowerAllLinkNames: string[],
+  lowerRealAssetNames: string[],
+): boolean => evaluateAssetFilter(filter, lowerRepoKey, lowerAllLinkNames, lowerRealAssetNames).matchesRelease;
+
+export function evaluateReleaseFilters(
+  selectedIds: readonly string[],
+  filters: readonly AssetFilter[],
+  repoName: string,
+  links: readonly { name: string; isSourceCode?: boolean }[],
+  realAssets: readonly { name: string }[],
+): AssetFilterEvaluation {
+  if (selectedIds.length === 0) {
+    return { matchesRelease: true, matchedLinkIndexes: new Set(links.map((_, index) => index)) };
+  }
+  const names = links.map(link => normalizeMatchedLinkName(link.name.toLowerCase(), Boolean(link.isSourceCode)));
+  const assetNames = realAssets.map(asset => asset.name.toLowerCase());
+  const result: AssetFilterEvaluation = { matchesRelease: false, matchedLinkIndexes: new Set() };
+  for (const id of selectedIds) {
+    const filter = filters.find(item => item.id === id) ?? PRESET_FILTERS.find(item => item.id === id);
+    if (!filter) continue;
+    const evaluation = evaluateAssetFilter(filter, normalizeRepoKey(repoName), names, assetNames);
+    result.matchesRelease ||= evaluation.matchesRelease;
+    evaluation.matchedLinkIndexes.forEach(index => result.matchedLinkIndexes.add(index));
+  }
+  return result;
+}

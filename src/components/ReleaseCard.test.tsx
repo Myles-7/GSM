@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReleaseCard from './ReleaseCard';
 import type { Release } from '../types';
@@ -10,10 +10,16 @@ const storeState: Record<string, unknown> = {
   activeAIConfig: null,
   language: 'zh',
 };
+const accountListeners = new Set<(next: { user: { id: number } }, previous: { user: { id: number } }) => void>();
 
 vi.mock('../store/useAppStore', () => ({
-  useAppStore: vi.fn((selector?: (state: Record<string, unknown>) => unknown) =>
-    selector ? selector(storeState) : storeState),
+  useAppStore: Object.assign(vi.fn((selector?: (state: Record<string, unknown>) => unknown) =>
+    selector ? selector(storeState) : storeState), {
+    subscribe: (listener: (next: { user: { id: number } }, previous: { user: { id: number } }) => void) => {
+      accountListeners.add(listener);
+      return () => accountListeners.delete(listener);
+    },
+  }),
 }));
 
 vi.mock('../hooks/useDialog', () => ({
@@ -84,6 +90,28 @@ const renderCard = (props: Partial<Parameters<typeof ReleaseCard>[0]> = {}) => {
 describe('ReleaseCard asset updated indicator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    storeState.language = 'zh';
+  });
+
+  it('resets show-all after an account leaves and returns within one render batch', () => {
+    const props = buildCardProps({
+      downloadLinks: [
+        { name: 'app.dmg', url: 'https://example.com/app.dmg', size: 0, downloadCount: 0 },
+        { name: 'app.exe', url: 'https://example.com/app.exe', size: 0, downloadCount: 0 },
+      ],
+      matchedLinkIndexes: new Set([0]),
+    });
+    render(<ReleaseCard {...props} />);
+    expect(screen.queryByText('app.exe')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '显示全部 2 个' }));
+    expect(screen.getByText('app.exe')).toBeInTheDocument();
+    act(() => {
+      accountListeners.forEach(listener => {
+        listener({ user: { id: 2 } }, { user: { id: 1 } });
+        listener({ user: { id: 1 } }, { user: { id: 2 } });
+      });
+    });
+    expect(screen.queryByText('app.exe')).not.toBeInTheDocument();
   });
 
   it('shows container-level and per-asset indicators from the same source (updated_asset_ids)', () => {

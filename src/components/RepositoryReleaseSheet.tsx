@@ -14,7 +14,9 @@ import AssetLeadingIcon from './AssetLeadingIcon';
 import { useAppStore } from '../store/useAppStore';
 import { useRepositoryReleaseSheet } from '../features/repositories/hooks/useRepositoryReleaseSheet';
 import { computeRpcDownloadKey } from '../hooks/useReleaseArtifactActions';
-import { buildReleaseDownloadLinks, type ReleaseDownloadLink } from '../utils/releaseDownloadLinks';
+import { type ReleaseDownloadLink } from '../utils/releaseDownloadLinks';
+import { buildReleaseFilterLinks } from '../utils/releaseFilterLinks';
+import { evaluateReleaseFilters } from '../utils/assetFilters';
 import { formatFileSize } from '../utils/formatBytes';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
 import { Button } from './ui/button';
@@ -76,14 +78,14 @@ const Pagination: React.FC<{
 
 const ReleaseAssetsTable: React.FC<{
   release: Release;
+  links: ReleaseDownloadLink[];
   assetPage: number;
   onAssetPageChange: (page: number) => void;
   downloadStates: Record<string, 'idle' | 'sending' | 'sent'>;
   onDownload: (link: ReleaseDownloadLink) => void;
   language: AppLanguage;
-}> = ({ release, assetPage, onAssetPageChange, downloadStates, onDownload }) => {
+}> = ({ release, links, assetPage, onAssetPageChange, downloadStates, onDownload }) => {
   const t = useT('releases');
-  const links = useMemo(() => buildReleaseDownloadLinks(release), [release]);
   const totalPages = Math.max(1, Math.ceil(links.length / ASSETS_PER_PAGE));
   const currentPage = Math.min(assetPage, totalPages);
   const displayedLinks = links.slice((currentPage - 1) * ASSETS_PER_PAGE, currentPage * ASSETS_PER_PAGE);
@@ -150,6 +152,8 @@ const ReleaseAssetsTable: React.FC<{
 
 const ReleaseContent: React.FC<{
   release: Release;
+  links: ReleaseDownloadLink[];
+  matchedLinkIndexes: ReadonlySet<number>;
   assetPage: number;
   onAssetPageChange: (page: number) => void;
   downloadStates: Record<string, 'idle' | 'sending' | 'sent'>;
@@ -158,9 +162,12 @@ const ReleaseContent: React.FC<{
   onGenerateSummary: () => void;
   language: AppLanguage;
   repository: Repository;
-}> = ({ release, assetPage, onAssetPageChange, downloadStates, onDownload, summary, onGenerateSummary, language, repository }) => {
+}> = ({ release, links, matchedLinkIndexes, assetPage, onAssetPageChange, downloadStates, onDownload, summary, onGenerateSummary, language, repository }) => {
   const t = useT('releases');
   const [activeTab, setActiveTab] = useState('assets');
+  const [showAllAssets, setShowAllAssets] = useState(false);
+  const visibleLinks = showAllAssets ? links : links.filter((_, index) => matchedLinkIndexes.has(index));
+  const hasHiddenAssets = matchedLinkIndexes.size < links.length;
   const hasBody = Boolean(release.body?.trim());
 
   const handleTabChange = (value: string) => {
@@ -176,14 +183,24 @@ const ReleaseContent: React.FC<{
         <TabsTrigger className="text-xs" value="summary">{t('repositoryReleaseSheet.summary')}</TabsTrigger>
       </TabsList>
       <TabsContent value="assets" className="mt-3">
-        <ReleasePluginRecommendations release={release} repository={repository} language={language} />
-        <InstallableAssetRecommendation
+        {(!hasHiddenAssets || showAllAssets) && <ReleasePluginRecommendations release={release} repository={repository} language={language} />}
+        {(!hasHiddenAssets || showAllAssets) && <InstallableAssetRecommendation
           release={release}
           downloadStates={downloadStates}
           onDownload={onDownload}
-        />
+        />}
+        {hasHiddenAssets && <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">{visibleLinks.length} / {links.length}</span>
+          <Button variant="ghost" size="sm" className="h-7 text-xs" aria-pressed={showAllAssets}
+            onClick={() => { setShowAllAssets(value => !value); onAssetPageChange(1); }}>
+            {showAllAssets
+              ? t('releaseCard.show-matched-assets', { defaultValue: 'Show matched assets' })
+              : t('releaseCard.show-all-assets', { count: links.length, defaultValue: 'Show all {{count}}' })}
+          </Button>
+        </div>}
         <ReleaseAssetsTable
           release={release}
+          links={visibleLinks}
           assetPage={assetPage}
           onAssetPageChange={onAssetPageChange}
           downloadStates={downloadStates}
@@ -237,6 +254,10 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
   repository,
 }) => {
   const language = useAppStore((state) => state.language);
+  const selectedFilters = useAppStore(state => state.releaseSelectedFilters);
+  const assetFilters = useAppStore(state => state.assetFilters);
+  const [accountEpoch, setAccountEpoch] = useState(0);
+  const filterResetKey = JSON.stringify([selectedFilters, assetFilters, accountEpoch]);
   const {
     releases,
     isLoading,
@@ -252,10 +273,15 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
   const [assetPages, setAssetPages] = useState<Record<number, number>>({});
   const [expandedReleaseIds, setExpandedReleaseIds] = useState<string[]>([]);
   const t = useT('releases');
+  const filteredReleases = useMemo(() => releases.map(release => {
+    const links = buildReleaseFilterLinks(release);
+    const evaluation = evaluateReleaseFilters(selectedFilters, assetFilters, release.repository.full_name, links, release.assets);
+    return { release, links, ...evaluation };
+  }).filter(item => item.matchesRelease), [releases, selectedFilters, assetFilters]);
 
-  const totalReleasePages = Math.max(1, Math.ceil(releases.length / RELEASES_PER_PAGE));
+  const totalReleasePages = Math.max(1, Math.ceil(filteredReleases.length / RELEASES_PER_PAGE));
   const currentReleasePage = Math.min(releasePage, totalReleasePages);
-  const visibleReleases = releases.slice((currentReleasePage - 1) * RELEASES_PER_PAGE, currentReleasePage * RELEASES_PER_PAGE);
+  const visibleReleases = filteredReleases.slice((currentReleasePage - 1) * RELEASES_PER_PAGE, currentReleasePage * RELEASES_PER_PAGE);
 
   const resetPagination = () => {
     setReleasePage(1);
@@ -267,6 +293,18 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
     resetPagination();
     void loadReleases();
   };
+  useEffect(() => useAppStore.subscribe((next, previous) => {
+    if (next.user?.id !== previous.user?.id) {
+      setAccountEpoch(value => value + 1);
+      setReleasePage(1);
+      setAssetPages({});
+      setExpandedReleaseIds([]);
+    }
+  }), []);
+  useEffect(() => {
+    setReleasePage(1);
+    setAssetPages({});
+  }, [filterResetKey]);
 
   useEffect(() => {
     if (isOpen) refresh();
@@ -329,10 +367,12 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
               <p className="max-w-sm text-sm text-destructive">{error}</p>
               <Button type="button" variant="secondary" size="sm" onClick={refresh}>{t('repositoryReleaseSheet.retry')}</Button>
             </div>
-          ) : releases.length === 0 ? (
+          ) : filteredReleases.length === 0 ? (
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
               <PackageOpen className="h-7 w-7" aria-hidden="true" />
-              <p className="text-sm">{t('repositoryReleaseSheet.this-repository-has-no-releases')}</p>
+              <p className="text-sm">{releases.length === 0
+                ? t('repositoryReleaseSheet.this-repository-has-no-releases')
+                : t('repositoryReleaseSheet.no-matching-releases', { defaultValue: 'No releases match the selected asset filters.' })}</p>
             </div>
           ) : (
             <>
@@ -340,7 +380,7 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
                 {t('repositoryReleaseSheet.v1-live-releases-loaded', { v1: releases.length })}
               </p>
               <Accordion type="multiple" value={expandedReleaseIds} onValueChange={setExpandedReleaseIds} className="rounded-md border border-border px-3">
-                {visibleReleases.map((release) => (
+                {visibleReleases.map(({ release, links, matchedLinkIndexes }) => (
                   <AccordionItem key={release.id} value={String(release.id)}>
                     <AccordionTrigger>
                       <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -354,7 +394,10 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
                     </AccordionTrigger>
                     <AccordionContent>
                       <ReleaseContent
+                        key={`${release.id}:${filterResetKey}`}
                         release={release}
+                        links={links}
+                        matchedLinkIndexes={matchedLinkIndexes}
                         assetPage={assetPages[release.id] ?? 1}
                         onAssetPageChange={(page) => setAssetPages((previous) => ({ ...previous, [release.id]: page }))}
                         downloadStates={downloadStates}

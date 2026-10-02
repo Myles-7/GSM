@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterMatchesRelease, normalizeAssetFilters } from './assetFilters';
+import { evaluateAssetFilter, evaluateReleaseFilters, filterMatchesRelease, normalizeAssetFilters } from './assetFilters';
 
 describe('normalizeAssetFilters', () => {
   it('strips the obsolete excludeRepos field from persisted filters', () => {
@@ -171,6 +171,53 @@ describe('normalizeAssetFilters', () => {
     expect(normalizeAssetFilters([null, 'oops', { id: 'f1' }])).toEqual([]);
     expect(normalizeAssetFilters(undefined)).toEqual([]);
     expect(normalizeAssetFilters('nope')).toEqual([]);
+  });
+});
+
+describe('asset-level Release evaluation', () => {
+  const links = [
+    { name: 'app-portable.zip' }, { name: 'app-setup.exe' },
+    { name: 'Source code (v1.zip)', isSourceCode: true },
+    { name: 'Source code (v1.tar.gz)', isSourceCode: true },
+    { name: 'Download for macOS' },
+  ];
+  const assets = links.slice(0, 2);
+  it('addresses the complete list including body links and unions independent matches', () => {
+    const result = evaluateReleaseFilters(['zip', 'mac', 'blocked'], [
+      { id: 'zip', name: 'Zip', keywords: ['zip'] },
+      { id: 'mac', name: 'Mac', keywords: ['macos'] },
+      { id: 'blocked', name: 'Blocked', keywords: [], alwaysExcludeRepos: ['owner/repo'] },
+    ], 'Owner/Repo', links, assets);
+    expect(result.matchesRelease).toBe(true);
+    expect([...result.matchedLinkIndexes]).toEqual([0, 4]);
+  });
+  it('strips automatic suffixes without breaking the explicit source preset', () => {
+    expect([...evaluateReleaseFilters(['preset-source'], [], 'owner/repo', links, assets).matchedLinkIndexes]).toEqual([0, 2, 3]);
+    expect(evaluateReleaseFilters(['zip'], [{ id: 'zip', name: 'Zip', keywords: ['zip', 'tar.gz'] }],
+      'owner/repo', links.slice(2, 4), []).matchesRelease).toBe(false);
+    expect(links[2].name).toBe('Source code (v1.zip)');
+  });
+  it('prioritizes repository exclusion over inclusion and keywords within each filter', () => {
+    const result = evaluateReleaseFilters(['both'], [
+      { id: 'both', name: 'Both', keywords: ['zip'], includeRepos: ['OWNER/REPO'], alwaysExcludeRepos: ['owner/repo'] },
+    ], 'Owner/Repo', links, assets);
+    expect(result).toEqual({ matchesRelease: false, matchedLinkIndexes: new Set() });
+  });
+  it('does not let a missing or empty filter unlock the full list', () => {
+    const filters = [{ id: 'zip', name: 'Zip', keywords: ['zip'] }, { id: 'empty', name: 'Empty', keywords: [] }];
+    expect([...evaluateReleaseFilters(['zip', 'empty', 'missing'], filters, 'owner/repo', links, assets).matchedLinkIndexes]).toEqual([0]);
+    expect([...evaluateReleaseFilters([], filters, 'owner/repo', links, assets).matchedLinkIndexes]).toEqual([0, 1, 2, 3, 4]);
+  });
+  it('requires surviving real assets for exclude-only rules and excludes individual links', () => {
+    const normalized = ['app-portable.zip', 'app-setup.exe', 'source code (v1)', 'download for macos'];
+    const filter = { keywords: [], excludeKeywords: ['setup'] };
+    expect(evaluateAssetFilter(filter, 'owner/repo', normalized, ['app-setup.exe']).matchesRelease).toBe(false);
+    expect([...evaluateAssetFilter(filter, 'owner/repo', normalized, assets.map(asset => asset.name)).matchedLinkIndexes]).toEqual([0, 2, 3]);
+  });
+  it('uses edited persisted presets before the default preset rules', () => {
+    expect([...evaluateReleaseFilters(['preset-source'], [
+      { id: 'preset-source', name: 'Edited source', keywords: ['portable'] },
+    ], 'owner/repo', links, assets).matchedLinkIndexes]).toEqual([0]);
   });
 });
 

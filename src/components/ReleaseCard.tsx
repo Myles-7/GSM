@@ -46,6 +46,8 @@ const AssetUpdatedTime = ({ updatedAt, language }: { updatedAt?: string; languag
 interface ReleaseCardProps {
   release: Release;
   downloadLinks: DownloadLink[];
+  matchedLinkIndexes?: ReadonlySet<number>;
+  assetFilterResetKey?: string;
   isUnread: boolean;
   isAssetsExpanded: boolean;
   isReleaseNotesExpanded: boolean;
@@ -64,6 +66,8 @@ interface ReleaseCardProps {
 const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
   release,
   downloadLinks,
+  matchedLinkIndexes,
+  assetFilterResetKey,
   isUnread,
   isAssetsExpanded,
   isReleaseNotesExpanded,
@@ -79,6 +83,19 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
   formatFileSize,
 }) => {
   const t = useT('releases');
+  const [showAllAssets, setShowAllAssets] = useState(false);
+  const accountId = useAppStore(state => state.user?.id);
+  const [resetVersion, setResetVersion] = useState(0);
+  useEffect(() => useAppStore.subscribe((next, previous) => {
+    if (next.user?.id !== previous.user?.id) {
+      setShowAllAssets(false);
+      setResetVersion(value => value + 1);
+    }
+  }), []);
+  useEffect(() => { setShowAllAssets(false); }, [release.id, accountId, assetFilterResetKey, resetVersion]);
+  const visibleDownloadLinks = matchedLinkIndexes && !showAllAssets
+    ? downloadLinks.filter((_, index) => matchedLinkIndexes.has(index)) : downloadLinks;
+  const hasHiddenAssets = matchedLinkIndexes !== undefined && matchedLinkIndexes.size < downloadLinks.length;
 
   const effectiveTime = effectiveReleaseTime(release);
   const showAssetsUpdatedIndicator = shouldShowAssetsUpdatedIndicator(release);
@@ -286,19 +303,26 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
           <div className="px-3 sm:px-4 pb-3 sm:pb-4 pt-3 sm:pt-4 border-t border-border dark:border-border">
           {isAssetsExpanded && downloadLinks.length > 0 && (
             <div className="py-2">
-              <ReleasePluginRecommendations release={release} language={language} />
-              <div className="flex items-center space-x-2 mb-3">
+              {(!hasHiddenAssets || showAllAssets) && <ReleasePluginRecommendations release={release} language={language} />}
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <FileArchive className="w-3.5 h-3.5 text-muted-foreground dark:text-muted-foreground" />
                 <span className="text-xs font-medium text-foreground dark:text-muted-foreground">
                   {t('releaseCard.download-files')}
                 </span>
                 <span className="text-xs text-muted-foreground dark:text-muted-foreground">
-                  ({downloadLinks.length})
+                  ({visibleDownloadLinks.length} / {downloadLinks.length})
                 </span>
+                {hasHiddenAssets && <Button variant="ghost" size="sm" className="ml-auto h-7 text-xs"
+                  onClick={event => { event.stopPropagation(); setShowAllAssets(value => !value); }}
+                  aria-pressed={showAllAssets}>
+                  {showAllAssets
+                    ? t('releaseCard.show-matched-assets', { defaultValue: 'Show matched assets' })
+                    : t('releaseCard.show-all-assets', { count: downloadLinks.length, defaultValue: 'Show all {{count}}' })}
+                </Button>}
               </div>
 
               <div className="ui-inset-surface max-h-72 overflow-hidden overflow-y-auto">
-                {downloadLinks.map((link, index) => {
+                {visibleDownloadLinks.map((link) => {
                   const isRpcEnabled = rpcDownloadConfig.enabled;
                   // 与 sendRpcDownload 使用相同的版本化 key
                   const rpcKey = computeRpcDownloadKey(link);
@@ -310,7 +334,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                   if (isRpcEnabled) {
                     return (
                       <Button
-                        key={index}
+                        key={`${link.url}-${link.assetId ?? link.name}`}
                         variant="ghost"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -356,7 +380,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
 
                   return (
                     <a
-                      key={index}
+                      key={`${link.url}-${link.assetId ?? link.name}`}
                       href={link.url}
                       target="_blank"
                       rel="noopener noreferrer"

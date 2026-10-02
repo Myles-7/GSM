@@ -144,6 +144,7 @@ const wireStoreMocks = () => {
   Object.assign(mockUseAppStore, {
     getState: vi.fn(() => storeState),
     setState: vi.fn((update: Partial<typeof storeState>) => Object.assign(storeState, update)),
+    subscribe: vi.fn(() => () => undefined),
   });
 
   // 复刻真实 store 的 markReleaseAsRead 行为：标记已读并清空
@@ -290,12 +291,12 @@ describe('ReleaseTimeline asset filter matching', () => {
     expect(await screen.findByText('owner/alpha')).toBeInTheDocument();
   });
 
-  it('does not trim the asset list of a matching release (filter decides visibility only)', async () => {
+  it('shows matching assets by default and restores all assets on request', async () => {
     const user = userEvent.setup();
     const alpha = makeRepo(7, 'alpha', 'owner/alpha');
     storeState.repositories = [alpha];
     storeState.releaseSubscriptions = new Set([alpha.id]);
-    // app-setup.exe 不命中 portable 关键词，但命中的 Release 仍要展示全部资产
+    // The complete list remains available through an explicit show-all control.
     storeState.releases = [makeRepoRelease(101, alpha, ['app-portable.zip', 'app-setup.exe'])];
     activateFilter();
 
@@ -304,7 +305,31 @@ describe('ReleaseTimeline asset filter matching', () => {
     await user.click(assetToggles[0]);
 
     expect(await screen.findByText('app-portable.zip')).toBeInTheDocument();
+    expect(screen.queryByText('app-setup.exe')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '显示全部 2 个' }));
     expect(screen.getByText('app-setup.exe')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '只显示命中资产' }));
+    expect(screen.queryByText('app-setup.exe')).not.toBeInTheDocument();
+  });
+
+  it.each(['timeline', 'list'] as const)('uses complete body-link indices and resets show-all after a filter edit in %s view', async view => {
+    const user = userEvent.setup();
+    const item = makeRepoRelease(101, repository, ['app-portable.zip', 'app-setup.exe']);
+    item.body = '[Mac download](https://example.com/mac.dmg)';
+    storeState.releases = [item];
+    activateFilter({ id: 'f1', name: 'Mac', keywords: ['mac'] });
+    storeState.releaseViewMode = view;
+    const rendered = render(<ReleaseTimeline />);
+    await user.click(screen.getByRole('button', { name: '显示下载资产' }));
+    expect(screen.getByText('Mac download')).toBeInTheDocument();
+    expect(screen.queryByText('app-portable.zip')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '显示全部 3 个' }));
+    expect(screen.getByText('app-portable.zip')).toBeInTheDocument();
+    storeState.assetFilters = [{ id: 'f1', name: 'Edited', keywords: ['portable'] }];
+    rendered.rerender(<ReleaseTimeline />);
+    expect(screen.getByText('app-portable.zip')).toBeInTheDocument();
+    expect(screen.queryByText('app-setup.exe')).not.toBeInTheDocument();
+    expect(screen.queryByText('Mac download')).not.toBeInTheDocument();
   });
 });
 

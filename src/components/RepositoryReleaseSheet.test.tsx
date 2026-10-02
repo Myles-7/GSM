@@ -1,9 +1,14 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Release, Repository } from '../types';
 import { RepositoryReleaseSheet } from './RepositoryReleaseSheet';
 
+const filterState = vi.hoisted(() => ({
+  language: 'zh', user: { id: 1 }, releaseSelectedFilters: [] as string[],
+  assetFilters: [] as { id: string; name: string; keywords: string[] }[],
+  listeners: new Set<(next: { user: { id: number } }, previous: { user: { id: number } }) => void>(),
+}));
 const hookMocks = vi.hoisted(() => ({
   loadReleases: vi.fn(),
   sendAssetToRpc: vi.fn(),
@@ -21,7 +26,12 @@ const hookMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../store/useAppStore', () => ({
-  useAppStore: (selector: (state: { language: 'zh' }) => unknown) => selector({ language: 'zh' }),
+  useAppStore: Object.assign((selector: (state: typeof filterState) => unknown) => selector(filterState), {
+    subscribe: (listener: (next: { user: { id: number } }, previous: { user: { id: number } }) => void) => {
+      filterState.listeners.add(listener);
+      return () => filterState.listeners.delete(listener);
+    },
+  }),
 }));
 
 vi.mock('../features/repositories/hooks/useRepositoryReleaseSheet', () => ({
@@ -89,19 +99,22 @@ const renderSheet = () => render(
   />
 );
 
-// 侧栏现在还会渲染 Repository Health 事实面板，面板里的「最新稳定版本」同样是 tag 名�?
-// 因此针对 Release 条目的查询必须限定在 Release 列表容器内，避免与事实面板串台�?
+// 侧栏现在还会渲染 Repository Health 事实面板，面板里的「最新稳定版本」同样是 tag 名�?
+// 因此针对 Release 条目的查询必须限定在 Release 列表容器内，避免与事实面板串台�?
 const releaseList = () => within(screen.getByTestId('release-list'));
 
 describe('RepositoryReleaseSheet', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    filterState.language = 'zh';
     hookMocks.state.releases = Array.from({ length: 11 }, (_, index) => createRelease(index + 1, index === 0 ? 7 : 0));
     hookMocks.state.isLoading = false;
     hookMocks.state.error = null;
     hookMocks.state.summaries = {};
     hookMocks.state.downloadStates = {};
     hookMocks.state.isRpcEnabled = false;
+    filterState.releaseSelectedFilters = [];
+    filterState.assetFilters = [];
   });
 
   it('paginates releases and assets while including source code ZIP/TAR downloads', async () => {
@@ -159,15 +172,15 @@ describe('RepositoryReleaseSheet', () => {
 
     await user.click(releaseList().getByText('v1').closest('button')!);
 
-    // 可识别平台的资产渲染品牌徽章（与 ReleaseCard �?AssetLeadingIcon 一致）�?
-    // getAllByTitle：simple-icons �?svg 内部也带 <title>，需按徽�?class 过滤出外�?span�?
+    // 可识别平台的资产渲染品牌徽章（与 ReleaseCard �?AssetLeadingIcon 一致）�?
+    // getAllByTitle：simple-icons �?svg 内部也带 <title>，需按徽�?class 过滤出外�?span�?
     const getBadge = (title: string) =>
       screen.getAllByTitle(title).find((el) => el.classList.contains('asset-platform-badge'));
     expect(getBadge('macOS')).toBeDefined();
     expect(getBadge('Windows')).toBeDefined();
     expect(getBadge('Linux')).toBeDefined();
 
-    // 平台不可识别的资产回退到通用下载图标，不猜平�?
+    // 平台不可识别的资产回退到通用下载图标，不猜平�?
     const zipRow = screen.getByText('myapp-1.0.zip').closest('tr');
     expect(zipRow).not.toBeNull();
     expect(zipRow!.querySelector('.asset-platform-badge')).toBeNull();
@@ -186,5 +199,45 @@ describe('RepositoryReleaseSheet', () => {
       name: 'asset-1-1.zip',
       url: 'https://example.com/asset-1-1.zip',
     }));
+  });
+
+  it('filters body links with complete indices, preserves downloads, and resets show-all on filter edits', async () => {
+    const user = userEvent.setup();
+    const item = createRelease(1, 2);
+    item.body = '[Mac download](https://example.com/mac.dmg)';
+    hookMocks.state.releases = [item];
+    filterState.releaseSelectedFilters = ['mac'];
+    filterState.assetFilters = [{ id: 'mac', name: 'Mac', keywords: ['mac'] }];
+    const rendered = renderSheet();
+    await user.click(releaseList().getByText('v1').closest('button')!);
+    expect(screen.getByText('Mac download')).toBeInTheDocument();
+    expect(screen.queryByText('asset-1-1.zip')).not.toBeInTheDocument();
+    await user.click(within(screen.getByText('Mac download').closest('tr')!).getByRole('button', { name: '下载' }));
+    expect(hookMocks.downloadAsset).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://example.com/mac.dmg' }));
+    await user.click(screen.getByRole('button', { name: '显示全部 5 个' }));
+    expect(screen.getByText('asset-1-1.zip')).toBeInTheDocument();
+    filterState.assetFilters = [{ id: 'mac', name: 'Edited', keywords: ['asset-1-2'] }];
+    rendered.rerender(<RepositoryReleaseSheet isOpen onClose={vi.fn()} repository={repository} />);
+    expect(screen.getByText('asset-1-2.zip')).toBeInTheDocument();
+    expect(screen.queryByText('asset-1-1.zip')).not.toBeInTheDocument();
+    expect(screen.queryByText('Mac download')).not.toBeInTheDocument();
+  });
+
+  it('resets show-all after switching accounts away and back', async () => {
+    const user = userEvent.setup();
+    hookMocks.state.releases = [createRelease(1, 2)];
+    filterState.releaseSelectedFilters = ['one'];
+    filterState.assetFilters = [{ id: 'one', name: 'One', keywords: ['asset-1-1'] }];
+    renderSheet();
+    await user.click(releaseList().getByText('v1').closest('button')!);
+    await user.click(screen.getByRole('button', { name: '显示全部 4 个' }));
+    expect(screen.getByText('asset-1-2.zip')).toBeInTheDocument();
+    act(() => filterState.listeners.forEach(listener => {
+      listener({ user: { id: 2 } }, { user: { id: 1 } });
+      listener({ user: { id: 1 } }, { user: { id: 2 } });
+    }));
+    await user.click(releaseList().getByText('v1').closest('button')!);
+    expect(screen.getByText('asset-1-1.zip')).toBeInTheDocument();
+    expect(screen.queryByText('asset-1-2.zip')).not.toBeInTheDocument();
   });
 });
