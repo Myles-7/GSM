@@ -111,7 +111,9 @@ export function startMcpElectronBridge(): void {
       state.repositories !== prev.repositories ||
       state.customCategories !== prev.customCategories ||
       state.releases !== prev.releases ||
-      state.vectorSearchConfig !== prev.vectorSearchConfig;
+      state.vectorSearchConfig !== prev.vectorSearchConfig ||
+      state.embeddingConfigs !== prev.embeddingConfigs ||
+      state.activeEmbeddingConfig !== prev.activeEmbeddingConfig;
 
     if (cfgChanged || dataChanged) {
       schedulePush();

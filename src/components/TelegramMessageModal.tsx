@@ -2,6 +2,8 @@ import { getIntlLocale } from '../i18n/format';
 import { useT } from "../i18n/useT";
 import React from 'react';
 import { ExternalLink, Calendar } from 'lucide-react';
+import { Button } from './ui/button';
+import { useDiscoveryPostRead } from '../home/useDiscoveryPostRead';
 import { Modal } from './Modal';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useAppStore } from '../store/useAppStore';
@@ -21,6 +23,7 @@ interface TelegramMessageModalProps {
 export const TelegramMessageModal: React.FC<TelegramMessageModalProps> = ({ isOpen, onClose, message }) => {
   const language = useAppStore(state => state.language);
   const t = useT('plugins');
+  const postRead = useDiscoveryPostRead('telegram', message.messageId, isOpen);
 
   const messageDate = message.createdAt && Number.isFinite(Date.parse(message.createdAt))
     ? new Date(message.createdAt).toLocaleString(getIntlLocale(language))
@@ -46,6 +49,8 @@ export const TelegramMessageModal: React.FC<TelegramMessageModalProps> = ({ isOp
               </span>
             )}
           </div>
+          {postRead.available && <Button variant="outline" size="sm" disabled={postRead.busy} onClick={() => void postRead.mark(!postRead.isRead)}>{language.startsWith('zh') ? (postRead.isRead ? '标为未读' : '标为已读') : (postRead.isRead ? 'Mark unread' : 'Mark read')}</Button>}
+          {postRead.error && <span role="status" className="text-xs text-destructive">{postRead.error}</span>}
           <a
             href={message.html_url}
             target="_blank"

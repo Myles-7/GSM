@@ -177,3 +177,4 @@ describe('App backend initialization', () => {
     }
   });
 });
+vi.mock('./components/AITaskPanel', () => ({ AITaskPanel: () => null }));

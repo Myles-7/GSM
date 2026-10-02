@@ -1,10 +1,15 @@
 import { isAIToolCallUnsupportedError, supportsChatToolCalls } from './aiService';
 import {
   runEvidenceDrivenRepositoryChatTurn,
+  runModelRepositoryChatTurn,
+  resolveTurnLimits,
   type RepositoryChatTurnInput,
   type RepositoryChatTurnResult,
 } from './repositoryChatService';
 import { runToolLoopRepositoryChatTurn } from './agentToolLoop';
+import { isAgyConfig } from '../utils/aiConfig';
+import { withDeadline } from '../utils/requestDeadline';
+import { bindFileCacheIdentity } from './pinnedFileCache';
 
 /**
  * 仓库问答的执行入口：按设置与 AI 配置能力在两个执行循环间分派。
@@ -20,10 +25,11 @@ const isEndpointRejectionError = (error: unknown): boolean => {
   return status === 400 || status === 404 || status === 422;
 };
 
-export const runRepositoryChatTurn = async (input: RepositoryChatTurnInput): Promise<RepositoryChatTurnResult> => {
+const dispatchTurn = async (input: RepositoryChatTurnInput): Promise<RepositoryChatTurnResult> => {
+  if (isAgyConfig(input.aiConfig) && input.aiConfig.agyMode === 'model') return runModelRepositoryChatTurn(input);
   // 受控工具循环（实验性）：仅在设置开启、AI 配置协议族支持且用户显式勾选
   // “支持工具调用”时启用；端点不支持工具调用时本轮自动落回编排式循环。
-  if (input.enableAgentToolLoop && supportsChatToolCalls(input.aiConfig)) {
+  if (!input.localSource && input.enableAgentToolLoop && supportsChatToolCalls(input.aiConfig)) {
     try {
       return await runToolLoopRepositoryChatTurn(input);
     } catch (error) {
@@ -32,4 +38,18 @@ export const runRepositoryChatTurn = async (input: RepositoryChatTurnInput): Pro
     }
   }
   return await runEvidenceDrivenRepositoryChatTurn(input);
+};
+
+export const runRepositoryChatTurn = async (input: RepositoryChatTurnInput): Promise<RepositoryChatTurnResult> => {
+  bindFileCacheIdentity(JSON.stringify([input.session.ownerId, input.githubToken]));
+  const startedAt = Date.now();
+  const deadlineAt = Math.min(input.deadlineAt ?? Infinity, startedAt + resolveTurnLimits(input).budget.maxDurationMs);
+  const duration = Math.max(0, deadlineAt - startedAt);
+  return withDeadline(signal => dispatchTurn({
+    ...input, signal, deadlineAt,
+    retrievalDeadlineAt: Math.min(input.retrievalDeadlineAt ?? Infinity, input.evidenceOnly ? deadlineAt : startedAt + duration * 0.6),
+    onAnswerChunk: input.onAnswerChunk ? text => { if (!signal.aborted) input.onAnswerChunk?.(text); } : undefined,
+    onAnswerEvent: input.onAnswerEvent ? event => { if (!signal.aborted) input.onAnswerEvent?.(event); } : undefined,
+    onToolEvent: input.onToolEvent ? event => { if (!signal.aborted) input.onToolEvent?.(event); } : undefined,
+  }), duration, input.signal);
 };

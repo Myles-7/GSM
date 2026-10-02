@@ -5,6 +5,26 @@ import type {
   RunPluginActionRequest,
   RunPluginActionResult,
 } from './types';
+import { aiTaskJournal } from '../services/aiTaskJournal';
+import { useAppStore } from '../store/useAppStore';
+
+async function track<T extends { success: boolean }>(plugin: string, action: string, run: () => Promise<T>): Promise<T> {
+  const owner = useAppStore.getState().user?.id;
+  const journal = owner === undefined ? null : aiTaskJournal.begin(String(owner), 'plugins', [{ id: action, label: `${plugin}: ${action}` }]);
+  journal?.bind({}); // Existing plugin API has no cancellation or safe replay contract.
+  journal?.item(action, 'running');
+  let invalidated = false;
+  const off = useAppStore.subscribe((next, previous) => {
+    if (next.user?.id !== previous.user?.id || next.githubToken !== previous.githubToken) invalidated = true;
+  });
+  try {
+    const result = await run();
+    if (invalidated) throw new DOMException('Account changed', 'AbortError');
+    journal?.item(action, result.success ? 'complete' : 'failed');
+    return result;
+  } catch (error) { journal?.item(action, 'failed'); throw error; }
+  finally { off(); journal?.finish(); }
+}
 
 const unavailableError = () => ({
   success: false,
@@ -41,12 +61,12 @@ export const pluginClient = {
     return api()?.uninstall(pluginId, removePluginData) ?? unavailable();
   },
   async runAction(request: RunPluginActionRequest): Promise<RunPluginActionResult> {
-    return api()?.runAction(request) ?? unavailableAction();
+    return track(request.pluginId, request.actionId, async () => api()?.runAction(request) ?? unavailableAction());
   },
   async runProcessor(request: Parameters<ElectronPluginAPI['runProcessor']>[0]): ReturnType<ElectronPluginAPI['runProcessor']> {
     const pluginApi = api();
     if (!pluginApi) return unavailableError();
-    return pluginApi.runProcessor(request);
+    return track(request.pluginId, request.processorId, () => pluginApi.runProcessor(request));
   },
   async pushSnapshot(snapshot: Parameters<ElectronPluginAPI['pushSnapshot']>[0]): ReturnType<ElectronPluginAPI['pushSnapshot']> {
     const pluginApi = api();
@@ -56,7 +76,7 @@ export const pluginClient = {
   async runReleaseProcessor(request: Parameters<ElectronPluginAPI['runReleaseProcessor']>[0]): ReturnType<ElectronPluginAPI['runReleaseProcessor']> {
     const pluginApi = api();
     if (!pluginApi) return unavailableError();
-    return pluginApi.runReleaseProcessor(request);
+    return track(request.pluginId, request.processorId, () => pluginApi.runReleaseProcessor(request));
   },
   async downloadReleaseAsset(request: Parameters<ElectronPluginAPI['downloadReleaseAsset']>[0]): ReturnType<ElectronPluginAPI['downloadReleaseAsset']> {
     const pluginApi = api();
@@ -66,7 +86,7 @@ export const pluginClient = {
   async runExporter(request: Parameters<ElectronPluginAPI['runExporter']>[0]): ReturnType<ElectronPluginAPI['runExporter']> {
     const pluginApi = api();
     if (!pluginApi) return unavailableError();
-    return pluginApi.runExporter(request);
+    return track(request.pluginId, request.exporterId, () => pluginApi.runExporter(request));
   },
   async getPage(pluginId: string, pageId: string): ReturnType<ElectronPluginAPI['getPage']> {
     const pluginApi = api();

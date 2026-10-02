@@ -7,7 +7,7 @@ import { analyzeRepository, createFailedAnalysisResult } from '../../../services
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { useDialog } from '../../../hooks/useDialog';
-import { applyDiscoveryAnalysisFailure, applyDiscoveryAnalysisSuccess } from '../../repositories/application/discoveryRepoPatches';
+import { applyDiscoveryAnalysisFailure, applyDiscoveryAnalysisSuccess } from '../application/discoveryRepoPatches';
 
 export interface UseDiscoveryRepoActionsOptions {
   repo: DiscoveryRepo;
@@ -174,7 +174,7 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
       return;
     }
 
-    if (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model) {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(t('useDiscoveryRepoActions.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return;
     }
@@ -245,3 +245,4 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     optimisticStarred,
   }), [analyze, star, executeUnstar, isAnalyzing, isStarring, isStarred, optimisticStarred]);
 };
+import { isAIConfigAvailable } from '../../../utils/aiConfig';

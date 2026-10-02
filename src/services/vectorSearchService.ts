@@ -7,6 +7,13 @@
 
 import type { EmbeddingConfig, VectorSearchConfig, Repository, VectorIndexMode } from '../types';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
+import {
+  EMBEDDING_FORMAT_VERSION, VECTOR_PROTOCOL_VERSION, hashVectorContent,
+  requireCompatibleVectorIndex, vectorScope,
+  VectorIndexCompatibilityError,
+  type VectorIndexGeneration, type VectorIndexScope,
+} from './vectorIndexIdentity';
+export { EMBEDDING_FORMAT_VERSION } from './vectorIndexIdentity';
 
 // ============================================================
 // EmbeddingClient
@@ -187,6 +194,8 @@ export interface VectorizeVector {
   id: string;
   values: number[];
   metadata: {
+    content_hash?: string;
+    identity_hash?: string;
     full_name: string;
     description: string;
     language: string;
@@ -202,6 +211,7 @@ export interface VectorQueryResult {
   id: string;
   score: number;
   metadata: {
+    identity_hash?: string;
     full_name: string;
     description: string;
     language: string;
@@ -216,17 +226,55 @@ export interface VectorizeStatus {
   vectorCount: number;
   dimensions: number;
   indexName?: string;
+  protocolVersion?: number;
 }
 
-type VectorSearchServiceConfig = Pick<VectorSearchConfig, 'workerUrl' | 'authToken'>;
+type VectorSearchServiceConfig = Pick<VectorSearchConfig, 'workerUrl' | 'authToken'> & Partial<VectorSearchConfig>;
 
 export class VectorSearchService {
   private workerUrl: string;
   private authToken: string;
+  private scope?: VectorIndexScope;
+  private lastMutationId?: string;
+  private queryReady?: Promise<void>;
 
-  constructor(config: VectorSearchServiceConfig) {
+  constructor(private config: VectorSearchServiceConfig, private embedding?: EmbeddingConfig, generation?: VectorIndexGeneration) {
     this.workerUrl = config.workerUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
+    this.scope = generation ? vectorScope(generation) : undefined;
+  }
+
+  async checkCapabilities(dimensions: number, signal?: AbortSignal): Promise<void> {
+    const status = await this.getStatus(signal);
+    if (status.protocolVersion !== VECTOR_PROTOCOL_VERSION) {
+      throw new VectorIndexCompatibilityError('Update the Vectorize Worker before rebuilding or querying the index (identity protocol v2 required).');
+    }
+    if (status.dimensions !== dimensions) {
+      throw new VectorIndexCompatibilityError('Embedding dimensions do not match the Worker index. Use a compatible index target; the old generation is retained.');
+    }
+  }
+
+  async prepareQuery(signal?: AbortSignal): Promise<void> {
+    if (!this.queryReady) {
+      this.queryReady = (async () => {
+        if (!this.embedding) throw new Error('Embedding identity required. Rebuild the vector index.');
+        const active = await requireCompatibleVectorIndex(this.embedding, this.config as VectorSearchConfig);
+        await this.checkCapabilities(active.identity.dimensions, signal);
+        this.scope = vectorScope(active);
+      })();
+    }
+    return this.queryReady;
+  }
+
+  private requireScope(): VectorIndexScope {
+    if (!this.scope) throw new Error('Vector generation required. Rebuild the vector index.');
+    return this.scope;
+  }
+
+  private validateVector(values: number[]): void {
+    if (!Array.isArray(values) || values.length !== this.requireScope().dimensions || !values.every(Number.isFinite)) {
+      throw new Error('Embedding response has invalid values or incompatible dimensions.');
+    }
   }
 
   private async request<T>(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
@@ -255,10 +303,41 @@ export class VectorSearchService {
    * 批量 upsert 向量到 Vectorize
    */
   async upsert(vectors: VectorizeVector[], signal?: AbortSignal): Promise<{ upserted: number }> {
-    return this.request<{ upserted: number }>('/upsert', {
+    const scope = this.requireScope();
+    vectors.forEach((vector) => this.validateVector(vector.values));
+    const result = await this.request<{ upserted: number; mutationId: string }>('/upsert', {
       method: 'POST',
-      body: JSON.stringify({ vectors }),
+      body: JSON.stringify({ vectors, scope }),
     }, signal);
+    if (!result.mutationId || result.upserted !== vectors.length) throw new Error('Worker did not acknowledge the complete vector batch.');
+    this.lastMutationId = result.mutationId;
+    return result;
+  }
+
+  async verifyGeneration(entries: Array<{ id: string; contentHash: string }>, signal?: AbortSignal): Promise<void> {
+    if (entries.length === 0) return;
+    if (!this.lastMutationId) throw new Error('Missing vector mutation acknowledgement.');
+    // Conservative visibility barrier: a missed/advanced watermark times out rather
+    // than publishing a generation whose query visibility cannot be established.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      signal?.throwIfAborted();
+      let ready = true;
+      for (let i = 0; i < entries.length; i += 100) {
+        const result = await this.request<{ ready: boolean }>('/verify', {
+          method: 'POST',
+          body: JSON.stringify({ scope: this.requireScope(), entries: entries.slice(i, i + 100), mutationId: this.lastMutationId }),
+        }, signal);
+        ready = ready && result.ready;
+      }
+      if (ready) return;
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+        const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 1000);
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+      });
+    }
+    throw new Error('Vector writes are not yet confirmed queryable. Previous generation retained; retry rebuilding later.');
   }
 
   /**
@@ -269,11 +348,16 @@ export class VectorSearchService {
     options: { topK?: number; threshold?: number } = {},
     signal?: AbortSignal,
   ): Promise<VectorQueryResult[]> {
+    await this.prepareQuery(signal);
+    this.validateVector(vector);
     const { topK = 20, threshold = 0.35 } = options;
     const result = await this.request<{ matches: VectorQueryResult[] }>('/query', {
       method: 'POST',
-      body: JSON.stringify({ vector, topK, threshold }),
+      body: JSON.stringify({ vector, topK, threshold, scope: this.requireScope() }),
     }, signal);
+    if (!Array.isArray(result.matches) || result.matches.some((match) => match.metadata?.identity_hash !== this.scope!.identityHash)) {
+      throw new Error('Worker returned an incompatible vector identity.');
+    }
     return result.matches;
   }
 
@@ -283,7 +367,7 @@ export class VectorSearchService {
   async delete(ids: string[], signal?: AbortSignal): Promise<{ deleted: number }> {
     return this.request<{ deleted: number }>('/delete', {
       method: 'POST',
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, scope: this.requireScope() }),
     }, signal);
   }
 
@@ -291,17 +375,16 @@ export class VectorSearchService {
    * 清理不在 keepIds 列表中的向量（删除已 unstar 的仓库）
    */
   async cleanup(keepIds: string[], signal?: AbortSignal): Promise<{ deleted: number }> {
-    return this.request<{ deleted: number }>('/cleanup', {
-      method: 'POST',
-      body: JSON.stringify({ keepIds }),
-    }, signal);
+    // Do not send this to older Workers, which ignore scope and delete globally.
+    signal?.throwIfAborted();
+    throw new Error(`Automatic cleanup disabled (${keepIds.length} keep IDs ignored). Retained generations require explicit administration.`);
   }
 
   /**
    * 获取索引状态
    */
-  async getStatus(): Promise<VectorizeStatus> {
-    return this.request<VectorizeStatus>('/status');
+  async getStatus(signal?: AbortSignal): Promise<VectorizeStatus> {
+    return this.request<VectorizeStatus>('/status', {}, signal);
   }
 
   /**
@@ -329,13 +412,6 @@ export class VectorSearchService {
 // ============================================================
 // 工具函数
 // ============================================================
-
-/**
- * 嵌入文本格式版本。
- * buildEmbeddingText 的输出格式变化时必须递增，
- * 使增量索引能检测到格式变化并强制重新索引所有向量。
- */
-export const EMBEDDING_FORMAT_VERSION = 3;
 
 /**
  * 拼接仓库文本用于 embedding
@@ -402,11 +478,12 @@ export function buildEmbeddingText(repo: Repository, readmeContent?: string, max
  * 该模块与 `VectorSearchSettings.tsx` 的 `unindexedCount` / `attemptedCount` 谓词
  * 必须保持一致，故统一抽取为可选导出供复用，避免三处副本分别漂移。
  */
-export function needsReindex(repo: Pick<Repository, 'last_edited' | 'analyzed_at' | 'license' | 'vector_indexed_at' | 'vector_indexed_license'>, formatVersionChanged: boolean): boolean {
+export function needsReindex(repo: Pick<Repository, 'last_edited' | 'analyzed_at' | 'license' | 'vector_indexed_at' | 'vector_indexed_license'>
+  & Partial<Pick<Repository, 'pushed_at' | 'updated_at'>>, formatVersionChanged: boolean): boolean {
   if (!repo.vector_indexed_at) return true; // 从未索引
   if (formatVersionChanged) return true; // 格式版本升级，需要重新索引
   // 取 last_edited 与 analyzed_at 中较新者作为内容时间，更新后需要重新索引
-  const contentTime = [repo.last_edited, repo.analyzed_at]
+  const contentTime = [repo.last_edited, repo.analyzed_at, repo.pushed_at, repo.updated_at]
     .filter((t): t is string => !!t)
     .sort()
     .pop() || '';
@@ -468,8 +545,8 @@ export async function embedWithFallback(
   try {
     if (signal?.aborted) throw new Error('Aborted');
     const vectors = await embeddingClient.embed(texts, 'document', signal);
-    if (Array.isArray(vectors) && vectors.length >= texts.length) {
-      return vectors.slice(0, texts.length);
+    if (Array.isArray(vectors) && vectors.length === texts.length) {
+      return vectors;
     }
     throw new Error(`Embedding API returned ${vectors?.length ?? 0} vectors for ${texts.length} texts`);
   } catch (err) {
@@ -539,8 +616,9 @@ export async function indexAllRepos(
     formatVersion?: number;
     /** 最新格式版本号（EMBEDDING_FORMAT_VERSION） */
     currentFormatVersion?: number;
+    generation?: VectorIndexGeneration;
   } = {}
-): Promise<{ indexed: number; skipped: number; errors: number; error?: string; indexedRepoIds: number[] }> {
+): Promise<{ indexed: number; skipped: number; errors: number; error?: string; indexedRepoIds: number[]; indexedContentHashes: Record<string, string> }> {
   const { batchSize = 32, onProgress, signal, readmeFetcher, indexMode = 'readme', readmeMaxChars = 6000, incremental, onRepoIndexed } = options;
 
   if (!Number.isInteger(batchSize) || batchSize <= 0) {
@@ -550,7 +628,7 @@ export async function indexAllRepos(
   // 只索引已分析且未失败的仓库
   let indexable = repos.filter((r) => r.analyzed_at && !r.analysis_failed);
   // 增量模式下跳过已索引且内容未更新的仓库
-  if (incremental) {
+  if (incremental && !options.generation) {
     // 嵌入文本格式版本变化时，强制重新索引所有向量以避免混合格式
     // 缺失版本号视为 v1（旧格式），仍需触发升级
     const formatVersionChanged = (options.formatVersion ?? 1) < (options.currentFormatVersion ?? EMBEDDING_FORMAT_VERSION);
@@ -560,10 +638,16 @@ export async function indexAllRepos(
   let errors = 0;
   let lastError = '';
   const indexedRepoIds: number[] = [];
+  const indexedContentHashes: Record<string, string> = {};
+  let skipped = repos.length - indexable.length;
 
   // 仅在 readme 模式下获取 README 内容
+  if (options.generation && indexMode === 'readme' && !readmeFetcher && indexable.length > 0) {
+    throw new Error('README indexing requires a README source. Previous generation retained.');
+  }
   const shouldFetchReadme = indexMode === 'readme' && readmeFetcher;
   const readmeCache = new Map<string, string>();
+  const readmeFailures = new Set<string>();
   if (shouldFetchReadme) {
     const CONCURRENCY = 5;
     let completed = 0;
@@ -580,9 +664,11 @@ export async function indexAllRepos(
         })
       );
 
-      for (const result of results) {
+      for (const [j, result] of results.entries()) {
         if (result.status === 'fulfilled' && result.value.readme) {
           readmeCache.set(result.value.fullName, result.value.readme);
+        } else if (result.status === 'rejected' && options.generation) {
+          readmeFailures.add(batch[j].full_name);
         }
       }
 
@@ -591,14 +677,34 @@ export async function indexAllRepos(
     }
   }
 
+  if (readmeFailures.size) {
+    errors += readmeFailures.size;
+    lastError = 'README retrieval failed; the previous generation is retained.';
+    indexable = indexable.filter((repo) => !readmeFailures.has(repo.full_name));
+  }
   const totalBatches = Math.ceil(indexable.length / batchSize);
   for (let i = 0; i < indexable.length; i += batchSize) {
     if (signal?.aborted) {
       throw new Error('Aborted');
     }
 
-    const batch = indexable.slice(i, i + batchSize);
-    const texts = batch.map(repo => buildEmbeddingText(repo, readmeCache.get(repo.full_name), readmeMaxChars));
+    const candidates = await Promise.all(indexable.slice(i, i + batchSize).map(async (repo) => {
+      const text = buildEmbeddingText(repo, readmeCache.get(repo.full_name), readmeMaxChars);
+      const hash = options.generation ? await hashVectorContent(JSON.stringify({
+        text, stars: repo.stargazers_count || 0, tags: repo.ai_tags || [],
+      })) : '';
+      return { repo, text, hash };
+    }));
+    const pending = candidates.filter(({ repo, hash }) => {
+      if (!incremental || !options.generation) return true;
+      return repo.vector_indexed_identity !== options.generation.identityHash ||
+        repo.vector_indexed_generation !== options.generation.namespace ||
+        repo.vector_indexed_content_hash !== hash || needsReindex(repo, false);
+    });
+    skipped += candidates.length - pending.length;
+    const batch = pending.map(({ repo }) => repo);
+    const texts = pending.map(({ text }) => text);
+    if (!batch.length) continue;
 
     try {
       // 1. 调用 Embedding API 生成向量（带单条失败隔离 + 截断重试）
@@ -610,11 +716,13 @@ export async function indexAllRepos(
       let batchErrors = 0;
       for (let j = 0; j < batch.length; j++) {
         const vec = vectors[j];
-        if (vec && Array.isArray(vec)) {
+        if (vec && Array.isArray(vec) && vec.length > 0 && vec.every(Number.isFinite) &&
+            (!options.generation || vec.length === options.generation.identity.dimensions)) {
           vectorizeVectors.push({
             id: String(batch[j].id),
             values: vec,
             metadata: {
+              ...(options.generation ? { content_hash: pending[j].hash } : {}),
               full_name: batch[j].full_name,
               description: batch[j].description || '',
               language: batch[j].language || '',
@@ -644,6 +752,7 @@ export async function indexAllRepos(
         for (let j = 0; j < upsertedCount; j++) {
           const repoId = parseInt(vectorizeVectors[j].id, 10);
           indexedRepoIds.push(repoId);
+          if (options.generation) indexedContentHashes[String(repoId)] = vectorizeVectors[j].metadata.content_hash!;
           onRepoIndexed?.(repoId);
         }
         // 若 worker 返回的 upserted 少于发送数，差额计入 errors
@@ -669,7 +778,7 @@ export async function indexAllRepos(
     onProgress?.({ phase: 'embedding', done: currentBatch, total: totalBatches });
   }
 
-  return { indexed, skipped: repos.length - indexable.length, errors, error: lastError || undefined, indexedRepoIds };
+  return { indexed, skipped, errors, error: lastError || undefined, indexedRepoIds, indexedContentHashes };
 }
 
 /**
@@ -708,6 +817,7 @@ export async function findSimilarRepositories(
     readmeMaxChars = 6000,
     signal,
   } = opts;
+  signal?.throwIfAborted();
 
   // An index created from README-enriched documents must be queried with the same
   // representation. Embedding only the card metadata made the source vector a
@@ -720,6 +830,7 @@ export async function findSimilarRepositories(
       try {
         sourceReadme = await readmeFetcher(owner, repo, signal);
       } catch {
+        signal?.throwIfAborted();
         // README enrichment improves quality but must not make a usable vector
         // index unavailable. The metadata representation remains a safe fallback.
         sourceReadme = '';
@@ -730,7 +841,9 @@ export async function findSimilarRepositories(
   // 1. Generate the source query vector from the same text schema and truncation
   // policy used during index construction.
   const text = buildEmbeddingText(sourceRepo, sourceReadme, readmeMaxChars);
+  signal?.throwIfAborted();
   const vectors = await embeddingClient.embed([text], 'query', signal);
+  signal?.throwIfAborted();
   if (!vectors || vectors.length === 0 || !Array.isArray(vectors[0])) {
     throw new Error('Failed to generate embedding for source repository');
   }

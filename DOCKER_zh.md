@@ -1,10 +1,10 @@
 # Docker 部署指南
 
-GithubStarsManager 提供两种 Docker 部署方式。原有的前后端分离方式继续得到完整支持；同时新增了一个**可选的全栈单镜像**，供希望以一个容器完成部署的用户使用。新增方式不会替换、重命名或改变任何现有镜像、`docker-compose.yml`、API 地址或客户端行为。
+GithubStarsManager 提供两种 Docker 部署方式。原有的前后端分离方式继续得到完整支持；同时提供一个**可选的全栈单镜像**，供希望以一个容器完成部署的用户使用。两种 Compose 方式现在均要求设置非空 `API_SECRET`，镜像名称和 API 地址保持兼容。
 
 | 部署方式 | 使用的镜像 / 文件 | 适用场景 | 兼容性 |
 |---|---|---|---|
-| 前后端分离（现有） | `github-stars-manager-frontend`、`github-stars-manager-server`、`docker-compose.yml` | 需要独立升级、独立部署或自行配置前端反向代理的用户 | **保持不变** |
+| 前后端分离（现有） | `github-stars-manager-frontend`、`github-stars-manager-server`、`docker-compose.yml` | 需要独立升级、独立部署或自行配置前端反向代理的用户 | 需设置 `API_SECRET` |
 | 全栈单容器（可选） | `github-stars-manager-fullstack`、`docker-compose.fullstack.yml` | 希望只运行一个容器、一个镜像标签和一个数据卷的个人服务器、Mac 或 homelab 用户 | 新增，不影响现有方式 |
 
 规范镜像名称使用明确的角色后缀：`-frontend`、`-backend` 与 `-fullstack`。原有 `-server` 后端镜像会继续发布同样的标签，作为现有 `docker-compose.yml` 和直接部署用户的兼容别名。
@@ -25,7 +25,9 @@ docker login ghcr.io -u YOUR_GITHUB_USERNAME
 
 ## 方式一：继续使用现有前后端分离部署
 
-这是现有用户的默认路径，无需为全栈镜像做任何修改。`docker-compose.yml` 保持原样：前端容器对外暴露 8080 端口，后端容器在 Compose 网络中监听 3000 端口，并把 `/api`、`/mcp` 和 SSE 请求由前端代理到后端。
+这是现有用户的默认路径。前端容器对外暴露 8080 端口，后端容器在 Compose 网络中监听 3000 端口，并把 `/api`、`/mcp` 和 SSE 请求由前端代理到后端。
+
+启动前，在仓库根目录的 `.env` 中设置 `API_SECRET=足够长的随机密钥`，并在应用的后端连接设置中填写同一密钥。已有密钥请继续沿用；MCP 使用 MCP 设置中独立配置的令牌。
 
 ```bash
 # 在仓库根目录执行
@@ -39,7 +41,7 @@ docker compose up -d
 
 ```bash
 API_SECRET=your-api-secret
-ENCRYPTION_KEY=your-encryption-key
+# ENCRYPTION_KEY=the-exact-existing-key # 原先设置过则保留原值
 BACKEND_IMAGE_TAG=0.8.4
 FRONTEND_IMAGE_TAG=0.8.4
 # BACKEND_HOST=backend:3000
@@ -119,7 +121,7 @@ docker run -d \
 
 ## 从现有 Compose 部署迁移到单容器
 
-迁移是**可选的**。如果当前前后端分离部署运行正常，您无需执行任何操作。只有在希望简化为一个容器时才迁移。若当前后端已经设置 `API_SECRET`，请将其原样写入全栈 `.env`，这样现有浏览器、API 与 MCP 客户端无需重新配置。若旧后端未设置 `API_SECRET`，请在全栈 `.env` 生成一个新的高强度密钥，并在切换后为所有直接 API 与 MCP 客户端配置该密钥；全栈 Compose 不会允许以无认证状态启动。如果旧服务显式设置过 `ENCRYPTION_KEY`，也必须在全栈 `.env` 中写入**完全相同的值**。
+迁移是**可选的**，只有在希望简化为一个容器时才迁移。两种 Compose 现在都要求 `API_SECRET`：已有密钥请在 `.env` 中原样保留；此前未设置的用户，需在下次启动前生成高强度密钥，并更新浏览器及直接 API 客户端的后端连接配置。MCP 继续使用 MCP 设置中的独立令牌，无需替换为 `API_SECRET`。如果旧服务显式设置过 `ENCRYPTION_KEY`，也必须在全栈 `.env` 中写入**完全相同的值**。
 
 ### 1. 识别并备份现有数据卷
 
@@ -200,7 +202,7 @@ docker compose up -d
 
 | 变量 | 分离部署 | 全栈部署 | 说明 |
 |---|---:|---:|---|
-| `API_SECRET` | 可选 | 全栈 Compose 必填 | 后端 API 的 Bearer Token；独立后端未设置时禁用认证。全栈 Compose 必须设置，以避免新服务无认证启动。 |
+| `API_SECRET` | Compose 必填 | Compose 必填 | 后端 API 的 Bearer Token；两种 Compose 均拒绝空值。直接运行独立后端仍允许不设置（禁用认证），网络部署应配置。MCP 使用独立令牌。 |
 | `ENCRYPTION_KEY` | 可选 | 可选 | 用于加密服务端保存的密钥；未设置时生成并保存至数据卷。 |
 | `DB_PATH` | 可选 | 可选 | SQLite 文件路径，默认位于 `data/data.db`。 |
 | `PORT` | 可选 | 可选 | Node 服务端口，默认 3000；全栈 Compose 默认将宿主机 8080 映射至容器 3000。 |
@@ -227,4 +229,4 @@ docker rm github-stars-manager-fullstack
 
 ## 客户端与部署兼容性说明
 
-全栈镜像是新增入口，不会影响任何现有用户：现有前端镜像、后端镜像、`docker-compose.yml`、桌面客户端、API 地址和 MCP 客户端均继续按原方式工作。选择全栈镜像的用户使用同源 URL；选择分离部署的用户无需改动任何命令、端口、环境变量或客户端设置。
+两种部署方式继续得到支持，镜像名称、端口和 API 地址保持兼容。已设置 `API_SECRET` 的用户继续沿用原值；此前未设置的用户，需在下次 Compose 启动前补充 `.env`，并同步更新应用的后端连接密钥。MCP 继续使用独立令牌，已有 `ENCRYPTION_KEY` 必须保留原值。

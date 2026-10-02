@@ -1,8 +1,11 @@
 import React, { Suspense, useEffect, useMemo, useCallback } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { Header } from './components/Header';
+import { AITaskPanel } from './components/AITaskPanel';
 import { usePageTranslationLifecycle } from './hooks/usePageTranslation';
 import { useWorkbenchLifecycle } from './features/ai-workbench/hooks/useWorkbenchLifecycle';
+import { useCustomDiscoveryLifecycle } from './features/discovery/hooks/useCustomDiscoveryLifecycle';
+import { useHtmlReadingLifecycle } from './features/lifecycle/hooks/useHtmlReadingLifecycle';
 import { SearchBar } from './components/SearchBar';
 import { RepositoryList } from './components/RepositoryList';
 import { CategorySidebar } from './components/CategorySidebar';
@@ -146,6 +149,8 @@ const DiscoverySubscriptionView = React.memo(() => (
 DiscoverySubscriptionView.displayName = 'DiscoverySubscriptionView';
 
 function App() {
+  useHtmlReadingLifecycle();
+  useCustomDiscoveryLifecycle();
   usePageTranslationLifecycle();
   useWorkbenchLifecycle();
   const {
@@ -288,7 +293,7 @@ function App() {
   return (
     <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
-      <Header />
+      <Header taskPanel={<AITaskPanel />} />
       <main className={currentView === 'ai' ? 'w-full' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
         {currentViewContent}
       </main>

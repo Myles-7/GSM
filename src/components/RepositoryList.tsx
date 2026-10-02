@@ -3,8 +3,8 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { Bot, FolderTree, LayoutGrid, List, SearchX, X } from 'lucide-react';
-import { useAIOrganization } from '../features/repositories/hooks/useAIOrganization';
-import { AIOrganizationPanel } from '../features/repositories/components/AIOrganizationPanel';
+import { useAIOrganization } from '../hooks/useAIOrganization';
+import { AIOrganizationPanel } from './AIOrganizationPanel';
 import { RepositoryCard } from './RepositoryCard';
 import { SimilarViewBanner } from './SimilarViewBanner';
 import { GlobalChatHistorySheet } from './GlobalChatHistorySheet';

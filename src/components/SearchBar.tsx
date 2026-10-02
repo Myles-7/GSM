@@ -8,11 +8,17 @@ import { Input } from './ui/input';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2, MoreHorizontal } from 'lucide-react';
 import { BatchStarImportDialog } from './BatchStarImportDialog';
-import { getPlatformDisplayName, getPlatformIcon } from './platformMeta';
+import {
+  CANONICAL_PLATFORMS,
+  getCanonicalPlatforms,
+  getPlatformDisplayName,
+  getPlatformIcon,
+} from './platformMeta';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useSearchShortcuts } from '../hooks/useSearchShortcuts';
 import { useSearchActions } from '../features/repositories/hooks/useSearchActions';
+import { SearchReport } from './SearchReport';
 import { useDialog } from '../hooks/useDialog';
 import { isRepoCustomized } from '../utils/repoUtils';
 import { repositoryChatStorage } from '../services/repositoryChatStorage';
@@ -105,6 +111,7 @@ export const SearchBar: React.FC = () => {
   const {
     isSearching,
     searchPhase,
+    searchReport,
     vectorScoreMapRef,
     skipNextTextSearchRef,
     aiSearch,
@@ -217,6 +224,16 @@ export const SearchBar: React.FC = () => {
   const filterChipActiveClass = 'is-active font-medium';
   const filterChipInactiveClass = '';
   const filterTagBaseClass = 'linear-filter-chip px-3 py-1.5 text-sm';
+  const platformCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const repo of repositories) {
+      const list = getCanonicalPlatforms(repo.ai_platforms);
+      for (const p of list) {
+        counts[p] = (counts[p] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [repositories]);
 
   useEffect(() => {
     // Extract unique languages, tags, and platforms from repositories
@@ -227,7 +244,8 @@ export const SearchBar: React.FC = () => {
       ...repositories.flatMap(r => r.topics || []),
       ...repositories.flatMap(r => r.custom_tags || [])
     ])];
-    const platforms = [...new Set(repositories.flatMap(r => r.ai_platforms || []))] as string[];
+    const platformsSet = new Set(repositories.flatMap(r => getCanonicalPlatforms(r.ai_platforms)));
+    const platforms = CANONICAL_PLATFORMS.filter(p => platformsSet.has(p)) as string[];
     // 开源许可：归一化为 SPDX id 或 NO_LICENSE_SENTINEL，排序并把「无」项放最后
     const licenses = [...new Set(repositories.map(r => normalizeLicense(r.license)))].sort((a, b) => {
       if (a === NO_LICENSE_SENTINEL) return 1;
@@ -940,10 +958,12 @@ export const SearchBar: React.FC = () => {
       {isSearching && searchPhase && (
         <div className="mt-2 text-xs text-muted-foreground" role="status">{searchPhase}</div>
       )}
+      {!isSearching && searchReport && searchReport.query === searchQuery && <SearchReport report={searchReport} />}
 
       {/* Advanced Filters */}
       {showFilters && (
-        <div id="advanced-filters-panel" className="mt-5 pt-5 border-t ui-divider space-y-5">
+        <div id="advanced-filters-panel" className="mt-4 pt-4 border-t border-border/60 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-start">
           {/* Status Filters */}
           <div>
             <h4 className="text-sm font-medium text-foreground dark:text-foreground mb-3">
@@ -1160,6 +1180,9 @@ export const SearchBar: React.FC = () => {
                   >
                     {React.createElement(getPlatformIcon(platform), { className: "w-4 h-4" })}
                     <span>{getPlatformDisplayName(platform)}</span>
+                    {platformCounts[platform] ? (
+                      <span className="text-xs opacity-70">({platformCounts[platform]})</span>
+                    ) : null}
                   </Button>
                 ))}
               </div>
@@ -1333,6 +1356,25 @@ export const SearchBar: React.FC = () => {
               >
                 <AlertCircle className="w-4 h-4" />
                 <span>{t('searchBar.no-declared-license')}</span>
+              </Button>
+            </div>
+          </div>
+          </div>
+
+          {/* Quick reset and collapse footer bar */}
+          <div className="flex items-center justify-between border-t border-border/40 pt-3">
+            <span className="text-xs text-muted-foreground">
+              {activeFiltersCount > 0 ? (language === 'zh' ? `已生效 ${activeFiltersCount} 项筛选` : `${activeFiltersCount} filters active`) : ''}
+            </span>
+            <div className="flex items-center gap-2">
+              {activeFiltersCount > 0 && (
+                <Button variant="ghost" size="sm" onClick={clearFilters} className="h-7 text-xs text-muted-foreground hover:text-foreground">
+                  <X className="mr-1 h-3.5 w-3.5" />
+                  {t('searchBar.clear-all')}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => setShowFilters(false)} className="h-7 text-xs">
+                {language === 'zh' ? '收起筛选' : 'Collapse'}
               </Button>
             </div>
           </div>

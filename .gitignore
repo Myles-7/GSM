@@ -12,6 +12,11 @@ node_modules
 dist
 
 dist-ssr
+dist-mobile/
+*.jks
+*.keystore
+android/signing.properties
+output/android-home-backend/
 *.tsbuildinfo
 *.local
 
@@ -66,3 +71,8 @@ package-lock.json.*.tmp
 
 # GitHub wiki clone (published to *.wiki.git, not this repo)
 docs/wiki/
+
+# Private local home-backend deployment, installers and migration backups
+/home-backend/
+/.deployment-staging/
+/GSM-桌面端.lnk

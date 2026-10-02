@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Gist } from '../../../types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AIConfig, Gist } from '../../../types';
 import { applyGistAnalysisFailure, applyGistAnalysisSuccess, useGistActions } from './useGistActions';
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   deleteGist: vi.fn(),
   getGistFileRaw: vi.fn(),
   analyzeGist: vi.fn(),
+  searchGists: vi.fn(),
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
@@ -41,16 +42,17 @@ vi.mock('../../../services/githubApiFactory', () => ({
 vi.mock('../../../services/aiService', () => ({
   AIService: class {
     analyzeGist = mocks.analyzeGist;
+    searchGistsWithReranking = mocks.searchGists;
   },
 }));
 
 const createStoreState = () => ({
-  user: { login: 'me', avatar_url: 'https://example.com/me.png' },
+  user: { id: 1, login: 'me', avatar_url: 'https://example.com/me.png' },
   githubToken: 'github-token' as string | null,
-  gists: [],
-  starredGists: [],
+  gists: [] as Gist[],
+  starredGists: [] as Gist[],
   gistSearchFilters: { query: '' },
-  gistSearchResults: [],
+  gistSearchResults: [] as Gist[],
   selectedGistCategory: 'all' as const,
   aiConfigs: [{
     id: 'ai-config',
@@ -58,7 +60,7 @@ const createStoreState = () => ({
     baseUrl: 'https://example.com/v1',
     apiKey: 'ai-key',
     model: 'ai-model',
-  }],
+  }] as AIConfig[],
   activeAIConfig: 'ai-config',
   language: 'zh' as const,
   setGists: vi.fn(),
@@ -68,7 +70,10 @@ const createStoreState = () => ({
   setGistSearchFilters: vi.fn(),
   setGistSearchResults: vi.fn(),
   setSelectedGistCategory: vi.fn(),
-  setAnalyzingGist: vi.fn(),
+  setAnalyzingGist: vi.fn((id: string, analyzing: boolean) => {
+    if (analyzing) storeState.analyzingGistIds.add(id);
+    else storeState.analyzingGistIds.delete(id);
+  }),
   analyzingGistIds: new Set<string>(),
 });
 
@@ -77,6 +82,22 @@ const mockUseAppStore = vi.mocked(mocks.useAppStore);
 mockUseAppStore.mockImplementation((selector?: (state: typeof storeState) => unknown) =>
   selector ? selector(storeState) : storeState);
 (mockUseAppStore as unknown as { getState: () => typeof storeState }).getState = () => storeState;
+const storeListeners = new Set<(state: typeof storeState) => void>();
+Object.assign(mockUseAppStore, {
+  subscribe: (listener: (state: typeof storeState) => void) => {
+    storeListeners.add(listener);
+    return () => storeListeners.delete(listener);
+  },
+});
+const notifyStore = () => {
+  for (const listener of storeListeners) listener(storeState);
+};
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
 
 const gist: Gist = {
   id: 'gist-1',
@@ -100,9 +121,27 @@ const gistDetail: Gist = {
 };
 
 describe('useGistActions card actions', () => {
+  it('cancels superseded search and rejects late results from the old query', async () => {
+    const old = deferred<Gist[]>();
+    mocks.searchGists.mockReturnValueOnce(old.promise).mockResolvedValueOnce([gist]);
+    const hook = renderHook(useGistActions);
+    const onReranked = vi.fn();
+    let first!: Promise<void>;
+    await act(async () => { first = hook.result.current.aiSearch('old query', [gist], onReranked); });
+    const oldSignal = mocks.searchGists.mock.calls[0][2] as AbortSignal;
+    await act(async () => { await hook.result.current.aiSearch('new query', [gist], onReranked); });
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => { old.resolve([]); await first; });
+    expect(storeState.setGistSearchResults).toHaveBeenCalledTimes(1);
+    expect(storeState.setGistSearchResults).toHaveBeenLastCalledWith([gist]);
+    expect(storeState.setGistSearchFilters).toHaveBeenLastCalledWith({ query: 'new query' });
+    expect(onReranked).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     storeState = createStoreState();
+    storeState.gists = [gist];
   });
 
   describe('analyzeOne', () => {
@@ -119,7 +158,7 @@ describe('useGistActions card actions', () => {
       await act(async () => { await result.current.analyzeOne(gist); });
       expect(mocks.toast).toHaveBeenLastCalledWith('请先在设置中配置AI服务。', 'error');
 
-      storeState.aiConfigs = [{ id: 'ai-config', name: 'Broken', baseUrl: '', apiKey: '', model: '' }];
+      storeState.aiConfigs = [{ id: 'ai-config', name: 'Broken', baseUrl: '', apiKey: '', model: '', isActive: true }];
       rerender();
       await act(async () => { await result.current.analyzeOne(gist); });
       expect(mocks.toast).toHaveBeenLastCalledWith('AI服务配置不完整，请检查设置。', 'error');
@@ -141,7 +180,7 @@ describe('useGistActions card actions', () => {
       expect(storeState.setAnalyzingGist).not.toHaveBeenCalled();
     });
 
-    it('patches the success fields from the fetched detail and does not force sync', async () => {
+    it('analyzes fetched detail but patches only analysis fields on the current record', async () => {
       mocks.getGistForAnalysis.mockResolvedValue(gistDetail);
       mocks.getGistContentPreview.mockReturnValue('preview');
       mocks.analyzeGist.mockResolvedValue('  summary text  ');
@@ -149,6 +188,9 @@ describe('useGistActions card actions', () => {
       await act(async () => { await result.current.analyzeOne(gist); });
 
       expect(mocks.confirm).not.toHaveBeenCalled();
+      const signal = mocks.getGistForAnalysis.mock.calls[0][2] as AbortSignal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(mocks.analyzeGist).toHaveBeenCalledWith(gistDetail, 'preview', signal);
       expect(storeState.setAnalyzingGist).toHaveBeenCalledWith('gist-1', true);
       expect(storeState.setAnalyzingGist).toHaveBeenLastCalledWith('gist-1', false);
       expect(storeState.updateGist).toHaveBeenCalledTimes(1);
@@ -157,8 +199,7 @@ describe('useGistActions card actions', () => {
       expect(patch.analyzed_at).toEqual(expect.any(String));
       expect(patch.analysis_failed).toBe(false);
       expect(patch.analysis_error).toBeUndefined();
-      // 成功 patch 以拉取到的 detail 为底（内容比列表缓存更完整）
-      expect(patch.files['a.ts'].content).toBe('const a = 1; // full');
+      expect(patch.files).toBe(gist.files);
       expect(mocks.toast).toHaveBeenCalledWith('Gist AI分析完成', 'success');
       expect(mocks.forceSyncToBackend).not.toHaveBeenCalled();
     });
@@ -175,6 +216,304 @@ describe('useGistActions card actions', () => {
       expect(patch.analysis_error).toBe('boom');
       expect(mocks.toast).toHaveBeenCalledWith('Gist AI分析失败', 'error');
       expect(storeState.setAnalyzingGist).toHaveBeenLastCalledWith('gist-1', false);
+    });
+  });
+
+  describe('analysis lifecycle', () => {
+    beforeEach(() => {
+      mocks.getGistForAnalysis.mockReset().mockResolvedValue(gistDetail);
+      mocks.analyzeGist.mockReset().mockResolvedValue('summary');
+      mocks.confirm.mockReset().mockResolvedValue(true);
+      storeState.gistSearchResults = [gist, { ...gist, id: 'gist-2' }];
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    for (const mode of ['single', 'batch'] as const) {
+      const start = (actions: ReturnType<typeof useGistActions>) => mode === 'single'
+        ? actions.analyzeOne(gist) : actions.analyzeVisibleGists();
+
+      for (const outcome of ['success', 'failure'] as const) {
+        it(`${mode}: skips ${outcome} writes when the gist was deleted while AI was pending`, async () => {
+          const pending = deferred<string>();
+          storeState.gistSearchResults = [gist];
+          mocks.analyzeGist.mockReturnValue(pending.promise);
+          const { result } = renderHook(() => useGistActions());
+          let work!: Promise<void>;
+          await act(async () => { work = start(result.current); });
+          act(() => {
+            storeState.gists = [];
+            storeState.starredGists = [];
+            storeState.gistSearchResults = [];
+            notifyStore();
+          });
+          await act(async () => {
+            if (outcome === 'success') pending.resolve('late summary');
+            else pending.reject(new Error('late failure'));
+            await work;
+          });
+          expect(storeState.updateGist).not.toHaveBeenCalled();
+          expect(storeState.gists).toEqual([]);
+          expect(storeState.analyzingGistIds.size).toBe(0);
+          if (mode === 'single') expect(mocks.toast).not.toHaveBeenCalled();
+        });
+
+        it.each(['gists', 'starredGists', 'gistSearchResults'] as const)(
+          `${mode}: preserves newer edits in %s on ${outcome}`,
+          async collection => {
+            const pending = deferred<string>();
+            storeState.gists = collection === 'gists' ? [gist] : [];
+            storeState.starredGists = collection === 'starredGists' ? [gist] : [];
+            storeState.gistSearchResults = [gist];
+            mocks.analyzeGist.mockReturnValue(pending.promise);
+            const { result } = renderHook(() => useGistActions());
+            let work!: Promise<void>;
+            await act(async () => { work = start(result.current); });
+            const edited: Gist = {
+              ...gist,
+              description: 'Newer description',
+              starred: true,
+              comments: 7,
+              last_edited: '2026-09-29T00:00:00.000Z',
+              ai_summary: 'Current saved summary',
+              files: {
+                'new.ts': { filename: 'new.ts', type: 'text/plain', language: 'TypeScript', size: 9, content: 'new edit' },
+              },
+            };
+            act(() => { storeState[collection] = [edited]; notifyStore(); });
+            await act(async () => {
+              if (outcome === 'success') pending.resolve('  new analysis  ');
+              else pending.reject(new Error('analysis failure'));
+              await work;
+            });
+            expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+            expect(storeState.updateGist).toHaveBeenCalledWith({
+              ...edited,
+              analyzed_at: expect.any(String),
+              ...(outcome === 'success'
+                ? { ai_summary: 'new analysis', analysis_failed: false, analysis_error: undefined }
+                : { analysis_failed: true, analysis_error: 'analysis failure' }),
+            });
+            expect(storeState.analyzingGistIds.size).toBe(0);
+          },
+        );
+      }
+
+      it.each(['account', 'token', 'config', 'active-config', 'logout', 'unmount'] as const)(
+        `${mode}: aborts on %s and ignores late success without starting queued work`,
+        async change => {
+          const pending = deferred<string>();
+          mocks.analyzeGist.mockReturnValue(pending.promise);
+          const hook = renderHook(() => useGistActions());
+          let work!: Promise<void>;
+          await act(async () => { work = start(hook.result.current); });
+          const signal = mocks.analyzeGist.mock.calls[0][2] as AbortSignal;
+          expect(signal.aborted).toBe(false);
+          act(() => {
+            if (change === 'unmount') hook.unmount();
+            else {
+              if (change === 'account') storeState.user = { ...storeState.user, id: 2, login: 'other' };
+              if (change === 'token') storeState.githubToken = 'new-token';
+              if (change === 'config') storeState.aiConfigs = [{ ...storeState.aiConfigs[0], model: 'new-model' }];
+              if (change === 'active-config') storeState.activeAIConfig = 'other-config';
+              if (change === 'logout') storeState.githubToken = null;
+              notifyStore();
+            }
+          });
+          expect(signal.aborted).toBe(true);
+          await act(async () => { await work; });
+          expect(storeState.analyzingGistIds.size).toBe(0);
+          if (change !== 'unmount') expect(hook.result.current.isAnalyzingAll).toBe(false);
+          await act(async () => { pending.resolve('stale summary'); });
+          expect(storeState.updateGist).not.toHaveBeenCalled();
+          expect(mocks.toast).not.toHaveBeenCalled();
+          expect(mocks.getGistForAnalysis).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it(`${mode}: ignores a late failure after account A -> B -> A without a render`, async () => {
+        const pending = deferred<string>();
+        mocks.analyzeGist.mockReturnValue(pending.promise);
+        const { result } = renderHook(() => useGistActions());
+        let work!: Promise<void>;
+        await act(async () => { work = start(result.current); });
+        act(() => {
+          storeState.githubToken = 'other-token';
+          notifyStore();
+          storeState.githubToken = 'github-token';
+          notifyStore();
+        });
+        await act(async () => {
+          pending.reject(new Error('late failure'));
+          await work;
+        });
+        expect(storeState.updateGist).not.toHaveBeenCalled();
+        expect(mocks.toast).not.toHaveBeenCalled();
+      });
+
+      it(`${mode}: rejects a stale confirmation before fetching`, async () => {
+        const confirmation = deferred<boolean>();
+        mocks.confirm.mockReturnValue(confirmation.promise);
+        const { result } = renderHook(() => useGistActions());
+        let work!: Promise<void>;
+        await act(async () => {
+          work = mode === 'single'
+            ? result.current.analyzeOne({ ...gist, analyzed_at: '2026-01-03' })
+            : result.current.analyzeVisibleGists();
+        });
+        act(() => {
+          storeState.aiConfigs = [{ ...storeState.aiConfigs[0], model: 'changed' }];
+          notifyStore();
+        });
+        await act(async () => {
+          await work;
+          confirmation.resolve(true);
+        });
+        expect(mocks.getGistForAnalysis).not.toHaveBeenCalled();
+        expect(storeState.setAnalyzingGist).not.toHaveBeenCalled();
+        expect(mocks.toast).not.toHaveBeenCalled();
+      });
+
+      it(`${mode}: aborts a hung read at the deadline and never starts AI on its late result`, async () => {
+        vi.useFakeTimers();
+        const read = deferred<Gist>();
+        storeState.gistSearchResults = [gist];
+        mocks.getGistForAnalysis.mockReturnValue(read.promise);
+        const { result } = renderHook(() => useGistActions());
+        let work!: Promise<void>;
+        await act(async () => { work = start(result.current); });
+        const signal = mocks.getGistForAnalysis.mock.calls[0][2] as AbortSignal;
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(120_000);
+          await work;
+        });
+        expect(signal.aborted).toBe(true);
+        expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+        expect(storeState.updateGist).toHaveBeenCalledWith(expect.objectContaining({
+          analysis_failed: true, analysis_error: expect.stringContaining('Request deadline exceeded'),
+        }));
+        expect(storeState.analyzingGistIds.size).toBe(0);
+        expect(result.current.isAnalyzingAll).toBe(false);
+        await act(async () => { read.resolve(gistDetail); });
+        expect(mocks.analyzeGist).not.toHaveBeenCalled();
+        expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+        await vi.runOnlyPendingTimersAsync(); // jsdom dispatches task-journal storage events asynchronously.
+        expect(vi.getTimerCount()).toBe(0);
+      });
+
+      it(`${mode}: stops after a cancelled GitHub read even when the read ignores abort`, async () => {
+        const read = deferred<Gist>();
+        mocks.getGistForAnalysis.mockReturnValue(read.promise);
+        const { result } = renderHook(() => useGistActions());
+        let work!: Promise<void>;
+        await act(async () => { work = start(result.current); });
+        const signal = mocks.getGistForAnalysis.mock.calls[0][2] as AbortSignal;
+        act(() => { storeState.githubToken = null; notifyStore(); });
+        await act(async () => { await work; read.resolve(gistDetail); });
+        expect(signal.aborted).toBe(true);
+        expect(mocks.analyzeGist).not.toHaveBeenCalled();
+        expect(storeState.updateGist).not.toHaveBeenCalled();
+        expect(mocks.toast).not.toHaveBeenCalled();
+      });
+
+      it(`${mode}: bounds a hung AI provider and ignores its late success`, async () => {
+        vi.useFakeTimers();
+        const pending = deferred<string>();
+        storeState.gistSearchResults = [gist];
+        mocks.analyzeGist.mockReturnValue(pending.promise);
+        const { result } = renderHook(() => useGistActions());
+        let work!: Promise<void>;
+        await act(async () => { work = start(result.current); });
+        const signal = mocks.analyzeGist.mock.calls[0][2] as AbortSignal;
+        await act(async () => { await vi.advanceTimersByTimeAsync(120_000); await work; });
+        expect(signal.aborted).toBe(true);
+        expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+        expect(storeState.updateGist).toHaveBeenCalledWith(expect.objectContaining({ analysis_failed: true }));
+        expect(storeState.analyzingGistIds.size).toBe(0);
+        await act(async () => { pending.resolve('too late'); });
+        expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+        await vi.runOnlyPendingTimersAsync();
+        expect(vi.getTimerCount()).toBe(0);
+      });
+    }
+
+    it('cancels all concurrent batch items without launching the next wave', async () => {
+      const pending = deferred<string>();
+      mocks.analyzeGist.mockReturnValue(pending.promise);
+      storeState.aiConfigs = [{ ...storeState.aiConfigs[0], concurrency: 2 }];
+      storeState.gistSearchResults.push({ ...gist, id: 'gist-3' });
+      const { result, unmount } = renderHook(() => useGistActions());
+      let work!: Promise<void>;
+      await act(async () => { work = result.current.analyzeVisibleGists(); });
+      expect(mocks.analyzeGist).toHaveBeenCalledTimes(2);
+      act(() => unmount());
+      await act(async () => { await work; pending.reject(new Error('late')); });
+      for (const call of mocks.analyzeGist.mock.calls) expect((call[2] as AbortSignal).aborted).toBe(true);
+      expect(mocks.getGistForAnalysis).toHaveBeenCalledTimes(2);
+      expect(storeState.updateGist).not.toHaveBeenCalled();
+      expect(mocks.toast).not.toHaveBeenCalled();
+      expect(storeState.analyzingGistIds.size).toBe(0);
+    });
+
+    it('does not let old cleanup clear a new task marker across hook instances', async () => {
+      const oldResult = deferred<string>();
+      const newResult = deferred<string>();
+      mocks.analyzeGist.mockReturnValueOnce(oldResult.promise).mockReturnValueOnce(newResult.promise);
+      const first = renderHook(() => useGistActions());
+      const second = renderHook(() => useGistActions());
+      let oldWork!: Promise<void>;
+      let newWork!: Promise<void>;
+      await act(async () => { oldWork = first.result.current.analyzeOne(gist); });
+      act(() => {
+        storeState.githubToken = 'new-token';
+        notifyStore();
+      });
+      second.rerender();
+      await act(async () => { newWork = second.result.current.analyzeOne(gist); });
+      await act(async () => { await oldWork; oldResult.reject(new Error('late failure')); });
+      expect(storeState.analyzingGistIds.has(gist.id)).toBe(true);
+      expect(storeState.setAnalyzingGist).toHaveBeenLastCalledWith(gist.id, true);
+      expect(storeState.updateGist).not.toHaveBeenCalled();
+      await act(async () => { newResult.resolve('new summary'); await newWork; });
+      expect(storeState.updateGist).toHaveBeenCalledTimes(1);
+      expect(storeState.updateGist).toHaveBeenCalledWith(expect.objectContaining({ ai_summary: 'new summary' }));
+      expect(storeState.analyzingGistIds.size).toBe(0);
+    });
+
+    it('retains a new batch busy flag when an older batch unwinds', async () => {
+      const pending = deferred<string>();
+      mocks.analyzeGist.mockReturnValue(pending.promise);
+      const hook = renderHook(() => useGistActions());
+      let oldWork!: Promise<void>;
+      let newWork!: Promise<void>;
+      await act(async () => { oldWork = hook.result.current.analyzeVisibleGists(); });
+      act(() => { storeState.githubToken = 'new-token'; notifyStore(); });
+      hook.rerender();
+      await act(async () => { newWork = hook.result.current.analyzeVisibleGists(); await oldWork; });
+      expect(hook.result.current.isAnalyzingAll).toBe(true);
+      expect(storeState.analyzingGistIds.has(gist.id)).toBe(true);
+      act(() => hook.unmount());
+      await act(async () => { await newWork; pending.resolve('late'); });
+      expect(storeState.updateGist).not.toHaveBeenCalled();
+    });
+
+    it('keeps unrelated store changes live and reports ordinary batch success/failure', async () => {
+      const pending = deferred<string>();
+      mocks.analyzeGist.mockReturnValueOnce(pending.promise).mockRejectedValueOnce(new Error('boom'));
+      const { result } = renderHook(() => useGistActions());
+      let work!: Promise<void>;
+      await act(async () => { work = result.current.analyzeVisibleGists(); });
+      act(() => { storeState.gistSearchFilters = { query: 'changed' }; notifyStore(); });
+      expect((mocks.analyzeGist.mock.calls[0][2] as AbortSignal).aborted).toBe(false);
+      await act(async () => { pending.resolve('ok'); await work; });
+      expect(storeState.updateGist).toHaveBeenCalledTimes(2);
+      expect(storeState.updateGist).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: 'gist-2', analysis_failed: true, analysis_error: 'boom',
+      }));
+      expect(mocks.toast).toHaveBeenCalledTimes(1);
+      expect(mocks.toast).toHaveBeenLastCalledWith(expect.any(String), 'error');
+      expect(result.current.isAnalyzingAll).toBe(false);
     });
   });
 

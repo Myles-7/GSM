@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Category, Repository, VectorSearchConfig } from '../../../types';
+import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIdentity';
 import {
   applyListsToRepositories,
   buildSearchPatch,
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
   embed: vi.fn(),
   vectorQuery: vi.fn(),
+  prepareVectorQuery: vi.fn(),
   generateHyDEQuery: vi.fn(),
   searchRepositoriesWithSemanticReranking: vi.fn(),
   searchRepositoriesWithSelection: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock('../../../services/vectorSearchService', async (importOriginal) => {
     },
     VectorSearchService: class {
       query = mocks.vectorQuery;
+      prepareQuery = mocks.prepareVectorQuery;
     },
   };
 });
@@ -150,6 +153,56 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
     setupStoreMocks();
   });
 
+  it('asks for rebuild and avoids embeddings/HyDE/query when the index identity is incompatible', async () => {
+    Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.example' });
+    mocks.prepareVectorQuery.mockRejectedValue(new VectorIndexCompatibilityError());
+    mocks.searchRepositoriesWithSelection.mockResolvedValue([]);
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('query', identity); });
+    expect(mocks.embed).not.toHaveBeenCalled();
+    expect(mocks.generateHyDEQuery).not.toHaveBeenCalled();
+    expect(mocks.vectorQuery).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining('Rebuild'), 'error');
+  });
+
+  it('ignores a late vector response even when the transport ignores abort', async () => {
+    Object.assign(storeState.vectorSearchConfig, {
+      enabled: true, workerUrl: 'https://worker.example', enableHyDE: false, enableReranking: false,
+    });
+    storeState.repositories = [baseRepo({ id: 1, full_name: 'owner/first' }), baseRepo({ id: 2, full_name: 'owner/second' })];
+    mocks.embed.mockResolvedValue([[0.1]]);
+    let resolveFirst!: (value: unknown) => void;
+    mocks.vectorQuery.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce([{ id: '2', score: 0.9 }]);
+    const { result } = renderHook(() => useSearchActions());
+    let first!: Promise<void>;
+    await act(async () => { first = result.current.aiSearch('first', identity); });
+    await act(async () => { await result.current.aiSearch('second', identity); });
+    await act(async () => { resolveFirst([{ id: '1', score: 1 }]); await first; });
+    expect(storeState.setSearchResults).toHaveBeenCalledTimes(1);
+    expect(storeState.setSearchResults.mock.calls[0][0].map((repo: Repository) => repo.id)).toEqual([2]);
+    expect(storeState.setSearchFilters).toHaveBeenCalledExactlyOnceWith({ query: 'second' });
+    expect(result.current.vectorScoreMapRef.current?.query).toBe('second');
+    expect(mocks.vectorQuery.mock.calls[0][2].aborted).toBe(true);
+    expect(mocks.searchRepositoriesWithSelection).not.toHaveBeenCalled();
+  });
+
+  it('blocks late embedding results after an account change without a rerender', async () => {
+    Object.assign(storeState.vectorSearchConfig, {
+      enabled: true, workerUrl: 'https://worker.example', enableHyDE: false,
+    });
+    let resolve!: (value: number[][]) => void;
+    mocks.embed.mockImplementation(() => new Promise(r => { resolve = r; }));
+    const { result } = renderHook(() => useSearchActions());
+    let search!: Promise<void>;
+    await act(async () => { search = result.current.aiSearch('query', identity); });
+    storeState.githubToken = 'another-account';
+    await act(async () => { resolve([[1]]); await search; });
+    expect(mocks.vectorQuery).not.toHaveBeenCalled();
+    expect(storeState.setSearchResults).not.toHaveBeenCalled();
+    expect(storeState.setSearchFilters).not.toHaveBeenCalled();
+  });
+
   it('queries with default topK 30 / threshold 0.35, boosts scores and sets the skip ref', async () => {
     storeState.vectorSearchConfig = {
       enabled: true,
@@ -178,7 +231,7 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
     const { result } = renderHook(() => useSearchActions());
     await act(async () => { await result.current.aiSearch('foo', identity); });
 
-    expect(mocks.vectorQuery).toHaveBeenCalledWith([0.1, 0.2], { topK: 30, threshold: 0.35 });
+    expect(mocks.vectorQuery).toHaveBeenCalledWith([0.1, 0.2], { topK: 30, threshold: 0.35 }, expect.any(AbortSignal));
     expect(result.current.vectorScoreMapRef.current).toEqual({
       query: 'foo',
       scores: new Map([['1', 0.9 + 0.05], ['2', 0.8 + 0.03], ['3', 0.7 + 0.02]]),
@@ -257,7 +310,7 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(5100); });
       await act(async () => { await promise; });
 
-      expect(mocks.embed).toHaveBeenCalledWith(['foo'], 'query');
+      expect(mocks.embed).toHaveBeenCalledWith(['foo'], 'query', expect.any(AbortSignal));
       // 5s 预算耗尽后 HyDE 局部 controller 必须真正 abort 掉挂起的请求
       expect(hydeSignals[0]?.aborted).toBe(true);
     } finally {
@@ -378,7 +431,7 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
 
     const { result } = renderHook(() => useSearchActions());
     await act(async () => { await result.current.aiSearch('foo', identity); });
-    expect(mocks.embed).toHaveBeenCalledWith(['an ideal description of foo'], 'query');
+    expect(mocks.embed).toHaveBeenCalledWith(['an ideal description of foo'], 'query', expect.any(AbortSignal));
   });
 });
 

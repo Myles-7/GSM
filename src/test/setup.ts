@@ -88,11 +88,15 @@ const storageShim = (): Storage => {
   };
 };
 
-if (!window.localStorage) {
-  Object.defineProperty(window, 'localStorage', { writable: true, value: storageShim() });
+if (!window.localStorage || typeof window.localStorage.clear !== 'function') {
+  const shim = storageShim();
+  Object.defineProperty(window, 'localStorage', { configurable: true, writable: true, value: shim });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: shim });
 }
-if (!window.sessionStorage) {
-  Object.defineProperty(window, 'sessionStorage', { writable: true, value: storageShim() });
+if (!window.sessionStorage || typeof window.sessionStorage.clear !== 'function') {
+  const shim = storageShim();
+  Object.defineProperty(window, 'sessionStorage', { configurable: true, writable: true, value: shim });
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: shim });
 }
 
 vi.mock('../store/useAppStore', () => ({

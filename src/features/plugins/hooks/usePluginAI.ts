@@ -4,6 +4,7 @@ import { useDialog } from '../../../hooks/useDialog';
 import { useCallback } from 'react';
 import { pluginClient } from '../../../plugins/pluginClient';
 import { AIService } from '../../../services/aiService';
+import { forAgyFeature } from '../../../services/agyProfiles';
 import { useAppStore } from '../../../store/useAppStore';
 
 export function usePluginAI() {
@@ -30,7 +31,7 @@ export function usePluginAI() {
 
     const { system, user, maxTokens } = args as { system: string; user: string; maxTokens?: number };
     let destination = t('usePluginAI.custom-endpoint');
-    try { destination = new URL(config.baseUrl).origin; } catch { /* Provider name remains visible. */ }
+    try { destination = config.provider === 'agy-cli' ? 'AGY CLI' : new URL(config.baseUrl).origin; } catch { /* Provider name remains visible. */ }
     const approved = await confirm(
       t('usePluginAI.allow-plugin-ai-request'),
       t('usePluginAI.allow-plugin-ai-body', { pluginName, configName: config.name, model: config.model, destination, relayNote: t('usePluginAI.the-host-may-relay-this-through-its-configured-b'), system, user }),
@@ -44,7 +45,7 @@ export function usePluginAI() {
     result = await authorize();
     if (!result.success) return result;
     if (!isCurrentPage() || signal.aborted) return { success: false as const, error: { code: 'PLUGIN_PAGE_CLOSED', message: 'Plugin page closed' } };
-    const text = await new AIService(config, language, true).generateChatText({ system, user, maxTokens, signal });
+    const text = await new AIService(forAgyFeature(config, 'plugin'), language, true).generateChatText({ system, user, maxTokens, signal });
     return text.length <= 65536
       ? { success: true as const, value: text }
       : { success: false as const, error: { code: 'PLUGIN_AI_RESULT_TOO_LARGE', message: 'AI response is too large' } };

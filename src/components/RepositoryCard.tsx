@@ -9,7 +9,7 @@ import {
   getPlatformIcon,
 } from './platformMeta';
 import { useRepositoryPlatforms } from '../hooks/useRepositoryPlatforms';
-import { GripVertical, Star, StarOff, ExternalLink, Calendar, Bell, BellOff, Bot, Sparkles, Terminal, Edit3, BookOpen, Square, CheckSquare, Loader2, HelpCircle, Search, Scale, MoreHorizontal, PackageOpen, MessageSquareText, Plug } from 'lucide-react';
+import { GripVertical, StarOff, ExternalLink, Calendar, Bell, BellOff, Bot, Sparkles, Terminal, Edit3, BookOpen, Square, CheckSquare, Loader2, HelpCircle, Search, Scale, MoreHorizontal, PackageOpen, MessageSquareText, Plug, ArrowRight } from 'lucide-react';
 import { Repository, Category } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { isRepositoryCardFieldVisible } from '../utils/repositoryCardFields';
@@ -29,7 +29,8 @@ import { applyPluginActionResult } from '../plugins/applyPluginActionResult';
 import { useDialog } from '../hooks/useDialog';
 import { pluginClient } from '../plugins/pluginClient';
 import type { RegisteredPluginAction } from '../plugins/types';
-import { readRepositoryDetails } from '../features/repositories/application/repositoryDetailsSchema';
+import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
+import { RepositoryLanguageStars, RepositorySoftwareForms, repositoryListDescriptionClass, repositoryListSurfaceClass } from './RepositoryListPresentation';
 
 type DialogContentPointerDownOutsideHandler = NonNullable<
   React.ComponentProps<typeof DialogContent>['onPointerDownOutside']
@@ -474,39 +475,6 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
     };
   }, []);
 
-  const formatNumber = (num: number) => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
-  // 缓存语言颜色映射
-  const languageColors = useMemo(() => ({
-    JavaScript: '#f1e05a',
-    TypeScript: '#3178c6',
-    Python: '#3572A5',
-    Java: '#b07219',
-    'C++': '#f34b7d',
-    C: '#555555',
-    'C#': '#239120',
-    Go: '#00ADD8',
-    Rust: '#dea584',
-    PHP: '#4F5D95',
-    Ruby: '#701516',
-    Swift: '#fa7343',
-    Kotlin: '#A97BFF',
-    Dart: '#00B4AB',
-    Shell: '#89e051',
-    HTML: '#e34c26',
-    CSS: '#1572B6',
-    Vue: '#4FC08D',
-    React: '#61DAFB',
-  }), []);
-
-  const getLanguageColor = useCallback((language: string | null) => {
-    return languageColors[language as keyof typeof languageColors] || '#6b7280';
-  }, [languageColors]);
-
   // 展示平台：优先 release 资产/仓库元数据的确定性识别，无信号时回退 ai_platforms
   const displayPlatforms = useRepositoryPlatforms(repository);
 
@@ -893,7 +861,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   // 使用 useMemo 缓存卡片类名，避免重复计算
   const cardClassName = useMemo(() => {
     const baseClasses = viewMode === 'list'
-      ? 'repository-card repository-card--list ui-card group relative px-6 pt-5 pb-0 transition-[color,background-color,border-color,box-shadow] duration-200 cursor-pointer'
+      ? repositoryListSurfaceClass
       : 'repository-card ui-card group relative p-4 transition-[color,background-color,border-color,box-shadow] duration-200 flex flex-col h-full cursor-pointer';
     const selectedClasses = isSelected
       ? 'linear-card-selected'
@@ -999,7 +967,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         )}
 
         {viewMode === 'grid' && !selectionMode && (
-          <div className="hidden lg:block absolute -left-2 top-3 z-[1] opacity-0 focus-within:opacity-100 transition-opacity duration-200 group-hover:opacity-100">
+          <div className="hidden lg:block absolute left-2.5 top-2.5 z-10 opacity-0 focus-within:opacity-100 transition-opacity duration-150 group-hover:opacity-100">
             <div
               ref={dragHandleRef}
               draggable
@@ -1032,7 +1000,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
               tabIndex={0}
               role="button"
               aria-label={t('repositoryCard.edit-repository-category')}
-              className="linear-icon-button flex items-center justify-center w-8 h-8 cursor-grab active:cursor-grabbing touch-manipulation"
+              className="linear-icon-button flex items-center justify-center w-7 h-7 rounded-md bg-background/90 backdrop-blur-xs border border-border/60 shadow-2xs cursor-grab active:cursor-grabbing touch-manipulation text-muted-foreground hover:text-foreground"
               title={t('repositoryCard.drag-me-to-sidebar-to-categorize')}
             >
               <GripVertical className="w-4 h-4" />
@@ -1099,7 +1067,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
             <p
               tabIndex={0}
               className={viewMode === 'list'
-                ? 'text-sm leading-6 text-muted-foreground dark:text-muted-foreground line-clamp-4 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground'
+                ? repositoryListDescriptionClass
                 : 'text-foreground dark:text-muted-foreground text-[13px] leading-[1.625] line-clamp-4 mb-2 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground rounded-md px-1 -mx-1 hover:bg-muted dark:hover:bg-card/[0.02]'}
             >
               {highlightSearchTerm(displayContent.content, searchQuery)}
@@ -1160,9 +1128,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       )}
 
       {/* Platform Icons */}
-      {softwareForms.length > 0 && <div className="flex flex-wrap gap-1" aria-label={t('details.softwareForms')}>
-        {softwareForms.map((form) => <span key={form} data-software-form={form} className="linear-card-tag px-1.5 py-0.5 text-xs">{t(`details.forms.${form}`)}</span>)}
-      </div>}
+      <RepositorySoftwareForms forms={softwareForms} />
       {viewMode === 'grid' && displayPlatforms.length > 0 && (
         <div className="flex items-center space-x-2 mb-4">
           <span className="text-xs text-muted-foreground dark:text-muted-foreground">
@@ -1191,21 +1157,8 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       <div className={viewMode === 'list' ? 'contents' : 'space-y-3 mt-auto'}>
         {/* Language and Stars */}
         <div className={`flex items-center ${viewMode === 'list' ? 'space-x-3 flex-wrap gap-y-1' : 'space-x-4'} text-xs text-muted-foreground dark:text-muted-foreground`}>
-          {isRepositoryCardFieldVisible(cardFields, 'language') && repository.language && (
-            <div className="flex items-center space-x-1 min-w-0">
-              <div
-                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: getLanguageColor(repository.language) }}
-              />
-              <span className="truncate max-w-20">{repository.language}</span>
-            </div>
-          )}
-          {isRepositoryCardFieldVisible(cardFields, 'stars') && (
-          <div className="flex items-center space-x-1 flex-shrink-0">
-            <Star className="w-3.5 h-3.5" />
-            <span className="truncate max-w-16">{formatNumber(repository.stargazers_count)}</span>
-          </div>
-          )}
+          <RepositoryLanguageStars language={isRepositoryCardFieldVisible(cardFields, 'language') ? repository.language : null}
+            stars={isRepositoryCardFieldVisible(cardFields, 'stars') ? repository.stargazers_count : undefined} />
           {viewMode === 'list' && displayPlatforms.length > 0 && (
             <div className="flex items-center space-x-1 min-w-0">
               <Terminal className="w-3.5 h-3.5 flex-shrink-0" />
@@ -1227,7 +1180,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
 
         {/* Update time is a compact footer in list mode and stays centered between divider and card edge. */}
         <div className={viewMode === 'list' ? 'basis-full flex-none' : 'mt-4'}>
-        <div className={`flex items-center justify-between text-muted-foreground dark:text-muted-foreground border-t ui-divider ${viewMode === 'list' ? 'w-full h-14 mt-4 text-sm leading-5' : 'pt-2 text-sm'}`}>
+        <div className={`flex items-center justify-between text-muted-foreground dark:text-muted-foreground border-t border-border/50 ${viewMode === 'list' ? 'w-full pt-2.5 mt-2.5 text-xs' : 'pt-2 text-sm'}`}>
           <div className="relative flex min-w-0 items-center gap-1.5 leading-none">
             {isRepositoryCardFieldVisible(cardFields, 'lastUpdated') && (
             <>
@@ -1241,6 +1194,24 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
             {latestRelease && <span className="inline-flex min-w-0 items-center gap-1 text-xs" title={latestRelease.tag_name}><PackageOpen className="h-3.5 w-3.5 shrink-0" /><span className="max-w-24 truncate">{latestRelease.tag_name}</span></span>}
           </div>
 
+
+          {/* 查看深度详情入口按钮 */}
+          {onViewDetails && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs font-normal text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors gap-1 ml-auto mr-1.5"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewDetails(repository);
+              }}
+              title={language === 'zh' ? '查看深度详情' : 'View details'}
+              aria-label={language === 'zh' ? '查看深度详情' : 'View details'}
+            >
+              <span>{language === 'zh' ? '详情' : 'Details'}</span>
+              <ArrowRight className="w-3 h-3" />
+            </Button>
+          )}
 
           {/* 选择按钮 */}
           {onSelect && (

@@ -9,6 +9,7 @@ import { useDialog } from '../../../hooks/useDialog';
 import { backend } from '../../../services/backendAdapter';
 import { normalizeBackendUrl } from '../../../utils/backendUrl';
 import { syncLocalGitHubTokenToBackend, tryRestoreAuthFromBackend } from '../../../services/autoSync';
+import { flushDesktopHome } from '../../../home/desktop';
 
 type BackendStatus = 'connected' | 'disconnected' | 'checking';
 
@@ -121,6 +122,7 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
   }, [checkConnection, secretInput, state, t, toast, urlInput]);
 
   const syncToBackend = useCallback(async () => {
+    if (await flushDesktopHome()) return;
     if (!backend.isAvailable) {
       toast(t('useBackendSettingsActions.backend-not-available'), 'error');
       return;
@@ -130,10 +132,9 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
       const results = await Promise.allSettled([
         backend.syncRepositories(state.repositories),
         backend.syncReleases(state.releases),
-        backend.syncAIConfigs(state.aiConfigs),
+        backend.syncAIConfigs(httpAIConfigs(state.aiConfigs)),
         backend.syncWebDAVConfigs(state.webdavConfigs),
         backend.syncSettings({
-          activeAIConfig: state.activeAIConfig,
           activeWebDAVConfig: state.activeWebDAVConfig,
           hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
           categoryOrder: state.categoryOrder,
@@ -163,6 +164,7 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
   }, [state, t, toast]);
 
   const syncFromBackend = useCallback(async () => {
+    if (await flushDesktopHome()) return;
     if (!backend.isAvailable) {
       toast(t('useBackendSettingsActions.backend-not-available'), 'error');
       return;
@@ -184,7 +186,7 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
       ]);
       useAppStore.setState(current => incomingOrganizationSnapshot(current, settingsData, repoData.repositories));
       state.setReleases(releaseData.releases, { allowEmpty: true });
-      state.setAIConfigs(aiConfigData);
+      state.setAIConfigs(mergeRemoteAIConfigs(useAppStore.getState().aiConfigs, aiConfigData));
       state.setWebDAVConfigs(webdavConfigData);
       const serverHidden = Array.isArray(settingsData.hiddenDefaultCategoryIds) ? settingsData.hiddenDefaultCategoryIds : [];
       for (const categoryId of serverHidden) if (typeof categoryId === 'string') state.hideDefaultCategory(categoryId);
@@ -224,3 +226,4 @@ export const useBackendSettingsActions = (): BackendSettingsActions => {
     syncFromBackend,
   };
 };
+import { httpAIConfigs, mergeRemoteAIConfigs } from '../../../utils/aiConfig';

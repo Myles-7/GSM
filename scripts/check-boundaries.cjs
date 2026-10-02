@@ -8,7 +8,8 @@
  * cannot silently let a View component (shared or feature-local) import a
  * business service, an application command import React/JSX/the Store/a service,
  * or a feature hook sit outside its feature's hooks/ directory (or src/hooks/
- * when shared across features).
+ * when shared across features). It also rejects relative imports from one
+ * feature into another feature's internals.
  *
  * Contract source of truth: docs/adr/0001-frontend-layering.md
  *
@@ -171,11 +172,30 @@ function checkApplicationFile(full, relPath) {
 const files = walk(path.join(ROOT, 'src'));
 for (const full of files) {
   const relPath = rel(full);
+  checkSiblingFeatureImports(full, relPath);
   if (relPath.startsWith('src/components/')) checkComponentFile(full, relPath);
   // Feature-local view components are View tier too (ADR 0001): same service ban.
   else if (/^src\/features\/[^/]+\/components\//.test(relPath)) checkComponentFile(full, relPath);
   else if (/^src\/features\/[^/]+\/application\//.test(relPath)) checkApplicationFile(full, relPath);
   else if (/^src\/features\/[^/]+\/[^/]+$/.test(relPath)) checkFeatureRootFile(relPath);
+}
+
+/** ADR 0001: shared behavior belongs outside a sibling feature's internals. */
+function checkSiblingFeatureImports(full, relPath) {
+  const feature = relPath.match(/^src\/features\/([^/]+)\//)?.[1];
+  if (!feature || isTestFile(relPath)) return;
+  const source = fs.readFileSync(full, 'utf8');
+  const check = (spec) => {
+    if (!spec.startsWith('.')) return;
+    const target = rel(path.resolve(path.dirname(full), spec));
+    const targetFeature = target.match(/^src\/features\/([^/]+)\//)?.[1];
+    if (targetFeature && targetFeature !== feature) {
+      console.error(`✖ ${relPath}: must not import sibling feature internals '${spec}'. Use a shared module. See docs/adr/0001-frontend-layering.md.`);
+      violations++;
+    }
+  };
+  for (const match of source.matchAll(new RegExp(IMPORT_RE.source, 'g'))) check(staticImportSpecifier(match));
+  for (const match of source.matchAll(new RegExp(DYNAMIC_IMPORT_RE.source, 'g'))) check(match[2]);
 }
 
 /**

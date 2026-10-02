@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "ソースの版は同じです",
+    "freshness-changed": "ソースが変更されています。再調査してください",
+    "freshness-unknown": "現在の版は未確認",
+    "freshness-rebind": "フォルダーを再選択して確認",
+    "discovery": "発見タスク",
+    "plugins": "プラグイン",
+    "openPlugin": "プラグイン設定を開く",
+    "rerankUnavailable": "AI の再順位付けに失敗したため、ベクトル順位を維持しています。",
+    "vectorUnavailable": "ベクトル検索を利用できないため、キーワード検索を使用しています。",
+    "supported": "対応", "unsupported": "非対応",
+    "sources": "プロジェクト別の調査", "state": "状態", "complete": "調査済み", "reused": "同じ版の結果を再利用",
+    "changed": "版が変更されたため再調査済み", "failed": "失敗", "pending": "未処理",
+    "continue": "未完了の調査を続行", "fillMissing": "未回答の要件を補足", "restart": "再調査",
+    "question": "選択した資料について質問…", "mixed": "ローカル + 選択したリポジトリ", "readFiles": "{{count}} ファイル読取済み",
+    "claims": "主張と根拠の抜粋", "tasks": "AI タスク", "pause": "一時停止", "resume": "再開", "stop": "停止",
+    "retry": "失敗した項目のみ再試行", "interrupted": "中断済み、手動で再開", "paused": "一時停止中", "running": "実行中",
+    "summary": "リポジトリ要約", "details": "リポジトリ詳細", "gists": "Gist 分析", "searchSummary": "{{mode}} · {{total}} 件検索 · {{count}} 件表示",
+    "keyword": "キーワード検索", "vector": "ベクトル検索", "ai": "AI 選択", "fallback": "代替検索を使用", "support": "根拠あり", "unknown": "不明"
+  },
+  "localResearch": {
+    "local": "ローカルプロジェクト",
+    "choose": "プロジェクトフォルダーを選択",
+    "deviceOnly": "履歴はこの端末のみ、バックアップ対象外",
+    "rebind": "続行前にフォルダーを選択してください。過去の出典は古い可能性があります。",
+    "projectChanged": "別のプロジェクトフォルダーです。元のフォルダーを選ぶか、新しい会話を開始してください。",
+    "scope": "資料の範囲",
+    "configure": "利用可能な AI 設定を選択してください。",
+    "open": "調査ワークベンチを開く"
+  },
+  "answerReview": {
+      "draft": "未確認の下書き",
+      "reviewing": "下書き：要件と出典を確認中",
+      "interrupted": "中断した下書き：未確認",
+      "reviewed": "モデルによる確認済み。独立した事実検証ではありません",
+      "unreviewed": "確認未完了",
+      "legacy": "確認状態の記録なし",
+      "coverage": "要件の対応状況",
+      "answered": "回答済み",
+      "unknown": "不明"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Q&A履歴を閉じる",
     "chat-history": "Q&A履歴",
@@ -170,6 +211,13 @@
     "addSelected": "スター済みを追加",
     "moreResults": "さらに検索",
     "unknown": "不明",
+    "added": "追加済み",
+    "addedToContext": "会話コンテキストに追加済み",
+    "addedToContextTooltip": "会話コンテキストに追加済み（クリックで削除）",
+    "contextPrefix": "会話コンテキスト:",
+    "clearAll": "すべてクリア",
+    "multilingualGeneral": "多言語 / 汎用",
+    "viewNewProposals": "📋 新しい提案を確認 ↓",
     "candidate": "候補",
     "verifying": "確認中",
     "verified": "確認済み：根拠を見る",
@@ -267,6 +315,9 @@
     "skip": "指定なし",
     "searchAgain": "この条件で再検索",
     "draftPreserved": "編集を保持しました。新しい AI 提案があります。",
-    "useNew": "新しい提案に置き換え"
+    "useNew": "新しい提案に置き換え",
+    "quickOptions": "クイック選択:",
+    "cyclePriority": "クリックして優先度を切り替え",
+    "doubleClickToDelete": "ダブルクリックで削除"
   }
 }

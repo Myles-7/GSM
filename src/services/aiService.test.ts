@@ -23,11 +23,11 @@ const makeConfig = () => ({
   isActive: true,
 });
 
-it('redacts plugin AI request details from debug logs', () => {
+it.each([undefined, true, false])('redacts all AI request details regardless of legacy option (%s)', (legacyOption) => {
   const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {});
   const isDebugMode = vi.spyOn(logger, 'isDebugMode').mockReturnValue(true);
   try {
-    const service = new AIService(makeConfig() as never, 'en', true);
+    const service = new AIService(makeConfig() as never, 'en', legacyOption);
     const logRequest = service as unknown as { logAIRequestDebug: (
       startTime: number,
       context: { apiType: string; model: string; configId: string },

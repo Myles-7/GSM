@@ -76,6 +76,9 @@ export interface Repository {
   vector_indexed_at?: string;  // ISO timestamp of last successful vector indexing
   /** 上次向量索引时采用的 license（SPDX id / null）。增量谓词据此判断 license 是否变化以触发重索引。 */
   vector_indexed_license?: string | null;
+  vector_indexed_identity?: string;
+  vector_indexed_generation?: string;
+  vector_indexed_content_hash?: string;
   last_release_fetch_time?: string;  // ISO timestamp, for incremental sync
   has_fetched_releases?: boolean;   // whether this repo has been synced for releases
   /** SPDX id（如 'MIT'、'Apache-2.0'）；无许可证/未识别为 null。AI/搜索/过滤均以此为准。 */
@@ -292,6 +295,8 @@ export interface VectorSearchConfig {
   enableReranking?: boolean;  // 是否启用 LLM 语义重排序，默认 true
   // 嵌入文本格式版本，buildEmbeddingText 格式变化时递增
   embeddingFormatVersion?: number;
+  /** Only a fully verified generation may become active. Missing means rebuild required. */
+  activeIndex?: import('../services/vectorIndexIdentity').VectorIndexGeneration;
 }
 
 export interface VectorSearchStatus {
@@ -335,12 +340,10 @@ export type MiMoPlan = 'api' | 'token-plan';
 
 export type SecretStatus = 'ok' | 'empty' | 'decrypt_failed';
 
-export interface AIConfig {
+interface AIConfigBase {
   id: string;
   name: string;
   apiType?: AIApiType; // API 格式/兼容协议（默认 openai）
-  baseUrl: string;
-  apiKey: string;
   model: string;
   isActive: boolean;
   customPrompt?: string; // 自定义提示词
@@ -352,6 +355,30 @@ export interface AIConfig {
   supportsToolCalls?: boolean; // 端点/模型支持 OpenAI 风格 function calling（仓库问答工具循环用，默认关闭）
   apiKeyStatus?: SecretStatus;
 }
+
+export interface HttpAIConfig extends AIConfigBase {
+  provider?: 'http';
+    credentialSource?: 'device' | 'backend';
+    backendAvailable?: boolean;
+  baseUrl: string;
+  apiKey: string;
+}
+
+export interface AgyAIConfig extends AIConfigBase {
+  agyRevision?: number;
+  agyFeature?: import('./agy').AgyFeature;
+  agyPriority?: 'interactive' | 'background';
+  agyTimeoutSeconds?: number;
+  agyFeatureOverrides?: import('./agy').AgyDevicePrefs['featureOverrides'];
+  provider: 'agy-cli';
+  baseUrl?: never;
+  apiKey?: never;
+  agyEffort: 'low' | 'medium' | 'high' | 'max';
+  agyMode: 'model' | 'research';
+  deviceBound: boolean;
+}
+
+export type AIConfig = HttpAIConfig | AgyAIConfig;
 
 export interface WebDAVConfig {
   id: string;

@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { initializeSchema } from './schema.js';
 import { logger } from '../services/logger.js';
+import { initializeSyncV2 } from '../services/syncV2.js';
+import { initializeTasks } from '../services/taskRunner.js';
 
 const migrations: Record<number, (db: Database.Database) => void> = {
   1: (db) => {
@@ -8,6 +10,10 @@ const migrations: Record<number, (db: Database.Database) => void> = {
   },
   2: (db) => {
     initializeSchema(db);
+  },
+  3: (db) => {
+    initializeSyncV2(db);
+    initializeTasks(db);
   },
 };
 

@@ -10,7 +10,7 @@ import { generateOrganizationDraft } from './aiOrganizationService';
 export async function runOrganizationGeneration(input: {
   sessionId: string; repositories: Repository[]; scopeName: string; configId: string; instruction: string;
   previous?: WorkbenchProposal; retryOnly?: boolean; enrichRepositoryIds?: number[];
-  replaceManual?: boolean; maxNewSubcategories?: number;
+  replaceManual?: boolean; maxNewSubcategories?: number; batchIndex?: number;
 }): Promise<void> {
   const ownerId = String(useAppStore.getState().user?.id ?? '');
   if (!ownerId) throw new Error('Connect a GitHub account first');
@@ -52,6 +52,19 @@ export async function runOrganizationGeneration(input: {
       proposal.organization!.instruction = input.instruction;
       proposal.organization!.configId = input.configId;
       proposal.organization!.status = 'generating';
+      if (input.batchIndex !== undefined) {
+        if (proposal.organization!.batches[input.batchIndex]) {
+          proposal.organization!.batches[input.batchIndex].status = 'pending';
+          delete proposal.organization!.batches[input.batchIndex].error;
+        }
+      } else if (input.retryOnly) {
+        for (const b of proposal.organization!.batches) {
+          if (b.status === 'failed') {
+            b.status = 'pending';
+            delete b.error;
+          }
+        }
+      }
     }
     const messageId = crypto.randomUUID();
     await storage.saveMessage({ id: messageId, sessionId: session.id, role: 'user', content: input.instruction, status: 'complete', evidenceIds: [], createdAt: date });

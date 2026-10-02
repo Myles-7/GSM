@@ -43,7 +43,7 @@ const BANNED_COMPONENT_SERVICE_DYNAMIC_SELECTORS = BANNED_COMPONENT_SERVICES.map
 );
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  { ignores: ['dist', 'output', 'server/dist'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

@@ -22,6 +22,7 @@ import {
   WorkflowDefinition,
 } from '../types';
 import { logger } from './logger';
+import { waitForRequest, withDeadline } from '../utils/requestDeadline';
 import { isReadmeCandidateItem, type GitHubReadmeCandidateItem } from '../utils/readmeVariants';
 
 interface GitHubContentResponse {
@@ -336,8 +337,8 @@ const SEARCH_BOOLEAN_OPERATORS = new Set(['or', 'and', 'not']);
 
 export class GitHubApiService {
   private token: string;
-  private rateLimitRemaining: number | null = null;
-  private rateLimitReset: number | null = null;
+  private rateLimits = new Map<string, { remaining: number; reset: number }>();
+  private retryUntil = new Map<string, number>();
   private backendUrl: string | null = null;
   private backendAuthToken: string | null = null;
 
@@ -369,31 +370,19 @@ export class GitHubApiService {
   private async makeRequest<T>(endpoint: string, options: RequestInit & { operationTag?: string } = {}, signal?: AbortSignal): Promise<T> {
     const startTime = Date.now();
     const method = (options.method || 'GET') as string;
-    const { operationTag, ...fetchOptions } = options;
-
-    // Check rate limit before making request
-    if (this.rateLimitRemaining !== null && this.rateLimitRemaining < 100 && this.rateLimitReset !== null) {
-      const waitMs = (this.rateLimitReset * 1000) - Date.now();
-      if (waitMs > 0) {
-        logger.warn('githubApi', 'Rate limit low, waiting for reset', { remaining: this.rateLimitRemaining, resetTime: this.rateLimitReset });
-        // Honor abort signal during rate limit wait
-        await new Promise<void>((resolve, reject) => {
-          const timeoutId = setTimeout(() => resolve(), waitMs + 1000);
-          const signalHandler = () => {
-            clearTimeout(timeoutId);
-            reject(new Error('Aborted'));
-          };
-          signal?.addEventListener('abort', signalHandler);
-          // Also check if already aborted
-          if (signal?.aborted) {
-            clearTimeout(timeoutId);
-            signal?.removeEventListener('abort', signalHandler);
-            reject(new Error('Aborted'));
-          }
-        }).catch(err => {
-          if (err.message === 'Aborted') throw err;
-        });
+    const { operationTag, signal: optionSignal, ...fetchOptions } = options;
+    signal = signal ?? optionSignal ?? undefined;
+    signal?.throwIfAborted();
+    const resource = endpoint.startsWith('/search/code') ? 'code_search'
+      : endpoint.startsWith('/search/') ? 'search' : endpoint === '/graphql' ? 'graphql' : 'core';
+    const limit = this.rateLimits.get(resource);
+    const until = Math.max(limit?.remaining === 0 ? limit.reset : 0, this.retryUntil.get(resource) || 0);
+    if (until > Date.now()) {
+      // Interactive discovery surfaces the cooldown instead of silently blocking its dialog.
+      if (operationTag === 'custom-discovery') {
+        throw Object.assign(new Error('GitHub rate limit exceeded'), { status: 429, retryAfterMs: until - Date.now() });
       }
+      await waitForRequest(until - Date.now(), signal);
     }
 
     // GitHub 的 gist 等端点偶发 502/503/504（网关瞬时故障），这里对 5xx 做指数退避重试，
@@ -465,11 +454,9 @@ export class GitHubApiService {
       // Parse rate limit headers
       const remaining = response.headers.get('X-RateLimit-Remaining');
       const reset = response.headers.get('X-RateLimit-Reset');
-      if (remaining !== null) {
-        this.rateLimitRemaining = parseInt(remaining, 10);
-      }
-      if (reset !== null) {
-        this.rateLimitReset = parseInt(reset, 10);
+      const responseResource = response.headers.get('X-RateLimit-Resource') || resource;
+      if (remaining !== null && reset !== null && Number.isFinite(Number(remaining)) && Number.isFinite(Number(reset))) {
+        this.rateLimits.set(responseResource, { remaining: Number(remaining), reset: Number(reset) * 1000 });
       }
 
       if (response.ok) break;
@@ -488,12 +475,14 @@ export class GitHubApiService {
         }
         throw new Error(GITHUB_TOKEN_INVALID_ERROR);
       }
-      if (response.status === 403 && this.rateLimitRemaining === 0) {
-        const resetDate = this.rateLimitReset
-          ? new Date(this.rateLimitReset * 1000).toLocaleString()
-          : 'unknown';
-        logger.warn('githubApi', 'API request failed: rate limit exceeded', { method, endpoint, status: response.status, durationMs });
-        throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}`);
+      const retryAfter = response.headers.get('Retry-After');
+      if (response.status === 429 || (response.status === 403 && (remaining === '0' || retryAfter !== null))) {
+        const resetAt = this.rateLimits.get(responseResource)?.reset || 0;
+        const retryMs = retryAfter === null ? 0 : /^\d+(?:\.\d+)?$/.test(retryAfter)
+          ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0;
+        const retryAfterMs = Math.max(retryMs, remaining === '0' ? resetAt - Date.now() : 0, 1000);
+        this.retryUntil.set(resource, Date.now() + retryAfterMs);
+        throw Object.assign(new Error('GitHub API rate limit exceeded'), { status: response.status, retryAfterMs });
       }
 
       // 5xx 视为可重试的瞬时故障；其余 4xx 直接抛出（重试无意义）。
@@ -1800,11 +1789,26 @@ export class GitHubApiService {
     };
   }
 
+  async searchDiscoveryCandidates(query: string, page: number, recent: boolean, signal?: AbortSignal, sort: 'relevance' | 'stars' | 'updated' = 'relevance'): Promise<{ items: Repository[]; incomplete: boolean; hasMore: boolean }> {
+    const order = recent ? 'updated' : sort;
+    const data = await withDeadline(requestSignal => this.makeRequest<GitHubSearchRepoResponse & { incomplete_results?: boolean }>(
+      `/search/repositories?q=${encodeURIComponent(query)}&per_page=50&page=${Math.max(1, Math.min(20, page))}${order !== 'relevance' ? `&sort=${order}&order=desc` : ''}`,
+      { signal: requestSignal, operationTag: 'custom-discovery' },
+    ), 15000, signal);
+    return { items: data.items || [], incomplete: data.incomplete_results === true, hasMore: data.items?.length === 50 && page < 20 };
+  }
+
+  /** Read canonical repository data after an explicitly confirmed Star. */
+  async getRepository(owner: string, repo: string, signal?: AbortSignal): Promise<Repository> {
+    return this.makeRequest<Repository>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { operationTag: 'repository-read' }, signal);
+  }
+
   async getTrendingRepositories(
     platform: DiscoveryPlatform,
     page: number = 1,
     perPage: number = 20,
-    timeRange: TrendingTimeRange = 'weekly'
+    timeRange: TrendingTimeRange = 'weekly',
+    signal?: AbortSignal,
   ): Promise<PaginatedDiscoveryRepositories> {
     const startTime = Date.now();
     const rssUrlMap: Record<TrendingTimeRange, string> = {
@@ -1816,6 +1820,7 @@ export class GitHubApiService {
 
     try {
       const response = await fetch(rssUrl, {
+        signal,
         headers: { 'Accept': 'application/rss+xml, application/xml, text/xml' }
       });
       if (!response.ok) {
@@ -1899,7 +1904,7 @@ export class GitHubApiService {
               created_at: string;
               updated_at: string;
               pushed_at: string;
-            }>(`/repos/${owner}/${repo}`, { operationTag: 'trending' });
+            }>(`/repos/${owner}/${repo}`, { operationTag: 'trending' }, signal);
             r.id = data.id;
             r.stargazers_count = data.stargazers_count ?? r.stargazers_count;
             r.forks_count = data.forks_count ?? r.forks_count;

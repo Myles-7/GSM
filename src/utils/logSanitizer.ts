@@ -148,7 +148,11 @@ function sanitizeString(value: string): string {
     return value.slice(0, 6) + '***';
   }
 
-  return value;
+  return value
+    .replace(/\b(?:gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]+|sk-[a-zA-Z0-9_-]{16,}|gsm_mcp_[a-zA-Z0-9_-]+)/g, '[redacted]')
+    .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*["']?)[^\s"';,]+/gi, '$1[redacted]')
+    .replace(/\b(Bearer)\s+[a-zA-Z0-9._~+/-]+=*/gi, '$1 [redacted]')
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[redacted private key]');
 }
 
 function sanitizeObject(obj: Record<string, unknown>, seen: WeakSet<object>): Record<string, unknown> {

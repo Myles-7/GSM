@@ -43,6 +43,15 @@ describe('organization apply and restore safety', () => {
     await expect(applyOrganizationProposal('proposal', result.updatedAt)).rejects.toThrow('Generate a new draft');
     expect(mocks.writes).toBe(1);
   });
+  it('supports staged apply for successive batches sharing newly created categories', async () => {
+    const p1 = await applyOrganizationProposal('proposal', date, undefined, [1]);
+    expect(p1.organization?.entries.find(e => e.repositoryId === 1)?.status).toBe('success');
+    expect(p1.organization?.entries.find(e => e.repositoryId === 2)?.status).toBe('pending');
+    expect(mocks.state.customCategories.map(c => c.id)).toEqual(['new-main']);
+
+    const p2 = await applyOrganizationProposal('proposal', p1.updatedAt, undefined, [2]);
+    expect(p2.organization?.entries.find(e => e.repositoryId === 2)?.status).toBe('success');
+  });
   it('skips stale membership without hiding successful independent assignments', async () => {
     mocks.state.repositories[0].category_locked = true;
     const result = await applyOrganizationProposal('proposal', date);
@@ -115,4 +124,31 @@ describe('organization apply and restore safety', () => {
     await expect(applyOrganizationProposal('proposal', date, controller.signal)).rejects.toThrow();
     expect(mocks.writes).toBe(0);
   });
+  it('rolls back uncommitted additions from createdCategoryIds when apply throws, allowing retry', async () => {
+    const originalApply = (mocks.state as any).applyAIOrganization;
+    let failOnce = true;
+    (mocks.state as any).applyAIOrganization = (input: any) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('Simulated store write failure');
+      }
+      return originalApply(input);
+    };
+
+    const failed = await applyOrganizationProposal('proposal', date);
+    expect(failed.organization?.status).toBe('interrupted');
+    expect(failed.organization?.createdCategoryIds).toEqual([]);
+    expect(failed.organization?.entries[0].status).toBe('conflict');
+
+    failed.organization!.entries.forEach(e => { e.status = 'pending'; e.selected = true; delete e.error; });
+    await mocks.proposals.set(failed.id, structuredClone(failed));
+
+    const retried = await applyOrganizationProposal('proposal', failed.updatedAt);
+    expect(retried.organization?.status).toBe('applied');
+    expect(retried.organization?.entries.every(e => e.status === 'success')).toBe(true);
+    expect(mocks.state.customCategories.map(c => c.id)).toEqual(['new-main']);
+
+    (mocks.state as any).applyAIOrganization = originalApply;
+  });
 });
+

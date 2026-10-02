@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => {
   const unsubscribe = vi.fn(() => calls.push('unsubscribe'));
   return {
     calls,
+    activateDesktopHome: vi.fn(async () => false),
+    stopDesktopHome: vi.fn(),
     unsubscribe,
     backend: {
       init: vi.fn(async () => { calls.push('backend.init'); }),
@@ -23,6 +25,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../../../services/backendAdapter', () => ({ backend: mocks.backend }));
+vi.mock('../../../home/desktop', () => ({ activateDesktopHome: mocks.activateDesktopHome, stopDesktopHome: mocks.stopDesktopHome }));
 vi.mock('../../../services/autoSync', () => ({
   tryRestoreAuthFromBackend: mocks.tryRestoreAuthFromBackend,
   syncLocalGitHubTokenToBackend: mocks.syncLocalGitHubTokenToBackend,
@@ -43,6 +46,7 @@ describe('useBackendLifecycle', () => {
     vi.clearAllMocks();
     mocks.calls.splice(0);
     mocks.backend.isAvailable = true;
+    mocks.activateDesktopHome.mockResolvedValue(false);
   });
 
   it('waits for hydration and restores authentication before backend data synchronization', async () => {
@@ -78,6 +82,16 @@ describe('useBackendLifecycle', () => {
     expect(mocks.startAutoSync).not.toHaveBeenCalled();
     expect(mocks.refreshMcpElectronBridge).toHaveBeenCalledOnce();
     consoleError.mockRestore();
+  });
+
+  it('uses v2 exclusively when the home workspace is active', async () => {
+    mocks.activateDesktopHome.mockResolvedValue(true);
+    const { unmount } = renderHook(() => useBackendLifecycle(true));
+    await waitFor(() => expect(mocks.startMcpElectronBridge).toHaveBeenCalledOnce());
+    expect(mocks.startAutoSync).not.toHaveBeenCalled();
+    expect(mocks.syncLocalGitHubTokenToBackend).not.toHaveBeenCalled();
+    unmount();
+    expect(mocks.stopDesktopHome).toHaveBeenCalled();
   });
 
   it('stops auto-sync and the Electron MCP bridge on unmount', async () => {

@@ -232,5 +232,32 @@ describe('runToolLoopRepositoryChatTurn (native function-calling loop)', () => {
 
     expect(result.evidences).toHaveLength(0);
     expect(result.content).toContain('insufficient');
+    expect(result.missing).toEqual(['everything']);
+  });
+
+  it('persists completion gaps and passes them to answer synthesis', async () => {
+    const events: unknown[] = [];
+    mocks.generateWithTools
+      .mockResolvedValueOnce(modelTurn([toolCall('c1', 'read_documentation', { path: 'README.md' })]))
+      .mockResolvedValueOnce(modelTurn([toolCall('c2', 'ready_to_answer', { missing: ['GPU support'] })]));
+    mocks.generateChatText.mockResolvedValueOnce('A documented project. `/README.md - 1-4`');
+    const result = await runToolLoopRepositoryChatTurn({ ...turnInput('GPU support?'), onToolEvent: event => events.push(event) });
+    expect(result.missing).toContain('GPU support');
+    expect(result.quality).toBe('unreviewed');
+    expect(result.content).toContain('GPU support');
+    expect(mocks.generateChatText.mock.calls[0][0].user).toContain('["GPU support"]');
+    expect(events).toContainEqual(expect.objectContaining({ toolName: 'evidence_gate', detail: expect.stringContaining('GPU support') }));
+  });
+
+  it('reads release evidence when the repository has no documentation', async () => {
+    configureTreeAndFiles({ 'main.go': 'package main' });
+    mocks.getRepositoryReleases.mockResolvedValue(releasesPayload);
+    mocks.generateWithTools
+      .mockResolvedValueOnce(modelTurn([toolCall('c1', 'read_recent_releases')]))
+      .mockResolvedValueOnce(modelTurn([toolCall('c2', 'ready_to_answer')]));
+    mocks.generateChatText.mockResolvedValueOnce('Adds a dashboard. `/release-v1.0.0.md - 1-4`');
+    const result = await runToolLoopRepositoryChatTurn(turnInput('What changed recently?'));
+    expect(mocks.getRepositoryReleases).toHaveBeenCalledOnce();
+    expect(result.evidences.length).toBeGreaterThan(0);
   });
 });

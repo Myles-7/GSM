@@ -4,6 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const isDev = process.env.NODE_ENV === 'development';
 const { createMcpLocalServer } = require('./mcpLocalServer');
+const { createAgyDesktop } = require('./agyDesktop');
+const { registerAgyIpc } = require('./agyIpc');
 const { createPluginManager } = require('./plugins/pluginManager');
 const { downloadReleaseAsset } = require('./plugins/releaseDownload');
 const { loadPluginRegistry } = require('./plugins/pluginRegistryFeed');
@@ -23,6 +25,24 @@ const {
 } = require('./xAuthStorage');
 
 let mainWindow;
+let agyDesktop;
+let agyQuitReady = false;
+function getAgyDesktop() {
+  if (!agyDesktop) agyDesktop = createAgyDesktop({
+    userDataPath: app.getPath('userData'),
+    selectExecutable: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'], filters: [{ name: 'AGY CLI', extensions: ['exe'] }],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    },
+    selectDirectory: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+      return result.canceled ? null : result.filePaths[0];
+    },
+  });
+  return agyDesktop;
+}
 let tray = null;
 // True only when the user explicitly quits (tray menu / Cmd+Q / before-quit).
 // Distinguishes "hide to tray" from "really exit" for close-to-tray (#345).
@@ -59,7 +79,9 @@ function createWindow() {
       devTools: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    icon: path.join(__dirname, '../build/icon.png'),
+    icon: isDev
+      ? path.join(__dirname, '../public/app.ico')
+      : path.join(__dirname, '../build/icon.png'),
     titleBarStyle: 'default', // 使用默认标题栏，避免重叠问题
     show: false,
     // Windows/Linux 隐藏原生顶部菜单栏（Edit/View/Window），按 Alt 可临时呼出；
@@ -73,6 +95,12 @@ function createWindow() {
   });
 
   // 添加错误处理和加载事件（fallback 只尝试一次，避免 did-fail-load 死循环）
+  const agyOwner = mainWindow.webContents.id;
+  mainWindow.webContents.once('destroyed', () => agyDesktop?.cancel(agyOwner));
+  mainWindow.webContents.on('render-process-gone', () => agyDesktop?.cancel(agyOwner));
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) agyDesktop?.cancel(agyOwner);
+  });
   let fallbackAttempted = false;
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
     console.error('Failed to load:', errorCode, errorDescription, validatedURL);
@@ -103,7 +131,9 @@ function createWindow() {
 
   if (isDev) {
     mainWindow.loadURL(process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173');
-    mainWindow.webContents.openDevTools();
+    if (process.env.GSM_DESKTOP_LAUNCHER !== '1') {
+      mainWindow.webContents.openDevTools();
+    }
   } else {
     // 生产环境：尝试多个可能的路径
     const possiblePaths = [
@@ -946,6 +976,13 @@ function isMainPluginFrame(event) {
   return mainWindow && event.sender === mainWindow.webContents &&
     event.senderFrame === mainWindow.webContents.mainFrame;
 }
+registerAgyIpc({ ipcMain, isMainFrame: isMainPluginFrame, getService: getAgyDesktop });
+
+const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlReading');
+app.whenReady().then(() => {
+  const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
+  registerHtmlReadingIpc({ ipcMain, isMainFrame: isMainPluginFrame, service, getWindow: () => mainWindow, powerMonitor: require('electron').powerMonitor });
+});
 ipcMain.handle('plugins:getPage', async (event, pluginId, pageId) => {
   if (!isMainPluginFrame(event)) return { success: false, error: { code: 'PLUGIN_IPC_DENIED', message: 'Plugin IPC requires the main frame' } };
   return getPluginManager().getPage(pluginId, pageId);
@@ -1027,9 +1064,13 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   // Allow the real quit path to bypass the close-to-tray interceptor.
   isQuitting = true;
+  if (agyDesktop && !agyQuitReady) {
+    event.preventDefault();
+    void agyDesktop.shutdown().finally(() => { agyQuitReady = true; app.quit(); });
+  }
 });
 
 app.on('will-quit', () => {

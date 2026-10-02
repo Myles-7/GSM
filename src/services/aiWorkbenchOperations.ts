@@ -9,6 +9,7 @@ import type {
 } from '../types/aiWorkbench';
 import { forceSyncToBackend } from './autoSync';
 import { AIService } from './aiService';
+import { forAgyFeature } from './agyProfiles';
 import { createGitHubApiService } from './githubApiFactory';
 import { repositoryChatStorage } from './repositoryChatStorage';
 
@@ -718,7 +719,7 @@ export async function proposeWorkbenchOperations(input: {
     topics: [...repository.topics],
     ...(repository.custom_tags ? { custom_tags: [...repository.custom_tags] } : {}),
   }));
-  const ai = new AIService(config, state.language);
+  const ai = new AIService(forAgyFeature(config, 'workbench'), state.language);
   const candidates = await ai.searchRepositoriesWithSelection(library, question, { signal: input.signal });
   throwIfAborted(input.signal);
   const candidateIds = new Set(candidates.map((repository) => repository.id));

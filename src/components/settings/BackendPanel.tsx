@@ -9,6 +9,7 @@ import { Server, TestTube, RefreshCw, Upload, Download, CheckCircle, AlertCircle
 import { useBackendSettingsActions } from '../../features/settings/hooks/useBackendSettingsActions';
 import { useAppStore } from '../../store/useAppStore';
 import type { RouteMode } from '../../types';
+import { HomeBackendPanel } from './HomeBackendPanel';
 
 interface BackendPanelProps {
   t: TranslateFn;
@@ -74,6 +75,7 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
 
   return (
     <div className="space-y-6">
+      <HomeBackendPanel />
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <Server className="w-6 h-6 text-muted-foreground dark:text-muted-foreground " />

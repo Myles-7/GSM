@@ -1,0 +1,15 @@
+import Database from 'better-sqlite3';
+import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
+import {changeDiscoveryStar} from '../../src/services/discoveryStar.js';
+import {initializeSyncV2,getRecord} from '../../src/services/syncV2.js';
+import {encrypt} from '../../src/services/crypto.js';
+import {config} from '../../src/config.js';
+let db:Database.Database;const input={workspaceId:'home',githubUserId:42,requestId:'request-1',repository:'owner/repo',starred:true,confirm:true};
+beforeEach(()=>{db=new Database(':memory:');initializeSyncV2(db);db.exec("INSERT INTO sync_v2_workspace VALUES('home',42,'2026-09-29',0);CREATE TABLE settings(key TEXT,value TEXT)");db.prepare('INSERT INTO settings VALUES(?,?)').run('github_token',encrypt('secret',config.encryptionKey));});
+afterEach(()=>db.close());
+const json=(value:unknown)=>new Response(JSON.stringify(value));
+describe('confirmed discovery star',()=>{
+ it('requires explicit confirmation and rejects account mismatch',async()=>{const fetcher=vi.fn<typeof fetch>();await expect(changeDiscoveryStar(db,{...input,confirm:false},fetcher)).rejects.toThrow('EXPLICIT_STAR_CONFIRMATION_REQUIRED');expect(fetcher).not.toHaveBeenCalled();fetcher.mockResolvedValue(json({id:43}));await expect(changeDiscoveryStar(db,input,fetcher)).rejects.toThrow('BACKEND_ACCOUNT_MISMATCH');expect(fetcher).toHaveBeenCalledTimes(1);});
+ it('checks state, confirms mutation, syncs repository, and deduplicates completed requests',async()=>{const fetcher=vi.fn<typeof fetch>().mockResolvedValueOnce(json({id:42})).mockResolvedValueOnce(new Response(null,{status:404})).mockResolvedValueOnce(json({id:8,full_name:'owner/repo'})).mockResolvedValueOnce(new Response(null,{status:204})).mockResolvedValueOnce(new Response(null,{status:204}));expect(await changeDiscoveryStar(db,input,fetcher)).toMatchObject({applied:true,starred:true});expect(getRecord(db,'repositories','8')?.data?.full_name).toBe('owner/repo');expect(await changeDiscoveryStar(db,input,fetcher)).toMatchObject({replayed:true});expect(fetcher).toHaveBeenCalledTimes(5);await expect(changeDiscoveryStar(db,{...input,confirm:false},fetcher)).rejects.toThrow('EXPLICIT_STAR_CONFIRMATION_REQUIRED');await expect(changeDiscoveryStar(db,{...input,starred:false},fetcher)).rejects.toThrow('REQUEST_ID_CONFLICT');});
+ it('recovers an ambiguous write by querying real state without writing again',async()=>{const first=vi.fn<typeof fetch>().mockResolvedValueOnce(json({id:42})).mockResolvedValueOnce(new Response(null,{status:404})).mockResolvedValueOnce(json({id:8,full_name:'owner/repo'})).mockRejectedValueOnce(new Error('connection lost after write'));await expect(changeDiscoveryStar(db,input,first)).rejects.toThrow('STAR_OUTCOME_UNKNOWN');const retry=vi.fn<typeof fetch>().mockResolvedValueOnce(json({id:42})).mockResolvedValueOnce(new Response(null,{status:204})).mockResolvedValueOnce(json({id:8,full_name:'owner/repo'}));expect(await changeDiscoveryStar(db,input,retry)).toMatchObject({applied:true});expect(retry.mock.calls.every(call=>call[1]?.method==='GET')).toBe(true);});
+});

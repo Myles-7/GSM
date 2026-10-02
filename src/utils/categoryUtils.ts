@@ -64,8 +64,9 @@ export const getAICategory = (repo: Repository, allCategories: Category[]): stri
   for (const category of allCategories) {
     if (category.id === 'all') continue;
 
+    const keywords = category.keywords || [];
     const hasMatch = repo.ai_tags.some(tag =>
-      category.keywords.some(keyword =>
+      keywords.some(keyword =>
         tag.toLowerCase().includes(keyword.toLowerCase())
       )
     );
@@ -93,7 +94,8 @@ export const getDefaultCategory = (repo: Repository, allCategories: Category[]):
       repo.ai_summary || ''
     ].join(' ').toLowerCase();
 
-    const hasMatch = category.keywords.some(keyword =>
+    const keywords = category.keywords || [];
+    const hasMatch = keywords.some(keyword =>
       repoText.includes(keyword.toLowerCase())
     );
 

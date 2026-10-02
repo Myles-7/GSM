@@ -1,137 +1,196 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Repository } from '../../../types';
+import { webcrypto } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Repository, VectorIndexingState, VectorSearchConfig } from '../../../types';
+import { createVectorGeneration } from '../../../services/vectorIndexIdentity';
 import { useVectorSearchActions, type VectorIndexDraft } from './useVectorSearchActions';
-import { useAppStore } from '../../../store/useAppStore';
 
 const mocks = vi.hoisted(() => ({
-  useAppStore: vi.fn(),
-  indexAllRepos: vi.fn(),
-  cleanup: vi.fn(),
-  setVectorIndexingState: vi.fn(),
-  setVectorSearchConfig: vi.fn(),
-  setVectorSearchStatus: vi.fn(),
-  updateRepositoriesMetadata: vi.fn(),
+  useAppStore: vi.fn(), indexAllRepos: vi.fn(), cleanup: vi.fn(), verify: vi.fn(),
+  capabilities: vi.fn(), setVectorIndexingState: vi.fn(), setVectorSearchConfig: vi.fn(),
+  setVectorSearchStatus: vi.fn(), updateRepositoriesMetadata: vi.fn(),
 }));
-
-vi.mock('../../../store/useAppStore', () => ({
-  EMBEDDING_FORMAT_VERSION: 3,
-  LEGACY_EMBEDDING_FORMAT_VERSION: 1,
-  isKnownEmbeddingFormatVersion: (value: unknown) => value === 1 || value === 2 || value === 3,
-  useAppStore: mocks.useAppStore,
-}));
+vi.mock('../../../store/useAppStore', () => ({ useAppStore: mocks.useAppStore }));
 vi.mock('../../../services/vectorSearchService', () => ({
   EMBEDDING_FORMAT_VERSION: 3,
   EmbeddingClient: class {},
   VectorSearchService: class {
     cleanup = mocks.cleanup;
-    testConnection = vi.fn();
+    verifyGeneration = mocks.verify;
+    checkCapabilities = mocks.capabilities;
   },
   indexAllRepos: mocks.indexAllRepos,
-  needsReindex: () => false,
 }));
-vi.mock('../../../services/githubApi', () => ({ GitHubApiService: class {} }));
-vi.mock('../../../utils/licenseFilter', () => ({ normalizeLicense: (value: string | null) => value }));
+vi.mock('../../../services/githubApiFactory', () => ({ createGitHubApiService: vi.fn() }));
 
 const repository = {
-  id: 1,
-  name: 'repository',
-  full_name: 'owner/repository',
-  owner: { login: 'owner' },
-  analyzed_at: '2026-08-25T00:00:00.000Z',
-  analysis_failed: false,
-  license: null,
+  id: 1, full_name: 'owner/repository', analyzed_at: '2026-08-25T00:00:00.000Z',
+  analysis_failed: false, license: 'MIT', vector_indexed_at: '2026-08-26T00:00:00.000Z',
 } as Repository;
-
 const draft: VectorIndexDraft = {
-  apiType: 'openai',
-  baseUrl: 'https://example.com/v1',
-  apiKey: 'key',
-  model: 'text-embedding-3-small',
-  dimensions: 1536,
-  workerUrl: 'https://worker.example.com',
-  authToken: 'worker-token',
-  indexMode: 'description',
-  readmeMaxChars: 6000,
+  apiType: 'openai', baseUrl: 'https://example.com', apiKey: 'key',
+  model: 'embedding-model', dimensions: 3, workerUrl: 'https://worker.example.com',
+  authToken: 'worker-token', indexMode: 'description', readmeMaxChars: 6000,
 };
-
 const createStoreState = () => ({
-  embeddingConfigs: [{
-    id: 'embedding', name: 'Embedding', apiType: 'openai' as const,
-    baseUrl: 'https://example.com/v1', apiKey: 'key', model: 'text-embedding-3-small', dimensions: 1536, isActive: true,
-  }],
+  embeddingConfigs: [{ id: 'embedding', name: 'Embedding', ...draft, isActive: true }],
   activeEmbeddingConfig: 'embedding',
-  vectorSearchConfig: { embeddingFormatVersion: 1 },
-  repositories: [repository],
-  githubToken: null,
+  vectorSearchConfig: {
+    ...draft, enabled: true, embeddingConfigId: 'embedding', embeddingFormatVersion: 1,
+  } as VectorSearchConfig,
+  vectorIndexingState: { isIndexing: false, phase: null, phaseDone: 0, phaseTotal: 0, result: null } as VectorIndexingState,
+  repositories: [repository], githubToken: null,
   setVectorSearchStatus: mocks.setVectorSearchStatus,
   setVectorIndexingState: mocks.setVectorIndexingState,
   setVectorSearchConfig: mocks.setVectorSearchConfig,
   updateRepositoriesMetadata: mocks.updateRepositoriesMetadata,
 });
-
 let storeState = createStoreState();
-const mockUseAppStore = vi.mocked(useAppStore);
+const success = { indexed: 1, skipped: 0, errors: 0, indexedRepoIds: [1], indexedContentHashes: { '1': 'a'.repeat(64) } };
 
-describe('useVectorSearchActions', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe('vector generation publication', () => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.stubGlobal('crypto', webcrypto);
     storeState = createStoreState();
-    mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (
-      selector ? selector(storeState) : storeState
-    )) as typeof useAppStore);
-    Object.assign(mockUseAppStore, { getState: () => storeState });
-    mocks.cleanup.mockResolvedValue(undefined);
+    storeState.vectorSearchConfig.activeIndex = await createVectorGeneration(draft, draft);
+    mocks.useAppStore.mockImplementation((selector?: (state: typeof storeState) => unknown) => selector ? selector(storeState) : storeState);
+    Object.assign(mocks.useAppStore, { getState: () => storeState });
+    mocks.setVectorIndexingState.mockImplementation((patch) => Object.assign(storeState.vectorIndexingState, patch));
+    mocks.setVectorSearchConfig.mockImplementation((patch) => {
+      storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, ...patch };
+    });
+    mocks.capabilities.mockResolvedValue(undefined);
+    mocks.verify.mockResolvedValue(undefined);
+    mocks.indexAllRepos.mockResolvedValue(success);
   });
+  afterEach(() => vi.unstubAllGlobals());
 
-  it('keeps the embedding format migration pending when indexing has failed repositories', async () => {
-    mocks.indexAllRepos.mockResolvedValue({ indexed: 0, skipped: 0, errors: 1, indexedRepoIds: [] });
+  it('keeps old identity and stamps until the complete stage is verified, then switches', async () => {
+    const oldIndex = storeState.vectorSearchConfig.activeIndex;
+    let complete!: () => void;
+    mocks.verify.mockImplementation(() => new Promise<void>((resolve) => { complete = resolve; }));
     const { result } = renderHook(() => useVectorSearchActions());
-
-    await act(async () => { await result.current.rebuildIndex(draft); });
-
+    let indexing!: Promise<void>;
+    act(() => { indexing = result.current.rebuildIndex(draft); });
+    await waitFor(() => expect(mocks.verify).toHaveBeenCalledOnce());
     expect(mocks.setVectorSearchConfig).not.toHaveBeenCalled();
+    expect(mocks.updateRepositoriesMetadata).not.toHaveBeenCalled();
+    expect(storeState.vectorSearchConfig.activeIndex).toBe(oldIndex);
+    const stage = mocks.indexAllRepos.mock.calls[0][3].generation;
+    expect(stage.namespace).not.toBe(oldIndex!.namespace);
+    await act(async () => { complete(); await indexing; });
+    expect(storeState.vectorSearchConfig.activeIndex).toBe(stage);
+    expect(mocks.updateRepositoriesMetadata).toHaveBeenCalledWith([{
+      id: 1, patch: expect.objectContaining({
+        vector_indexed_generation: stage.namespace, vector_indexed_identity: stage.identityHash,
+        vector_indexed_content_hash: success.indexedContentHashes['1'],
+      }),
+    }]);
     expect(mocks.cleanup).not.toHaveBeenCalled();
-    expect(mocks.setVectorIndexingState).toHaveBeenLastCalledWith(expect.objectContaining({
-      isIndexing: false,
-      result: expect.objectContaining({ errors: 1 }),
-    }));
   });
 
-  it('keeps the format migration pending when an existing legacy vector is excluded from indexing', async () => {
-    storeState.repositories = [
-      repository,
-      { ...repository, id: 2, analyzed_at: undefined, analysis_failed: true, vector_indexed_at: '2026-08-01T00:00:00.000Z' } as Repository,
-    ];
-    mocks.indexAllRepos.mockResolvedValue({ indexed: 1, skipped: 1, errors: 0, indexedRepoIds: [1] });
+  it.each(['partial', 'throw', 'verification', 'incomplete', 'capabilities'])('retains old generation and all stamps on %s failure', async (failure) => {
+    const oldIndex = storeState.vectorSearchConfig.activeIndex;
+    if (failure === 'partial') mocks.indexAllRepos.mockResolvedValue({ ...success, errors: 1 });
+    if (failure === 'throw') mocks.indexAllRepos.mockRejectedValue(new Error('Embedding failed'));
+    if (failure === 'verification') mocks.verify.mockRejectedValue(new Error('Writes not visible'));
+    if (failure === 'incomplete') mocks.indexAllRepos.mockResolvedValue({ ...success, indexedRepoIds: [], indexed: 0 });
+    if (failure === 'capabilities') mocks.capabilities.mockRejectedValue(new Error('Update Worker'));
     const { result } = renderHook(() => useVectorSearchActions());
-
     await act(async () => { await result.current.rebuildIndex(draft); });
-    await act(async () => { await result.current.rebuildIndex(draft); });
-
+    expect(storeState.vectorSearchConfig.activeIndex).toBe(oldIndex);
     expect(mocks.setVectorSearchConfig).not.toHaveBeenCalled();
-    expect(mocks.cleanup).toHaveBeenNthCalledWith(1, ['1', '2'], expect.any(AbortSignal));
-    expect(mocks.cleanup).toHaveBeenNthCalledWith(2, ['1', '2'], expect.any(AbortSignal));
-    expect(mocks.updateRepositoriesMetadata).not.toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ id: 2 }),
-    ]));
-    expect(mocks.setVectorSearchStatus).toHaveBeenLastCalledWith(expect.objectContaining({ vectorCount: 2 }));
+    expect(mocks.updateRepositoriesMetadata).not.toHaveBeenCalled();
+    expect(mocks.setVectorSearchStatus).not.toHaveBeenCalled();
+    expect(mocks.cleanup).not.toHaveBeenCalled();
+    expect(storeState.vectorIndexingState.result?.errors).toBeGreaterThan(0);
   });
 
-  it('treats an AbortError from cleanup as a cancelled index operation', async () => {
-    mocks.indexAllRepos.mockResolvedValue({ indexed: 1, skipped: 0, errors: 0, indexedRepoIds: [1] });
-    mocks.cleanup.mockImplementation((_ids: string[], signal: AbortSignal) => new Promise<void>((_, reject) => {
+  it('publishes a clean migration without pulling excluded legacy vectors into the new generation', async () => {
+    delete storeState.vectorSearchConfig.activeIndex;
+    storeState.repositories = [repository, { ...repository, id: 2, analyzed_at: undefined, analysis_failed: true }];
+    mocks.indexAllRepos.mockResolvedValue({ ...success, skipped: 1 });
+    const { result } = renderHook(() => useVectorSearchActions());
+    await act(async () => { await result.current.rebuildIndex(draft); });
+    expect(storeState.vectorSearchConfig.activeIndex).toBeDefined();
+    expect(storeState.vectorSearchConfig.embeddingFormatVersion).toBe(3);
+    expect(mocks.updateRepositoriesMetadata).toHaveBeenCalledWith([expect.objectContaining({ id: 1 })]);
+    expect(mocks.setVectorSearchStatus).toHaveBeenCalledWith(expect.objectContaining({ vectorCount: 1 }));
+    expect(mocks.cleanup).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', 'model', 'target', 'mode'])('rejects incompatible incremental indexing: %s', async (change) => {
+    if (change === 'unknown') delete storeState.vectorSearchConfig.activeIndex;
+    const changed = { ...draft };
+    if (change === 'model') changed.model = 'another-model';
+    if (change === 'target') changed.workerUrl = 'https://other.worker';
+    if (change === 'mode') changed.indexMode = 'readme';
+    Object.assign(storeState.embeddingConfigs[0], changed);
+    Object.assign(storeState.vectorSearchConfig, changed);
+    const { result } = renderHook(() => useVectorSearchActions());
+    await act(async () => { await result.current.incrementalIndex(changed); });
+    expect(mocks.indexAllRepos).not.toHaveBeenCalled();
+    expect(storeState.vectorIndexingState.result?.error).toContain('Rebuild');
+    expect(mocks.setVectorSearchConfig).not.toHaveBeenCalled();
+  });
+
+  it('uses the active generation only for a compatible incremental refresh', async () => {
+    const active = storeState.vectorSearchConfig.activeIndex;
+    const { result } = renderHook(() => useVectorSearchActions());
+    await act(async () => { await result.current.incrementalIndex(draft); });
+    expect(mocks.indexAllRepos.mock.calls[0][3]).toMatchObject({ generation: active, incremental: true });
+    expect(storeState.vectorSearchConfig.activeIndex).toBe(active);
+  });
+
+  it('cancels while waiting for verification without publishing or clearing', async () => {
+    mocks.verify.mockImplementation((_entries, signal: AbortSignal) => new Promise<void>((_, reject) => {
       signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
     }));
     const { result } = renderHook(() => useVectorSearchActions());
-
     let indexing!: Promise<void>;
     act(() => { indexing = result.current.rebuildIndex(draft); });
-    await waitFor(() => expect(mocks.cleanup).toHaveBeenCalledTimes(1));
-    act(() => { result.current.abortIndexing(); });
+    await waitFor(() => expect(mocks.verify).toHaveBeenCalledOnce());
+    act(() => result.current.abortIndexing());
     await act(async () => { await indexing; });
-
-    expect(mocks.setVectorIndexingState).toHaveBeenLastCalledWith({ isIndexing: false, phase: null, result: null });
+    expect(storeState.vectorIndexingState.result).toBeNull();
     expect(mocks.setVectorSearchConfig).not.toHaveBeenCalled();
+    expect(mocks.updateRepositoriesMetadata).not.toHaveBeenCalled();
+  });
+
+  it.each(['settings', 'repositories'])('does not publish a stage after %s change in flight', async (change) => {
+    mocks.verify.mockImplementation(async () => {
+      if (change === 'settings') storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, workerUrl: 'https://other.worker' };
+      else storeState.repositories = [];
+    });
+    const { result } = renderHook(() => useVectorSearchActions());
+    await act(async () => { await result.current.rebuildIndex(draft); });
+    expect(mocks.setVectorSearchConfig).not.toHaveBeenCalled();
+    expect(mocks.updateRepositoriesMetadata).not.toHaveBeenCalled();
+    expect(storeState.vectorIndexingState.result?.error).toContain('changed during');
+  });
+
+  it('rejects unsaved drafts before any embedding or Worker request', async () => {
+    const { result } = renderHook(() => useVectorSearchActions());
+    await act(async () => { await result.current.rebuildIndex({ ...draft, model: 'unsaved' }); });
+    expect(mocks.capabilities).not.toHaveBeenCalled();
+    expect(mocks.indexAllRepos).not.toHaveBeenCalled();
+    expect(storeState.vectorIndexingState.result?.error).toContain('Save');
+  });
+
+  it('prevents double starts and concurrent hook instances', async () => {
+    let complete!: () => void;
+    mocks.verify.mockImplementation(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const first = renderHook(() => useVectorSearchActions());
+    const second = renderHook(() => useVectorSearchActions());
+    let indexing!: Promise<void>;
+    act(() => { indexing = first.result.current.rebuildIndex(draft); });
+    await act(async () => {
+      await first.result.current.rebuildIndex(draft);
+      await second.result.current.rebuildIndex(draft);
+    });
+    await waitFor(() => expect(mocks.verify).toHaveBeenCalledOnce());
+    await act(async () => { complete(); await indexing; });
+    expect(mocks.indexAllRepos).toHaveBeenCalledOnce();
   });
 });

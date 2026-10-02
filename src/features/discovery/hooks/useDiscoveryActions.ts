@@ -9,6 +9,7 @@ import { syncWeeklyChannel } from '../../../services/weeklyIssuesService';
 import { syncXTweetChannel } from '../../../services/xTweetService';
 import { syncTelegramChannel } from '../../../services/telegramService';
 import { AIService } from '../../../services/aiService';
+import { forAgyFeature, agyFeatureConcurrency } from '../../../services/agyProfiles';
 import { AIAnalysisOptimizer } from '../../../services/aiAnalysisOptimizer';
 import { discoveryAnalysisStorage } from '../../../services/discoveryAnalysisStorage';
 import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/categoryUtils';
@@ -238,7 +239,7 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
       toast(t('useDiscoveryActions.please-configure-ai-service-in-settings-first'), 'error');
       return;
     }
-    if (activeConfig.apiKeyStatus === 'decrypt_failed' || activeConfig.apiKeyStatus === 'empty' || !activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model) {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(t('useDiscoveryActions.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return;
     }
@@ -260,14 +261,15 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
         : ['All', 'Web Apps', 'Mobile Apps', 'Desktop Apps', 'Database', 'AI/ML', 'Dev Tools', 'Security Tools', 'Games', 'Design Tools', 'Productivity', 'Education', 'Social Networks', 'Data Analysis']),
     ];
     const optimizer = new AIAnalysisOptimizer({
-      initialConcurrency: activeConfig.concurrency || 3,
+      initialConcurrency: activeConfig.provider === 'agy-cli' ? agyFeatureConcurrency(activeConfig, 'repository-summary') : activeConfig.concurrency || 3,
+      ...(activeConfig.provider === 'agy-cli' ? { maxConcurrency: agyFeatureConcurrency(activeConfig, 'repository-summary'), enableAdaptiveConcurrency: false } : {}),
       rateLimiter: { maxConcurrency: 0, requestsPerMinute: activeConfig.requestsPerMinute || 0 },
     });
     optimizerRef.current = optimizer;
     analysisState.setAnalysisProgress({ current: 0, total: unanalyzed.length });
     try {
       const api = createGitHubApiService(analysisState.githubToken);
-      const service = new AIService(activeConfig, analysisState.language);
+      const service = new AIService(forAgyFeature(activeConfig, 'repository-summary', 'background'), analysisState.language);
       const readmeCache = await optimizer.prefetchReadmes(unanalyzed, api);
       if (optimizer.isAborted() || !isCurrentSession(analysisSession)) return;
       const results = await optimizer.analyzeRepositories(
@@ -331,3 +333,4 @@ export const useDiscoveryActions = (scrollContainerRef: RefObject<HTMLDivElement
 
   return { ...state, t, isAnalyzing, refreshChannel, handleAnalyzePage, handleAbortAnalysis };
 };
+import { isAIConfigAvailable } from '../../../utils/aiConfig';

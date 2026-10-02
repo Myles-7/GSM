@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 import { buildMcpDataSnapshot } from './mcpSnapshot';
+import { createVectorGeneration } from './vectorIndexIdentity';
 import type { EmbeddingConfig, Repository, Release, VectorSearchConfig } from '../types';
 
 const repository = {
@@ -49,6 +53,8 @@ const embedding = {
   dimensions: 1024,
   isActive: true,
 } satisfies EmbeddingConfig;
+const { getVectorAvailability } = createRequire(resolve('package.json'))('./electron/mcpLocalServer.js');
+afterEach(() => vi.unstubAllGlobals());
 
 describe('buildMcpDataSnapshot', () => {
   it('includes release cache data while keeping runtime config in the existing IPC snapshot', () => {
@@ -69,5 +75,35 @@ describe('buildMcpDataSnapshot', () => {
     expect(snapshot.snapshotAt).toBe('2026-09-05T00:00:00.000Z');
     expect(snapshot.vectorSearchConfig.embedding?.model).toBe('bge-m3');
     expect(snapshot.vectorSearchConfig.authToken).toBe('runtime-token');
+    expect(snapshot.vectorSearchConfig.indexProtocolVersion).toBe(2);
+    expect(getVectorAvailability(snapshot)).toMatchObject({ available: false, reason: 'vector_index_rebuild_required' });
+  });
+
+  it('round-trips the actual renderer identity through Electron verification and carries its scope', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const activeIndex = await createVectorGeneration(embedding, vectorSearchConfig);
+    const snapshot = buildMcpDataSnapshot({
+      repositories: [], customCategories: [], releases: [],
+      vectorSearchConfig: { ...vectorSearchConfig, activeIndex }, embeddingConfigs: [embedding],
+      activeEmbeddingConfig: 'another-selection',
+    }, 'snapshot');
+    expect(snapshot.vectorSearchConfig.activeIndex).toEqual(activeIndex);
+    expect(getVectorAvailability(snapshot)).toMatchObject({
+      available: true, scope: { namespace: activeIndex.namespace, identityHash: activeIndex.identityHash, dimensions: 1024 },
+    });
+    snapshot.vectorSearchConfig.embedding = { ...snapshot.vectorSearchConfig.embedding!, model: 'same-dimensions-other-model' };
+    expect(getVectorAvailability(snapshot)).toMatchObject({ available: false, reason: 'vector_index_rebuild_required' });
+  });
+
+  it('never substitutes an independently selected model when the bound embedding is missing', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const activeIndex = await createVectorGeneration(embedding, vectorSearchConfig);
+    const snapshot = buildMcpDataSnapshot({
+      repositories: [], customCategories: [], releases: [],
+      vectorSearchConfig: { ...vectorSearchConfig, embeddingConfigId: 'deleted', activeIndex },
+      embeddingConfigs: [embedding], activeEmbeddingConfig: embedding.id,
+    }, 'snapshot');
+    expect(snapshot.vectorSearchConfig.embedding).toBeNull();
+    expect(getVectorAvailability(snapshot).available).toBe(false);
   });
 });

@@ -1,15 +1,15 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EmbeddingApiType } from '../../../types';
 import {
   EMBEDDING_FORMAT_VERSION,
   EmbeddingClient,
   indexAllRepos,
-  needsReindex,
   VectorSearchService,
 } from '../../../services/vectorSearchService';
+import { createVectorGeneration, embeddingIdentity, hasCompatibleVectorIndex, requireCompatibleVectorIndex } from '../../../services/vectorIndexIdentity';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
-import { LEGACY_EMBEDDING_FORMAT_VERSION, isKnownEmbeddingFormatVersion, useAppStore } from '../../../store/useAppStore';
+import { useAppStore } from '../../../store/useAppStore';
 import { normalizeLicense } from '../../../utils/licenseFilter';
 
 export interface EmbeddingDraft {
@@ -44,8 +44,8 @@ export interface VectorSearchActions {
 }
 
 /**
- * Owns all vector service integration while retaining the store's persisted
- * embedding-format metadata and per-repository indexing stamps unchanged.
+ * Publishes verified generations and their repository stamps together after
+ * indexing, leaving the prior generation untouched during a full rebuild.
  */
 export const useVectorSearchActions = (): VectorSearchActions => {
   const state = useAppStore(useShallow((store) => ({
@@ -63,20 +63,18 @@ export const useVectorSearchActions = (): VectorSearchActions => {
   const [embeddingTestResult, setEmbeddingTestResult] = useState<{ success: boolean; dimensions: number; error?: string } | null>(null);
   const [testingWorker, setTestingWorker] = useState(false);
   const [workerTestResult, setWorkerTestResult] = useState<{ success: boolean; vectorCount: number; dimensions: number; error?: string } | null>(null);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const abortController = useRef<AbortController | null>(null);
   const activeConfig = useMemo(
     () => state.embeddingConfigs.find((config) => config.id === state.activeEmbeddingConfig),
     [state.activeEmbeddingConfig, state.embeddingConfigs],
   );
 
   const incrementalTargetCount = useMemo(() => {
-    const indexable = state.repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed).length;
-    const unindexed = state.repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed && needsReindex(repository, false)).length;
-    const storedVersion = isKnownEmbeddingFormatVersion(state.vectorSearchConfig.embeddingFormatVersion)
-      ? state.vectorSearchConfig.embeddingFormatVersion
-      : LEGACY_EMBEDDING_FORMAT_VERSION;
-    return storedVersion < EMBEDDING_FORMAT_VERSION ? indexable : unindexed;
-  }, [state.repositories, state.vectorSearchConfig.embeddingFormatVersion]);
+    // Hash comparison requires reading the content, including README. These are
+    // candidates to inspect, not a promise to embed every candidate.
+    if (!activeConfig || !hasCompatibleVectorIndex(activeConfig, state.vectorSearchConfig)) return 0;
+    return state.repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed).length;
+  }, [activeConfig, state.repositories, state.vectorSearchConfig]);
 
   const testEmbedding = useCallback(async (draft: EmbeddingDraft) => {
     setTestingEmbedding(true);
@@ -107,103 +105,113 @@ export const useVectorSearchActions = (): VectorSearchActions => {
     }
   }, [state]);
 
-  const createClients = useCallback((draft: VectorIndexDraft) => {
-    if (!activeConfig) return null;
-    const embeddingClient = new EmbeddingClient({ ...activeConfig, ...draft, isActive: activeConfig.isActive });
-    const vectorService = new VectorSearchService({ workerUrl: draft.workerUrl, authToken: draft.authToken });
-    const githubApi = state.githubToken ? createGitHubApiService(state.githubToken) : null;
-    const readmeFetcher = githubApi
-      ? (owner: string, repository: string, signal?: AbortSignal) => githubApi.getRepositoryReadme(owner, repository, signal)
-      : undefined;
-    return { embeddingClient, vectorService, readmeFetcher };
-  }, [activeConfig, state.githubToken]);
-
   const runIndex = useCallback(async (draft: VectorIndexDraft, incremental: boolean) => {
-    const clients = createClients(draft);
-    if (!clients) return;
+    const initial = useAppStore.getState();
+    if (abortController.current || initial.vectorIndexingState?.isIndexing) return;
     const controller = new AbortController();
-    setAbortController(controller);
+    abortController.current = controller;
     state.setVectorIndexingState({ isIndexing: true, phase: null, phaseDone: 0, phaseTotal: 0, result: null });
-    let currentFormatVersion = LEGACY_EMBEDDING_FORMAT_VERSION;
+    const repositories = initial.repositories;
+    const indexable = repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed);
     try {
-      const currentState = useAppStore.getState();
-      const repositories = currentState.repositories;
-      const excludedVectorIds = repositories
-        .filter((repository) => Boolean(repository.vector_indexed_at) && (!repository.analyzed_at || repository.analysis_failed))
-        .map((repository) => String(repository.id));
-      const excludedVectorIdSet = new Set(excludedVectorIds);
-      currentFormatVersion = isKnownEmbeddingFormatVersion(currentState.vectorSearchConfig.embeddingFormatVersion)
-        ? currentState.vectorSearchConfig.embeddingFormatVersion
-        : LEGACY_EMBEDDING_FORMAT_VERSION;
+      const embedding = initial.embeddingConfigs.find((config) => config.id === initial.vectorSearchConfig.embeddingConfigId);
+      if (!embedding || embedding.id !== initial.activeEmbeddingConfig ||
+          JSON.stringify(embeddingIdentity(embedding, initial.vectorSearchConfig)) !== JSON.stringify(embeddingIdentity(draft, draft)) ||
+          embedding.apiKey !== draft.apiKey || initial.vectorSearchConfig.authToken !== draft.authToken) {
+        throw new Error('Save the embedding and index settings before indexing.');
+      }
+      const snapshot = (current: typeof initial) => JSON.stringify({
+        embedding: current.embeddingConfigs.find((config) => config.id === embedding.id),
+        config: current.vectorSearchConfig, active: current.activeEmbeddingConfig,
+        githubToken: current.githubToken, user: current.user?.id,
+      });
+      const originalSnapshot = snapshot(initial);
+      const check = () => {
+        controller.signal.throwIfAborted();
+        if (snapshot(useAppStore.getState()) !== originalSnapshot || useAppStore.getState().repositories !== repositories) {
+          throw new Error('Index settings or repositories changed during indexing. Previous generation retained; retry.');
+        }
+      };
+      const generation = incremental
+        ? await requireCompatibleVectorIndex(embedding, initial.vectorSearchConfig)
+        : await createVectorGeneration(embedding, initial.vectorSearchConfig);
+      check();
+      const embeddingClient = new EmbeddingClient(embedding);
+      const vectorService = new VectorSearchService(initial.vectorSearchConfig, embedding, generation);
+      await vectorService.checkCapabilities(embedding.dimensions, controller.signal);
+      check();
+      const githubApi = initial.githubToken ? createGitHubApiService(initial.githubToken) : null;
+      const readmeFetcher = githubApi
+        ? (owner: string, repository: string, signal?: AbortSignal) => githubApi.getRepositoryReadme(owner, repository, signal, { strict: true })
+        : undefined;
       const now = new Date().toISOString();
       const licenseById = new Map(repositories.map((repository) => [repository.id, repository.license ?? null]));
-      const stamp = (id: number) => ({ id, patch: { vector_indexed_at: now, vector_indexed_license: normalizeLicense(licenseById.get(id) ?? null) } });
-      const newlyIndexed = new Set(repositories.filter((repository) => !repository.vector_indexed_at).map((repository) => repository.id));
-      if (!incremental) {
-        state.updateRepositoriesMetadata(repositories.filter((repository) => (
-          repository.vector_indexed_at && !excludedVectorIdSet.has(String(repository.id))
-        )).map((repository) => ({
-          id: repository.id,
-          patch: { vector_indexed_at: undefined, vector_indexed_license: undefined },
-        })));
-      }
-      const stamped: number[] = [];
-      const result = await indexAllRepos(repositories, clients.embeddingClient, clients.vectorService, {
+      const result = await indexAllRepos(repositories, embeddingClient, vectorService, {
         onProgress: (progress) => state.setVectorIndexingState({ phase: progress.phase, phaseDone: progress.done, phaseTotal: progress.total }),
         signal: controller.signal,
-        readmeFetcher: clients.readmeFetcher,
+        readmeFetcher,
         indexMode: draft.indexMode,
         readmeMaxChars: draft.readmeMaxChars,
         incremental,
-        ...(incremental ? { formatVersion: currentFormatVersion, currentFormatVersion: EMBEDDING_FORMAT_VERSION } : {}),
-        onRepoIndexed: (id) => {
-          stamped.push(id);
-          if (stamped.length % 32 === 0) state.updateRepositoriesMetadata(stamped.splice(0).map(stamp));
-        },
+        generation,
       });
-      if (stamped.length) state.updateRepositoriesMetadata(stamped.map(stamp));
-      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      if (!incremental && result.errors === 0) {
-        const cleanupKeepIds = [...new Set([...result.indexedRepoIds.map(String), ...excludedVectorIds])];
-        await clients.vectorService.cleanup(cleanupKeepIds, controller.signal);
+      check();
+      if (result.errors > 0) {
+        state.setVectorIndexingState({
+          isIndexing: false, phase: null,
+          result: { ...result, error: `${result.error || 'Indexing failed.'} Previous generation retained; no generation switch.` },
+        });
+        return;
       }
-      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (!incremental && result.indexedRepoIds.length !== indexable.length) {
+        throw new Error('Incomplete staged generation. Previous generation retained.');
+      }
+      await vectorService.verifyGeneration(result.indexedRepoIds.map((id) => ({
+        id: String(id), contentHash: result.indexedContentHashes[String(id)],
+      })), controller.signal);
+      check();
+      // Publish only after every staged write is query-visible. Never clear old
+      // stamps or delete old vectors, even when a stage fails or is cancelled.
+      state.setVectorSearchConfig({ activeIndex: generation, embeddingFormatVersion: EMBEDDING_FORMAT_VERSION });
+      state.updateRepositoriesMetadata(result.indexedRepoIds.map((id) => ({
+        id, patch: {
+          vector_indexed_at: now,
+          vector_indexed_license: normalizeLicense(licenseById.get(id) ?? null),
+          vector_indexed_identity: generation.identityHash,
+          vector_indexed_generation: generation.namespace,
+          vector_indexed_content_hash: result.indexedContentHashes[String(id)],
+        },
+      })));
       state.setVectorIndexingState({ result, isIndexing: false, phase: null });
-      const previousCount = useAppStore.getState().vectorSearchStatus?.vectorCount ?? 0;
       state.setVectorSearchStatus({
         connected: true,
-        vectorCount: incremental
-          ? previousCount + result.indexedRepoIds.filter((id) => newlyIndexed.has(id)).length
-          : result.indexed + excludedVectorIds.length,
+        vectorCount: incremental ? new Set([
+          ...repositories.filter((repo) => repo.vector_indexed_generation === generation.namespace).map((repo) => repo.id),
+          ...result.indexedRepoIds,
+        ]).size : result.indexed,
         dimensions: draft.dimensions,
         lastSyncAt: new Date().toISOString(),
       });
-      const hasExcludedLegacyVector = currentFormatVersion < EMBEDDING_FORMAT_VERSION && excludedVectorIds.length > 0;
-      if (result.errors === 0 && !hasExcludedLegacyVector) {
-        state.setVectorSearchConfig({ embeddingFormatVersion: EMBEDDING_FORMAT_VERSION });
-      }
     } catch (reason) {
       const isCancelled = controller.signal.aborted
         || (reason instanceof Error && (reason.name === 'AbortError' || reason.message === 'Aborted'));
       if (isCancelled) {
         state.setVectorIndexingState({ isIndexing: false, phase: null, result: null });
       } else {
-        const repositories = useAppStore.getState().repositories;
-        const indexable = repositories.filter((repository) => repository.analyzed_at && !repository.analysis_failed && (!incremental || needsReindex(repository, currentFormatVersion < EMBEDDING_FORMAT_VERSION))).length;
         state.setVectorIndexingState({
           isIndexing: false,
           phase: null,
-          result: { indexed: 0, skipped: repositories.length - indexable, errors: indexable, error: reason instanceof Error ? reason.message : String(reason) },
+          result: { indexed: 0, skipped: repositories.length - indexable.length, errors: Math.max(1, indexable.length), error: reason instanceof Error ? reason.message : String(reason) },
         });
       }
     } finally {
-      setAbortController(null);
+      abortController.current = null;
     }
-  }, [createClients, state]);
+  }, [state]);
 
   const rebuildIndex = useCallback((draft: VectorIndexDraft) => runIndex(draft, false), [runIndex]);
   const incrementalIndex = useCallback((draft: VectorIndexDraft) => runIndex(draft, true), [runIndex]);
-  const abortIndexing = useCallback(() => abortController?.abort(), [abortController]);
+  const abortIndexing = useCallback(() => abortController.current?.abort(), []);
 
   return {
     testingEmbedding, embeddingTestResult, testingWorker, workerTestResult,

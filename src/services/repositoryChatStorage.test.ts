@@ -243,6 +243,28 @@ describe('repositoryChatStorage local fallback', () => {
     await expect(repositoryChatStorage.listProposals(ownerId)).resolves.toHaveLength(2);
   });
 
+  it('keeps local research history but excludes its messages, evidence and operations from backup', async () => {
+    const ownerId = 'local-owner';
+    const session = { ...createSession('local-session', -1, '2026-09-29T00:00:00.000Z'), ownerId, deviceOnly: true };
+    await repositoryChatStorage.saveSession(session);
+    await repositoryChatStorage.saveEvidence({ ...createEvidence('local-evidence'), source: 'local' });
+    await repositoryChatStorage.saveMessage(createMessage('local-message', session.id, ['local-evidence']));
+    await repositoryChatStorage.saveProposal(createProposal('local-proposal', ownerId, session.id));
+    expect(await repositoryChatStorage.listMessages(session.id)).toHaveLength(1);
+    expect(await repositoryChatStorage.exportWorkbench(ownerId)).toMatchObject({ sessions: [], messages: [], evidence: [], proposals: [] });
+  });
+
+  it('rejects a completed draft or claims that refer to fabricated evidence', async () => {
+    const ownerId = 'review-owner';
+    const session = { ...createSession('review-session', 1, '2026-09-29T00:00:00.000Z'), ownerId };
+    await repositoryChatStorage.saveSession(session);
+    await repositoryChatStorage.saveMessage({ ...createMessage('review-message', session.id), answerPhase: 'draft' });
+    await expect(repositoryChatStorage.exportWorkbench(ownerId)).rejects.toThrow('Draft answer');
+    await repositoryChatStorage.saveMessage({ ...createMessage('review-message', session.id), answerPhase: 'final',
+      claims: [{ text: 'Answer', evidenceId: 'invented', quote: 'invented' }] });
+    await expect(repositoryChatStorage.exportWorkbench(ownerId)).rejects.toThrow('missing content');
+  });
+
   it('cleans up ordinary expired sessions while retaining protected and operation records', async () => {
     const ownerId = 'owner-a';
     const old = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
@@ -289,6 +311,11 @@ describe('repositoryChatStorage local fallback', () => {
     };
     const evidence = createEvidence('evidence-a');
     const message = createMessage('message-a', session.id, [evidence.id]);
+    message.missing = ['GPU support has not been established'];
+    message.answerPhase = 'final';
+    message.quality = 'model-reviewed';
+    message.claims = [{ text: 'Answer', evidenceId: evidence.id, quote: 'README' }];
+    message.coverage = [{ requirement: 'Purpose', status: 'answered', answerExcerpt: 'Answer' }];
     const toolEvent = {
       ...createToolEvent(session.id, evidence.id),
       id: 'tool-a',
@@ -314,6 +341,10 @@ describe('repositoryChatStorage local fallback', () => {
       id: 'message-a-import-1',
       sessionId: importedSession!.id,
       evidenceIds: ['evidence-a-import-1'],
+      missing: ['GPU support has not been established'],
+      answerPhase: 'final', quality: 'model-reviewed',
+      claims: [{ text: 'Answer', evidenceId: 'evidence-a-import-1', quote: 'README' }],
+      coverage: [{ requirement: 'Purpose', status: 'answered', answerExcerpt: 'Answer' }],
     });
     await expect(repositoryChatStorage.listEvidence(['evidence-a-import-1'])).resolves.toMatchObject([
       { id: 'evidence-a-import-1' },

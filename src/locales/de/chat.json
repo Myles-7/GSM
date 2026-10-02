@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "Quellversion unverändert",
+    "freshness-changed": "Quelle geändert; erneut recherchieren",
+    "freshness-unknown": "Version nicht geprüft",
+    "freshness-rebind": "Ordner zum Prüfen erneut verbinden",
+    "discovery": "Entdeckung",
+    "plugins": "Plugins",
+    "openPlugin": "Plugin-Einstellungen öffnen",
+    "rerankUnavailable": "KI-Neusortierung fehlgeschlagen; Vektorreihenfolge beibehalten.",
+    "vectorUnavailable": "Vektorsuche nicht verfügbar; Stichwortsuche wird verwendet.",
+    "supported": "Unterstützt", "unsupported": "Nicht unterstützt",
+    "sources": "Recherche je Projekt", "state": "Status", "complete": "Recherchiert", "reused": "Ergebnis derselben Version wiederverwendet",
+    "changed": "Version geändert; erneut recherchiert", "failed": "Fehlgeschlagen", "pending": "Ausstehend",
+    "continue": "Offene Projekte fortsetzen", "fillMissing": "Fehlende Anforderungen ergänzen", "restart": "Erneut recherchieren",
+    "question": "Frage zu den gewählten Quellen…", "mixed": "Lokal + gewählte Repositories", "readFiles": "{{count}} Dateien gelesen",
+    "claims": "Aussagen und Belegauszüge", "tasks": "KI-Aufgaben", "pause": "Pausieren", "resume": "Fortsetzen", "stop": "Stoppen",
+    "retry": "Nur fehlgeschlagene wiederholen", "interrupted": "Unterbrochen; manuell fortsetzen", "paused": "Pausiert", "running": "Läuft",
+    "summary": "Repository-Zusammenfassungen", "details": "Repository-Details", "gists": "Gist-Analyse", "searchSummary": "{{mode}} · {{total}} durchsucht · {{count}} Ergebnisse",
+    "keyword": "Stichwortsuche", "vector": "Vektorsuche", "ai": "KI-Auswahl", "fallback": "Ersatzsuche verwendet", "support": "Belege vorhanden", "unknown": "Unbekannt"
+  },
+  "localResearch": {
+    "local": "Lokales Projekt",
+    "choose": "Projektordner wählen",
+    "deviceOnly": "Verlauf nur auf diesem Gerät, ohne Sicherung",
+    "rebind": "Vor dem Fortfahren Projektordner wählen; ältere Quellen können veraltet sein.",
+    "projectChanged": "Dies ist ein anderer Projektordner. Wählen Sie den ursprünglichen Ordner oder starten Sie ein neues Gespräch.",
+    "scope": "Quellenumfang",
+    "configure": "Zuerst eine verfügbare KI-Konfiguration wählen.",
+    "open": "Recherche öffnen"
+  },
+  "answerReview": {
+      "draft": "Entwurf, noch nicht geprüft",
+      "reviewing": "Entwurf: Anforderungen und Quellen werden geprüft",
+      "interrupted": "Unterbrochener Entwurf, ungeprüft",
+      "reviewed": "Modellgeprüft, nicht unabhängig bestätigt",
+      "unreviewed": "Prüfung unvollständig",
+      "legacy": "Prüfstatus nicht erfasst",
+      "coverage": "Anforderungsabdeckung",
+      "answered": "Beantwortet",
+      "unknown": "Unbekannt"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Schließen Sie den Q&A-Verlauf",
     "chat-history": "Q&A-Geschichte",
@@ -170,6 +211,13 @@
     "addSelected": "Favorisiertes Repository hinzufügen",
     "moreResults": "Weitere suchen",
     "unknown": "Unbekannt",
+    "added": "Hinzugefügt",
+    "addedToContext": "Zu Kontext hinzugefügt",
+    "addedToContextTooltip": "Zu Kontext hinzugefügt (Klicken zum Entfernen)",
+    "contextPrefix": "Kontext:",
+    "clearAll": "Alles leeren",
+    "multilingualGeneral": "Mehrsprachig / Allgemein",
+    "viewNewProposals": "📋 Neue Vorschläge anzeigen ↓",
     "candidate": "Kandidat",
     "verifying": "Wird geprüft",
     "verified": "Geprüft: Belege anzeigen",
@@ -267,6 +315,9 @@
     "skip": "Keine Präferenz",
     "searchAgain": "Mit diesen Bedingungen suchen",
     "draftPreserved": "Ihre Änderungen bleiben erhalten. Neue KI-Vorschläge sind verfügbar.",
-    "useNew": "Durch neue Vorschläge ersetzen"
+    "useNew": "Durch neue Vorschläge ersetzen",
+    "quickOptions": "Schnellauswahl:",
+    "cyclePriority": "Klicken zum Wechseln der Priorität",
+    "doubleClickToDelete": "Doppelklick zum Löschen"
   }
 }

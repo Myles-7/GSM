@@ -9,7 +9,12 @@ vi.unmock('../../../store/useAppStore');
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(), search: vi.fn(), answer: vi.fn(), propose: vi.fn(), execute: vi.fn(), restore: vi.fn(),
+  bindLocal: vi.fn(), getLocal: vi.fn(), researchLocal: vi.fn(),
 }));
+vi.mock('../../../services/localResearchGrants', () => ({
+  bindLocalResearchGrant: mocks.bindLocal, getLocalResearchGrant: mocks.getLocal,
+}));
+vi.mock('../../../services/localResearch', () => ({ researchLocalProject: mocks.researchLocal }));
 vi.mock('../../../services/aiWorkbenchService', async (original) => ({
   ...await original<typeof import('../../../services/aiWorkbenchService')>(),
   prepareWorkbenchRequirements: mocks.prepare,
@@ -38,9 +43,95 @@ beforeEach(() => {
   });
   mocks.prepare.mockResolvedValue(requirements);
   mocks.answer.mockResolvedValue({ content: 'Evidence-backed answer', evidences: [] });
+  mocks.getLocal.mockReturnValue(undefined);
+  mocks.bindLocal.mockResolvedValue({ id: 'grant', name: 'fixture', identity: 'a'.repeat(64), entries: [], truncated: false });
+  mocks.researchLocal.mockResolvedValue({ content: 'Local answer', evidences: [], quality: 'model-reviewed', claims: [], coverage: [] });
 });
 
 describe('AI workbench integration', () => {
+  it('publishes running status within 300ms and an arriving draft within 500ms, then atomically replaces it', async () => {
+    useAppStore.setState({ aiConfigs: [{ id: 'http', name: 'Fixture', apiKey: 'fixture', baseUrl: 'https://example.com',
+      model: 'fixture', apiType: 'openai', isActive: true }], activeAIConfig: 'http' });
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.chooseLocalProject(); });
+    mocks.getLocal.mockReturnValue(await mocks.bindLocal.mock.results[0].value);
+    let events!: (event: { phase: string; content: string }) => void;
+    let finish!: (value: unknown) => void;
+    mocks.researchLocal.mockImplementation((_grant, _question, _config, _language, _signal, options) => {
+      events = options.onAnswerEvent;
+      return new Promise(resolve => { finish = resolve; });
+    });
+    const started = performance.now();
+    let pending!: Promise<void>;
+    act(() => { pending = hook.result.current.send('Explain the local project'); });
+    await waitFor(() => expect(hook.result.current.task.running).toBe(true));
+    expect(performance.now() - started).toBeLessThan(300);
+    await waitFor(() => expect(events).toBeDefined());
+    const arrived = performance.now();
+    act(() => events({ phase: 'draft', content: 'Partial draft' }));
+    await waitFor(() => expect(hook.result.current.messages.slice(-1)[0]?.content).toBe('Partial draft'));
+    expect(performance.now() - arrived).toBeLessThan(500);
+    expect((await storage.listMessages(hook.result.current.active!.id)).slice(-1)[0]?.status).toBe('streaming');
+    act(() => events({ phase: 'reviewing', content: 'Partial draft' }));
+    await act(async () => {
+      finish({ content: 'Final reviewed answer', evidences: [], quality: 'model-reviewed', missing: [] });
+      await pending;
+    });
+    await waitFor(() => expect(hook.result.current.messages.slice(-1)[0]).toMatchObject({
+      content: 'Final reviewed answer', status: 'complete', answerPhase: 'final',
+    }));
+    expect(hook.result.current.messages.filter(m => m.role === 'assistant')).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it('stores device-only local selection, streams a draft and keeps final review metadata', async () => {
+    useAppStore.setState({ aiConfigs: [{ id: 'http', name: 'Fixture', apiKey: 'fixture', baseUrl: 'https://example.com',
+      model: 'fixture', apiType: 'openai', isActive: true }], activeAIConfig: 'http' });
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.chooseLocalProject(); });
+    await waitFor(() => expect(hook.result.current.active?.workbench?.scope).toBe('local'));
+    const session = hook.result.current.active!;
+    expect(session.deviceOnly).toBe(true);
+    expect(session.workbench?.localProject).toEqual({ name: 'fixture', identity: 'a'.repeat(64) });
+    mocks.getLocal.mockReturnValue(await mocks.bindLocal.mock.results[0].value);
+    let finish!: (result: unknown) => void;
+    mocks.researchLocal.mockImplementation((_grant, _question, _config, _language, _signal, options) => {
+      options.onAnswerEvent({ phase: 'draft', content: 'Draft preview' });
+      return new Promise(resolve => { finish = resolve; });
+    });
+    let pending!: Promise<void>;
+    act(() => { pending = hook.result.current.send('Explain the local project'); });
+    await waitFor(() => expect(hook.result.current.messages.some(message => message.content === 'Draft preview')).toBe(true));
+    hook.unmount();
+    await act(async () => {
+      finish({ content: 'Reviewed answer', evidences: [], quality: 'model-reviewed', claims: [], coverage: [] });
+      await pending;
+    });
+    expect((await storage.listMessages(session.id))[1]).toMatchObject({
+      content: 'Reviewed answer', status: 'complete', answerPhase: 'final', quality: 'model-reviewed',
+    });
+    expect((await storage.exportWorkbench('77') as { sessions: unknown[] }).sessions).toEqual([]);
+    const reopened = renderHook(useAIWorkbench);
+    await waitFor(() => expect(reopened.result.current.active?.id).toBe(session.id));
+    mocks.researchLocal.mockResolvedValue({ content: 'Follow up', evidences: [] });
+    await act(async () => { await reopened.result.current.send('And its limitations?'); });
+    expect(mocks.researchLocal.mock.calls[1][5].messages).toHaveLength(2);
+    mocks.getLocal.mockReturnValue(undefined);
+    await expect(reopened.result.current.send('After restart')).rejects.toThrow();
+    expect(await storage.listMessages(session.id)).toHaveLength(4);
+  });
+
+  it('rejects a different project folder without modifying the existing transcript', async () => {
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.chooseLocalProject(); });
+    await waitFor(() => expect(hook.result.current.active?.workbench?.scope).toBe('local'));
+    const original = hook.result.current.active!;
+    mocks.bindLocal.mockRejectedValueOnce(new Error('LOCAL_PROJECT_CHANGED'));
+    await expect(hook.result.current.chooseLocalProject()).rejects.toThrow();
+    expect(mocks.bindLocal).toHaveBeenLastCalledWith(original.id, '77', 'a'.repeat(64));
+    expect(await storage.getSession(original.id)).toEqual(original);
+  });
+
   it('creates an account-owned GitHub search session and requires an explicit search action', async () => {
     const { result } = renderHook(useAIWorkbench);
     await act(async () => { await result.current.send('Find modeling tools'); });

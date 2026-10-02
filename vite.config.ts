@@ -15,6 +15,10 @@ export default defineConfig({
   optimizeDeps: {
     include: ['lucide-react'],
   },
+  server: {
+    // Generated reading files and QA reports must not reload the desktop page.
+    watch: { ignored: ['**/output/**'] },
+  },
   build: {
     // Warn before the 3,000 KiB hard budget enforced by check:bundle-size.
     chunkSizeWarningLimit: 2900,

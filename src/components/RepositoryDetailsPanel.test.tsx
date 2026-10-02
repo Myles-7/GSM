@@ -22,6 +22,12 @@ const repository = {
   pushed_at: '2026-09-02T00:00:00Z',
 } as Repository;
 describe('RepositoryDetailsPanel', () => {
+  it('supports an injected analysis action and docks by default without using the saved-repository action', async () => {
+    render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} defaultDocked analysisAction={() => <button>discovery-analysis</button>} />);
+    expect(await screen.findByRole('complementary')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'discovery-analysis' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'opt-in-analysis' })).not.toBeInTheDocument();
+  });
   it('preserves an intentionally blank personal description', () => {
     render(<RepositoryDetailsPanel repository={{ ...repository, custom_description: '' }} onClose={vi.fn()} />);
     expect(screen.queryByText('AI summary')).not.toBeInTheDocument();
@@ -52,7 +58,7 @@ describe('RepositoryDetailsPanel', () => {
     render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} onPinnedChange={onPinnedChange} />);
     fireEvent.click(screen.getByRole('button', { name: 'details.pin' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByRole('complementary')).toHaveClass('w-[400px]');
+    expect(screen.getByRole('complementary')).toHaveClass('w-[440px]');
     expect(onPinnedChange).toHaveBeenLastCalledWith(true);
     act(() => { Object.defineProperty(window, 'innerWidth', { value: 1000 }); window.dispatchEvent(new Event('resize')); });
     expect(screen.getByRole('dialog')).toBeInTheDocument();

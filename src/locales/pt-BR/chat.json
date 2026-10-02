@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "Versão da fonte inalterada",
+    "freshness-changed": "Fonte alterada; pesquise novamente",
+    "freshness-unknown": "Versão não verificada",
+    "freshness-rebind": "Reconecte a pasta para verificar",
+    "discovery": "Descoberta",
+    "plugins": "Plugins",
+    "openPlugin": "Abrir configurações de plugins",
+    "rerankUnavailable": "Falha na reordenação por IA; classificação vetorial mantida.",
+    "vectorUnavailable": "Busca vetorial indisponível; usando busca por palavras.",
+    "supported": "Compatível", "unsupported": "Não compatível",
+    "sources": "Pesquisa por projeto", "state": "Estado", "complete": "Pesquisado", "reused": "Resultado da mesma versão reutilizado",
+    "changed": "Versão alterada; pesquisado novamente", "failed": "Falhou", "pending": "Pendente",
+    "continue": "Continuar projetos pendentes", "fillMissing": "Completar requisitos pendentes", "restart": "Pesquisar novamente",
+    "question": "Pergunte sobre as fontes selecionadas…", "mixed": "Local + repositórios selecionados", "readFiles": "{{count}} arquivos lidos",
+    "claims": "Afirmações e trechos de apoio", "tasks": "Tarefas de IA", "pause": "Pausar", "resume": "Continuar", "stop": "Parar",
+    "retry": "Repetir apenas falhas", "interrupted": "Interrompido; retomar manualmente", "paused": "Pausado", "running": "Em andamento",
+    "summary": "Resumos de repositórios", "details": "Detalhes de repositórios", "gists": "Análise de Gist", "searchSummary": "{{mode}} · {{total}} examinados · {{count}} resultados",
+    "keyword": "Busca por palavras", "vector": "Busca vetorial", "ai": "Seleção de IA", "fallback": "Busca alternativa usada", "support": "Com evidências", "unknown": "Desconhecido"
+  },
+  "localResearch": {
+    "local": "Projeto local",
+    "choose": "Selecionar pasta do projeto",
+    "deviceOnly": "Histórico local, excluído dos backups",
+    "rebind": "Selecione a pasta antes de continuar; fontes históricas podem estar desatualizadas.",
+    "projectChanged": "Esta é outra pasta de projeto. Selecione a original ou inicie uma nova conversa.",
+    "scope": "Escopo das fontes",
+    "configure": "Selecione uma configuração de IA disponível.",
+    "open": "Abrir pesquisa"
+  },
+  "answerReview": {
+      "draft": "Rascunho não revisado",
+      "reviewing": "Rascunho: revisando requisitos e fontes",
+      "interrupted": "Rascunho interrompido, não revisado",
+      "reviewed": "Revisado pelo modelo, sem verificação independente",
+      "unreviewed": "Revisão incompleta",
+      "legacy": "Estado de revisão não registrado",
+      "coverage": "Cobertura dos requisitos",
+      "answered": "Respondido",
+      "unknown": "Desconhecido"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Fechar histórico de perguntas e respostas",
     "chat-history": "Histórico de perguntas e respostas",
@@ -170,6 +211,13 @@
     "addSelected": "Adicionar favorito",
     "moreResults": "Buscar mais",
     "unknown": "Desconhecido",
+    "added": "Adicionado",
+    "addedToContext": "Adicionado ao contexto",
+    "addedToContextTooltip": "Adicionado ao contexto (clique para remover)",
+    "contextPrefix": "Contexto:",
+    "clearAll": "Limpar tudo",
+    "multilingualGeneral": "Multilíngue / Geral",
+    "viewNewProposals": "📋 Ver novas propostas ↓",
     "candidate": "Candidato encontrado",
     "verifying": "Em verificação",
     "verified": "Verificado: ver evidências",
@@ -267,6 +315,9 @@
     "skip": "Sem preferência",
     "searchAgain": "Buscar com estas condições",
     "draftPreserved": "Suas edições foram mantidas. Há novas sugestões de IA.",
-    "useNew": "Substituir pelas novas sugestões"
+    "useNew": "Substituir pelas novas sugestões",
+    "quickOptions": "Opções rápidas:",
+    "cyclePriority": "Clique para alternar prioridade",
+    "doubleClickToDelete": "Clique duplo para excluir"
   }
 }

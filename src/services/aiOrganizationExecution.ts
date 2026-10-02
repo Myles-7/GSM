@@ -35,11 +35,18 @@ export async function saveOrganizationProposal(proposal: WorkbenchProposal): Pro
 }
 export async function editOrganizationProposal(id: string, expectedUpdatedAt: string, edit: {
   repositoryId?: number; patch?: Partial<Pick<OrganizationEntry, 'categoryId' | 'subcategoryId' | 'selected' | 'overrideLocked'>>;
+  selection?: { repositoryIds: number[]; selected: boolean };
   categoryId?: string; name?: string;
 }): Promise<WorkbenchProposal> {
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   const draft = proposal.organization!;
   if (!['ready', 'interrupted'].includes(draft.status)) throw new Error('Draft is not editable');
+  if (edit.selection) {
+    const ids = new Set(edit.selection.repositoryIds);
+    for (const entry of draft.entries) if (ids.has(entry.repositoryId) && entry.status === 'pending' && entry.disposition === 'move') {
+      entry.selected = edit.selection.selected && (!entry.before.locked || entry.categoryId === entry.before.categoryId || entry.overrideLocked);
+    }
+  }
   if (edit.categoryId && edit.name !== undefined) {
     const category = draft.categories.find(c => c.id === edit.categoryId);
     if (!category?.isNew || !edit.name.trim()) throw new Error('Only new categories may be renamed');
@@ -62,49 +69,117 @@ export async function editOrganizationProposal(id: string, expectedUpdatedAt: st
 }
 async function sync(proposal: WorkbenchProposal) {
   if (proposal.ownerId !== String(useAppStore.getState().user?.id ?? '')) throw new Error('Account changed');
-  try { await forceSyncToBackend({ reportFailures: true }); delete proposal.syncError; }
-  catch { proposal.syncError = 'Local changes saved; backend synchronization failed. Retry synchronization.'; }
-  await saveOrganizationProposal(proposal);
-  return proposal;
+  let syncErr: string | undefined;
+  try { await forceSyncToBackend({ reportFailures: true }); }
+  catch { syncErr = 'Local changes saved; backend synchronization failed. Retry synchronization.'; }
+  const latest = await storage.getProposal(proposal.id);
+  const target = latest ?? proposal;
+  if (syncErr) {
+    target.syncError = syncErr;
+  } else {
+    delete target.syncError;
+  }
+  if (latest?.organization && proposal.organization) {
+    for (const pe of proposal.organization.entries) {
+      if (pe.status === 'success' || pe.status === 'conflict') {
+        const te = target.organization!.entries.find(e => e.repositoryId === pe.repositoryId);
+        if (te) {
+          te.status = pe.status;
+          te.categoryId = pe.categoryId;
+          te.subcategoryId = pe.subcategoryId;
+          te.selected = pe.selected;
+          if (pe.error) te.error = pe.error;
+          else delete te.error;
+        }
+      }
+    }
+    target.organization!.createdCategoryIds = Array.from(new Set([
+      ...target.organization!.createdCategoryIds,
+      ...proposal.organization.createdCategoryIds,
+    ]));
+  }
+  await saveOrganizationProposal(target);
+  return target;
 }
 export async function retryOrganizationSync(id: string): Promise<WorkbenchProposal> {
   return sync(await requireOrganizationProposal(id));
 }
 
-export async function applyOrganizationProposal(id: string, expectedUpdatedAt: string, signal?: AbortSignal): Promise<WorkbenchProposal> {
+export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: string, signal?: AbortSignal, targetRepositoryIds?: number[]): Promise<WorkbenchProposal> {
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   signal?.throwIfAborted();
   const draft = proposal.organization!;
-  if (!['ready', 'interrupted'].includes(draft.status)) throw new Error('Generate a new draft before applying');
+  if (!['ready', 'interrupted', 'generating'].includes(draft.status)) throw new Error('Generate a new draft before applying');
   const currentCategories = organizationCategorySnapshot();
   const currentById = new Map(currentCategories.map(c => [c.id, c]));
   const valid: OrganizationEntry[] = [];
+  const targetIdSet = targetRepositoryIds && targetRepositoryIds.length > 0 ? new Set(targetRepositoryIds) : null;
   for (const entry of draft.entries.filter(e => e.selected && e.disposition === 'move' && e.status === 'pending')) {
+    if (targetIdSet && !targetIdSet.has(entry.repositoryId)) continue;
     const repository = useAppStore.getState().repositories.find(r => r.id === entry.repositoryId);
     const targets = draft.categories.filter(c => c.id === entry.categoryId || c.id === entry.subcategoryId);
     let error: string | undefined;
     if (!repository || !sameMembership(membershipOf(repository), entry.before)) error = 'Repository membership or lock changed';
     else if (entry.before.locked && entry.categoryId !== entry.before.categoryId && !entry.overrideLocked) error = 'Locked category requires explicit confirmation';
-    else if (targets.some(c => c.isNew ? currentById.has(c.id) : !currentById.has(c.id) || currentById.get(c.id)?.parentId !== c.parentId)) error = 'Target category changed';
+    else if (targets.some(c => {
+      const isAlreadyCreated = draft.createdCategoryIds.includes(c.id);
+      if (c.isNew && !isAlreadyCreated) return currentById.has(c.id);
+      return !currentById.has(c.id) || currentById.get(c.id)?.parentId !== c.parentId;
+    })) error = 'Target category changed';
     if (error) { entry.status = 'conflict'; entry.error = error; entry.selected = false; }
     else valid.push(entry);
   }
   const referenced = new Set(valid.flatMap(e => [e.categoryId, e.subcategoryId]).filter((v): v is string => !!v));
-  const additions = draft.categories.filter(c => c.isNew && referenced.has(c.id));
-  draft.createdCategoryIds = additions.map(c => c.id);
-  draft.status = 'applying';
+  const additions = draft.categories.filter(c => c.isNew && referenced.has(c.id) && !currentById.has(c.id) && !draft.createdCategoryIds.includes(c.id));
+  const priorStatus = draft.status;
+  if (priorStatus !== 'generating') {
+    draft.status = 'applying';
+  }
   await saveOrganizationProposal(proposal);
   try {
     signal?.throwIfAborted();
     useAppStore.getState().applyAIOrganization({ ownerId: proposal.ownerId, categories: additions,
       assignments: valid.map(e => ({ repositoryId: e.repositoryId, before: e.before, after: { categoryId: e.categoryId, subcategoryId: e.subcategoryId, locked: e.before.locked }, overrideLocked: e.overrideLocked })) });
     valid.forEach(e => { e.status = 'success'; });
-    draft.status = 'applied';
+    draft.createdCategoryIds = Array.from(new Set([...draft.createdCategoryIds, ...additions.map(c => c.id)]));
+    const hasRemainingPending = draft.entries.some(e => e.status === 'pending' && e.disposition === 'move');
+    if (priorStatus === 'generating') {
+      draft.status = 'generating';
+    } else {
+      draft.status = hasRemainingPending ? 'ready' : 'applied';
+    }
   } catch (error) {
     valid.forEach(e => { e.status = 'conflict'; e.error = error instanceof Error ? error.message : String(error); e.selected = false; });
-    draft.createdCategoryIds = [];
     draft.status = 'interrupted';
   }
+
+  const latestStored = await storage.getProposal(proposal.id);
+  if (latestStored?.organization) {
+    proposal.organization!.batches = latestStored.organization.batches;
+    const validRepoIds = new Set(valid.map(e => e.repositoryId));
+    for (const storedEntry of latestStored.organization.entries) {
+      if (!validRepoIds.has(storedEntry.repositoryId)) {
+        const idx = proposal.organization!.entries.findIndex(e => e.repositoryId === storedEntry.repositoryId);
+        if (idx >= 0) {
+          proposal.organization!.entries[idx] = storedEntry;
+        }
+      }
+    }
+    const existingCatIds = new Set(proposal.organization!.categories.map(c => c.id));
+    for (const cat of latestStored.organization.categories) {
+      if (!existingCatIds.has(cat.id)) {
+        proposal.organization!.categories.push(cat);
+      }
+    }
+    proposal.organization!.createdCategoryIds = Array.from(new Set([
+      ...proposal.organization!.createdCategoryIds,
+      ...latestStored.organization.createdCategoryIds,
+    ]));
+    if (priorStatus === 'generating' && draft.status !== 'interrupted') {
+      proposal.organization!.status = 'generating';
+    }
+  }
+
   await saveOrganizationProposal(proposal);
   return valid.some(e => e.status === 'success') ? sync(proposal) : proposal;
 }

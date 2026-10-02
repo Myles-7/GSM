@@ -1,10 +1,11 @@
 import { useT } from "../../../i18n/useT";
-import { useCallback, useMemo, useState, type MutableRefObject, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Category, Repository } from '../../../types';
 import { useAppStore, getAllCategories } from '../../../store/useAppStore';
 import { AIService, isAbortError } from '../../../services/aiService';
 import { EmbeddingClient, VectorSearchService } from '../../../services/vectorSearchService';
+import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIdentity';
 import { createGitHubApiService, createGitHubListsApiService } from '../../../services/githubApiFactory';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { useDialog } from '../../../hooks/useDialog';
@@ -178,6 +179,7 @@ export const applyListsToRepositories = (
 export interface SearchActions {
   isSearching: boolean;
   searchPhase: string | null;
+  searchReport: { query: string; mode: 'ai' | 'vector' | 'keyword'; total: number; count: number; fallback?: string } | null;
   // 渲染相关 ref：View 的过滤 effect 仍要读写，故以 RefObject 暴露。
   // 实体挂 hook、以 RefObject 暴露给 View 原样读写——写点在 aiSearch（本 hook），
   // 读点在 View 的过滤 effect（依赖 View 本地 applyFilters 闭包），整体搬入 hook
@@ -235,7 +237,19 @@ export const useSearchActions = (): SearchActions => {
   const skipNextTextSearchRef = useRef(false);
   // 当前在途 AI 搜索的控制器：新搜索启动时中止旧请求（超代语义）
   const aiSearchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setIsSearching(false);
+    setSearchPhase(null);
+    return () => {
+      aiSearchAbortRef.current?.abort();
+      aiSearchAbortRef.current = null;
+      vectorScoreMapRef.current = null;
+      skipNextTextSearchRef.current = false;
+    };
+  }, [githubToken, user?.id, activeAIConfig, aiConfigs]);
   const t = useT('repositories');
+  const [searchReport, setSearchReport] = useState<SearchActions['searchReport']>(null);
+  useEffect(() => { setSearchReport(null); }, [githubToken, user?.id, activeAIConfig]);
 
   const keywordSearch = useCallback(async (
     query: string,
@@ -243,9 +257,18 @@ export const useSearchActions = (): SearchActions => {
     options?: { signal?: AbortSignal },
   ): Promise<void> => {
     const activeConfig = aiConfigs.find(config => config.id === activeAIConfig);
+    const initial = { ...useAppStore.getState() };
+    const check = () => {
+      options?.signal?.throwIfAborted();
+      const current = useAppStore.getState();
+      if (current.user?.id !== initial.user?.id || current.githubToken !== initial.githubToken
+          || current.activeAIConfig !== initial.activeAIConfig || current.aiConfigs !== initial.aiConfigs) throw new DOMException('Stale search', 'AbortError');
+    };
+    check();
 
     let filtered = repositories;
     let aiOrdered = false;
+    let fallback: string | undefined;
     if (activeConfig) {
       try {
         // 无向量降级链：查询扩展+意图复述 → 词法候选召回 → LLM 精选排序
@@ -254,26 +277,32 @@ export const useSearchActions = (): SearchActions => {
         const aiResults = await aiService.searchRepositoriesWithSelection(repositories, query, {
           signal: options?.signal,
           onPhase: (phase) => {
+            check();
             setSearchPhase(phase === 'selecting'
               ? t('useSearchActions.ai-selecting-relevant-repositories')
               : t('useSearchActions.ai-semantic-analysis'));
           },
           onFallback: (reason) => {
+            check();
             // 端点抖动/配置问题时用户看到的不能只是"空结果"：明确告知已降级
             if (reason === 'ai_failed') {
+              fallback = t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea');
               toast(t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea'), 'warning');
             }
           },
         });
+        check();
         console.log('✅ AI selection search completed, results:', aiResults.length);
         filtered = aiResults;
         aiOrdered = true;
       } catch (error) {
+        check();
         // 取消不是失败：向上传播交给 aiSearch 静默结束，不产出兜底结果
         if (isAbortError(error)) throw error;
         console.warn('❌ AI search failed, falling back to basic search:', error);
         toast(t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea'), 'warning');
         filtered = performBasicTextSearch(repositories, query);
+        fallback = t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea');
       }
     } else {
       console.log('⚠️ No AI config found, using basic text search');
@@ -282,7 +311,9 @@ export const useSearchActions = (): SearchActions => {
     }
 
     // Apply other filters and update results
+    check();
     const finalFiltered = applyFilters(filtered);
+    check();
     if (aiOrdered) {
       // AI 返回的顺序（LLM 精选序或词法兜底序）就是相关性顺序；applyFilters 会按
       // 排序控件重排（默认 star 降序），这里恢复 AI 顺序——与向量路径的
@@ -297,6 +328,8 @@ export const useSearchActions = (): SearchActions => {
       skipNextTextSearchRef.current = true;
     }
     setSearchResults(finalFiltered);
+    setSearchReport(previous => ({ query, mode: activeConfig && !fallback ? 'ai' : 'keyword',
+      total: repositories.length, count: finalFiltered.length, fallback: fallback ?? (previous?.query === query ? previous.fallback : undefined) }));
 
     // Update search filters to mark that AI search was performed
     setSearchFilters({ query });
@@ -313,11 +346,24 @@ export const useSearchActions = (): SearchActions => {
     aiSearchAbortRef.current?.abort();
     const controller = new AbortController();
     aiSearchAbortRef.current = controller;
+    const initial = { ...useAppStore.getState() };
+    const check = () => {
+      controller.signal.throwIfAborted();
+      const current = useAppStore.getState();
+      if (aiSearchAbortRef.current !== controller || current.user?.id !== initial.user?.id
+          || current.githubToken !== initial.githubToken || current.activeAIConfig !== initial.activeAIConfig
+          || current.aiConfigs !== initial.aiConfigs
+          || current.vectorSearchConfig !== initial.vectorSearchConfig
+          || current.embeddingConfigs !== initial.embeddingConfigs) {
+        controller.abort();
+        throw new DOMException('Stale search', 'AbortError');
+      }
+    };
 
     setIsSearching(true);
     setSearchPhase(null);
+    setSearchReport(null);
     vectorScoreMapRef.current = null;
-    console.log('🔍 Starting AI search for query:', query);
 
     try {
       // ====== 向量搜索分支 ======
@@ -329,13 +375,17 @@ export const useSearchActions = (): SearchActions => {
       if (vsConfig?.enabled && vsConfig?.workerUrl && activeEmbConfig) {
         try {
           const embeddingClient = new EmbeddingClient(activeEmbConfig);
-          const vectorService = new VectorSearchService(vsConfig);
+          const vectorService = new VectorSearchService(vsConfig, activeEmbConfig);
+          await vectorService.prepareQuery(controller.signal);
+          check();
 
           // 1. HyDE 查询预处理：用 LLM 生成理想仓库描述再嵌入（可选，5 秒超时降级）
           let embeddingQuery = query;
           const hydeConfig = aiConfigs.find(config => config.id === activeAIConfig);
           if (vsConfig.enableHyDE !== false && hydeConfig) {
             const hydeAbort = new AbortController();
+            const abortHyde = () => hydeAbort.abort();
+            controller.signal.addEventListener('abort', abortHyde, { once: true });
             let hydeTimer: ReturnType<typeof setTimeout> | null = null;
             try {
               setSearchPhase(t('useSearchActions.ai-analyzing-query'));
@@ -349,27 +399,29 @@ export const useSearchActions = (): SearchActions => {
                   }, 5000);
                 }),
               ]);
-              if (embeddingQuery !== query) {
-                console.log('🔮 HyDE generated:', embeddingQuery.slice(0, 100));
-              }
+              check();
             } catch (hydeError) {
               console.warn('HyDE failed, using raw query:', hydeError);
               embeddingQuery = query;
             } finally {
               if (hydeTimer) clearTimeout(hydeTimer);
+              controller.signal.removeEventListener('abort', abortHyde);
             }
           }
 
           // 2. 前端调用 Embedding API 生成查询向量
+          check();
           setSearchPhase(t('useSearchActions.generating-query-vector'));
-          const queryVectors = await embeddingClient.embed([embeddingQuery], 'query');
+          const queryVectors = await embeddingClient.embed([embeddingQuery], 'query', controller.signal);
+          check();
           if (queryVectors && queryVectors.length > 0) {
             // 2. 前端将查询向量发送到 Worker
             setSearchPhase(t('useSearchActions.searching-vector-index'));
             const vectorResults = await vectorService.query(queryVectors[0], {
               topK: vsConfig.searchTopK ?? 30,
               threshold: vsConfig.searchThreshold ?? 0.35,
-            });
+            }, controller.signal);
+            check();
 
             if (vectorResults.length > 0) {
               // 3. 轻量关键词加分：精确匹配的字段给予分数微调
@@ -394,10 +446,12 @@ export const useSearchActions = (): SearchActions => {
                   try {
                     setSearchPhase(t('useSearchActions.ai-semantic-reranking'));
                     const rerankService = new AIService(rerankConfig, language);
-                    reranked = await rerankService.searchRepositoriesWithSemanticReranking(scoredRepos, query);
+                    reranked = await rerankService.searchRepositoriesWithSemanticReranking(scoredRepos, query, controller.signal);
+                    check();
                     rerankSucceeded = true;
                     console.log('🤖 AI semantically reranked results:', reranked.length);
                   } catch (rerankError) {
+                    check();
                     console.warn('AI semantic reranking failed, using vector order:', rerankError);
                   }
                 }
@@ -407,6 +461,7 @@ export const useSearchActions = (): SearchActions => {
                   ? new Map(reranked.map((repo, index) => [String(repo.id), index]))
                   : null;
                 const finalFiltered = applyFilters([...reranked]);
+                check();
                 if (rerankOrder) {
                   // 恢复 LLM 语义排序顺序
                   finalFiltered.sort((a, b) =>
@@ -420,6 +475,9 @@ export const useSearchActions = (): SearchActions => {
                 vectorScoreMapRef.current = { query, scores: scoreMap };
                 skipNextTextSearchRef.current = true;
                 setSearchResults(finalFiltered);
+                setSearchReport({ query, mode: 'vector', total: reranked.length, count: finalFiltered.length,
+                  fallback: rerankConfig && vsConfig.enableReranking !== false && !rerankSucceeded
+                    ? 'rerank-unavailable' : undefined });
                 setSearchFilters({ query });
                 return;
               }
@@ -428,11 +486,17 @@ export const useSearchActions = (): SearchActions => {
           // 向量搜索无结果 → 继续走关键词搜索
           console.log('⚠️ Vector search returned no results, falling back to keyword search');
         } catch (vectorError) {
+          check();
+          if (isAbortError(vectorError)) throw vectorError;
+          if (vectorError instanceof VectorIndexCompatibilityError) toast(vectorError.message, 'error');
+          setSearchReport({ query, mode: 'keyword', total: repositories.length, count: 0,
+            fallback: vectorError instanceof VectorIndexCompatibilityError ? vectorError.message : 'vector-unavailable' });
           console.warn('❌ Vector search failed, falling back to keyword search:', vectorError);
         }
       }
       // ====== 向量搜索分支结束 ======
 
+      check();
       await keywordSearch(query, applyFilters, { signal: controller.signal });
     } catch (error) {
       // 取消不是失败：静默结束当前搜索（不产出结果），不当作可恢复的 AI 失败
@@ -450,7 +514,7 @@ export const useSearchActions = (): SearchActions => {
         setSearchPhase(null);
       }
     }
-  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t]);
+  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t, toast]);
 
   const syncStars = useCallback(async (mode: 'auto' | 'stars-only' | 'stars-and-lists' = 'auto') => {
     if (!githubToken) {
@@ -551,10 +615,11 @@ export const useSearchActions = (): SearchActions => {
   return useMemo(() => ({
     isSearching,
     searchPhase,
+    searchReport,
     vectorScoreMapRef,
     skipNextTextSearchRef,
     aiSearch,
     keywordSearch,
     syncStars,
-  }), [isSearching, searchPhase, aiSearch, keywordSearch, syncStars]);
+  }), [isSearching, searchPhase, searchReport, aiSearch, keywordSearch, syncStars]);
 };

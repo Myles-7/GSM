@@ -199,10 +199,12 @@ removed it from the allowlist, until PR #326 migrated the last three, folded `up
 
 ## Open issues / follow-up
 
-- `src/features/discovery/hooks/useDiscoveryRepoActions.ts` imports
-  `src/features/repositories/application/discoveryRepoPatches` — a sideways import into a
-  sibling feature's internals (forbidden by the Decision above, not yet enforced by any tool).
-  Either lift the shared patch into a neutral module or route it through the Store; not
-  scheduled here.
+- Resolved on 2026-09-29: Discovery analysis patches now belong to
+  `src/features/discovery/application/discoveryRepoPatches.ts`. AI organization uses
+  the shared `src/hooks/useAIOrganization.ts` and `src/components/AIOrganizationPanel.tsx`
+  for its repository-list and Workbench entry points. Shared selection and detail
+  validation live in `src/utils/organizationScope.ts` and `src/utils/repositoryDetailsSchema.ts`.
+  `check-boundaries.cjs` now rejects relative static and dynamic imports into sibling
+  features in production files; tests may import multiple features to exercise integration.
 - If a future PR genuinely needs a component to call a business service (e.g. a throwaway debug
   component), the answer is a new hook in the right feature, not an `eslint-disable` comment.

@@ -6,6 +6,7 @@ import { createGitHubApiService } from './githubApiFactory';
 import { logger } from './logger';
 import type { Repository } from '../types';
 import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
+import { flushDesktopHome, getDesktopHomeSync } from '../home/desktop';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
@@ -261,6 +262,7 @@ export async function syncLocalGitHubTokenToBackend(
  * Silent: errors logged to console only.
  */
 export async function syncFromBackend(options: { force?: boolean } = {}): Promise<void> {
+  if (getDesktopHomeSync()) { await flushDesktopHome(); return; }
   if (!backend.isAvailable) return;
   if (!options.force && (
     _isSyncingFromBackendActive ||
@@ -459,7 +461,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
     if (changed.ai && aiResult.status === 'fulfilled') {
       // Filter out configs with decrypt_failed status — preserve local apiKey values
       // to prevent backend decryption failures from overwriting valid local data.
-      const backendConfigs = aiResult.value;
+      const backendConfigs = httpAIConfigs(aiResult.value);
       const localConfigs = state.aiConfigs;
       const mergedConfigs = backendConfigs.map(bc => {
         if (bc.apiKeyStatus === 'decrypt_failed' || !bc.apiKey) {
@@ -471,7 +473,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
         }
         return bc;
       });
-      state.setAIConfigs(mergedConfigs);
+      state.setAIConfigs(mergeRemoteAIConfigs(localConfigs, mergedConfigs));
       // Store raw backend hash so change detection compares against the same payload.
       // Using mergedConfigs would cause a mismatch and re-trigger on every poll.
       _lastHash.ai = hashes.ai;
@@ -538,9 +540,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
     // Sync active selections from settings
     if (changed.settings && settingsResult.status === 'fulfilled' && organizationApplied) {
       const settings = settingsResult.value;
-      if (typeof settings.activeAIConfig === 'string' || settings.activeAIConfig === null) {
-        state.setActiveAIConfig(settings.activeAIConfig as string | null);
-      }
+      // The chosen AI provider belongs to this device (desktop AGY / mobile DeepSeek).
       if (typeof settings.activeWebDAVConfig === 'string' || settings.activeWebDAVConfig === null) {
         state.setActiveWebDAVConfig(settings.activeWebDAVConfig as string | null);
       }
@@ -605,6 +605,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
  * Queued callers wait for a push containing the latest local state.
  */
 export async function syncToBackend(): Promise<boolean> {
+  if (getDesktopHomeSync()) { await flushDesktopHome(); return true; }
   if (!backend.isAvailable) return true;
   if (_isSyncingFromBackendActive) {
     _hasPendingPush = true;
@@ -652,12 +653,11 @@ async function pushToBackend(): Promise<boolean> {
     const results = await Promise.allSettled([
       backend.syncRepositories(state.repositories),
       backend.syncReleases(state.releases),
-      backend.syncAIConfigs(state.aiConfigs),
+      backend.syncAIConfigs(httpAIConfigs(state.aiConfigs)),
       backend.syncWebDAVConfigs(state.webdavConfigs),
       backend.syncEmbeddingConfigs(state.embeddingConfigs),
       backend.syncVectorSearchConfig(state.vectorSearchConfig),
       backend.syncSettings({
-        activeAIConfig: state.activeAIConfig,
         activeWebDAVConfig: state.activeWebDAVConfig,
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
@@ -688,13 +688,12 @@ async function pushToBackend(): Promise<boolean> {
     // projection and doesn't re-apply setRepositories after a push.
     if (reposSync.status === 'fulfilled') _lastHash.repos = quickHash(stripLocalRepositoryFields(state.repositories));
     if (releasesSync.status === 'fulfilled') _lastHash.releases = quickHash(state.releases);
-    if (aiSync.status === 'fulfilled') _lastHash.ai = quickHash(state.aiConfigs);
+    if (aiSync.status === 'fulfilled') _lastHash.ai = quickHash(httpAIConfigs(state.aiConfigs));
     if (webdavSync.status === 'fulfilled') _lastHash.webdav = quickHash(state.webdavConfigs);
     if (embeddingSync.status === 'fulfilled') _lastHash.embedding = quickHash(state.embeddingConfigs);
     if (vectorSearchSync.status === 'fulfilled') _lastHash.vectorSearch = vectorSearchFingerprint(state.vectorSearchConfig);
     if (settingsSync.status === 'fulfilled') {
       _lastHash.settings = quickHash({
-        activeAIConfig: state.activeAIConfig,
         activeWebDAVConfig: state.activeWebDAVConfig,
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
@@ -744,6 +743,7 @@ export async function forceSyncToBackend(options: { reportFailures?: boolean } =
  * Returns an unsubscribe function for cleanup.
  */
 export function startAutoSync(): () => void {
+  if (getDesktopHomeSync()) return () => {};
   // Guard: if already running, stop previous instance first
   if (_storeUnsubscribe) {
     _storeUnsubscribe();
@@ -843,3 +843,4 @@ export function stopAutoSync(unsubscribe: () => void): void {
   _hasPendingLocalChanges = false;
   logger.info('sync.stop', 'Auto-sync stopped');
 }
+import { httpAIConfigs, mergeRemoteAIConfigs } from '../utils/aiConfig';

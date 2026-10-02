@@ -21,7 +21,9 @@ const discoveryChannelIconMap: Record<DiscoveryChannelIcon, React.ComponentType<
 
 interface DiscoverySidebarProps {
   channels: DiscoveryChannel[];
-  selectedChannel: DiscoveryChannelId;
+  selectedChannel: DiscoveryChannelId | null;
+  customNavigation?: React.ReactNode;
+  createChannelButton?: React.ReactNode;
   onChannelSelect: (channel: DiscoveryChannelId) => void;
   onToggleChannel: (channel: DiscoveryChannelId) => void;
   onRefreshAll: () => void;
@@ -41,6 +43,8 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
   lastRefresh,
   isAnalyzing,
   language,
+  customNavigation,
+  createChannelButton,
 }) => {
   const t = useT('discovery');
 
@@ -128,6 +132,22 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
             );
           })}
         </div>
+
+        {customNavigation && (
+          <div className="pt-3 mt-3 border-t border-border/60">
+            <div className="flex items-center justify-between px-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {language.startsWith('zh') ? '自定义订阅' : 'Custom Subscriptions'}
+              </span>
+              <div className="flex items-center gap-1">
+                {createChannelButton}
+              </div>
+            </div>
+            <div className="space-y-1">
+              {customNavigation}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

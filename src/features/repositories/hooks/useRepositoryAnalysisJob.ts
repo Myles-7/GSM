@@ -10,6 +10,8 @@ import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/categoryUtils';
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
+import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 
 export type RepositoryAnalysisScope = 'all' | 'unanalyzed' | 'failed' | 'selected';
 
@@ -21,6 +23,7 @@ interface RunRepositoryAnalysisOptions {
   repositories: Repository[];
   scope: RepositoryAnalysisScope;
   syncOnComplete: boolean;
+  configId?: string;
 }
 
 export interface RepositoryAnalysisJob {
@@ -33,15 +36,16 @@ export interface RepositoryAnalysisJob {
   progress: { current: number; total: number };
 }
 
-const createOptimizer = (concurrency?: number, requestsPerMinute?: number) => new AIAnalysisOptimizer({
+const createOptimizer = (concurrency?: number, requestsPerMinute?: number, agy = false, onTaskStart?: (repo: Repository) => void) => new AIAnalysisOptimizer({
+  onTaskStart,
   initialConcurrency: concurrency || 3,
-  maxConcurrency: 10,
+  maxConcurrency: agy ? concurrency || 5 : 10,
   minConcurrency: 1,
   targetResponseTime: 5000,
   batchDelayMs: 100,
-  maxRetries: 3,
+  maxRetries: 1,
   retryDelayBaseMs: 1000,
-  enableAdaptiveConcurrency: true,
+  enableAdaptiveConcurrency: !agy,
   rateLimiter: {
     maxConcurrency: 0,
     requestsPerMinute: requestsPerMinute || 0,
@@ -80,6 +84,7 @@ export const useRepositoryAnalysisJob = ({
   const isPausedRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const mountedRef = useRef(true);
+  const journalRef = useRef<ReturnType<typeof aiTaskJournal.begin> | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
@@ -101,13 +106,14 @@ export const useRepositoryAnalysisJob = ({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      optimizerRef.current?.abort();
-      optimizerRef.current = null;
-      isRunningRef.current = false;
-      isPausedRef.current = false;
-      stopRequestedRef.current = false;
-      setLoading(false);
-      setAnalysisProgress({ current: 0, total: 0 });
+      // Active work is controlled by the app-wide task panel after navigation.
+      if (!journalRef.current) {
+        optimizerRef.current?.abort();
+        optimizerRef.current = null;
+        isRunningRef.current = false;
+        setLoading(false);
+        setAnalysisProgress({ current: 0, total: 0 });
+      }
     };
   }, [setAnalysisProgress, setLoading]);
 
@@ -115,8 +121,9 @@ export const useRepositoryAnalysisJob = ({
     const optimizer = optimizerRef.current;
     if (!isRunningRef.current || !optimizer || isPausedRef.current) return;
     optimizer.pause();
+    journalRef.current?.state('paused');
     isPausedRef.current = true;
-    setIsPaused(true);
+    if (mountedRef.current) setIsPaused(true);
     console.log('Analysis paused');
   }, []);
 
@@ -124,8 +131,9 @@ export const useRepositoryAnalysisJob = ({
     const optimizer = optimizerRef.current;
     if (!isRunningRef.current || !optimizer || !isPausedRef.current) return;
     optimizer.resume();
+    journalRef.current?.state('running');
     isPausedRef.current = false;
-    setIsPaused(false);
+    if (mountedRef.current) setIsPaused(false);
     console.log('Analysis resumed');
   }, []);
 
@@ -153,6 +161,7 @@ export const useRepositoryAnalysisJob = ({
     repositories,
     scope,
     syncOnComplete,
+    configId,
   }: RunRepositoryAnalysisOptions) => {
     if (isRunningRef.current) return false;
 
@@ -161,7 +170,7 @@ export const useRepositoryAnalysisJob = ({
       return false;
     }
 
-    const activeConfig = aiConfigs.find((config) => config.id === activeAIConfig);
+    const activeConfig = aiConfigs.find((config) => config.id === (configId ?? activeAIConfig));
     if (!activeConfig) {
       toast(t('useRepositoryAnalysisJob.please-configure-ai-service-in-settings-first'), 'error');
       return false;
@@ -172,7 +181,7 @@ export const useRepositoryAnalysisJob = ({
       return false;
     }
 
-    if (scope !== 'selected' && (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model)) {
+    if (scope !== 'selected' && !isAIConfigAvailable(activeConfig)) {
       toast(t('useRepositoryAnalysisJob.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return false;
     }
@@ -192,6 +201,7 @@ export const useRepositoryAnalysisJob = ({
       : scope === 'unanalyzed'
         ? (t('useRepositoryAnalysisJob.unanalyzed'))
         : (t('useRepositoryAnalysisJob.all'));
+    const confirmationAccount = useAppStore.getState();
     const confirmationMessage = scope === 'selected'
       ? (t('useRepositoryAnalysisJob.will-analyze-v1-repositories-with-ai-this-may-ta', { v1: repositories.length }))
       : (t('useRepositoryAnalysisJob.will-analyze-v1-actiontext-repositories-with-ai', { v1: repositories.length, actionText: actionText }));
@@ -202,8 +212,29 @@ export const useRepositoryAnalysisJob = ({
       { type: 'warning' },
     );
     if (!confirmed) return false;
+    const afterConfirmation = useAppStore.getState();
+    if (afterConfirmation.user?.id !== confirmationAccount.user?.id
+      || afterConfirmation.githubToken !== confirmationAccount.githubToken) return false;
+    if (aiTaskJournal.busy(String(useAppStore.getState().user?.id ?? ''), 'summary')) return false;
 
-    const optimizer = createOptimizer(activeConfig.concurrency, activeConfig.requestsPerMinute);
+    const optimizer = createOptimizer(activeConfig.provider === 'agy-cli' ? Math.min(activeConfig.concurrency ?? 5, activeConfig.agyFeatureOverrides?.['repository-summary']?.concurrency ?? 5) : activeConfig.concurrency, activeConfig.requestsPerMinute, activeConfig.provider === 'agy-cli', repo => journalRef.current?.item(String(repo.id), 'running'));
+    const startState = useAppStore.getState();
+    const writes = new Map(repositories.map(repo => [repo.id, beginRepositoryAnalysisWrite(startState.user?.id ?? 0, repo.id)]));
+    let invalidated = false;
+    const currentAccount = () => {
+      const current = useAppStore.getState();
+      return !invalidated && current.user?.id === startState.user?.id && current.githubToken === startState.githubToken;
+    };
+    const journal = startState.user ? aiTaskJournal.begin(String(startState.user.id), 'summary',
+      repositories.map(repo => ({ id: String(repo.id), label: repo.full_name })), activeConfig.id) : null;
+    journalRef.current = journal;
+    journal?.bind({ pause, resume, stop: () => { stopRequestedRef.current = true; optimizer.abort(); } });
+    const unsubscribe = useAppStore.subscribe?.((next, previous) => {
+      if (next.user?.id !== previous.user?.id || next.githubToken !== previous.githubToken) {
+        invalidated = true;
+        optimizer.abort();
+      }
+    });
     optimizerRef.current = optimizer;
     stopRequestedRef.current = false;
     isPausedRef.current = false;
@@ -221,11 +252,15 @@ export const useRepositoryAnalysisJob = ({
 
     try {
       const githubApi = createGitHubApiService(githubToken);
-      const aiService = new AIService(activeConfig, language);
+      const aiService = new AIService(activeConfig.provider === 'agy-cli' ? { ...activeConfig, agyFeature: 'repository-summary' as const, agyPriority: repositories.length === 1 ? 'interactive' as const : 'background' as const } : activeConfig, language);
       const categoryNames = allCategories.filter((category) => category.id !== 'all').map((category) => category.name);
       const aiCategoryHints = buildCategoryHints(allCategories);
       const onResult = (result: AnalysisResult) => {
-        if (!mountedRef.current || optimizerRef.current !== optimizer) return;
+        if ((!mountedRef.current && !journal) || optimizerRef.current !== optimizer || !currentAccount()) return;
+        journal?.item(String(result.repo.id), result.success ? 'complete' : 'failed');
+        const latest = useAppStore.getState().repositories.find(repo => repo.id === result.repo.id);
+        if (!latest) return;
+        const merge = writes.get(result.repo.id)!;
 
         if (result.success) {
           const resolvedCategory = resolveCategoryAssignment(
@@ -234,22 +269,22 @@ export const useRepositoryAnalysisJob = ({
             allCategories,
           );
           const wasCategoryLocked = !!result.repo.category_locked;
-          updateRepository(applyAnalysisSuccess(result.repo, {
+          updateRepository(merge(latest, applyAnalysisSuccess(latest, {
             summary: result.summary,
             tags: result.tags,
             platforms: result.platforms,
             category: resolvedCategory,
             categoryLocked: wasCategoryLocked,
             analyzedAt: new Date().toISOString(),
-          }));
+          })));
           successCount += 1;
           return;
         }
 
-        updateRepository(applyAnalysisFailure(result.repo, {
+        updateRepository(merge(latest, applyAnalysisFailure(latest, {
           analyzedAt: new Date().toISOString(),
           error: result.error?.message || undefined,
-        }));
+        })));
         failedCount += 1;
       };
 
@@ -260,9 +295,9 @@ export const useRepositoryAnalysisJob = ({
         categoryNames,
         aiCategoryHints,
         (current, total, currentConcurrency) => {
-          if (!mountedRef.current || optimizerRef.current !== optimizer) return;
+          if ((!mountedRef.current && !journal) || optimizerRef.current !== optimizer || !currentAccount()) return;
           setAnalysisProgress({ current, total });
-          setProgress({ current, total });
+          if (mountedRef.current) setProgress({ current, total });
           console.log(`AI Analysis Progress: ${current}/${total}, Concurrency: ${currentConcurrency}`);
         },
         onResult,
@@ -270,7 +305,7 @@ export const useRepositoryAnalysisJob = ({
 
       const stats = optimizer.getStats();
       console.log('AI Analysis Stats:', stats);
-      if (syncOnComplete) {
+      if (syncOnComplete && currentAccount()) {
         await forceSyncToBackend();
       }
 
@@ -298,6 +333,9 @@ export const useRepositoryAnalysisJob = ({
       );
       return false;
     } finally {
+      unsubscribe?.();
+      journal?.finish();
+      journalRef.current = null;
       if (optimizerRef.current === optimizer) {
         optimizerRef.current = null;
         isRunningRef.current = false;
@@ -305,7 +343,7 @@ export const useRepositoryAnalysisJob = ({
         resetVisibleState();
       }
     }
-  }, [aiConfigs, activeAIConfig, allCategories, confirm, githubToken, language, resetVisibleState, setAnalysisProgress, setLoading, t, toast, updateRepository]);
+  }, [aiConfigs, activeAIConfig, allCategories, confirm, githubToken, language, resetVisibleState, setAnalysisProgress, setLoading, t, toast, updateRepository, pause, resume]);
 
   return useMemo(() => ({
     run,
@@ -317,3 +355,4 @@ export const useRepositoryAnalysisJob = ({
     progress,
   }), [isPaused, isRunning, pause, progress, requestStop, resume, run]);
 };
+import { isAIConfigAvailable } from '../../../utils/aiConfig';

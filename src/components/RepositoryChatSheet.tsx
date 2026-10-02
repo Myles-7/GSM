@@ -14,6 +14,7 @@ import { useRepositoryChat } from '../features/repository-chat/hooks/useReposito
 import { useTurnStatusAnnouncement } from '../features/repository-chat/hooks/useTurnStatusAnnouncement';
 import { RepositoryChatHistoryPanel } from './RepositoryChatHistoryPanel';
 import MarkdownRenderer from './MarkdownRenderer';
+import { AnswerReviewStatus } from './AnswerReviewStatus';
 import { CitationBadge } from '../features/repository-chat/components/CitationBadge';
 import { resolveCitation, stripCitationsForCopy } from '../features/repository-chat/utils/citationUtils';
 import { Button } from './ui/button';
@@ -463,6 +464,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                           <ExecutionTimeline events={messageToolEvents} language={language} isRunning={message.status === 'streaming'} />
                         )}
                         <div className={message.role === 'assistant' && messageToolEvents.length > 0 ? 'mt-4' : ''}>
+                          <AnswerReviewStatus message={message} />
                           {message.content ? (
                             <AssistantMessageBody
                               content={message.content}

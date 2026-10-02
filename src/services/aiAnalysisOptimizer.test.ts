@@ -81,9 +81,10 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBeInstanceOf(AIRequestError);
-    // 3 次调用 >= 阈值 2 => 熔断打开
+    expect(analyze).toHaveBeenCalledTimes(2);
+    // One transient retry still reaches the circuit threshold of two.
     expect(optimizer.limiter.getStatus().circuitOpen).toBe(true);
-    expect(optimizer.limiter.getStatus().consecutiveRateLimits).toBe(3);
+    expect(optimizer.limiter.getStatus().consecutiveRateLimits).toBe(2);
   });
 
   it('非限流错误不受 RateLimiter 冷却影响', async () => {
@@ -93,7 +94,7 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
     });
 
     const analyze = vi.fn()
-      .mockRejectedValueOnce(new Error('some server error'))
+      .mockRejectedValueOnce(new AIRequestError('server error', 503))
       .mockResolvedValueOnce({ summary: 'ok', tags: [], platforms: [] });
     const fakeAi = { analyzeRepository: analyze } as unknown as AIService;
 

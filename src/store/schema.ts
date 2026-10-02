@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { defaultRepositoryChatAgentBudget, defaultRepositoryChatSettings } from '../types/repositoryChat';
 import { EMBEDDING_FORMAT_VERSION } from '../services/vectorSearchService';
+import { normalizeVectorGeneration } from '../services/vectorIndexIdentity';
 import { MCP_DEFAULT_HOST, MCP_DEFAULT_PORT, normalizeMcpHost } from '../utils/mcpHost';
 import { PRESET_FILTERS } from '../constants/presetFilters';
 
@@ -334,6 +335,7 @@ export const normalizeVectorSearchConfig = (
       ? config.enableReranking
       : defaultVectorSearchConfig.enableReranking,
     embeddingFormatVersion,
+    ...(normalizeVectorGeneration(config.activeIndex) ? { activeIndex: normalizeVectorGeneration(config.activeIndex) } : {}),
   };
 };
 

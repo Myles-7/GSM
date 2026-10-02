@@ -18,6 +18,10 @@ export interface McpVectorRuntimeConfig {
   authToken: string;
   searchThreshold?: number;
   searchTopK?: number;
+  indexProtocolVersion?: number;
+  activeIndex?: import('./vectorIndexIdentity').VectorIndexGeneration;
+  indexMode?: 'description' | 'readme';
+  readmeMaxChars?: number;
   embedding: Pick<
     EmbeddingConfig,
     'apiType' | 'baseUrl' | 'apiKey' | 'model' | 'dimensions'
@@ -59,6 +63,8 @@ export interface DesktopElectronAPI {
 }
 
 interface ElectronAPI {
+  htmlReading?: import('../lib/html-reading/desktopApi').HtmlReadingApi;
+  agy?: import('../types/agy').AgyDesktopAPI;
   setProxy: (config: ProxyConfig) => Promise<{ success: boolean }>;
   getProxy: () => Promise<ProxyConfig>;
   testProxy: (config: ProxyConfig) => Promise<{ success: boolean; error?: string }>;

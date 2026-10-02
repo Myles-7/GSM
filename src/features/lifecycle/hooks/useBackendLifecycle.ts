@@ -13,6 +13,8 @@ import {
   stopMcpElectronBridge,
 } from '../../../services/mcpElectronBridge';
 import { startPluginSnapshotBridge, stopPluginSnapshotBridge } from '../../../plugins/pluginSnapshotBridge';
+import { refreshAgyDeviceState } from '../../../services/agyClient';
+import { activateDesktopHome, stopDesktopHome } from '../../../home/desktop';
 
 /**
  * Owns application-wide backend and Electron MCP startup after Store hydration.
@@ -29,6 +31,7 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
 
   useEffect(() => {
     if (!hasHydrated) return;
+    void refreshAgyDeviceState().catch(() => {});
 
     let unsubscribe: (() => void) | null = null;
     let cancelled = false;
@@ -40,6 +43,7 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
           // Session restoration must precede the data pull so a fresh browser
           // receives authentication state before it consumes backend records.
           await tryRestoreAuthFromBackend();
+          if (!cancelled && await activateDesktopHome()) return;
           if (!cancelled) {
             await syncLocalGitHubTokenToBackend();
           }
@@ -68,6 +72,7 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
 
     return () => {
       cancelled = true;
+      stopDesktopHome();
       if (unsubscribe) {
         stopAutoSync(unsubscribe);
       }

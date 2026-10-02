@@ -87,19 +87,29 @@ npm run deploy
 
 ## 更换 Embedding 模型
 
-> ⚠️ **更换模型后必须重建索引！** 不同模型生成的向量维度不同，混用会导致查询失败。
+**更换模型后必须重建索引，即使维度相同也不能混用。**
 
 步骤：
 1. 在 App 设置中更换 Embedding 模型
-2. 如果新模型的维度与旧模型不同，需要**删除旧索引并创建新索引**：
+2. 如果维度不同，创建另一个索引，并通过另一个 Worker 地址绑定新索引；保留原索引及原 Worker，直到新索引验证成功：
    ```bash
-   # 删除旧索引
-   npx wrangler vectorize delete github-stars
-
-   # 创建新索引（维度与新模型一致）
-   npx wrangler vectorize create github-stars --dimensions=1024 --metric=cosine
+   npx wrangler vectorize create github-stars-next --dimensions=1024 --metric=cosine
    ```
-3. 在 App 中点击 **重建向量索引**
+3. 保存 Embedding 和索引配置，再点击 **重建向量索引**。不兼容的配置不能执行增量索引。
+
+## Identity Protocol v2
+
+- `/status` advertises `protocolVersion: 2`. Upgrade both deployment variants before using the new client. Older clients (including legacy MCP consumers) receive a rebuild/upgrade error for unscoped requests; they cannot query mixed generations.
+- Electron MCP now receives `activeIndex` and content settings over IPC, verifies the canonical identity/hash, checks Worker v2 and dimensions before embedding, and sends the generation scope for both vector tools. Restart Electron's main process after updating. Current identity-aware snapshots without an active generation require rebuilding; only old, unversioned snapshots without `activeIndex` retain the explicitly labeled `legacy_unverified` path. A failed scoped request never retries unscoped.
+- Backend MCP does not yet persist/sync generation identity. It therefore reports `vector_index_identity_not_synced` and omits both vector tools by default, without making embedding or Worker calls. The eight keyword/repository/status tools remain available. Intentional use of an unchanged legacy index is possible only by setting `GSM_MCP_LEGACY_VECTOR_WORKER_URL` to that exact Worker URL and restarting the backend. Every legacy search checks `/status` before embedding, rejects v2/newer protocols and dimension mismatches, and labels successful results `legacy_unverified`. This opt-in cannot enable v2 querying or provide identity guarantees for old data. Do not use it with a changed model/index pair.
+- The client persists `activeIndex` with a SHA-256 identity covering provider, endpoint, model, dimensions, content mode, README limit, text format and Worker target. API keys are not stored in this identity.
+- Every request carries `{ scope: { namespace, identityHash, dimensions } }`. The Worker validates it, prefixes repository IDs with the generation namespace, and passes the namespace to Vectorize **before** nearest-neighbor selection. No metadata index setup is needed.
+- Full rebuilds write to a fresh namespace. The active pointer and repository stamps change only after every upload and visibility check succeeds. Partial failure, cancellation or changed settings retain the previous pointer and vectors. No automatic deletion runs.
+- `/verify` checks the final mutation against `describe().processedUpToMutation` and reads back every uploaded ID, identity, dimension and content hash. The client waits up to 30 polls. A concurrent writer can advance the watermark before it is observed; verification then conservatively times out rather than publishing an unverified stage.
+- Compatible incremental refreshes update only changed content in the current generation. They are **not transactional**: successful same-identity writes may remain if a later batch fails; no generation switch or new stamps are published on failure, and retry rechecks the hashes.
+- Unknown legacy identity requires an explicit full rebuild. Existing vectors and timestamps are never used to infer compatibility. Failed/excluded repositories are not copied into a new generation; their old vectors remain in the old namespace.
+- `activeIndex` and repository content stamps persist locally. The existing backend config schema does not sync these new fields. A different device without an identity must rebuild; an older backend response cannot authorize an incompatible local query.
+- Retained/abandoned generations consume storage. Cleanup is intentionally disabled because similarity sampling is not safe enumeration. Explicit administrative retention management is required; this change does not deploy or delete remote resources.
 
 ---
 
@@ -108,7 +118,7 @@ npm run deploy
 | 文件 | 说明 |
 |------|------|
 | `src/index.ts` | Worker 源码（TypeScript，CLI 部署使用） |
-| `worker.js` | Worker 代码（纯 JS，备用） |
+| `worker.js` | 从 TypeScript 源码打包的 Dashboard 粘贴版本 |
 | `wrangler.toml` | Wrangler 部署配置 |
 | `package.json` | 依赖声明 |
 
@@ -119,10 +129,25 @@ npm run deploy
 | POST | `/upsert` | 批量写入向量 |
 | POST | `/query` | 向量相似度查询 |
 | POST | `/delete` | 删除指定向量 |
-| POST | `/cleanup` | 清理不在 keepIds 列表中的向量 |
+| POST | `/verify` | 验证 generation 写入可见性和内容哈希 |
+| POST | `/cleanup` | 禁用，返回 409，不删除任何数据 |
 | GET | `/status` | 获取索引状态 |
 
 所有请求需要 `Authorization: Bearer <AUTH_TOKEN>` 头。
+
+After changing the TypeScript Worker, regenerate the standalone Dashboard bundle from the repository root:
+
+```bash
+npm ci
+npm run build:vector-worker
+npm run check:vector-worker
+```
+
+The root lockfile pins the bundler. CI checks that the Dashboard bundle matches the
+TypeScript source (ignoring CRLF/LF differences); include the regenerated
+`worker.js` whenever the Worker source changes. Inside `cloudflare-worker`,
+`npm run build` and `npm run check:bundle` use the same root tooling, so install
+the root dependencies first. Wrangler deployment continues to use `src/index.ts`.
 
 ## 本地开发
 

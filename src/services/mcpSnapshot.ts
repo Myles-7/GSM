@@ -1,5 +1,6 @@
 import type { AppState } from '../types';
 import type { McpDataSnapshot } from './electronProxy';
+import { VECTOR_PROTOCOL_VERSION } from './vectorIndexIdentity';
 
 export type McpSnapshotState = Pick<
   AppState,
@@ -18,7 +19,6 @@ export function buildMcpDataSnapshot(
   const vectorSearchConfig = state.vectorSearchConfig;
   const embedding =
     state.embeddingConfigs.find((config) => config.id === vectorSearchConfig.embeddingConfigId) ||
-    state.embeddingConfigs.find((config) => config.id === state.activeEmbeddingConfig) ||
     null;
 
   return {
@@ -31,6 +31,10 @@ export function buildMcpDataSnapshot(
       authToken: vectorSearchConfig.authToken || '',
       searchThreshold: vectorSearchConfig.searchThreshold,
       searchTopK: vectorSearchConfig.searchTopK,
+      indexProtocolVersion: VECTOR_PROTOCOL_VERSION,
+      activeIndex: vectorSearchConfig.activeIndex,
+      indexMode: vectorSearchConfig.indexMode,
+      readmeMaxChars: vectorSearchConfig.readmeMaxChars,
       embedding: embedding
         ? {
             apiType: embedding.apiType,

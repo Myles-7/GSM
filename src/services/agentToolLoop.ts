@@ -1,6 +1,7 @@
 import type { AppLanguage } from '../i18n/languages';
 import type { ToolEvidence } from '../types/repositoryChat';
 import { AIService, type AIToolCall, type AIToolDefinition, type AIToolLoopMessage } from './aiService';
+import { forAgyFeature } from './agyProfiles';
 import { createGitHubApiService } from './githubApiFactory';
 import {
   asStringArray,
@@ -155,7 +156,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
   const zh = input.language === 'zh';
   const [owner, repo] = splitOwnerAndRepo(input.repository.full_name);
   const github = createGitHubApiService(input.githubToken);
-  const ai = new AIService(input.aiConfig, input.language);
+  const ai = new AIService(forAgyFeature(input.aiConfig, input.aiConfig.provider === 'agy-cli' && input.aiConfig.agyFeature === 'workbench' ? 'workbench' : 'repository-chat'), input.language);
   const { budget, answerMaxTokens } = resolveTurnLimits(input);
   const ctx = createEvidenceToolbox(input, budget, ai);
   const { emit, invokeTool } = ctx;
@@ -167,6 +168,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
   const codeReadPaths = new Set<string>();
   const metaFetched = new Set<string>();
   let documentationEvidenceCount = 0;
+  let missing: string[] = [];
 
   const treeResult = await invokeTool(
     'read_repo_tree',
@@ -353,6 +355,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
 
     if (call.name === 'ready_to_answer') {
       const missingList = asStringArray(args.missing, 6);
+      missing = missingList;
       emit({
         toolName: 'evidence_gate',
         status: 'success',
@@ -367,7 +370,8 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
     }
 
     // README 优先是代码级硬规则：未读到文档证据之前，调度器直接拒绝其他来源。
-    if (documentationEvidenceCount === 0 && call.name !== 'read_documentation') return docsMissing;
+    const unreadDocs = documentationCandidates.some(path => !readPaths.has(path));
+    if (documentationEvidenceCount === 0 && unreadDocs && call.name !== 'read_documentation') return docsMissing;
 
     if (call.name === 'read_documentation') return await readToolLoopTarget(args, 'documentation', round);
     if (call.name === 'read_code') return await readToolLoopTarget(args, 'code', round);
@@ -376,7 +380,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
     return zh ? `已拒绝：未知工具 ${call.name}。` : `Rejected: unknown tool ${call.name}.`;
   };
 
-  const systemPrompt = buildToolLoopSystemPrompt(input.language);
+  const systemPrompt = `${buildToolLoopSystemPrompt(input.language)}\nIf no documentation candidate exists, or all candidates failed to yield readable evidence, other read-only sources are allowed.`;
   const tools = buildToolLoopTools(input.language);
   const firstUserContent = buildToolLoopUserPrompt(input, documentationCandidates, codeCandidates);
   const messages: AIToolLoopMessage[] = [
@@ -473,7 +477,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
     conversationChars += Math.max(64, result.content.length) + result.toolCalls.length * 48;
     for (const call of result.toolCalls) {
       if (call.name === 'ready_to_answer') {
-        const confirmText = zh ? '已确认。接下来基于已收集的证据生成最终回答。' : 'Confirmed. The final answer will now be generated from the gathered evidence.';
+        const confirmText = await dispatchToolCall(call, loopTurns);
         conversationChars += confirmText.length;
         messages.push({ role: 'tool', toolCallId: call.id, content: confirmText });
         ready = true;
@@ -493,9 +497,10 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
         ctx.toolErrors.length > 0,
       ),
       evidences,
+      missing,
     };
   }
 
-  const content = await synthesizeVerifiedAnswer(ai, input, evidences, Math.max(1, loopTurns), answerMaxTokens, ctx.callModelWithRetry);
-  return { content, evidences };
+  const answer = await synthesizeVerifiedAnswer(ai, input, evidences, Math.max(1, loopTurns), answerMaxTokens, ctx.callModelWithRetry, missing);
+  return { ...answer, evidences, missing };
 };

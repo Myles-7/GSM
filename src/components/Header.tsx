@@ -28,7 +28,7 @@ const MENU_META: Record<HeaderMenuId, {
   settings: { icon: Settings, labelZh: '设置', labelEn: 'Settings' },
 };
 
-export const Header: React.FC = () => {
+export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel }) => {
   const {
     user,
     theme,
@@ -154,6 +154,7 @@ export const Header: React.FC = () => {
 
           {/* User Actions */}
           <div className="flex items-center gap-2 sm:gap-3 hd-btns lg:hd-btns">
+            {taskPanel}
             <PageTranslationButton />
             {/* Theme Toggle */}
             <Tooltip>

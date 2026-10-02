@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 interface Config {
+  host: string;
+  dataDir: string;
   port: number;
   apiSecret: string | null;
   encryptionKey: string;
@@ -12,7 +14,11 @@ interface Config {
 
 /** Resolve the data directory path, creating it if it doesn't exist. */
 function resolveDataDir(): string {
-  const dataDir = path.resolve(process.cwd(), 'data');
+  const configured = process.env.DATA_DIR;
+  if (configured && !path.isAbsolute(configured)) {
+    throw new Error('DATA_DIR must be an absolute path');
+  }
+  const dataDir = configured || path.resolve(process.cwd(), 'data');
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
@@ -56,34 +62,47 @@ function resolveEncryptionKey(dataDir: string): string {
     return normalizeEncryptionKey(envKey);
   }
 
-  const keyFilePath = path.join(dataDir, '.encryption-key');
+  const keyFilePath = process.env.ENCRYPTION_KEY_FILE || path.join(dataDir, '.encryption-key');
+  if (process.env.ENCRYPTION_KEY_FILE && !path.isAbsolute(keyFilePath)) {
+    throw new Error('ENCRYPTION_KEY_FILE must be an absolute path');
+  }
+  fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
   if (fs.existsSync(keyFilePath)) {
     const fileKey = fs.readFileSync(keyFilePath, 'utf-8').trim();
     const normalized = normalizeEncryptionKey(fileKey);
     // Persist normalized key so future startups (even without normalization) use the correct format
     if (normalized !== fileKey) {
       fs.writeFileSync(keyFilePath, normalized, { mode: 0o600 });
-      console.log('[config] Normalized encryption key written back to data/.encryption-key');
+      console.log('[config] Normalized encryption key written back to its protected key file');
     }
     return normalized;
   }
 
   const newKey = crypto.randomBytes(32).toString('hex');
   fs.writeFileSync(keyFilePath, newKey, { mode: 0o600 });
-  console.log('Generated new encryption key and saved to data/.encryption-key');
+  console.log('[config] Generated a new encryption key and saved it to the key file');
   return newKey;
 }
 
 /** Load all server configuration from environment variables and defaults. */
 function loadConfig(): Config {
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  const apiSecret = process.env.API_SECRET?.trim() || null;
+  if (nodeEnv === 'production' && !apiSecret) {
+    throw new Error('API_SECRET is required in production');
+  }
+  const port = Number(process.env.PORT || '3000');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535');
   const dataDir = resolveDataDir();
 
   return {
-    port: parseInt(process.env.PORT || '3000', 10),
-    apiSecret: process.env.API_SECRET || null,
+    host: process.env.HOST || '127.0.0.1',
+    dataDir,
+    port,
+    apiSecret,
     encryptionKey: resolveEncryptionKey(dataDir),
-    dbPath: process.env.DB_PATH || path.join(dataDir, 'data.db'),
-    nodeEnv: process.env.NODE_ENV || 'development',
+    dbPath: process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.join(dataDir, 'data.db'),
+    nodeEnv,
   };
 }
 

@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "來源版本未變",
+    "freshness-changed": "來源已變更，請重新研究",
+    "freshness-unknown": "尚未確認目前版本",
+    "freshness-rebind": "重新綁定目錄後檢查",
+    "discovery": "探索任務",
+    "plugins": "外掛任務",
+    "openPlugin": "開啟外掛設定",
+    "rerankUnavailable": "AI 重新排序失敗，已保留向量排序。",
+    "vectorUnavailable": "向量搜尋無法使用，已改用關鍵字搜尋。",
+    "supported": "支援", "unsupported": "不支援",
+    "sources": "逐專案研究進度", "state": "狀態", "complete": "已研究", "reused": "已重用同版本結果",
+    "changed": "版本已變更，已重新研究", "failed": "失敗", "pending": "待處理",
+    "continue": "繼續未完成專案", "fillMissing": "補充缺失項", "restart": "重新研究",
+    "question": "針對所選資料提問…", "mixed": "本機 + 所選儲存庫", "readFiles": "已讀 {{count}} 個檔案",
+    "claims": "論點與原文依據", "tasks": "AI 任務", "pause": "暫停", "resume": "繼續", "stop": "停止",
+    "retry": "僅重試失敗項", "interrupted": "已中斷，等待手動繼續", "paused": "已暫停", "running": "進行中",
+    "summary": "儲存庫摘要", "details": "儲存庫詳情", "gists": "Gist 分析", "searchSummary": "{{mode}} · 掃描 {{total}} 項 · 返回 {{count}} 項",
+    "keyword": "關鍵字搜尋", "vector": "向量搜尋", "ai": "AI 篩選", "fallback": "已降級", "support": "有依據", "unknown": "未知"
+  },
+  "localResearch": {
+    "local": "本機專案",
+    "choose": "選擇專案目錄",
+    "deviceOnly": "僅本機歷史，不參與備份",
+    "rebind": "繼續前請重新選擇專案目錄；歷史來源不代表目前檔案。",
+    "projectChanged": "所選目錄不是原專案。請重新選擇原目錄，或建立新對話研究其他專案。",
+    "scope": "資料範圍",
+    "configure": "請先選擇可用的 AI 設定。",
+    "open": "開啟研究工作台"
+  },
+  "answerReview": {
+      "draft": "草稿，尚未複核",
+      "reviewing": "草稿，正在複核要求與來源",
+      "interrupted": "已中斷的草稿，未經複核",
+      "reviewed": "已經模型複核，非獨立事實驗證",
+      "unreviewed": "複核未完成",
+      "legacy": "未記錄複核狀態",
+      "coverage": "要求涵蓋情況",
+      "answered": "已回答",
+      "unknown": "未知"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "關閉問答歷史",
     "chat-history": "問答歷史",
@@ -170,6 +211,13 @@
     "addSelected": "加入已收藏倉庫",
     "moreResults": "尋找更多",
     "unknown": "尚未確認",
+    "added": "已新增",
+    "addedToContext": "已加入對話脈絡",
+    "addedToContextTooltip": "已加入對話脈絡（點擊移除）",
+    "contextPrefix": "對話脈絡:",
+    "clearAll": "清空全部",
+    "multilingualGeneral": "多語言 / 通用",
+    "viewNewProposals": "📋 檢視新提案 ↓",
     "candidate": "候選專案",
     "verifying": "查核中",
     "verified": "已查核：檢視證據",
@@ -267,6 +315,9 @@
     "skip": "不設限制",
     "searchAgain": "依新條件查找",
     "draftPreserved": "已保留你的修改，有新的 AI 建議待檢視。",
-    "useNew": "替換為新建議"
+    "useNew": "替換為新建議",
+    "quickOptions": "快速點選:",
+    "cyclePriority": "點擊切換分組優先級",
+    "doubleClickToDelete": "按兩下快速刪除"
   }
 }

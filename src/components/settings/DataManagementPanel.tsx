@@ -636,9 +636,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         exportDataObj.data.releases = store.releases;
       }
       if (selectedTypes.includes('aiConfigs')) {
-        exportDataObj.data.aiConfigs = includeKeys
-          ? store.aiConfigs
-          : store.aiConfigs.map(cfg => ({ ...cfg, apiKey: cfg.apiKey ? MASKED_SECRET : '' }));
+        exportDataObj.data.aiConfigs = store.aiConfigs.map(cfg => backupAIConfig(cfg, includeKeys));
       }
       if (selectedTypes.includes('webdavConfigs')) {
         exportDataObj.data.webdavConfigs = includeKeys
@@ -761,7 +759,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           store.setReleases(importedData.releases, { allowEmpty: true });
         }
         if (selectedTypes.includes('aiConfigs') && importedData.aiConfigs) {
-          const restoredConfigs = importedData.aiConfigs.map(cfg => ({
+          const restoredConfigs = importedData.aiConfigs.map(cfg => isAgyConfig(cfg) ? inertAgyDescriptor(cfg) : ({
             ...cfg,
             apiKey: wasIncluded && isRealSecret(cfg.apiKey) ? cfg.apiKey : store.aiConfigs.find(c => c.id === cfg.id)?.apiKey || ''
           }));
@@ -903,7 +901,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           const existingIds = new Set(store.aiConfigs.map(c => c.id));
           const newConfigs = importedData.aiConfigs
             .filter(c => !existingIds.has(c.id))
-            .map(cfg => ({
+            .map(cfg => isAgyConfig(cfg) ? inertAgyDescriptor(cfg) : ({
               ...cfg,
               apiKey: wasIncluded && isRealSecret(cfg.apiKey) ? cfg.apiKey : ''
             }));
@@ -2113,3 +2111,4 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     </div>
   );
 };
+import { backupAIConfig, inertAgyDescriptor, isAgyConfig } from '../../utils/aiConfig';

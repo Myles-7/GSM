@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react';
+import { isAIConfigAvailable } from '../utils/aiConfig';
 import { Sparkles, Pause, Play, Square, RotateCcw } from 'lucide-react';
 import type { Repository } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -20,9 +21,9 @@ export function RepositoryDetailAnalysisAction({ repositories, job: externalJob,
   const [pending, setPending] = useState<{ repositories: Repository[]; accountId: number | undefined } | null>(null);
   useEffect(() => { setPending(null); setSelectedConfigId(null); }, [accountId]);
   useEffect(() => { if (request && request.accountId === accountId) setPending({ repositories: [...request.repositories], accountId }); }, [request, accountId]);
-  const localJob = useRepositoryDetailAnalysisJob();
+  const localJob = useRepositoryDetailAnalysisJob(!externalJob);
   const job = externalJob || localJob;
-  const configured = !!(config?.model && config.apiKey && config.baseUrl && config.apiKeyStatus !== 'decrypt_failed');
+  const configured = isAIConfigAvailable(config);
   return <div className="flex flex-wrap items-center gap-2">
     {!hideTrigger && <Button variant="outline" size={compact ? 'icon' : 'sm'} title={t('details.analyze')} aria-label={t('details.analyze')} disabled={!repositories.length || job.running} onClick={() => setPending({ repositories: [...repositories], accountId })}>
       <Sparkles className={compact ? 'h-4 w-4' : 'mr-2 h-4 w-4'} />{!compact && t('details.analyze')}

@@ -52,7 +52,15 @@ export const getAllCategories = (
       };
     });
 
-  return [...translatedDefaults, ...customCategories];
+  const seenIds = new Set(translatedDefaults.map(c => c.id));
+  const dedupedCustom = customCategories.map(cat => {
+    if (seenIds.has(cat.id)) {
+      return { ...cat, id: `custom_${cat.id}` };
+    }
+    return cat;
+  });
+
+  return [...translatedDefaults, ...dedupedCustom];
 };
 
 // Helper function to translate category names

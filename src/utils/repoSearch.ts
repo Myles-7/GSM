@@ -1,6 +1,7 @@
 import type { Category, Repository, SearchFilters } from '../types';
 import { isRepoCustomized } from './repoUtils';
 import { normalizeLicense } from './licenseFilter';
+import { getCanonicalPlatforms } from './platformNormalization';
 import {
   hasDeclaredLicense,
   hasRecentActivity,
@@ -159,8 +160,13 @@ export function applyRepoFilters<T extends Repository>(
   const platforms = searchFilters.platforms ?? [];
   if (platforms.length > 0) {
     filtered = filtered.filter((repo) => {
-      const repoPlatforms = repo.ai_platforms || [];
-      return platforms.some((platform) => repoPlatforms.includes(platform));
+      const canonicalPlatforms = getCanonicalPlatforms(repo.ai_platforms);
+      const rawPlatforms = repo.ai_platforms || [];
+      return platforms.some(
+        (platform) =>
+          canonicalPlatforms.includes(platform as any) ||
+          rawPlatforms.includes(platform)
+      );
     });
   }
 

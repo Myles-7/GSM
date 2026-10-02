@@ -228,6 +228,8 @@ export interface VectorAvailability {
   reason?: string;
   workerUrl?: string;
   embeddingModel?: string;
+  hint?: string;
+  indexCompatibility?: 'legacy_unverified';
 }
 
 export function getVectorAvailability(): VectorAvailability {
@@ -257,10 +259,23 @@ export function getVectorAvailability(): VectorAvailability {
   if (!hasKey && emb.api_type !== 'ollama') {
     return { available: false, reason: 'embedding_api_key_missing' };
   }
+  // The backend config table does not persist activeIndex. A format version,
+  // vector count or desktop status JSON cannot substitute for its identity.
+  // Pin the opt-in to one URL so switching targets cannot inherit legacy mode.
+  const legacyTarget = String(process.env.GSM_MCP_LEGACY_VECTOR_WORKER_URL || '').trim().replace(/\/+$/, '');
+  if (!legacyTarget || legacyTarget !== workerUrl.replace(/\/+$/, '')) {
+    return {
+      available: false,
+      reason: 'vector_index_identity_not_synced',
+      hint: 'Backend generation identity is not synced. Use standalone Electron MCP for scoped vector search; keyword and repository tools remain available.',
+    };
+  }
   return {
     available: true,
     workerUrl,
     embeddingModel: String(emb.model || ''),
+    indexCompatibility: 'legacy_unverified',
+    hint: 'Explicit legacy Worker opt-in: index identity is unverified. Only use an unchanged legacy model/index pair.',
   };
 }
 
@@ -397,7 +412,7 @@ export async function vectorSearch(
   opts: VectorSearchOptions = {}
 ): Promise<
   | { available: false; reason: string }
-  | { available: true; matches: Array<Record<string, unknown>>; filtering?: Record<string, unknown> }
+  | { available: true; matches: Array<Record<string, unknown>>; filtering?: Record<string, unknown>; indexCompatibility: 'legacy_unverified'; warning: string }
 > {
   const availability = getVectorAvailability();
   if (!availability.available) {
@@ -422,6 +437,32 @@ export async function vectorSearch(
     }
   }
 
+  const workerUrl = String(vs.worker_url).trim().replace(/\/+$/, '');
+  // Even an intentional legacy opt-in must not send an unscoped query after
+  // that same Worker URL has been redeployed to the generation-aware protocol.
+  try {
+    const response = await fetchWithTimeout(`${workerUrl}/status`, {
+      headers: workerToken ? { Authorization: `Bearer ${workerToken}` } : {},
+    });
+    if (!response.ok) return { available: false, reason: 'worker_status_failed' };
+    const status = await response.json() as {
+      success?: boolean; protocolVersion?: number; dimensions?: number; vectorCount?: number;
+    } | null;
+    if (!status || status.success === false) return { available: false, reason: 'worker_status_failed' };
+    if (status.protocolVersion !== undefined && status.protocolVersion !== 1) {
+      return { available: false, reason: 'vector_index_identity_not_synced' };
+    }
+    if (!Number.isInteger(status.dimensions) || status.dimensions! < 1 ||
+        !Number.isInteger(status.vectorCount) || status.vectorCount! < 0) {
+      return { available: false, reason: 'worker_status_failed' };
+    }
+    if (typeof emb.dimensions === 'number' && emb.dimensions !== status.dimensions) {
+      return { available: false, reason: 'vector_dimensions_mismatch' };
+    }
+  } catch {
+    return { available: false, reason: 'worker_status_failed' };
+  }
+
   const topK = Math.min(50, Math.max(1, opts.topK ?? 20));
   const threshold = opts.threshold ?? 0.35;
   const filtersActive = hasActiveVectorFilters(opts);
@@ -437,7 +478,6 @@ export async function vectorSearch(
     return { available: false, reason: `embedding_failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const workerUrl = String(vs.worker_url).replace(/\/$/, '');
   let res: Response;
   try {
     res = await fetchWithTimeout(`${workerUrl}/query`, {
@@ -477,6 +517,10 @@ export async function vectorSearch(
     return { available: false, reason: 'worker_query_failed' };
   }
   const matches = data.matches;
+  const compatibility = {
+    indexCompatibility: 'legacy_unverified' as const,
+    warning: availability.hint!,
+  };
   const repos = loadAllRepositories();
   const byId = new Map(repos.map((r) => [String(r.id), r]));
 
@@ -497,7 +541,7 @@ export async function vectorSearch(
       score: candidate.score,
       ...projectRepoForAgent(candidate.repository),
     }));
-    return { available: true, matches: enriched };
+    return { available: true, matches: enriched, ...compatibility };
   }
 
   // This is intentionally local filtering over the retrieved candidate set,
@@ -512,6 +556,7 @@ export async function vectorSearch(
   return {
     available: true,
     matches: enriched,
+    ...compatibility,
     filtering: {
       mode: 'local_candidate_set',
       candidateLimit: VECTOR_CANDIDATE_LIMIT,
@@ -533,6 +578,8 @@ export async function findSimilarRepositories(
       source: Record<string, unknown>;
       sourceExcluded: true;
       matches: Array<Record<string, unknown>>;
+      indexCompatibility: 'legacy_unverified';
+      warning: string;
     }
 > {
   const source = getRepository(idOrFullName);
@@ -568,5 +615,7 @@ export async function findSimilarRepositories(
     source: projectRepoForAgent(source, { summaryMaxChars: 2000 }),
     sourceExcluded: true,
     matches,
+    indexCompatibility: result.indexCompatibility,
+    warning: result.warning,
   };
 }

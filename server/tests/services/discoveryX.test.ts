@@ -1,0 +1,10 @@
+import {describe,it,expect,vi} from 'vitest';
+import {fetchXTimeline} from '../../src/services/discoveryX.js';
+describe('server X discovery timeline',()=>{
+ it('extracts live operation IDs and preserves real pagination and repository links',async()=>{
+  const transport=vi.fn().mockResolvedValueOnce('<script src="https://abs.twimg.com/responsive-web/client-web/main.current.js"></script>').mockResolvedValueOnce('queryId:"liveUser",operationName:"UserByScreenName";queryId:"liveTweets",operationName:"UserTweets"').mockResolvedValueOnce(JSON.stringify({data:{user:{result:{rest_id:'123'}}}})).mockResolvedValueOnce(JSON.stringify({data:{user:{result:{timeline_v2:{timeline:{instructions:[{entries:[{entryId:'tweet-456',content:{itemContent:{tweet_results:{result:{rest_id:'456',legacy:{full_text:'Tool https://github.com/Owner/Repo',created_at:'2026-09-29',entities:{urls:[]}}}}}}},{entryId:'cursor-bottom-1',content:{value:'next'}}]}]}}}}}}));
+  const result=await fetchXTimeline('owner','previous',transport);expect(result).toMatchObject({items:[{id:'456',repositories:['owner/repo']}],nextCursor:'next',exhausted:false});expect(transport.mock.calls[2][0]).toContain('/liveUser/UserByScreenName');const url=new URL(transport.mock.calls[3][0]);expect(JSON.parse(url.searchParams.get('variables')!)).toMatchObject({cursor:'previous',userId:'123'});
+ });
+ it('fails closed when X changes the bundle structure',async()=>{await expect(fetchXTimeline('owner','',async()=>'<html>changed</html>')).rejects.toThrow('X_PROTOCOL_CHANGED');});
+ it('returns a sanitized credential-expired error',async()=>{const transport=vi.fn().mockResolvedValueOnce('https://abs.twimg.com/responsive-web/client-web/main.live.js').mockResolvedValueOnce('queryId:"u",operationName:"UserByScreenName";queryId:"t",operationName:"UserTweets"').mockResolvedValueOnce(JSON.stringify({errors:[{code:32,message:'private upstream details'}]}));await expect(fetchXTimeline('owner','',transport)).rejects.toThrow('X_CREDENTIAL_EXPIRED');});
+});

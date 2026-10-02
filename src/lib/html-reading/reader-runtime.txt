@@ -1,0 +1,80 @@
+(() => {
+  'use strict';
+  const snapshot = JSON.parse(document.getElementById('gsm-data').textContent);
+  const items = new Map(snapshot.sections.flatMap(s => s.items).map(x => [String(x.id), x]));
+  const pending = new Map();
+  const storageKey = 'gsm-reading:' + snapshot.accountId + ':' + snapshot.id;
+  const notice = document.getElementById('notice');
+  const status = document.getElementById('change-status');
+  const inform = text => { notice.textContent = text; notice.hidden = false; };
+  const pack = () => ({ format: 'gsm-reading-changes', version: 1, accountId: snapshot.accountId, snapshotId: snapshot.id, operations: [...pending.values()] });
+  const updateCount = () => { status.textContent = pending.size ? pending.size + ' 项修改 · 导出后带回桌面' : '尚无修改'; };
+  const save = () => { try { localStorage.setItem(storageKey, JSON.stringify(pack())); } catch { inform('浏览器无法保存本地记录，请在关闭文件前导出修改。'); } updateCount(); };
+  const uuid = () => globalThis.crypto?.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const n = Math.random() * 16 | 0; return (c === 'x' ? n : (n & 3 | 8)).toString(16); });
+  const applyControls = () => {
+    document.querySelectorAll('[data-field]').forEach(el => {
+      const item = items.get(el.dataset.repo); const field = el.dataset.field;
+      const value = pending.get(item.id + ':' + field)?.value ?? item.state[field];
+      if (el.type === 'checkbox') el.checked = value; else el.value = value;
+    });
+  };
+  document.querySelectorAll('[data-field]').forEach(el => el.addEventListener(el.tagName === 'TEXTAREA' ? 'input' : 'change', () => {
+    const item = items.get(el.dataset.repo); const field = el.dataset.field;
+    const value = el.type === 'checkbox' ? el.checked : el.value;
+    const key = item.id + ':' + field;
+    if (value === item.state[field]) pending.delete(key);
+    else pending.set(key, { id: uuid(), repoId: item.id, field, base: item.state[field], value });
+    // Reflect edits in other channels containing the same repository.
+    document.querySelectorAll('[data-repo="' + item.id + '"][data-field="' + field + '"]').forEach(other => { if (other !== el) { if (other.type === 'checkbox') other.checked = value; else other.value = value; } });
+    save();
+  }));
+  const restore = text => {
+    if (text.length > 4000000) throw Error('文件过大');
+    const data = JSON.parse(text);
+    if (data.format !== 'gsm-reading-changes' || data.version !== 1 || data.snapshotId !== snapshot.id || data.accountId !== snapshot.accountId || !Array.isArray(data.operations) || data.operations.length > 20000) throw Error('请导入由这份 HTML 导出的记录');
+    const next = new Map(); const ids = new Set();
+    for (const op of data.operations) {
+      const item = items.get(String(op.repoId)); const field = op.field;
+      if (!item || !Object.hasOwn(snapshot.settings.operations, field) || !snapshot.settings.operations[field] || item.state[field] !== op.base || typeof op.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(op.id) || ids.has(op.id)) throw Error('回传记录不匹配');
+      const valid = field === 'note' ? typeof op.value === 'string' && op.value.length <= 12000 : field === 'interest' ? ['neutral', 'interested', 'ignored'].includes(op.value) : typeof op.value === 'boolean';
+      const key = op.repoId + ':' + field;
+      if (!valid || next.has(key)) throw Error('回传字段不合法');
+      ids.add(op.id); next.set(key, op);
+    }
+    next.forEach((value, key) => pending.set(key, value)); applyControls(); updateCount();
+  };
+  try { const saved = localStorage.getItem(storageKey); if (saved) restore(saved); localStorage.setItem(storageKey, JSON.stringify(pack())); } catch { inform('本地保存不可用或旧记录无法恢复，请使用导出文件保存修改。'); }
+  const sections = [...document.querySelectorAll('.reading-section')];
+  let page = snapshot.settings.initialPage; const counts = new Map();
+  const query = document.getElementById('search'); const category = document.getElementById('category');
+  const render = () => {
+    const needle = query.value.trim().toLocaleLowerCase(); const cat = category.value;
+    let count = 0;
+    sections.forEach(section => {
+      const visible = page === 'repositories' ? section.dataset.section === 'repositories' : section.dataset.section !== 'repositories';
+      section.hidden = !visible; if (!visible) return;
+      const filtered = [...section.querySelectorAll('.project')].filter(card => {
+        const item = items.get(card.dataset.id);
+        return (!needle || [item.name, item.summary, item.description, ...item.tags].join(' ').toLocaleLowerCase().includes(needle)) && (page !== 'repositories' || !cat || item.categoryId === cat);
+      });
+      count += filtered.length;
+      const shown = counts.get(section.dataset.section) || 40;
+      const visibleCards = new Set(filtered.slice(0, shown));
+      section.querySelectorAll('.project').forEach(card => { card.hidden = !visibleCards.has(card); });
+      const more = section.querySelector('.load-more'); more.hidden = filtered.length <= shown;
+      section.querySelector('.section-count').textContent = filtered.length + ' 个项目';
+    });
+    document.querySelectorAll('[data-page]').forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.page === page)));
+    category.hidden = page !== 'repositories'; document.getElementById('empty').hidden = count > 0;
+  };
+  query.addEventListener('input', render); category.addEventListener('change', render);
+  document.querySelectorAll('[data-page]').forEach(btn => btn.addEventListener('click', () => { page = btn.dataset.page; render(); window.scrollTo(0, 0); }));
+  document.querySelectorAll('.load-more').forEach(btn => btn.addEventListener('click', () => { const id = btn.closest('section').dataset.section; counts.set(id, (counts.get(id) || 40) + 40); render(); }));
+  const returnDialog = document.getElementById('return-dialog'); const text = document.getElementById('return-text');
+  document.getElementById('export').addEventListener('click', () => { text.value = JSON.stringify(pack()); returnDialog.showModal(); });
+  document.getElementById('close-export').addEventListener('click', () => returnDialog.close());
+  document.getElementById('copy').addEventListener('click', async () => { text.select(); try { await navigator.clipboard.writeText(text.value); document.getElementById('export-status').textContent = '已复制，请在桌面“每日 HTML”中导入。'; } catch { document.getElementById('export-status').textContent = '请长按文本框，选择全部并复制；也可下载文件。'; } });
+  document.getElementById('download').addEventListener('click', () => { const url = URL.createObjectURL(new Blob([text.value], {type:'application/json'})); const a = document.createElement('a'); a.href = url; a.download = 'GSM-阅读回传-' + snapshot.generatedAt.slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); document.getElementById('export-status').textContent = '已请求下载，请确认文件已保存。记录仍保留，可再次导出。'; });
+  document.getElementById('restore').addEventListener('change', async event => { try { const file = event.target.files[0]; if (!file || file.size > 4000000) throw Error('文件过大或未选择文件'); restore(await file.text()); save(); inform('已载入这份 HTML 的阅读记录。'); } catch (e) { inform(e.message || '恢复失败'); } event.target.value = ''; });
+  applyControls(); updateCount(); render();
+})();

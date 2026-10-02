@@ -79,10 +79,7 @@ export const useBackupActions = (): BackupActions => {
         categoryOrder: useAppStore.getState().categoryOrder,
         defaultCategoryOverrides: useAppStore.getState().defaultCategoryOverrides,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
-        aiConfigs: state.aiConfigs.map((config) => ({
-          ...config,
-          apiKey: state.includeKeysInBackup ? config.apiKey : (config.apiKey ? '***' : ''),
-        })),
+        aiConfigs: state.aiConfigs.map(config => backupAIConfig(config, state.includeKeysInBackup)),
         webdavConfigs: state.webdavConfigs.map((config) => ({
           ...config,
           password: state.includeKeysInBackup ? config.password : (config.password ? '***' : ''),
@@ -176,6 +173,11 @@ export const useBackupActions = (): BackupActions => {
           for (const config of backupConfigs) {
             if (!config?.id) continue;
             const existing = currentMap.get(config.id);
+            if (isAgyConfig(config)) {
+              if (existing) state.deleteAIConfig(config.id);
+              state.addAIConfig(inertAgyDescriptor(config));
+              continue;
+            }
             const apiKey = backupIncludedKeys && config.apiKey && config.apiKey !== '***' ? config.apiKey : existing?.apiKey ?? '';
             if (existing) {
               state.updateAIConfig(config.id, { ...config, apiKey, isActive: existing.isActive });
@@ -261,3 +263,4 @@ export const useBackupActions = (): BackupActions => {
 
   return { activeConfig, isBackingUp, isRestoring, backup, restore };
 };
+import { backupAIConfig, inertAgyDescriptor, isAgyConfig } from '../../../utils/aiConfig';

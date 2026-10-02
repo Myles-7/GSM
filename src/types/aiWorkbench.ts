@@ -1,7 +1,7 @@
 import type { Repository } from './index';
 import type { OrganizationDraft } from './aiOrganization';
 
-export type WorkbenchScope = 'github' | 'selected' | 'project' | 'library';
+export type WorkbenchScope = 'github' | 'selected' | 'project' | 'library' | 'local' | 'mixed';
 export type WorkbenchDepth = 'quick' | 'standard' | 'deep';
 export interface WorkbenchRequirements {
   purpose: string;
@@ -34,6 +34,8 @@ export interface WorkbenchProject {
   instructions: string;
   conclusions: string;
   repositories: Repository[];
+  /** Canonical project selections, including names awaiting metadata while offline. */
+  selectedRepositoryNames?: string[];
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
@@ -62,6 +64,7 @@ export interface WorkbenchProposal {
   organization?: OrganizationDraft;
 }
 export interface WorkbenchSessionData {
+  localProject?: { name: string; identity?: string };
   scope: WorkbenchScope;
   depth: WorkbenchDepth;
   selectedRepositories: Repository[];
@@ -73,5 +76,8 @@ export interface WorkbenchTaskState {
   ownerId: string | null;
   stage: string;
   running: boolean;
+  startedAt?: number;
+  readFiles?: number;
+  currentSource?: string;
   error?: string;
 }

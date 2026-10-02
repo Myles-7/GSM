@@ -135,16 +135,16 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
 
   return (
     <div ref={root} className="min-w-0" onDragEnd={() => setDropTarget(null)}>
-      <div className="sticky top-16 z-10 mb-3 flex flex-wrap items-center gap-2 border-b border-border bg-background py-2">
-        <nav aria-label={t('organization.outline')} className="flex min-w-0 flex-1 gap-3 overflow-x-auto whitespace-nowrap py-1">
+      <div className="sticky top-16 z-20 mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/95 backdrop-blur-md py-2.5">
+        <nav aria-label={t('organization.outline')} className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto whitespace-nowrap py-0.5">
           {sections.map(section => (
             <button type="button" key={section.key} onClick={() => jump(section.key)} aria-current={active === section.key ? 'location' : undefined}
-              className={`shrink-0 text-left text-xs hover:text-foreground ${active === section.key ? 'font-semibold text-foreground underline underline-offset-4' : 'text-muted-foreground'}`}>
+              className={`shrink-0 rounded-full px-2.5 py-1 text-xs transition-all ${active === section.key ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'}`}>
               {section.name}
             </button>
           ))}
         </nav>
-        <Button variant="ghost" size="sm" onClick={() => setEditing({ name: '', icon: 'folder' })}>
+        <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs shrink-0" onClick={() => setEditing({ name: '', icon: 'folder' })}>
           <Plus className="h-4 w-4" />{t('organization.createGroup')}
         </Button>
       </div>
@@ -156,9 +156,9 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
           ? orderedIds(state.repositoryOrder ?? [], members.map(r => r.id)).map(id => members.find(r => r.id === id)!)
           : members;
         return (
-          <section key={section.key} className={`mb-6 min-w-0 transition-colors ${dropTarget === section.key ? 'bg-accent/40 outline outline-2 outline-primary' : ''}`} aria-labelledby={`repository-group-${section.key}`}
+          <section key={section.key} className={`mb-8 min-w-0 transition-colors ${dropTarget === section.key ? 'bg-accent/40 rounded-xl outline outline-2 outline-primary' : ''}`} aria-labelledby={`repository-group-${section.key}`}
             onDragOver={event => { acceptDrag(event); if (event.defaultPrevented) setDropTarget(section.key); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null); }} onDrop={event => drop(event, section.id)}>
-            <div className="mb-3 flex min-w-0 items-center gap-1 border-b border-border py-2">
+            <div className="mb-4 flex min-w-0 items-center gap-1.5 border-b border-border/50 pb-2.5 pt-1">
               {section.id && <button type="button" draggable={!filtered} disabled={filtered} title={t('organization.reorderGroup')} aria-label={t('organization.reorderGroup')}
                 className="shrink-0 cursor-grab p-1 text-muted-foreground disabled:opacity-30"
                 onDragStart={event => { event.dataTransfer.setData(GROUP_MIME, section.id!); event.dataTransfer.effectAllowed = 'move'; }}
@@ -173,8 +173,8 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
                   const next = new Set(previous); if (next.has(section.key)) next.delete(section.key); else next.add(section.key); return next;
                 })}>{collapsed.has(section.key) ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</button>
               <h3 id={`repository-group-${section.key}`} tabIndex={-1} ref={node => { if (node) headingRefs.current.set(section.key, node); else headingRefs.current.delete(section.key); }}
-                className="min-w-0 flex-1 scroll-mt-36 break-words text-sm font-semibold outline-none">
-                <GroupIcon icon={section.icon} />{section.name} <span className="ml-2 font-normal tabular-nums text-muted-foreground">{members.length}</span>
+                className="min-w-0 flex-1 scroll-mt-36 break-words text-sm font-semibold tracking-tight outline-none flex items-center gap-1.5">
+                <GroupIcon icon={section.icon} /><span>{section.name}</span> <span className="ml-1 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-normal tabular-nums text-muted-foreground">{members.length}</span>
               </h3>
               {section.id && <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t('organization.addExisting')} title={t('organization.addExisting')} onClick={() => { setAddingTo(section.id); setChosen(new Set()); setQuery(''); }}><Plus className="h-4 w-4" /></Button>}
               {section.id && <DropdownMenu>
@@ -283,7 +283,7 @@ function GroupBatch({ repositories, collapsed, viewMode, renderRepository, reset
   if (collapsed) return null;
   return <>
     <RepositoryGrid viewMode={viewMode}>{repositories.slice(0, count).map(renderRepository)}</RepositoryGrid>
-    {repositories.length === 0 && <p className="py-3 text-xs text-muted-foreground">{t('organization.emptyGroup')}</p>}
+    {repositories.length === 0 && <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 py-6 text-center text-xs text-muted-foreground">{t('organization.emptyGroup')}</div>}
     {count < repositories.length && <div ref={sentinel} className="py-2"><Button variant="ghost" size="sm" onClick={() => setCount(previous => previous + BATCH)}>{t('organization.loadMore')}</Button></div>}
   </>;
 }

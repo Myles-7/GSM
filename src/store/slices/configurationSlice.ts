@@ -1,6 +1,7 @@
 
 import type { AppStoreSlice } from '../types';
 import { mergeVectorSearchConfig, normalizeMcpConfig } from '../schema';
+import type { AIConfig } from '../../types';
 
 export const createConfigurationSlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'addAIConfig'
@@ -31,7 +32,7 @@ export const createConfigurationSlice: AppStoreSlice<Pick<import('../types').App
       })),
       updateAIConfig: (id, updates) => set((state) => ({
         aiConfigs: state.aiConfigs.map(config =>
-          config.id === id ? { ...config, ...updates } : config
+          config.id === id ? { ...config, ...updates, provider: config.provider } as AIConfig : config
         )
       })),
       deleteAIConfig: (id) => set((state) => ({

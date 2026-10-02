@@ -1,5 +1,5 @@
 import { makeT, useT } from "../../../i18n/useT";
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Gist } from '../../../types';
 import type { GistCreateInput, GistUpdateInput } from '../../../services/githubApi';
@@ -9,6 +9,21 @@ import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { AIService } from '../../../services/aiService';
 import { useDialog } from '../../../hooks/useDialog';
 import { filterAndSortGists } from '../../../utils/gistUtils';
+import { withDeadline } from '../../../utils/requestDeadline';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
+
+const ANALYSIS_DEADLINE_MS = 120_000;
+// Cards and the batch view mount separate instances of this hook.
+const analysisOwners = new Map<string, symbol>();
+const analysisIdentity = (state: ReturnType<typeof selectGistViewState>) => JSON.stringify([
+  state.user?.id, state.user?.login, state.githubToken, state.activeAIConfig,
+  state.aiConfigs.find(config => config.id === state.activeAIConfig), state.language,
+]);
+type AnalysisTask = {
+  controller: AbortController;
+  isCurrent: () => boolean;
+  finish: () => void;
+};
 
 export type { GistCreateInput, GistUpdateInput };
 
@@ -35,6 +50,104 @@ export const useGistActions = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [isAnalyzingAll, setIsAnalyzingAll] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
+  const analysisTasks = useRef(new Set<AbortController>());
+  const analysisGeneration = useRef(0);
+  const mounted = useRef(false);
+  const batchTask = useRef<AnalysisTask | null>(null);
+  const searchTask = useRef<AnalysisTask | null>(null);
+  const backgroundController = useRef<AbortController | null>(null);
+  const backgroundCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    let identity = analysisIdentity(useAppStore.getState());
+    const cancel = () => {
+      analysisGeneration.current++;
+      for (const controller of analysisTasks.current) controller.abort();
+      analysisTasks.current.clear();
+      batchTask.current = null;
+      searchTask.current = null;
+      if (mounted.current) { setIsAnalyzingAll(false); setIsSearching(false); }
+    };
+    // Subscribe synchronously, including account A -> B -> A between renders.
+    const unsubscribe = useAppStore.subscribe(next => {
+      const nextIdentity = analysisIdentity(next);
+      if (nextIdentity === identity) return;
+      identity = nextIdentity;
+      cancel();
+    });
+    return () => {
+      mounted.current = false;
+      if (backgroundController.current && aiTaskJournal.hasHost()) {
+        for (const controller of analysisTasks.current) if (controller !== backgroundController.current) controller.abort();
+        backgroundCleanup.current = unsubscribe;
+        return;
+      }
+      unsubscribe();
+      cancel();
+    };
+  }, []);
+  const beginAnalysis = useCallback((): AnalysisTask | null => {
+    const identity = analysisIdentity(state);
+    if (!mounted.current || identity !== analysisIdentity(useAppStore.getState())) return null;
+    const generation = analysisGeneration.current;
+    const controller = new AbortController();
+    analysisTasks.current.add(controller);
+    return {
+      controller,
+      isCurrent: () => (mounted.current || backgroundController.current === controller) && !controller.signal.aborted
+        && generation === analysisGeneration.current
+        && identity === analysisIdentity(useAppStore.getState()),
+      finish: () => { analysisTasks.current.delete(controller); },
+    };
+  }, [state]);
+  const analyzeTarget = useCallback(async (
+    gist: Gist,
+    task: AnalysisTask,
+    activeConfig: (typeof state.aiConfigs)[number],
+  ): Promise<boolean | null> => {
+    if (!task.isCurrent() || analysisOwners.has(gist.id)) return null;
+    const owner = Symbol(gist.id);
+    analysisOwners.set(gist.id, owner);
+    const release = () => {
+      if (analysisOwners.get(gist.id) !== owner) return;
+      analysisOwners.delete(gist.id);
+      useAppStore.getState().setAnalyzingGist(gist.id, false);
+    };
+    task.controller.signal.addEventListener('abort', release, { once: true });
+    const canCommit = () => task.isCurrent() && analysisOwners.get(gist.id) === owner;
+    const readCurrentGist = () => {
+      const current = useAppStore.getState();
+      return current.gists.find(item => item.id === gist.id)
+        ?? current.starredGists.find(item => item.id === gist.id)
+        ?? current.gistSearchResults.find(item => item.id === gist.id);
+    };
+    try {
+      state.setAnalyzingGist(gist.id, true);
+      const summary = await withDeadline(async signal => {
+        const api = createGitHubApiService(state.githubToken!);
+        const detail = await api.getGistForAnalysis(gist.id, gist, signal);
+        signal.throwIfAborted();
+        if (!canCommit()) throw new DOMException('Cancelled', 'AbortError');
+        const aiService = new AIService(activeConfig, state.language);
+        return aiService.analyzeGist(detail, api.getGistContentPreview(detail), signal);
+      }, activeConfig.provider === 'agy-cli' ? (activeConfig.agyFeatureOverrides?.['gist-summary']?.timeoutSeconds ?? activeConfig.agyTimeoutSeconds ?? 180) * 2000 + 15000 : ANALYSIS_DEADLINE_MS, task.controller.signal);
+      if (!canCommit()) return null;
+      // Only analysis fields may change: the fetched/input gist may be deleted or edited.
+      const current = readCurrentGist();
+      if (!current) return null;
+      useAppStore.getState().updateGist(applyGistAnalysisSuccess(current, summary, new Date().toISOString()));
+      return true;
+    } catch (error) {
+      if (!canCommit() || ((error instanceof Error || error instanceof DOMException) && error.name === 'AbortError')) return null;
+      const current = readCurrentGist();
+      if (!current) return null;
+      useAppStore.getState().updateGist(applyGistAnalysisFailure(current, error instanceof Error ? error.message : String(error), new Date().toISOString()));
+      return false;
+    } finally {
+      task.controller.signal.removeEventListener('abort', release);
+      release();
+    }
+  }, [state]);
   // isAnalyzingGist(id) 的渲染值恒等于 store 集合值：原 GistCard 的本地 isAnalyzingLocal
   // 与 setAnalyzingGist 同置同清，渲染上与集合值等价，故本 hook 只操作 store 集合、
   // 不再设本地 flag（勿"修复"回双 flag 写法）。
@@ -73,80 +186,110 @@ export const useGistActions = () => {
     categoryItems: Gist[],
     onReranked: () => void,
   ) => {
+    searchTask.current?.controller.abort();
+    searchTask.current = null;
+    setIsSearching(false);
     if (!query.trim()) return;
     const activeConfig = state.aiConfigs.find(config => config.id === state.activeAIConfig);
     if (!activeConfig) {
       state.setGistSearchFilters({ query });
       return;
     }
+    const task = beginAnalysis();
+    if (!task) return;
+    searchTask.current = task;
     setIsSearching(true);
     try {
       const aiService = new AIService(activeConfig, state.language);
-      const ranked = await aiService.searchGistsWithReranking(
-        filterAndSortGists(categoryItems, { ...state.gistSearchFilters, query: '' }),
-        query,
-      );
+      const ranked = await withDeadline(signal => aiService.searchGistsWithReranking(
+        filterAndSortGists(categoryItems, { ...state.gistSearchFilters, query: '' }), query, signal,
+      ), activeConfig.provider === 'agy-cli' ? (activeConfig.agyFeatureOverrides?.['gist-rerank']?.timeoutSeconds ?? activeConfig.agyTimeoutSeconds ?? 180) * 2000 : ANALYSIS_DEADLINE_MS, task.controller.signal);
+      if (!task.isCurrent()) return;
       onReranked();
       state.setGistSearchFilters({ query });
       state.setGistSearchResults(ranked);
     } catch {
-      state.setGistSearchFilters({ query });
+      if (task.isCurrent()) state.setGistSearchFilters({ query });
     } finally {
-      setIsSearching(false);
+      task.finish();
+      if (searchTask.current === task) {
+        searchTask.current = null;
+        if (mounted.current) setIsSearching(false);
+      }
     }
-  }, [state]);
+  }, [state, beginAnalysis]);
 
-  const analyzeVisibleGists = useCallback(async () => {
+  const analyzeVisibleGists = useCallback(async (requestedIds?: string[], configId?: string) => {
     if (!state.githubToken) {
       toast(t('useGistActions.github-token-not-found-please-login-again'), 'error');
       return;
     }
-    const activeConfig = state.aiConfigs.find(config => config.id === state.activeAIConfig);
+    const activeConfig = state.aiConfigs.find(config => config.id === (configId ?? state.activeAIConfig));
     if (!activeConfig) {
       toast(t('useGistActions.please-configure-ai-service-in-settings-first'), 'error');
       return;
     }
-    if (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model || activeConfig.apiKeyStatus === 'decrypt_failed' || activeConfig.apiKeyStatus === 'empty') {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(t('useGistActions.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return;
     }
-    const targets = state.gistSearchResults.filter(gist => !gist.analyzed_at || gist.analysis_failed);
+    const targets = requestedIds
+      ? [...new Map([...state.gists, ...state.starredGists].filter(gist => requestedIds.includes(gist.id)).map(gist => [gist.id, gist])).values()]
+      : state.gistSearchResults.filter(gist => !gist.analyzed_at || gist.analysis_failed);
     if (targets.length === 0) {
       toast(t('useGistActions.no-gists-need-analysis-in-the-current-list'), 'info');
       return;
     }
-    const confirmed = await confirm(t('useGistActions.batch-ai-analysis'), t('useGistActions.analyze-v1-gists-continue', { v1: targets.length }), { type: 'warning' });
-    if (!confirmed) return;
-
-    setIsAnalyzingAll(true);
-    const api = createGitHubApiService(state.githubToken);
-    const aiService = new AIService(activeConfig, state.language);
+    if (batchTask.current) return;
+    const task = beginAnalysis();
+    if (!task) return;
+    batchTask.current = task;
     let success = 0;
     let failed = 0;
-    const concurrency = activeConfig.concurrency && activeConfig.concurrency > 1 ? activeConfig.concurrency : 1;
-    const analyzeOne = async (gist: Gist) => {
-      state.setAnalyzingGist(gist.id, true);
-      try {
-        const detail = await api.getGistForAnalysis(gist.id, gist);
-        const summary = await aiService.analyzeGist(detail, api.getGistContentPreview(detail));
-        state.updateGist({ ...detail, ai_summary: summary.trim(), analyzed_at: new Date().toISOString(), analysis_failed: false, analysis_error: undefined });
-        success++;
-      } catch (error) {
-        state.updateGist({ ...gist, analyzed_at: new Date().toISOString(), analysis_failed: true, analysis_error: error instanceof Error ? error.message : String(error) });
-        failed++;
-      } finally {
-        state.setAnalyzingGist(gist.id, false);
-      }
-    };
+    const concurrency = Math.max(1, Math.min(targets.length, Math.floor(activeConfig.concurrency || 1), activeConfig.provider === 'agy-cli' ? activeConfig.agyFeatureOverrides?.['gist-summary']?.concurrency ?? 5 : Infinity));
+    let journal: ReturnType<typeof aiTaskJournal.begin> | undefined;
+    let paused = false;
     try {
+      const confirmed = await withDeadline(
+        () => confirm(t('useGistActions.batch-ai-analysis'), t('useGistActions.analyze-v1-gists-continue', { v1: targets.length }), { type: 'warning' }),
+        ANALYSIS_DEADLINE_MS, task.controller.signal,
+      );
+      if (!confirmed || !task.isCurrent()) return;
+      if (aiTaskJournal.busy(String(state.user?.id ?? ''), 'gists')) return;
+      journal = aiTaskJournal.begin(String(state.user?.id ?? ''), 'gists',
+        targets.map(gist => ({ id: gist.id, label: gist.description || gist.id })), activeConfig.id);
+      journal.bind({ pause: () => { paused = true; journal?.state('paused'); },
+        resume: () => { paused = false; journal?.state('running'); }, stop: () => task.controller.abort() });
+      if (aiTaskJournal.hasHost()) backgroundController.current = task.controller;
+      setIsAnalyzingAll(true);
       for (let index = 0; index < targets.length; index += concurrency) {
-        await Promise.all(targets.slice(index, index + concurrency).map(analyzeOne));
+        while (paused && task.isCurrent()) await new Promise(resolve => setTimeout(resolve, 100));
+        if (!task.isCurrent()) return;
+        await Promise.all(targets.slice(index, index + concurrency).map(async gist => {
+          journal?.item(gist.id, 'running');
+          const result = await analyzeTarget(gist, task, activeConfig.provider === 'agy-cli' ? { ...activeConfig, agyFeature: 'gist-summary' as const, agyPriority: 'background' as const } : activeConfig);
+          if (result !== null) journal?.item(gist.id, result ? 'complete' : 'failed');
+          if (result === true) success++;
+          if (result === false) failed++;
+        }));
       }
-      toast(t('useGistActions.ai-analysis-done-success-succeeded-failed-failed', { success: success, failed: failed }), failed > 0 ? 'error' : 'success');
+      if (task.isCurrent()) {
+        toast(t('useGistActions.ai-analysis-done-success-succeeded-failed-failed', { success: success, failed: failed }), failed > 0 ? 'error' : 'success');
+      }
+    } catch {
+      // Confirmation can be cancelled or expire before any work starts.
     } finally {
-      setIsAnalyzingAll(false);
+      journal?.finish();
+      if (backgroundController.current === task.controller) backgroundController.current = null;
+      backgroundCleanup.current?.();
+      backgroundCleanup.current = null;
+      task.finish();
+      if (batchTask.current === task) {
+        batchTask.current = null;
+        if (mounted.current) setIsAnalyzingAll(false);
+      }
     }
-  }, [state, t, toast, confirm]);
+  }, [state, t, toast, confirm, beginAnalysis, analyzeTarget]);
 
   const fetchGistDetail = useCallback(async (gist: Gist): Promise<Gist | null> => {
     if (!state.githubToken) return null;
@@ -191,7 +334,7 @@ export const useGistActions = () => {
     }
   }, [state, t, toast]);
 
-  // 单卡 AI 分析（原 GistCard.handleAnalyze）：无 Abort、无 forceSync；
+  // 单卡 AI 分析（原 GistCard.handleAnalyze）：无 forceSync；
   // 重新分析覆盖确认在本 hook 内（View 只保留 stopPropagation 前置）。
   const analyzeOne = useCallback(async (gist: Gist) => {
     if (!state.githubToken) {
@@ -203,35 +346,36 @@ export const useGistActions = () => {
       toast(t('useGistActions.please-configure-ai-service-in-settings-first'), 'error');
       return;
     }
-    if (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model || activeConfig.apiKeyStatus === 'decrypt_failed' || activeConfig.apiKeyStatus === 'empty') {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(t('useGistActions.ai-service-configuration-is-incomplete-please-ch'), 'error');
       return;
     }
 
-    if (gist.analyzed_at) {
-      const shouldContinue = await confirm(
-        t('useGistActions.re-analyze-confirmation'),
-        t('useGistActions.this-gist-has-already-been-analyzed-overwrite-th'),
-        { type: 'warning' }
-      );
-      if (!shouldContinue) return;
-    }
-
-    state.setAnalyzingGist(gist.id, true);
+    if (analysisOwners.has(gist.id)) return;
+    const task = beginAnalysis();
+    if (!task) return;
     try {
-      const githubApi = createGitHubApiService(state.githubToken);
-      const detail = await githubApi.getGistForAnalysis(gist.id, gist);
-      const aiService = new AIService(activeConfig, state.language);
-      const summary = await aiService.analyzeGist(detail, githubApi.getGistContentPreview(detail));
-      state.updateGist(applyGistAnalysisSuccess(detail, summary, new Date().toISOString()));
-      toast(t('useGistActions.gist-ai-analysis-completed'), 'success');
-    } catch (error) {
-      state.updateGist(applyGistAnalysisFailure(gist, error instanceof Error ? error.message : String(error), new Date().toISOString()));
-      toast(t('useGistActions.gist-ai-analysis-failed'), 'error');
+      if (gist.analyzed_at) {
+        const shouldContinue = await withDeadline(
+          () => confirm(
+            t('useGistActions.re-analyze-confirmation'),
+            t('useGistActions.this-gist-has-already-been-analyzed-overwrite-th'),
+            { type: 'warning' },
+          ),
+          ANALYSIS_DEADLINE_MS, task.controller.signal,
+        );
+        if (!shouldContinue || !task.isCurrent()) return;
+      }
+      const result = await analyzeTarget(gist, task, activeConfig);
+      if (result !== null && task.isCurrent()) {
+        toast(t(result ? 'useGistActions.gist-ai-analysis-completed' : 'useGistActions.gist-ai-analysis-failed'), result ? 'success' : 'error');
+      }
+    } catch {
+      // Confirmation can be cancelled or expire before any work starts.
     } finally {
-      state.setAnalyzingGist(gist.id, false);
+      task.finish();
     }
-  }, [state, t, toast, confirm]);
+  }, [state, t, toast, confirm, beginAnalysis, analyzeTarget]);
 
   const unstarGist = useCallback(async (gist: Gist, onUnstarred?: (gistId: string) => void) => {
     if (!state.githubToken) return;
@@ -319,3 +463,4 @@ export const useGistActions = () => {
     isAnalyzingGist,
   };
 };
+import { isAIConfigAvailable } from '../../../utils/aiConfig';

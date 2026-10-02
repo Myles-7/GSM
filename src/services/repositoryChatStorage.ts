@@ -40,9 +40,9 @@ const emptySnapshot = (): FallbackSnapshot => ({
   proposals: [],
 });
 
-const notifyGlobalHistoryChanged = (): void => {
+const notifyGlobalHistoryChanged = (source?: 'home-projection'): void => {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT));
+  window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT, { detail: source ? { source } : undefined }));
 };
 
 const canUseIndexedDb = () => typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
@@ -282,15 +282,15 @@ const MAX_TEXT = 200_000;
 const SECRET_KEY_PATTERN = /(?:token|secret|password|authorization|cookie|api[_-]?key)/i;
 
 const BACKUP_KEYS = ['schemaVersion', 'ownerId', 'exportedAt', 'sessions', 'messages', 'toolEvents', 'evidence', 'projects', 'proposals'] as const;
-const SESSION_KEYS = ['id', 'repoId', 'repoFullName', 'sourceRefSha', 'title', 'summary', 'modelConfigId', 'modelLabelAtTime', 'ownerId', 'kind', 'projectId', 'pinned', 'archived', 'workbench', 'createdAt', 'updatedAt', 'deletedAt'] as const;
-const MESSAGE_KEYS = ['id', 'sessionId', 'role', 'content', 'status', 'evidenceIds', 'createdAt'] as const;
+const SESSION_KEYS = ['id', 'repoId', 'repoFullName', 'sourceRefSha', 'title', 'summary', 'modelConfigId', 'modelLabelAtTime', 'ownerId', 'kind', 'projectId', 'pinned', 'archived', 'deviceOnly', 'workbench', 'createdAt', 'updatedAt', 'deletedAt'] as const;
+const MESSAGE_KEYS = ['id', 'sessionId', 'role', 'content', 'status', 'evidenceIds', 'missing', 'createdAt', 'answerPhase', 'quality', 'claims', 'coverage', 'researchSources', 'comparison'] as const;
 const TOOL_EVENT_KEYS = ['id', 'sessionId', 'messageId', 'toolName', 'status', 'paramSummary', 'stage', 'round', 'detail', 'durationMs', 'resultSize', 'evidenceId', 'createdAt'] as const;
 const EVIDENCE_KEYS = ['id', 'source', 'repoFullName', 'refSha', 'path', 'lineStart', 'lineEnd', 'url', 'contentHash', 'excerpt', 'retrievedAt'] as const;
-const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'repositories', 'createdAt', 'updatedAt', 'deletedAt'] as const;
+const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'repositories', 'selectedRepositoryNames', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
 const OPERATION_KEYS = ['id', 'repository', 'kind', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
 const EDITABLE_KEYS = ['custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
-const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches'] as const;
+const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject'] as const;
 const REQUIREMENTS_KEYS = ['purpose', 'required', 'preferred', 'excluded', 'questions', 'queries'] as const;
 const SEARCH_BATCH_KEYS = ['id', 'createdAt', 'requirements', 'candidates', 'queries', 'nextPage'] as const;
 const CANDIDATE_KEYS = ['repository', 'summary', 'reasons', 'limitations', 'sources', 'status'] as const;
@@ -451,7 +451,12 @@ const validateRequirements = (value: unknown, label: string) => {
 
 const validateWorkbenchData = (value: unknown, label: string): WorkbenchSessionData => {
   const record = assertRecord(value, label, WORKBENCH_KEYS);
-  asEnum(record.scope, `${label}.scope`, ['github', 'selected', 'project', 'library'] as const);
+  asEnum(record.scope, `${label}.scope`, ['github', 'selected', 'project', 'library', 'local', 'mixed'] as const);
+  if (record.localProject !== undefined) {
+    const project = assertRecord(record.localProject, `${label}.localProject`, ['name', 'identity']);
+    asString(project.name, `${label}.localProject.name`, 1_000);
+    if (project.identity !== undefined) asString(project.identity, `${label}.localProject.identity`, 128);
+  }
   asEnum(record.depth, `${label}.depth`, ['quick', 'standard', 'deep'] as const);
   asArray(record.selectedRepositories, `${label}.selectedRepositories`, MAX_REPOSITORIES_PER_COLLECTION)
     .forEach((repository, index) => validateRepository(repository, `${label}.selectedRepositories[${index}]`));
@@ -493,6 +498,7 @@ const validateSession = (value: unknown, label: string, ownerId: string): Reposi
   asOptionalString(record.projectId, `${label}.projectId`);
   asOptionalBoolean(record.pinned, `${label}.pinned`);
   asOptionalBoolean(record.archived, `${label}.archived`);
+  asOptionalBoolean(record.deviceOnly, `${label}.deviceOnly`);
   if (record.workbench !== undefined) validateWorkbenchData(record.workbench, `${label}.workbench`);
   asIsoString(record.createdAt, `${label}.createdAt`);
   asIsoString(record.updatedAt, `${label}.updatedAt`);
@@ -508,6 +514,39 @@ const validateMessage = (value: unknown, label: string): RepositoryChatMessage =
   asString(record.content, `${label}.content`, MAX_TEXT);
   asEnum(record.status, `${label}.status`, ['complete', 'streaming', 'error', 'aborted'] as const);
   asIdentifierArray(record.evidenceIds, `${label}.evidenceIds`, 5_000);
+  if (record.missing !== undefined) asIdentifierArray(record.missing, `${label}.missing`, 32);
+  asOptionalEnum(record.answerPhase, `${label}.answerPhase`, ['draft', 'reviewing', 'final'] as const);
+  asOptionalEnum(record.quality, `${label}.quality`, ['model-reviewed', 'unreviewed'] as const);
+  if (record.comparison !== undefined) asArray(record.comparison, `${label}.comparison`, 200).forEach(value => {
+    const cell = assertRecord(value, `${label}.comparisonCell`, ['repository', 'requirement', 'status', 'evidenceId', 'quote']);
+    asString(cell.repository, `${label}.comparison.repository`, 1_000);
+    asString(cell.requirement, `${label}.comparison.requirement`, 1_000);
+    asEnum(cell.status, `${label}.comparison.status`, ['supported', 'unsupported', 'unknown'] as const);
+    asOptionalString(cell.evidenceId, `${label}.comparison.evidenceId`);
+    asOptionalString(cell.quote, `${label}.comparison.quote`, 4_000);
+    if (cell.status !== 'unknown' && (!cell.evidenceId || !cell.quote)) throw new Error('Comparison requires evidence');
+  });
+  if (record.researchSources !== undefined) asArray(record.researchSources, `${label}.researchSources`, 500).forEach(value => {
+    const source = assertRecord(value, `${label}.researchSource`, ['repository', 'status', 'version', 'evidenceIds']);
+    asString(source.repository, `${label}.researchSource.repository`, 1_000);
+    asEnum(source.status, `${label}.researchSource.status`, ['complete', 'reused', 'changed', 'failed', 'pending'] as const);
+    asOptionalString(source.version, `${label}.researchSource.version`, 1_000);
+    asIdentifierArray(source.evidenceIds, `${label}.researchSource.evidenceIds`, 5_000);
+  });
+  if (record.answerPhase === 'final' && record.status !== 'complete') throw new Error('Final answer must be complete');
+  if (record.status === 'complete' && (record.answerPhase === 'draft' || record.answerPhase === 'reviewing')) throw new Error('Draft answer cannot be complete');
+  if (record.claims !== undefined) asArray(record.claims, `${label}.claims`, 100).forEach((value, index) => {
+    const claim = assertRecord(value, `${label}.claims[${index}]`, ['text', 'evidenceId', 'quote']);
+    asString(claim.text, `${label}.claim.text`, 2_000);
+    asIdentifier(claim.evidenceId, `${label}.claim.evidenceId`);
+    asString(claim.quote, `${label}.claim.quote`, 4_000);
+  });
+  if (record.coverage !== undefined) asArray(record.coverage, `${label}.coverage`, 32).forEach((value, index) => {
+    const item = assertRecord(value, `${label}.coverage[${index}]`, ['requirement', 'status', 'answerExcerpt']);
+    asString(item.requirement, `${label}.coverage.requirement`, 1_000);
+    asEnum(item.status, `${label}.coverage.status`, ['answered', 'unknown'] as const);
+    asString(item.answerExcerpt, `${label}.coverage.answerExcerpt`, 4_000);
+  });
   asIsoString(record.createdAt, `${label}.createdAt`);
   return record as unknown as RepositoryChatMessage;
 };
@@ -533,7 +572,7 @@ const validateToolEvent = (value: unknown, label: string): RepositoryChatToolEve
 const validateEvidence = (value: unknown, label: string): ToolEvidence => {
   const record = assertRecord(value, label, EVIDENCE_KEYS);
   asIdentifier(record.id, `${label}.id`);
-  asEnum(record.source, `${label}.source`, ['github', 'existing-vector', 'web'] as const);
+  asEnum(record.source, `${label}.source`, ['github', 'existing-vector', 'web', 'local'] as const);
   asString(record.repoFullName, `${label}.repoFullName`);
   asOptionalString(record.refSha, `${label}.refSha`);
   asOptionalString(record.path, `${label}.path`, MAX_TEXT);
@@ -555,6 +594,10 @@ const validateProject = (value: unknown, label: string, ownerId: string): Workbe
   asString(record.conclusions, `${label}.conclusions`, MAX_TEXT);
   asArray(record.repositories, `${label}.repositories`, MAX_REPOSITORIES_PER_COLLECTION)
     .forEach((repository, index) => validateRepository(repository, `${label}.repositories[${index}]`));
+  if (record.selectedRepositoryNames !== undefined) {
+    asStringArray(record.selectedRepositoryNames, `${label}.selectedRepositoryNames`, MAX_REPOSITORIES_PER_COLLECTION);
+    if ((record.selectedRepositoryNames as string[]).some(name => !/^[\w.-]+\/[\w.-]+$/.test(name))) throw new Error('[repository-chat] invalid project repository name');
+  }
   asIsoString(record.createdAt, `${label}.createdAt`);
   asIsoString(record.updatedAt, `${label}.updatedAt`);
   asOptionalIsoString(record.deletedAt, `${label}.deletedAt`);
@@ -645,6 +688,16 @@ const parseWorkbenchBackup = (ownerId: string, data: unknown): WorkbenchBackup =
   if (messages.some((message) => message.evidenceIds.some((id) => !evidenceIds.has(id)))) {
     throw new Error('[repository-chat] invalid workbench import: message references missing evidence');
   }
+  const evidenceById = new Map(evidence.map(item => [item.id, item]));
+  if (messages.some(message => message.claims?.some(claim => !message.evidenceIds.includes(claim.evidenceId)
+    || !evidenceById.get(claim.evidenceId)?.excerpt.includes(claim.quote) || !message.content.includes(claim.text))
+    || message.coverage?.some(item => !message.content.includes(item.answerExcerpt))
+    || message.comparison?.some(cell => cell.status !== 'unknown' && (!cell.evidenceId || !cell.quote
+      || !message.evidenceIds.includes(cell.evidenceId)
+      || evidenceById.get(cell.evidenceId)?.repoFullName !== cell.repository
+      || !evidenceById.get(cell.evidenceId)?.excerpt.includes(cell.quote))))) {
+    throw new Error('[repository-chat] invalid workbench import: answer review references missing content');
+  }
   if (toolEvents.some((event) => event.evidenceId && !evidenceIds.has(event.evidenceId))) {
     throw new Error('[repository-chat] invalid workbench import: tool event references missing evidence');
   }
@@ -734,6 +787,11 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
     id: messageIds.get(message.id) ?? message.id,
     sessionId: sessionIds.get(message.sessionId) ?? message.sessionId,
     evidenceIds: message.evidenceIds.map((id) => evidenceIds.get(id) ?? id),
+    claims: message.claims?.map(claim => ({ ...claim, evidenceId: evidenceIds.get(claim.evidenceId) ?? claim.evidenceId })),
+    researchSources: message.researchSources?.map(source => ({ ...source,
+      evidenceIds: source.evidenceIds.map(id => evidenceIds.get(id) ?? id) })),
+    comparison: message.comparison?.map(cell => ({ ...cell,
+      evidenceId: cell.evidenceId ? evidenceIds.get(cell.evidenceId) ?? cell.evidenceId : undefined })),
   }));
   const toolEvents = backup.toolEvents.map((event) => ({
     ...event,
@@ -766,6 +824,45 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
 };
 
 export const repositoryChatStorage = {
+  /** Stable-ID projection from account-bound home sync. Unlike backup import, never remaps IDs. */
+  async applyHomeProjection(ownerId: string, records: Array<{ collection: string; id: string; data: Record<string, unknown> | null; deleted?: boolean }>): Promise<void> {
+    const merge = (snapshot: FallbackSnapshot): FallbackSnapshot => {
+    const deleted = (collection: string) => new Set(records.filter(row => row.collection === collection && row.deleted).map(row => row.id));
+    const ownedSessions = new Set(snapshot.sessions.filter(session => session.ownerId === ownerId && !session.deviceOnly && !session.workbench?.localProject && deleted('sessions').has(session.id)).map(session => session.id));
+    const remoteSessions = records.filter(row => row.collection === 'sessions' && row.data && (!row.data.ownerId || String(row.data.ownerId) === ownerId));
+    const remoteSessionIds = new Set(remoteSessions.map(row => row.id));
+    const keys: Record<string, readonly string[]> = { sessions: SESSION_KEYS, messages: MESSAGE_KEYS, evidence: EVIDENCE_KEYS, projects: PROJECT_KEYS, proposals: PROPOSAL_KEYS };
+    const pick = (collection: string, data: Record<string, unknown>) => Object.fromEntries(Object.entries(data).filter(([key]) => keys[collection]?.includes(key)));
+    const remote = (collection: string) => records.filter(row => row.collection === collection && row.data).map(row => ({ ...pick(collection, row.data!), id: row.id }));
+    const projected: FallbackSnapshot = {
+      sessions: [...snapshot.sessions.filter(row => !ownedSessions.has(row.id) && !remoteSessionIds.has(row.id)), ...remoteSessions.map(row => ({ ...pick('sessions', row.data!), id: row.id, ownerId }) as unknown as RepositoryChatSession)],
+      messages: [...snapshot.messages.filter(row => !ownedSessions.has(row.sessionId) && !deleted('messages').has(row.id) && !records.some(item => item.collection === 'messages' && item.id === row.id)), ...remote('messages').filter(row => remoteSessionIds.has(String((row as Record<string, unknown>).sessionId))).map(row => ({ evidenceIds: [], ...row }) as unknown as RepositoryChatMessage)],
+      toolEvents: snapshot.toolEvents,
+      evidence: [...snapshot.evidence.filter(row => row.source === 'local' || !records.some(item => item.collection === 'evidence' && item.id === row.id)), ...remote('evidence') as unknown as ToolEvidence[]],
+      projects: [...snapshot.projects.filter(row => row.ownerId !== ownerId || (!deleted('projects').has(row.id) && !records.some(item => item.collection === 'projects' && item.id === row.id))), ...remote('projects').map(row => ({ ...row, ownerId }) as unknown as WorkbenchProject)],
+      // Desktop proposal schemas are stricter than remote proposals. Keep remote proposals visible in the home panel without corrupting desktop actions.
+      proposals: [...snapshot.proposals.filter(row => row.ownerId !== ownerId || (!deleted('proposals').has(row.id) && !records.some(item => item.collection === 'proposals' && item.id === row.id))), ...remote('proposals').filter(row => Array.isArray((row as Record<string, unknown>).operations)).map(row => ({ ...row, ownerId }) as unknown as WorkbenchProposal)],
+    };
+      return projected;
+    };
+    if (useFallbackStorage || !canUseIndexedDb()) { writeFallback(merge(readFallback())); notifyGlobalHistoryChanged('home-projection'); return; }
+    await runTransaction([...STORE_NAMES], 'readwrite', async stores => {
+      const snapshot: FallbackSnapshot = {
+        sessions: await requestValue(stores.sessions.getAll()) as RepositoryChatSession[],
+        messages: await requestValue(stores.messages.getAll()) as RepositoryChatMessage[],
+        toolEvents: await requestValue(stores.toolEvents.getAll()) as RepositoryChatToolEvent[],
+        evidence: await requestValue(stores.evidence.getAll()) as ToolEvidence[],
+        projects: await requestValue(stores.projects.getAll()) as WorkbenchProject[],
+        proposals: await requestValue(stores.proposals.getAll()) as WorkbenchProposal[],
+      };
+      const projected = merge(snapshot);
+      for (const name of STORE_NAMES) {
+        await requestValue(stores[name].clear());
+        await Promise.all(projected[name].map(row => requestValue(stores[name].put(row))));
+      }
+    });
+    notifyGlobalHistoryChanged('home-projection');
+  },
   async listSessionsByRepository(repoId: number): Promise<RepositoryChatSession[]> {
     const fallback = () => fallbackList<RepositoryChatSession>('sessions', (session) => session.repoId === repoId && !session.deletedAt).sort(byUpdatedAtDescending);
     if (useFallbackStorage || !canUseIndexedDb()) {
@@ -1066,7 +1163,11 @@ export const repositoryChatStorage = {
 
   async exportWorkbench(ownerId: string): Promise<unknown> {
     const snapshot = await readCompleteSnapshot();
-    const sessions = snapshot.sessions.filter((session) => session.ownerId === ownerId);
+    const localEvidenceIds = new Set(snapshot.evidence.filter(item => item.source === 'local').map(item => item.id));
+    const localSessionIds = new Set(snapshot.messages.filter(message => message.evidenceIds.some(id => localEvidenceIds.has(id))).map(message => message.sessionId));
+    snapshot.sessions.filter(session => session.deviceOnly || session.workbench?.localProject).forEach(session => localSessionIds.add(session.id));
+    const sessions = snapshot.sessions.filter((session) => session.ownerId === ownerId && !session.deviceOnly
+      && !session.workbench?.localProject && !localSessionIds.has(session.id));
     const sessionIds = new Set(sessions.map((session) => session.id));
     const messages = snapshot.messages.filter((message) => sessionIds.has(message.sessionId));
     const toolEvents = snapshot.toolEvents.filter((event) => sessionIds.has(event.sessionId));
@@ -1083,7 +1184,7 @@ export const repositoryChatStorage = {
       toolEvents,
       evidence: snapshot.evidence.filter((item) => evidenceIds.has(item.id)),
       projects: snapshot.projects.filter((project) => project.ownerId === ownerId),
-      proposals: snapshot.proposals.filter((proposal) => proposal.ownerId === ownerId),
+      proposals: snapshot.proposals.filter((proposal) => proposal.ownerId === ownerId && !localSessionIds.has(proposal.sessionId)),
     };
     return parseWorkbenchBackup(ownerId, backup);
   },

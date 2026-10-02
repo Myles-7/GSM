@@ -28,6 +28,9 @@ import { SiAndroid, SiApple, SiLinux, SiX, SiTelegram } from '@icons-pack/react-
 import { SiWindows } from './SiWindows';
 import { useAppStore } from '../store/useAppStore';
 import { useDiscoveryActions } from '../features/discovery/hooks/useDiscoveryActions';
+import { CustomChannelEditor, CustomChannelNavigation, CustomChannelView, CreateChannelButton } from '../features/discovery/components/CustomChannelUI';
+import { selectCustomChannel, startCustomRun, useCustomDiscovery } from '../features/discovery/custom/store';
+import type { CustomDiscoveryChannel } from '../features/discovery/custom/model';
 import { DiscoverySidebar } from './DiscoverySidebar';
 import { DiscoveryChannelMenu } from './DiscoveryChannelMenu';
 import { TrendingHistoryPanel } from '../features/discovery/components/TrendingHistoryPanel';
@@ -110,7 +113,9 @@ const discoveryChannelStyleMap: Record<DiscoveryChannelIcon, { gradient: string;
 interface MobileTabNavProps {
   channels: { id: DiscoveryChannelId; name: string; nameEn: string; icon: React.ReactNode }[];
   allChannels: DiscoveryChannel[];
-  selectedChannel: DiscoveryChannelId;
+  selectedChannel: DiscoveryChannelId | null;
+  customNavigation?: React.ReactNode;
+  createChannelButton?: React.ReactNode;
   onChannelSelect: (channel: DiscoveryChannelId) => void;
   onToggleChannel: (channel: DiscoveryChannelId) => void;
   language: AppLanguage;
@@ -122,7 +127,9 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
   selectedChannel, 
   onChannelSelect,
   onToggleChannel,
-  language 
+  language,
+  customNavigation,
+  createChannelButton
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Map<DiscoveryChannelId, HTMLButtonElement>>(new Map());
@@ -137,19 +144,19 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
     }
 
     rafRef.current = requestAnimationFrame(() => {
-      const activeButton = tabRefs.current.get(selectedChannel);
+      const activeButton = selectedChannel ? tabRefs.current.get(selectedChannel) : undefined;
       if (activeButton && scrollContainerRef.current) {
         const container = scrollContainerRef.current;
         const translateX = activeButton.offsetLeft - container.scrollLeft;
         const width = activeButton.offsetWidth;
 
         setIndicatorStyle({ translateX, width });
-      }
+      } else { setIndicatorStyle({ translateX: 0, width: 0 }); }
     });
   }, [selectedChannel]);
 
   const scrollToActiveTab = useCallback(() => {
-    const activeButton = tabRefs.current.get(selectedChannel);
+    const activeButton = selectedChannel ? tabRefs.current.get(selectedChannel) : undefined;
     if (activeButton && scrollContainerRef.current) {
       const container = scrollContainerRef.current;
       const scrollLeft = activeButton.offsetLeft - (container.offsetWidth / 2) + (activeButton.offsetWidth / 2);
@@ -246,7 +253,9 @@ const MobileTabNav: React.FC<MobileTabNavProps> = ({
               </span>
             </Button>
           ))}
+          {customNavigation}
         </div>
+        {createChannelButton}
         <DiscoveryChannelMenu
           channels={allChannels}
           language={language}
@@ -451,6 +460,9 @@ const DataStats: React.FC<DataStatsProps> = ({ currentCount, totalCount }) => {
 };
 
 export const DiscoveryView: React.FC = React.memo(() => {
+  const customState = useCustomDiscovery();
+  const customChannel = customState.data.channels.find(c => c.id === customState.selected && c.enabled);
+  const [channelEditor, setChannelEditor] = useState<CustomDiscoveryChannel | 'new' | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const toggleDiscoveryChannel = useAppStore(state => state.toggleDiscoveryChannel);
   const {
@@ -725,6 +737,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
     for (const channel of enabledChannels) {
       await refreshChannel(channel.id, 1, false);
     }
+    await startCustomRun(useCustomDiscovery.getState().data.channels.filter(c => c.enabled && !c.paused).map(c => c.id));
   }, [safeDiscoveryChannels, refreshChannel]);
 
   const mobileChannels = useMemo(() => {
@@ -742,9 +755,12 @@ export const DiscoveryView: React.FC = React.memo(() => {
       <MobileTabNav
         channels={mobileChannels}
         allChannels={safeDiscoveryChannels}
-        selectedChannel={selectedDiscoveryChannel}
+        selectedChannel={customChannel ? null : selectedDiscoveryChannel}
+        customNavigation={<CustomChannelNavigation mobile />}
+        createChannelButton={<CreateChannelButton onClick={() => setChannelEditor('new')} />}
         onToggleChannel={toggleDiscoveryChannel}
         onChannelSelect={(channel) => {
+          selectCustomChannel(null);
           if (channel === selectedDiscoveryChannel) {
             return;
           }
@@ -767,8 +783,11 @@ export const DiscoveryView: React.FC = React.memo(() => {
           <DiscoverySidebar
             channels={safeDiscoveryChannels}
             onToggleChannel={toggleDiscoveryChannel}
-            selectedChannel={selectedDiscoveryChannel}
+            selectedChannel={customChannel ? null : selectedDiscoveryChannel}
+            customNavigation={<CustomChannelNavigation onCreate={() => setChannelEditor('new')} />}
+            createChannelButton={<CreateChannelButton onClick={() => setChannelEditor('new')} />}
             onChannelSelect={(channel) => {
+              selectCustomChannel(null);
               if (channel === selectedDiscoveryChannel) {
                 return;
               }
@@ -785,7 +804,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
           />
         </div>
 
-        <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
+        {customChannel ? <CustomChannelView key={customChannel.id} channel={customChannel} onEdit={() => setChannelEditor(customChannel)} /> : <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
           {/* 顶部工具栏 - 随滚动显示/隐藏 */}
           <div 
             className={`flex-shrink-0 pr-2 transition-transform duration-300 ease-in-out z-10 ${
@@ -1355,8 +1374,9 @@ export const DiscoveryView: React.FC = React.memo(() => {
           <TelegramSettingsModal
             isOpen={telegramSettingsOpen}
             onClose={() => setTelegramSettingsOpen(false)} />
-        </div>
+        </div>}
       </div>
+      {channelEditor && <CustomChannelEditor channel={channelEditor === 'new' ? undefined : channelEditor} onClose={() => setChannelEditor(null)} />}
     </div>
   );
 });

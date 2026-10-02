@@ -14,6 +14,7 @@ export interface RepositoryChatSession {
   projectId?: string;
   pinned?: boolean;
   archived?: boolean;
+  deviceOnly?: boolean;
   workbench?: WorkbenchSessionData;
   createdAt: string;
   updatedAt: string;
@@ -27,7 +28,34 @@ export interface RepositoryChatMessage {
   content: string;
   status: 'complete' | 'streaming' | 'error' | 'aborted';
   evidenceIds: string[];
+  missing?: string[];
+  answerPhase?: 'draft' | 'reviewing' | 'final';
+  quality?: 'model-reviewed' | 'unreviewed';
+  claims?: Array<{ text: string; evidenceId: string; quote: string }>;
+  coverage?: Array<{ requirement: string; status: 'answered' | 'unknown'; answerExcerpt: string }>;
+  researchSources?: ResearchSourceStatus[];
+  comparison?: ComparisonCell[];
   createdAt: string;
+}
+
+export interface ComparisonCell {
+  repository: string;
+  requirement: string;
+  status: 'supported' | 'unsupported' | 'unknown';
+  evidenceId?: string;
+  quote?: string;
+}
+
+export interface ResearchSourceStatus {
+  repository: string;
+  status: 'complete' | 'reused' | 'changed' | 'failed' | 'pending';
+  version?: string;
+  evidenceIds: string[];
+}
+
+export interface RepositoryAnswerEvent {
+  phase: 'draft' | 'reviewing' | 'final';
+  content: string;
 }
 
 export type RepositoryChatExecutionStage =
@@ -58,7 +86,7 @@ export interface RepositoryChatToolEvent {
 
 export interface ToolEvidence {
   id: string;
-  source: 'github' | 'existing-vector' | 'web';
+  source: 'github' | 'existing-vector' | 'web' | 'local';
   repoFullName: string;
   refSha?: string;
   path?: string;

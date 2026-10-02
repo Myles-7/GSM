@@ -69,6 +69,7 @@ const repository = (id: number, overrides: Partial<Repository> = {}): Repository
 });
 
 const createStoreState = () => ({
+  repositories: [] as Repository[],
   githubToken: 'github-token',
   aiConfigs: [{
     id: 'ai-config',
@@ -86,11 +87,15 @@ const createStoreState = () => ({
 
 let storeState = createStoreState();
 const mockUseAppStore = vi.mocked(useAppStore);
-const runOptions = (repositories: Repository[], syncOnComplete = false) => ({
+Object.assign(mockUseAppStore, { getState: () => storeState, subscribe: () => () => {} });
+const runOptions = (repositories: Repository[], syncOnComplete = false) => {
+  storeState.repositories = repositories;
+  return {
   repositories,
   scope: 'all' as const,
   syncOnComplete,
-});
+  };
+};
 
 const renderJob = () => renderHook(() => useRepositoryAnalysisJob({ allCategories: [] }));
 
@@ -107,6 +112,19 @@ describe('useRepositoryAnalysisJob', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('does not dispatch after the account changes during confirmation', async () => {
+    mocks.confirm.mockImplementation(async () => {
+      storeState = { ...storeState, githubToken: 'new-account-token' };
+      return true;
+    });
+    const { result } = renderJob();
+    await act(async () => {
+      expect(await result.current.run(runOptions([repository(1)]))).toBe(false);
+    });
+    expect(mocks.analyzeRepositoriesPipelined).not.toHaveBeenCalled();
+    expect(storeState.updateRepository).not.toHaveBeenCalled();
   });
 
   it('stores successful analysis results without syncing toolbar jobs', async () => {

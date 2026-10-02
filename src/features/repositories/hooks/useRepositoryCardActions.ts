@@ -11,6 +11,7 @@ import { forceSyncToBackend } from '../../../services/autoSync';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { logger } from '../../../services/logger';
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
+import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 
 interface UseRepositoryCardActionsOptions {
   repository: Repository;
@@ -55,7 +56,6 @@ export const useRepositoryCardActions = ({
     vectorSearchConfig,
     vectorSearchStatus,
     embeddingConfigs,
-    activeEmbeddingConfig,
     repositories,
     enterSimilarView,
     aiConfigs,
@@ -72,7 +72,6 @@ export const useRepositoryCardActions = ({
         vectorSearchConfig: state.vectorSearchConfig,
         vectorSearchStatus: state.vectorSearchStatus,
         embeddingConfigs: state.embeddingConfigs,
-        activeEmbeddingConfig: state.activeEmbeddingConfig,
         repositories: state.repositories,
         enterSimilarView: state.enterSimilarView,
         aiConfigs: state.aiConfigs,
@@ -84,17 +83,19 @@ export const useRepositoryCardActions = ({
   );
   const { toast, confirm } = useDialog();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const similarAbortRef = useRef<AbortController | null>(null);
   const [isLocallyAnalyzing, setIsLocallyAnalyzing] = useState(false);
   const [isFindingSimilar, setIsFindingSimilar] = useState(false);
   const [isUnstarring, setIsUnstarring] = useState(false);
 
   useEffect(() => () => {
     abortControllerRef.current?.abort();
+    similarAbortRef.current?.abort();
     setAnalyzingRepository(repoId, false);
   }, [repoId, setAnalyzingRepository]);
 
   const vectorSearchAvailable = useMemo(() => {
-    const activeConfig = embeddingConfigs.find((config) => config.id === activeEmbeddingConfig);
+    const activeConfig = embeddingConfigs.find((config) => config.id === vectorSearchConfig.embeddingConfigId);
     const configComplete = !!activeConfig
       && !!activeConfig.baseUrl
       && !!activeConfig.model
@@ -108,7 +109,7 @@ export const useRepositoryCardActions = ({
       && !!vectorSearchConfig.workerUrl
       && !!vectorSearchConfig.authToken
     );
-  }, [embeddingConfigs, activeEmbeddingConfig, vectorSearchConfig, vectorSearchStatus]);
+  }, [embeddingConfigs, vectorSearchConfig, vectorSearchStatus]);
 
   const analyze = useCallback(async () => {
     if (!githubToken) {
@@ -136,7 +137,7 @@ export const useRepositoryCardActions = ({
       return;
     }
 
-    if (!activeConfig.baseUrl || !activeConfig.apiKey || !activeConfig.model) {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(
         t('useRepositoryCardActions.ai-service-configuration-is-incomplete-please-ch'),
         'error',
@@ -161,6 +162,7 @@ export const useRepositoryCardActions = ({
     abortControllerRef.current = controller;
 
     const analysisStartedAt = performance.now();
+    const mergeAnalysis = beginRepositoryAnalysisWrite(useAppStore.getState().user?.id ?? 0, repoId);
     setIsLocallyAnalyzing(true);
     requestAnimationFrame(() => {
       logger.info('ai.performance', 'Repository card AI spinner painted', {
@@ -207,7 +209,7 @@ export const useRepositoryCardActions = ({
       });
 
       const updateStartedAt = performance.now();
-      updateRepository(updatedRepo);
+      updateRepository(mergeAnalysis(latestRepository, updatedRepo));
       logger.info('ai.performance', 'Repository card AI result stored', {
         repoId,
         fullName: repository.full_name,
@@ -236,7 +238,7 @@ export const useRepositoryCardActions = ({
         });
 
         const updateStartedAt = performance.now();
-        updateRepository(failedRepo);
+        updateRepository(mergeAnalysis(latestRepository, failedRepo));
         logger.info('ai.performance', 'Repository card AI failure stored', {
           repoId,
           fullName: repository.full_name,
@@ -269,7 +271,7 @@ export const useRepositoryCardActions = ({
     updateRepository, t]);
 
   const findSimilar = useCallback(async () => {
-    if (isFindingSimilar) return;
+    if (similarAbortRef.current) return;
     if (!vectorSearchAvailable) {
       toast(
         t('useRepositoryCardActions.vector-search-is-not-ready-please-enable-vector'),
@@ -278,11 +280,23 @@ export const useRepositoryCardActions = ({
       return;
     }
 
-    const activeConfig = embeddingConfigs.find((config) => config.id === activeEmbeddingConfig);
+    const activeConfig = embeddingConfigs.find((config) => config.id === vectorSearchConfig.embeddingConfigId);
     if (!activeConfig) return;
 
+    const controller = new AbortController();
+    similarAbortRef.current = controller;
+    const check = () => {
+      controller.signal.throwIfAborted();
+      const current = useAppStore.getState();
+      if (current.vectorSearchConfig !== vectorSearchConfig || current.embeddingConfigs !== embeddingConfigs ||
+          current.githubToken !== githubToken) {
+        controller.abort();
+        throw new DOMException('Stale vector search', 'AbortError');
+      }
+    };
     setIsFindingSimilar(true);
     try {
+      check();
       const embeddingClient = new EmbeddingClient({
         ...activeConfig,
         apiType: activeConfig.apiType,
@@ -291,10 +305,9 @@ export const useRepositoryCardActions = ({
         model: activeConfig.model,
         dimensions: activeConfig.dimensions,
       });
-      const vectorService = new VectorSearchService({
-        workerUrl: vectorSearchConfig.workerUrl,
-        authToken: vectorSearchConfig.authToken,
-      });
+      const vectorService = new VectorSearchService(vectorSearchConfig, activeConfig);
+      await vectorService.prepareQuery(controller.signal);
+      check();
       // Indexing enriches documents with README text in readme mode. Mirror that
       // source representation for card-level similarity without changing SearchBar.
       const githubApi = githubToken ? createGitHubApiService(githubToken) : null;
@@ -310,28 +323,29 @@ export const useRepositoryCardActions = ({
         readmeFetcher,
         indexMode: vectorSearchConfig.indexMode,
         readmeMaxChars: vectorSearchConfig.readmeMaxChars,
+        signal: controller.signal,
       });
-
+      check();
       enterSimilarView(similar, repository);
 
       if (similar.length === 0) {
         toast(t('useRepositoryCardActions.no-similar-repositories-found'), 'info');
       }
     } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return;
       console.error('Find similar repositories failed:', error);
       const errorMessage = error instanceof Error && error.message
         ? error.message
         : (t('useRepositoryCardActions.failed-to-find-similar-repositories-please-check'));
       toast(errorMessage, 'error');
     } finally {
+      similarAbortRef.current = null;
       setIsFindingSimilar(false);
     }
   }, [
-    activeEmbeddingConfig,
     embeddingConfigs,
     enterSimilarView,
     githubToken,
-    isFindingSimilar,
     repositories,
     repository,
     toast,
@@ -406,3 +420,4 @@ export const useRepositoryCardActions = ({
     vectorSearchAvailable,
   ]);
 };
+import { isAIConfigAvailable } from '../../../utils/aiConfig';

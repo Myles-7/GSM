@@ -70,9 +70,13 @@ export function registerMcpTools(server: McpServer): void {
           available: vector.available,
           reason: vector.reason,
           embeddingModel: vector.embeddingModel,
+          hint: vector.hint,
+          indexCompatibility: vector.indexCompatibility,
         },
         toolsNote: vector.available
           ? 'gsm_vector_search is available'
+          : vector.reason === 'vector_index_identity_not_synced'
+            ? 'Vector tools are unavailable because backend generation identity is not synced. Keyword and repository tools remain available.'
           : 'gsm_find_similar_repos and gsm_vector_search are not listed until vector search is configured and enabled',
         ...toolAvailability,
       });

@@ -31,6 +31,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { SliderInput } from '../ui/SliderInput';
 import { useDialog } from '../../hooks/useDialog';
 import { useVectorSearchActions } from '../../features/settings/hooks/useVectorSearchActions';
+import { hasCompatibleVectorIndex } from '../../services/vectorIndexIdentity';
 
 interface VectorSearchSettingsProps {
   t: TranslateFn;
@@ -130,6 +131,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
   const handleAbortIndexing = () => abortIndexing();
   const { isIndexing, phase, phaseDone, phaseTotal, result: indexResult } = vectorIndexingState;
   const isConfigComplete = !!(activeConfig && formBaseUrl && formModel && (formApiType === 'ollama' || formApiKey) && formWorkerUrl && formAuthToken);
+  const compatibleIndex = hasCompatibleVectorIndex(draft(), { ...draft(), activeIndex: vectorSearchConfig.activeIndex });
 
   return (
     <div className="space-y-6">
@@ -560,6 +562,11 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         )}
 
         {/* 保存索引配置 */}
+        {!compatibleIndex && (
+          <Alert>
+            <AlertDescription>{t('vectorSearchSettings.must-rebuild-index-after-changing-embedding-mode')}</AlertDescription>
+          </Alert>
+        )}
         <Button
           onClick={handleSaveWorkerConfig}
           variant={workerSaved ? 'default' : 'outline'}
@@ -579,7 +586,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
           </Button>
           <Button
             onClick={handleIncrementalIndex}
-            disabled={isIndexing || !isConfigComplete || incrementalTargetCount === 0}
+            disabled={isIndexing || !isConfigComplete || !compatibleIndex || incrementalTargetCount === 0}
             className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-accent-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isIndexing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}

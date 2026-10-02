@@ -6,6 +6,7 @@ import { makeT, useT } from '../../../i18n/useT';
 import type { AppLanguage } from '../../../i18n/languages';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
+import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import { useShallow } from 'zustand/react/shallow';
 import type { Repository } from '../../../types';
 import type {
@@ -130,9 +131,9 @@ export const useRepositoryChat = ({
     ? (t('useRepositoryChat.repository-chat-is-disabled-in-ai-settings'))
     : !githubToken
       ? (t('useRepositoryChat.configure-a-github-token-first'))
-      : !aiConfig
+      : !isAIConfigAvailable(aiConfig)
         ? (t('useRepositoryChat.configure-an-active-ai-service-first'))
-        : null;
+          : null;
 
   const persistToolEvent = useCallback(async (event: Omit<RepositoryChatToolEvent, 'id' | 'sessionId' | 'messageId' | 'createdAt'> & { toolName: string }, activeMessageId: string) => {
     if (!session) return;
@@ -219,6 +220,7 @@ export const useRepositoryChat = ({
       role: 'assistant',
       content: '',
       status: 'streaming',
+      answerPhase: 'draft',
       evidenceIds: [],
       createdAt: assistantCreatedAt,
     };
@@ -228,6 +230,7 @@ export const useRepositoryChat = ({
     // 流式渲染：增量回调以 ~60ms 节流刷新最后一条助手消息，最终结果仍以经过
     // 引用校验的 result.content 为准。声明在外层以便中止时保留半截回答。
     let streamedContent = '';
+    let previewPhase: 'draft' | 'reviewing' = 'draft';
     try {
       await Promise.all([
         repositoryChatStorage.saveMessage(userMessage),
@@ -239,13 +242,13 @@ export const useRepositoryChat = ({
           globalThis.clearTimeout(streamFlushTimer);
           streamFlushTimer = null;
         }
-        onMessagesChange([...baseMessages, userMessage, { ...assistantMessage, content }]);
+        if (!controller.signal.aborted) onMessagesChange([...baseMessages, userMessage, { ...assistantMessage, content, answerPhase: previewPhase }]);
       };
       const scheduleStreamedFlush = () => {
         if (streamFlushTimer) return;
         streamFlushTimer = globalThis.setTimeout(() => {
           streamFlushTimer = null;
-          onMessagesChange([...baseMessages, userMessage, { ...assistantMessage, content: streamedContent }]);
+          if (!controller.signal.aborted) onMessagesChange([...baseMessages, userMessage, { ...assistantMessage, content: streamedContent, answerPhase: previewPhase }]);
         }, 60);
       };
       try {
@@ -267,12 +270,19 @@ export const useRepositoryChat = ({
             void persistToolEvent(event, assistantMessage.id);
           },
           onAnswerChunk: (fullText) => {
+            if (controller.signal.aborted) return;
             streamedContent = fullText;
             if (fullText.length === 0) {
               // 流式降级：立即清空已流出的无效内容。
               flushStreamedContent('');
               return;
             }
+            scheduleStreamedFlush();
+          },
+          onAnswerEvent: (event) => {
+            if (controller.signal.aborted || event.phase === 'final') return;
+            streamedContent = event.content;
+            previewPhase = event.phase;
             scheduleStreamedFlush();
           },
         });
@@ -290,6 +300,11 @@ export const useRepositoryChat = ({
           content: result.content,
           status: 'complete',
           evidenceIds: result.evidences.map((evidence) => evidence.id),
+          missing: result.missing,
+          answerPhase: 'final',
+          quality: result.quality ?? 'unreviewed',
+          claims: result.claims,
+          coverage: result.coverage,
         };
         await repositoryChatStorage.saveMessage(completedAssistant);
         onMessagesChange([...baseMessages, userMessage, completedAssistant]);

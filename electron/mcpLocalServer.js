@@ -20,6 +20,42 @@ const {
 
 const MCP_BATCH_LIMIT = 50;
 const VECTOR_CANDIDATE_LIMIT = 50;
+// Matches vectorIndexIdentity.ts. Cross-runtime tests verify canonical identity.
+const VECTOR_PROTOCOL_VERSION = 2;
+const EMBEDDING_FORMAT_VERSION = 3;
+
+function getVectorScope(vs) {
+  const active = vs.activeIndex;
+  // Only old IPC snapshots may use legacy mode, never failed v2 validation.
+  if (active === undefined && vs.indexProtocolVersion === undefined) return null;
+  const incompatible = () => { throw new Error('vector_index_rebuild_required'); };
+  if (!active || (vs.indexProtocolVersion !== undefined && vs.indexProtocolVersion !== VECTOR_PROTOCOL_VERSION)) incompatible();
+  const emb = vs.embedding;
+  const normalizeUrl = (value, stripTrailingSlash = true) => {
+    const url = new URL(String(value || '').trim());
+    if (url.username || url.password || url.search || url.hash) incompatible();
+    return stripTrailingSlash ? url.href.replace(/\/+$/, '') : url.href;
+  };
+  const mode = vs.indexMode ?? 'readme';
+  const readmeMaxChars = mode === 'readme' ? (vs.readmeMaxChars ?? 6000) : 0;
+  if (!Number.isInteger(emb.dimensions) || emb.dimensions < 1 ||
+      !['description', 'readme'].includes(mode) ||
+      !Number.isInteger(readmeMaxChars) || readmeMaxChars < 0 || (mode === 'readme' && !readmeMaxChars)) incompatible();
+  const identity = {
+    provider: emb.apiType,
+    endpoint: normalizeUrl(emb.baseUrl, emb.apiType !== 'openai-compatible'),
+    model: emb.model,
+    dimensions: emb.dimensions,
+    mode,
+    readmeMaxChars,
+    format: EMBEDDING_FORMAT_VERSION,
+    target: normalizeUrl(vs.workerUrl),
+  };
+  const hash = crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  if (JSON.stringify(active.identity) !== JSON.stringify(identity) || active.identityHash !== hash ||
+      typeof active.namespace !== 'string' || !new RegExp(`^g${hash.slice(0, 12)}[a-f0-9]{32}$`).test(active.namespace)) incompatible();
+  return { identityHash: hash, namespace: active.namespace, dimensions: emb.dimensions };
+}
 
 function getVectorAvailability(snapshot) {
   const vs = snapshot?.vectorSearchConfig;
@@ -38,11 +74,18 @@ function getVectorAvailability(snapshot) {
   if (apiType !== 'ollama' && !emb.apiKey) {
     return { available: false, reason: 'embedding_api_key_missing' };
   }
+  let scope;
+  try {
+    scope = getVectorScope(vs);
+  } catch {
+    return { available: false, reason: 'vector_index_rebuild_required' };
+  }
   return {
     available: true,
     reason: null,
     embeddingModel: emb.model,
     workerUrl,
+    scope,
   };
 }
 
@@ -71,7 +114,7 @@ async function fetchWithTimeout(url, init, timeoutMs = FETCH_TIMEOUT_MS) {
  * `${baseUrl}/v1/embeddings` where baseUrl is typically host WITHOUT trailing /v1
  * (e.g. https://api.siliconflow.cn → .../v1/embeddings).
  */
-async function embedQuery(text, emb) {
+async function embedQuery(text, emb, scoped = false) {
   const apiType = emb.apiType || 'openai';
   const model = emb.model || '';
   const apiKey = emb.apiKey || '';
@@ -105,7 +148,7 @@ async function embedQuery(text, emb) {
   } else if (apiType === 'openai-compatible') {
     // App: use baseUrl as full embeddings endpoint URL
     if (!baseUrl) throw new Error('openai-compatible baseUrl is required (full embeddings endpoint)');
-    url = baseUrl;
+    url = scoped ? String(emb.baseUrl) : baseUrl;
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     body = { model, input: [text] };
   } else {
@@ -114,7 +157,7 @@ async function embedQuery(text, emb) {
       baseUrl ||
       (apiType === 'siliconflow' ? 'https://api.siliconflow.cn' : 'https://api.openai.com');
     // Avoid double /v1 if user already stored .../v1
-    url = /\/v1$/i.test(root) ? `${root}/embeddings` : `${root}/v1/embeddings`;
+    url = !scoped && /\/v1$/i.test(root) ? `${root}/embeddings` : `${root}/v1/embeddings`;
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     body = { model, input: [text] };
   }
@@ -160,6 +203,23 @@ async function runVectorSearch(query, args, snapshot) {
 
   const vs = snapshot.vectorSearchConfig;
   const emb = vs.embedding;
+  const scope = availability.scope;
+  const workerUrl = String(vs.workerUrl).replace(/\/+$/, '');
+  const workerToken = vs.authToken || '';
+  if (scope) {
+    try {
+      const statusResponse = await fetchWithTimeout(`${workerUrl}/status`, {
+        headers: workerToken ? { Authorization: `Bearer ${workerToken}` } : {},
+      });
+      const status = statusResponse.ok ? await statusResponse.json() : null;
+      if (!status || status.success === false || status.protocolVersion !== VECTOR_PROTOCOL_VERSION) {
+        return { available: false, reason: 'worker_upgrade_required' };
+      }
+      if (status.dimensions !== scope.dimensions) return { available: false, reason: 'vector_dimensions_mismatch' };
+    } catch {
+      return { available: false, reason: 'worker_status_failed' };
+    }
+  }
   const topK = Math.min(50, Math.max(1, Number(args?.topK) || vs.searchTopK || 20));
   const threshold =
     typeof args?.threshold === 'number'
@@ -172,7 +232,10 @@ async function runVectorSearch(query, args, snapshot) {
 
   let vector;
   try {
-    vector = await embedQuery(String(query || ''), emb);
+    vector = await embedQuery(String(query || ''), emb, !!scope);
+    if (scope && (!Array.isArray(vector) || vector.length !== scope.dimensions || !vector.every(Number.isFinite))) {
+      return { available: false, reason: 'vector_dimensions_mismatch' };
+    }
   } catch (err) {
     return {
       available: false,
@@ -180,8 +243,6 @@ async function runVectorSearch(query, args, snapshot) {
     };
   }
 
-  const workerUrl = String(vs.workerUrl).replace(/\/$/, '');
-  const workerToken = vs.authToken || '';
   let res;
   try {
     res = await fetchWithTimeout(`${workerUrl}/query`, {
@@ -190,7 +251,7 @@ async function runVectorSearch(query, args, snapshot) {
         'Content-Type': 'application/json',
         ...(workerToken ? { Authorization: `Bearer ${workerToken}` } : {}),
       },
-      body: JSON.stringify({ vector, topK: workerTopK, threshold }),
+      body: JSON.stringify({ vector, topK: workerTopK, threshold, ...(scope ? { scope } : {}) }),
     });
   } catch {
     return {
@@ -219,13 +280,18 @@ async function runVectorSearch(query, args, snapshot) {
   }
   // 与 server/src/mcp/provider.ts 相同的结构校验：JSON null / matches 非数组
   // 不静默转空结果，统一返回声明的 unavailable 结果
-  if (!data || !Array.isArray(data.matches)) {
+  if (!data || data.success === false || !Array.isArray(data.matches)) {
     return {
       available: false,
       reason: 'worker_query_failed',
     };
   }
   const matches = data.matches;
+  if (scope && matches.some((match) => !match || match.metadata?.identity_hash !== scope.identityHash ||
+      !/^\d{1,16}$/.test(String(match.id)) || !Number.isFinite(match.score))) {
+    return { available: false, reason: 'vector_identity_mismatch' };
+  }
+  const compatibility = scope ? {} : { indexCompatibility: 'legacy_unverified', warning: 'Legacy index identity is unknown. Upgrade the Worker and rebuild the vector index.' };
   const repos = Array.isArray(snapshot?.repositories) ? snapshot.repositories : [];
   const byId = new Map(repos.map((r) => [String(r.id), r]));
 
@@ -242,7 +308,7 @@ async function runVectorSearch(query, args, snapshot) {
       score: candidate.score,
       ...projectRepo(candidate.repository),
     }));
-    return { available: true, total: enriched.length, matches: enriched };
+    return { available: true, total: enriched.length, matches: enriched, ...compatibility };
   }
 
   // This is local filtering over the retrieved candidate set, not an exact
@@ -258,6 +324,7 @@ async function runVectorSearch(query, args, snapshot) {
     available: true,
     total: enriched.length,
     matches: enriched,
+    ...compatibility,
     filtering: {
       mode: 'local_candidate_set',
       candidateLimit: VECTOR_CANDIDATE_LIMIT,
@@ -536,7 +603,7 @@ async function callTool(name, args, snapshot) {
         return text({
           available: false,
           reason: vectorInfo.reason || 'vector_search_disabled',
-          hint: 'Enable Vector Search in Settings and ensure embedding + worker are configured, then retry.',
+          hint: 'Enable Vector Search in Settings. Unknown or incompatible index identity requires a vector index rebuild.',
         });
       }
       const key = String(args?.idOrFullName || '').trim();
@@ -571,6 +638,7 @@ async function callTool(name, args, snapshot) {
         source: projectRepo(source, 2000),
         sourceExcluded: true,
         matches: similarMatches,
+        ...(result.indexCompatibility ? { indexCompatibility: result.indexCompatibility, warning: result.warning } : {}),
       });
     }
     case 'gsm_vector_search': {
@@ -578,7 +646,7 @@ async function callTool(name, args, snapshot) {
         return text({
           available: false,
           reason: vectorInfo.reason || 'vector_search_disabled',
-          hint: 'Enable Vector Search in Settings and ensure embedding + worker are configured, then retry.',
+          hint: 'Enable Vector Search in Settings. Unknown or incompatible index identity requires a vector index rebuild.',
         });
       }
       const result = await runVectorSearch(args?.query || '', args, snapshot);
@@ -885,4 +953,4 @@ function createMcpLocalServer(getState) {
   return { start, stop, getStatus };
 }
 
-module.exports = { createMcpLocalServer, getMcpToolDefinitions, getMcpToolAvailability };
+module.exports = { createMcpLocalServer, getMcpToolDefinitions, getMcpToolAvailability, getVectorAvailability };

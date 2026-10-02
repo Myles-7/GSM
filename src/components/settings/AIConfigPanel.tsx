@@ -16,6 +16,8 @@ import { buildFinalApiUrl } from '../../utils/apiUrlBuilder';
 import { SliderInput } from '../ui/SliderInput';
 import { useDialog } from '../../hooks/useDialog';
 import { isToolCallCapableApiType } from '../../constants/aiCapabilities';
+import { AgyConfigPanel } from './AgyConfigPanel';
+import { isHttpAIConfig } from '../../utils/aiConfig';
 
 interface AIConfigPanelProps {
   t: TranslateFn;
@@ -263,8 +265,8 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
     setForm({
       name: config.name,
       apiType: config.apiType || 'openai',
-      baseUrl: config.baseUrl,
-      apiKey: config.apiKey,
+      baseUrl: config.baseUrl || '',
+      apiKey: config.apiKey || '',
       model: config.model,
       customPrompt: config.customPrompt || '',
       useCustomPrompt: config.useCustomPrompt || false,
@@ -430,6 +432,7 @@ Repository information:
 
   return (
     <div className="space-y-6">
+      <AgyConfigPanel />
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <Bot className="w-6 h-6 text-muted-foreground dark:text-muted-foreground " />
@@ -731,7 +734,7 @@ Repository information:
         {t('aIConfigPanel.active-ai-configuration')}
       </h4>
       <RadioGroup aria-labelledby="active-ai-config-heading" value={activeAIConfig || ''} onValueChange={setActiveAIConfig} className="space-y-3">
-        {aiConfigs.map(config => (
+        {aiConfigs.filter(isHttpAIConfig).map(config => (
           <div
             key={config.id}
             className={`p-4 rounded-lg border transition-colors ${

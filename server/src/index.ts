@@ -22,6 +22,14 @@ import telegramRouter from './routes/telegram.js';
 import logsRouter from './routes/logs.js';
 import mcpAdminRouter from './routes/mcp.js';
 import { mountMcpRoutes } from './mcp/http.js';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import syncV2Router, { legacySyncV2Guard } from './routes/syncV2.js';
+import tasksRouter from './routes/tasks.js';
+import discoveryRouter from './routes/discovery.js';
+import { initializeTasks, startTaskRunner, stopTaskRunner } from './services/taskRunner.js';
+import { backupBeforeMigration, startBackupScheduler } from './services/backups.js';
 
 // Origins the SPA is allowed to call directly from the browser. 'self' covers
 // the backend proxy; the rest support the "browser direct" route mode
@@ -50,6 +58,7 @@ function buildConnectSrc(): string[] {
 
 export function createApp(): express.Express {
   const app = express();
+  app.use((_req, res, next) => { res.setHeader('X-Request-ID', randomUUID()); next(); });
 
   // Helmet's default CSP blocks every browser-direct call (api.github.com,
   // avatar images, AI providers), which breaks the supported "browser direct"
@@ -67,6 +76,7 @@ export function createApp(): express.Express {
   app.use(
     cors({
       exposedHeaders: [
+        'X-Request-ID',
         'X-Log-Count',
         'Mcp-Session-Id',
         'mcp-session-id',
@@ -86,7 +96,8 @@ export function createApp(): express.Express {
       ],
     })
   );
-  app.use(morgan('combined', { stream: morganLoggerStream }));
+  morgan.token('gsm-request-id', (_req, res) => String(res.getHeader('X-Request-ID') ?? ''));
+  app.use(morgan(':gsm-request-id :method :url :status :response-time ms', { stream: morganLoggerStream }));
   app.use(express.json({ limit: '50mb' }));
 
   // Auth middleware for all /api/* except /api/health
@@ -94,6 +105,10 @@ export function createApp(): express.Express {
 
   // Routes
   app.use(healthRouter);
+  app.use(syncV2Router);
+  app.use(tasksRouter);
+  app.use(discoveryRouter);
+  app.use(legacySyncV2Guard);
 
   // Wave 2: Data CRUD routes
   app.use(repositoriesRouter);
@@ -128,15 +143,24 @@ export function createApp(): express.Express {
   return app;
 }
 
-function startServer(): void {
+async function startServer(): Promise<void> {
   // Initialize database
   const db = getDb();
+  const backupDir = path.join(config.dataDir, 'backups');
+  const hasExistingSchema = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
+  if (hasExistingSchema) {
+    const version = (db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number }).version;
+    if (version < 3) await backupBeforeMigration(db, backupDir);
+  }
   runMigrations(db);
+  initializeTasks(db);
+  startTaskRunner(db);
+  const stopBackups = startBackupScheduler(db, backupDir, error => logger.errorFromError('backup', 'Scheduled backup failed', error));
   logger.info('server.init', 'Database initialized');
 
   const app = createApp();
 
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, config.host, () => {
     logger.info('server.start', `Server running on port ${config.port}`);
     if (!config.apiSecret) {
       logger.warn('server.auth', 'Running without API_SECRET — auth is disabled');
@@ -144,13 +168,19 @@ function startServer(): void {
   });
 
   // Graceful shutdown
-  const shutdown = () => {
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
     logger.info('server.shutdown', 'Shutting down...');
-    server.close(() => {
-      closeDb();
-      logger.info('server.shutdown', 'Server stopped');
-      process.exit(0);
-    });
+    // Stop new submissions first, then settle task writes and online backups before closing SQLite.
+    server.close();
+    await stopTaskRunner();
+    await stopBackups();
+    server.closeAllConnections();
+    closeDb();
+    logger.info('server.shutdown', 'Server stopped');
+    process.exit(0);
   };
 
   process.on('SIGTERM', shutdown);
@@ -159,7 +189,7 @@ function startServer(): void {
 
 // Only start server when run directly (not imported for tests)
 const isMainModule =
-  process.argv[1] && new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname;
+  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (isMainModule) {
-  startServer();
+  void startServer().catch(error => { logger.errorFromError('server.start', 'Startup failed', error); closeDb(); process.exitCode = 1; });
 }

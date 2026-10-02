@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
@@ -34,7 +34,15 @@ function stop(exitCode = 0) {
   for (const child of [electronProcess, viteProcess, backendProcess]) {
     if (child && child.exitCode === null && child.signalCode === null) {
       try {
-        child.kill();
+        if (process.platform === 'win32') {
+          // npm/tsx can have descendants; stop only services owned by this launch.
+          spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+        } else {
+          child.kill();
+        }
       } catch {}
     }
   }
@@ -47,6 +55,7 @@ process.once('SIGTERM', () => stop(0));
 async function isBackendRunning() {
   return new Promise((resolve) => {
     const req = http.get('http://127.0.0.1:3000/api/health', { timeout: 1500 }, (res) => {
+      res.resume();
       resolve(res.statusCode === 200);
     });
     req.on('error', () => resolve(false));
@@ -61,6 +70,7 @@ async function isBackendRunning() {
 async function isViteServing() {
   return new Promise((resolve) => {
     const req = http.get(devServerUrl, { timeout: 1500 }, (res) => {
+      res.resume();
       resolve(Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 500));
     });
     req.on('error', () => resolve(false));
@@ -100,18 +110,27 @@ async function ensureBackend() {
     cwd: rootDir,
     stdio: 'inherit',
     shell: true,
+    windowsHide: true,
+  });
+  backendProcess.once('error', (error) => {
+    console.error(`[×] 后端启动异常: ${error.message}`);
+    stop(1);
   });
 
   // 等待后端启动
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
+    if (stopping) return;
+    if (backendProcess.exitCode !== null) {
+      throw new Error(`后端服务启动失败 (退出码: ${backendProcess.exitCode})`);
+    }
     if (await isBackendRunning()) {
       console.log('[√] 后端服务启动成功！');
       return;
     }
     await delay(500);
   }
-  console.warn('[!] 后端服务启动略慢，继续启动前端...');
+  throw new Error('后端服务启动超时 (http://127.0.0.1:3000/api/health)');
 }
 
 async function ensureVite() {
@@ -137,6 +156,7 @@ async function ensureVite() {
   viteProcess = spawn(process.execPath, [viteEntry, '--host', host, '--port', String(desktopPort), '--strictPort'], {
     cwd: rootDir,
     stdio: 'inherit',
+    windowsHide: true,
   });
 
   viteProcess.once('error', (err) => {
@@ -147,6 +167,9 @@ async function ensureVite() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (stopping) return;
+    if (viteProcess.exitCode !== null) {
+      throw new Error(`Vite 启动失败 (退出码: ${viteProcess.exitCode})`);
+    }
     if (await isViteServing()) {
       console.log('[√] 桌面端前端服务已就绪！');
       return;
@@ -160,10 +183,18 @@ async function ensureVite() {
 async function launchElectron() {
   console.log('[*] 正在唤起 Electron 桌面客户端...');
   const electron = (await import('electron')).default;
+  const electronEnv = { ...process.env };
+  delete electronEnv.ELECTRON_RUN_AS_NODE;
   electronProcess = spawn(electron, [path.join(rootDir, 'electron', 'main.js')], {
     cwd: rootDir,
-    env: { ...process.env, NODE_ENV: 'development', GSM_DEV_SERVER_URL: devServerUrl },
+    env: {
+      ...electronEnv,
+      NODE_ENV: 'development',
+      GSM_DEV_SERVER_URL: devServerUrl,
+      GSM_DESKTOP_LAUNCHER: '1',
+    },
     stdio: 'inherit',
+    windowsHide: true,
   });
 
   electronProcess.once('error', (error) => {
@@ -180,7 +211,9 @@ async function launchElectron() {
 async function main() {
   try {
     await ensureBackend();
+    if (stopping) return;
     await ensureVite();
+    if (stopping) return;
     await launchElectron();
   } catch (err) {
     console.error('\n[×] 启动失败:', err instanceof Error ? err.message : String(err));

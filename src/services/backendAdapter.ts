@@ -693,6 +693,7 @@ class BackendAdapter {
 
   async syncAIConfigs(configs: AIConfig[]): Promise<void> {
     if (!this._backendUrl) return;
+    configs = configs.filter(config => config.provider !== 'agy-cli');
 
     // Pre-sync validation: warn about configs that will likely be skipped
     for (const c of configs) {

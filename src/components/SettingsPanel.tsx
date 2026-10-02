@@ -21,6 +21,7 @@ import {
   Cable,
   Star,
   Plug,
+  FileText,
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -43,9 +44,10 @@ import {
   VectorSearchSettings,
   McpSettingsPanel,
   PluginSettingsPanel,
+  HtmlReadingPanel,
 } from './settings';
 
-type SettingsTab = 'general' | 'starSync' | 'ai' | 'webdav' | 'backup' | 'backend' | 'category' | 'menu' | 'data' | 'logs' | 'network' | 'vectorSearch' | 'mcp' | 'plugins';
+type SettingsTab = 'general' | 'starSync' | 'ai' | 'webdav' | 'backup' | 'backend' | 'category' | 'menu' | 'data' | 'logs' | 'network' | 'vectorSearch' | 'mcp' | 'plugins' | 'htmlReading';
 
 interface SettingsTabItem {
   id: SettingsTab;
@@ -273,7 +275,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   // Valid SettingsTab values for runtime validation
   const VALID_TABS: ReadonlySet<string> = useMemo(
-    () => new Set(['general', 'starSync', 'ai', 'webdav', 'backup', 'backend', 'category', 'menu', 'data', 'logs', 'network', 'vectorSearch', 'mcp', 'plugins']),
+    () => new Set(['general', 'starSync', 'ai', 'webdav', 'backup', 'backend', 'category', 'menu', 'data', 'logs', 'network', 'vectorSearch', 'mcp', 'plugins', 'htmlReading']),
     []
   );
 
@@ -324,6 +326,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   }, [handleTabChange, isTransitioning]);
 
   const tabs: SettingsTabItem[] = [
+    { id: 'htmlReading', label: '每日 HTML', icon: <FileText className="w-5 h-5" /> },
     {
       id: 'general',
       label: t('settingsPanel.general'),
@@ -400,6 +403,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const renderTabContent = () => {
     const content = (() => {
       switch (displayTab) {
+        case 'htmlReading':
+          return <HtmlReadingPanel />;
         case 'general':
           return <GeneralPanel t={t} />;
         case 'starSync':

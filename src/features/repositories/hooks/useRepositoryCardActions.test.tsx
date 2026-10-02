@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     analysis_error: error,
   })),
   findSimilarRepositories: vi.fn(),
+  prepareVectorQuery: vi.fn(),
   forceSyncToBackend: vi.fn(),
   unstarRepository: vi.fn(),
   getRepositoryReadme: vi.fn(),
@@ -35,7 +36,7 @@ vi.mock('../../../services/aiAnalysisHelper', () => ({
 
 vi.mock('../../../services/vectorSearchService', () => ({
   EmbeddingClient: vi.fn(),
-  VectorSearchService: vi.fn(),
+  VectorSearchService: class { prepareQuery = mocks.prepareVectorQuery; },
   findSimilarRepositories: mocks.findSimilarRepositories,
 }));
 
@@ -133,11 +134,42 @@ describe('useRepositoryCardActions', () => {
     mocks.confirm.mockResolvedValue(true);
     mocks.forceSyncToBackend.mockResolvedValue(undefined);
     mocks.unstarRepository.mockResolvedValue(undefined);
+    mocks.prepareVectorQuery.mockResolvedValue(undefined);
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
       callback(performance.now());
       return 1;
     }));
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  it('uses the embedding bound to the index instead of the independently selected embedding', async () => {
+    storeState.activeEmbeddingConfig = 'not-the-index-model';
+    mocks.findSimilarRepositories.mockResolvedValue([]);
+    const { result } = renderActions();
+    expect(result.current.vectorSearchAvailable).toBe(true);
+    await act(async () => { await result.current.findSimilar(); });
+    expect(mocks.prepareVectorQuery).toHaveBeenCalledOnce();
+    expect(mocks.findSimilarRepositories).toHaveBeenCalledOnce();
+    expect(storeState.enterSimilarView).toHaveBeenCalledWith([], repository);
+  });
+
+  it('stops similarity before fetching source content when identity validation fails', async () => {
+    mocks.prepareVectorQuery.mockRejectedValueOnce(new Error('Rebuild the vector index'));
+    const { result } = renderActions();
+    await act(async () => { await result.current.findSimilar(); });
+    expect(mocks.findSimilarRepositories).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith('Rebuild the vector index', 'error');
+  });
+
+  it('does not publish late similarity results after the index configuration changes', async () => {
+    let complete!: (repos: Repository[]) => void;
+    mocks.findSimilarRepositories.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const { result } = renderActions();
+    let searching!: Promise<void>;
+    await act(async () => { searching = result.current.findSimilar(); });
+    storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, workerUrl: 'https://another.worker' };
+    await act(async () => { complete([repository]); await searching; });
+    expect(storeState.enterSimilarView).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

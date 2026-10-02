@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
 
@@ -10,6 +10,7 @@ vi.mock('../../src/services/logger.js', () => ({
 }));
 
 const provider = await import('../../src/mcp/provider.js');
+const { registerMcpTools } = await import('../../src/mcp/tools.js');
 
 const repoRow = (overrides: Record<string, unknown> = {}) => ({
   id: 1,
@@ -70,6 +71,7 @@ function configureDb(options: {
     model: 'bge-m3',
     api_key_encrypted: '',
     base_url: 'http://127.0.0.1:11434',
+    dimensions: 2,
   };
 
   getDbMock.mockReturnValue({
@@ -107,10 +109,77 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+// Prior vector regressions intentionally exercise the opt-in legacy path.
+const legacyFetchMock = () => vi.fn()
+  .mockResolvedValueOnce(jsonResponse({ dimensions: 2, vectorCount: 1 }));
+
 describe('MCP provider discovery', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubEnv('GSM_MCP_LEGACY_VECTOR_WORKER_URL', 'https://worker.example');
     configureDb();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not advertise or call vector tools without synced identity or an intentional legacy opt-in', async () => {
+    vi.stubEnv('GSM_MCP_LEGACY_VECTOR_WORKER_URL', '');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(provider.getVectorAvailability()).toMatchObject({
+      available: false, reason: 'vector_index_identity_not_synced',
+    });
+    const registrations = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+    registerMcpTools({
+      registerTool: (name: string, _config: unknown, handler: (args: Record<string, unknown>) => Promise<unknown>) => {
+        registrations.set(name, handler);
+      },
+    } as never);
+    expect(registrations.size).toBe(8);
+    expect(registrations.has('gsm_vector_search')).toBe(false);
+    expect(registrations.has('gsm_find_similar_repos')).toBe(false);
+    const status = await registrations.get('gsm_status')!({}) as { content: Array<{ text: string }> };
+    expect(JSON.parse(status.content[0].text)).toMatchObject({
+      vector: { available: false, reason: 'vector_index_identity_not_synced' },
+    });
+    expect(JSON.parse(status.content[0].text).toolsNote).toContain('identity is not synced');
+    expect(await provider.vectorSearch('test')).toEqual({ available: false, reason: 'vector_index_identity_not_synced' });
+    expect(await provider.findSimilarRepositories('acme/alpha')).toEqual({ available: false, reason: 'vector_index_identity_not_synced' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not inherit the legacy opt-in when the configured Worker target changes', async () => {
+    vi.stubEnv('GSM_MCP_LEGACY_VECTOR_WORKER_URL', 'https://different-worker.example');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(provider.getVectorAvailability().available).toBe(false);
+    expect(await provider.vectorSearch('test')).toMatchObject({ reason: 'vector_index_identity_not_synced' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])('rejects protocol %s on an opted-in legacy URL before embedding/query', async (protocolVersion) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ protocolVersion, dimensions: 2, vectorCount: 1 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await provider.vectorSearch('test')).toEqual({ available: false, reason: 'vector_index_identity_not_synced' });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('https://worker.example/status', expect.objectContaining({
+      headers: { Authorization: 'Bearer worker-token' },
+    }));
+  });
+
+  it.each([null, {}, { success: false }, { dimensions: 0, vectorCount: 1 }])('fails closed on an invalid legacy status: %j', async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(status));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await provider.vectorSearch('test')).toEqual({ available: false, reason: 'worker_status_failed' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a legacy dimension mismatch before embedding/query', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ dimensions: 3, vectorCount: 1 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await provider.vectorSearch('test')).toEqual({ available: false, reason: 'vector_dimensions_mismatch' });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('returns bounded batch entries in order and preserves duplicates', () => {
@@ -137,7 +206,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('uses the requested topK unchanged when vector filters are absent', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(jsonResponse({
         matches: [{ id: '1', score: 0.9 }],
@@ -147,7 +216,8 @@ describe('MCP provider discovery', () => {
     const result = await provider.vectorSearch('retrieval', { topK: 2, threshold: 0.4 });
     expect(result).toMatchObject({ available: true, matches: [{ id: 1, score: 0.9 }] });
     expect(result).not.toHaveProperty('filtering');
-    const workerBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(result).toMatchObject({ indexCompatibility: 'legacy_unverified', warning: expect.stringContaining('unverified') });
+    const workerBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
     expect(workerBody.topK).toBe(2);
     expect(workerBody.threshold).toBe(0.4);
   });
@@ -159,7 +229,7 @@ describe('MCP provider discovery', () => {
         repoRow({ id: 2, name: 'python-one', full_name: 'acme/python-one', language: 'Python' }),
       ],
     });
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(jsonResponse({
         matches: [
@@ -186,7 +256,7 @@ describe('MCP provider discovery', () => {
       candidateCount: 2,
       filteredCount: 1,
     });
-    const workerBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    const workerBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
     expect(workerBody.topK).toBe(50);
   });
 
@@ -198,7 +268,7 @@ describe('MCP provider discovery', () => {
         repoRow({ id: 3, name: 'alpha', full_name: 'acme/alpha-two' }),
       ],
     });
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(jsonResponse({
         matches: [
@@ -214,12 +284,12 @@ describe('MCP provider discovery', () => {
     expect(result).toMatchObject({ available: true, sourceExcluded: true });
     expect(result.matches.map((match) => match.full_name)).toEqual(['acme/alpha-two', 'acme/zeta']);
     expect(result.matches.some((match) => match.id === 1)).toBe(false);
-    const workerBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    const workerBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
     expect(workerBody.topK).toBe(10);
   });
 
   it('maps worker connection failures to worker_query_failed instead of throwing', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockRejectedValueOnce(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock);
@@ -230,7 +300,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('maps a worker timeout abort to worker_query_failed instead of throwing', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockImplementationOnce((_url: unknown, init?: { signal?: AbortSignal }) =>
         new Promise((_resolve, reject) => {
@@ -253,7 +323,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('maps a non-JSON worker response to worker_query_failed instead of throwing', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(new Response('<html>gateway error</html>', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -264,7 +334,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('returns the declared unavailable result from findSimilarRepositories when the worker fails', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockRejectedValueOnce(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock);
@@ -275,7 +345,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('rejects a JSON null worker payload instead of throwing or returning empty matches', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(new Response('null', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -285,7 +355,7 @@ describe('MCP provider discovery', () => {
   });
 
   it('rejects a non-array matches field instead of silently returning empty matches', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = legacyFetchMock()
       .mockResolvedValueOnce(jsonResponse({ embeddings: [[0.1, 0.2]] }))
       .mockResolvedValueOnce(jsonResponse({ matches: 'not-an-array' }));
     vi.stubGlobal('fetch', fetchMock);

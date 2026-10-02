@@ -103,4 +103,146 @@ describe('RequirementsEditor', () => {
     fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'workbench.startSearch' }));
     await waitFor(() => expect(p.onSearch).toHaveBeenCalledWith(expect.objectContaining({ required: ['Python', 'A GUI is required'], questions: [] })));
   });
+
+  it('Phase 2: allows directly clicking quick recommended option cards to inject condition', async () => {
+    const p = props();
+    render(
+      <RequirementsEditor
+        {...p}
+        value={{
+          ...requirements,
+          questions: ['需要支持 GPU 加速还是仅 CPU 推理？'],
+        }}
+      />
+    );
+    expect(screen.getByText('需要支持 GPU 加速还是仅 CPU 推理？')).toBeInTheDocument();
+
+    // Click quick option card: "仅 CPU 推理"
+    const cpuOptionBtn = screen.getByRole('button', { name: /仅 CPU 推理/ });
+    expect(cpuOptionBtn).toBeInTheDocument();
+    fireEvent.click(cpuOptionBtn);
+
+    // Question is removed and option injected into conditions
+    expect(screen.queryByText('需要支持 GPU 加速还是仅 CPU 推理？')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '仅 CPU 推理' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'workbench.startSearch' }));
+    await waitFor(() =>
+      expect(p.onSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          preferred: ['仅 CPU 推理'],
+          questions: [],
+        })
+      )
+    );
+  });
+
+  it('Phase 2: supports double-clicking a condition chip to delete it and cycling priority', async () => {
+    const p = props();
+    render(<RequirementsEditor {...p} value={{ ...requirements, required: ['Python', 'Torch'] }} />);
+
+    const torchBtn = screen.getByRole('button', { name: 'Torch' });
+    expect(torchBtn).toBeInTheDocument();
+
+    // Double-click to delete
+    fireEvent.doubleClick(torchBtn);
+    expect(screen.queryByRole('button', { name: 'Torch' })).not.toBeInTheDocument();
+
+    // Priority cycling for Python: click priority dot
+    const cycleBtn = screen.getByTitle('requirementsEditor.cyclePriority');
+    expect(cycleBtn).toBeInTheDocument();
+    fireEvent.click(cycleBtn);
+    // Now Python is moved to preferred
+    expect(screen.getByTitle('workbench.preferred')).toBeInTheDocument();
+  });
+
+  it('Phase 2: parses bracketed options and numbered list from questions accurately', async () => {
+    const p = props();
+    render(
+      <RequirementsEditor
+        {...p}
+        value={{
+          ...requirements,
+          questions: [
+            '需要支持哪种部署模式？[本地离线 / 私有化 Docker / 云端托管]',
+            '请选择数据库后端：1. SQLite 2. PostgreSQL',
+          ],
+        }}
+      />
+    );
+
+    // Verify bracketed options
+    expect(screen.getByRole('button', { name: /本地离线/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /私有化 Docker/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /云端托管/ })).toBeInTheDocument();
+
+    // Click "私有化 Docker"
+    fireEvent.click(screen.getByRole('button', { name: /私有化 Docker/ }));
+    expect(screen.queryByText(/需要支持哪种部署模式/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '私有化 Docker' })).toBeInTheDocument();
+
+    // Verify numbered options
+    expect(screen.getByRole('button', { name: /SQLite/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /PostgreSQL/ })).toBeInTheDocument();
+  });
+
+  it('Phase 2: in-place condition editing allows changing group priority and saving', async () => {
+    const p = props();
+    render(<RequirementsEditor {...p} value={{ ...requirements, required: ['FastAPI'] }} />);
+
+    // Click condition to edit in place
+    fireEvent.click(screen.getByRole('button', { name: 'FastAPI' }));
+
+    const input = screen.getByLabelText('requirementsEditor.condition');
+    const prioritySelect = screen.getByLabelText('requirementsEditor.priority');
+
+    // Change text and priority
+    fireEvent.change(input, { target: { value: 'FastAPI v0.110+' } });
+    fireEvent.change(prioritySelect, { target: { value: 'preferred' } });
+
+    // Save
+    fireEvent.click(screen.getByRole('button', { name: 'workbench.save' }));
+
+    // Should now be moved to preferred
+    expect(screen.queryByTitle('workbench.required')).not.toBeInTheDocument();
+    expect(screen.getByTitle('workbench.preferred')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'FastAPI v0.110+' })).toBeInTheDocument();
+  });
+
+  it('Phase 2 edge cases: handles escape to cancel in-place edit and correctly preserves version numbers in options', () => {
+    const p = props();
+    render(
+      <RequirementsEditor
+        {...p}
+        value={{
+          ...requirements,
+          required: ['FastAPI', 'Torch'],
+          questions: ['支持哪个版本？1. Python 3.11 2. Python 3.12'],
+        }}
+      />
+    );
+
+    // Verify version numbers parsed accurately
+    expect(screen.getByRole('button', { name: /Python 3.11/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Python 3.12/ })).toBeInTheDocument();
+
+    // Start editing FastAPI
+    fireEvent.click(screen.getByRole('button', { name: 'FastAPI' }));
+    const input = screen.getByLabelText('requirementsEditor.condition');
+    fireEvent.change(input, { target: { value: 'Something Else' } });
+
+    // Cancel with Escape
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByLabelText('requirementsEditor.condition')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'FastAPI' })).toBeInTheDocument();
+
+    // Start editing Torch, then remove FastAPI -> editor safely resets
+    fireEvent.click(screen.getByRole('button', { name: 'Torch' }));
+    expect(screen.getByLabelText('requirementsEditor.condition')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'requirementsEditor.removeCondition: FastAPI' }));
+    // Editor should be closed, and Torch still present
+    expect(screen.queryByLabelText('requirementsEditor.condition')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Torch' })).toBeInTheDocument();
+  });
 });
+

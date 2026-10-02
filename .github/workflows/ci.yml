@@ -43,6 +43,9 @@ jobs:
       - name: Frontend layering boundaries
         run: node scripts/check-boundaries.cjs
 
+      - name: Worker Dashboard bundle matches source
+        run: npm run check:vector-worker
+
       - name: Fetch pull request endpoints
         if: github.event_name == 'pull_request'
         run: |

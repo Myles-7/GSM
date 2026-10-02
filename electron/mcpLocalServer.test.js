@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
+const crypto = require('node:crypto');
 
 const {
   buildBatchLookupResult,
@@ -424,6 +425,8 @@ test('Electron MCP executes batch, evidence, and candidate-set vector calls', as
     const vectorData = JSON.parse(vector.body.result.content[0].text);
     assert.deepEqual(vectorData.matches.map((match) => match.full_name), ['acme/rust']);
     assert.equal(vectorData.filtering.exactCorpusFilteredTopK, false);
+    assert.equal(vectorData.indexCompatibility, 'legacy_unverified');
+    assert.equal(workerBodies[0].scope, undefined);
     assert.equal(workerBodies[0].topK, 50);
 
     const similar = await postJson(
@@ -435,8 +438,118 @@ test('Electron MCP executes batch, evidence, and candidate-set vector calls', as
     );
     const similarData = JSON.parse(similar.body.result.content[0].text);
     assert.equal(similarData.sourceExcluded, true);
+    assert.equal(similarData.indexCompatibility, 'legacy_unverified');
     assert.equal(similarData.matches.some((match) => match.id === 1), false);
     assert.equal(workerBodies[1].topK, 10);
+  } finally {
+    await local.stop();
+    await new Promise((resolve) => embeddingUpstream.server.close(resolve));
+    await new Promise((resolve) => workerUpstream.server.close(resolve));
+  }
+});
+
+test('Electron generation MCP scopes both vector tools and fails closed on identity/protocol changes', async () => {
+  let embeddingRequests = 0;
+  let values = [0.1, 0.2];
+  const workerBodies = [];
+  let protocolVersion = 2;
+  let workerDimensions = 2;
+  let contaminated = false;
+  let queryStatus = 200;
+  let activeIndex;
+  const embeddingUpstream = await listen((_request, response) => {
+    embeddingRequests++;
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ embeddings: [values] }));
+  });
+  const workerUpstream = await listen((request, response) => {
+    if (request.url === '/status') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ success: true, protocolVersion, dimensions: workerDimensions }));
+      return;
+    }
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      workerBodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      response.writeHead(queryStatus, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ matches: [1, 2].map((id) => ({
+        id: String(id), score: 0.9, metadata: { identity_hash: contaminated ? 'wrong' : activeIndex.identityHash },
+      })) }));
+    });
+  });
+  const probe = await listen((_request, response) => response.end());
+  await new Promise((resolve) => probe.server.close(resolve));
+  const vectorConfig = {
+    enabled: true, indexProtocolVersion: 2,
+    workerUrl: `http://127.0.0.1:${workerUpstream.port}`, authToken: 'worker-token',
+    indexMode: 'description', readmeMaxChars: 6000,
+    embedding: { apiType: 'ollama', baseUrl: `http://127.0.0.1:${embeddingUpstream.port}`, model: 'model-a', dimensions: 2 },
+  };
+  const identity = {
+    provider: 'ollama', endpoint: vectorConfig.embedding.baseUrl, model: 'model-a', dimensions: 2,
+    mode: 'description', readmeMaxChars: 0, format: 3, target: vectorConfig.workerUrl,
+  };
+  const identityHash = crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  activeIndex = { identity, identityHash, namespace: `g${identityHash.slice(0, 12)}${'a'.repeat(32)}` };
+  vectorConfig.activeIndex = activeIndex;
+  const state = {
+    config: { enabled: true, host: '127.0.0.1', port: probe.port, token: 'local-token' },
+    snapshot: { repositories: [repo({ id: 1 }), repo({ id: 2, full_name: 'acme/beta' })],
+      customCategories: [], releases: [], vectorSearchConfig: vectorConfig },
+  };
+  const local = createMcpLocalServer(() => state);
+  try {
+    const started = await local.start();
+    const invoke = async (name = 'gsm_vector_search') => {
+      const result = await postJson(started.url, {
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name, arguments: { query: 'test', idOrFullName: 'acme/alpha' } },
+      }, 'local-token');
+      return JSON.parse(result.body.result.content[0].text);
+    };
+    assert.equal((await invoke()).available, true);
+    const similar = await invoke('gsm_find_similar_repos');
+    assert.deepEqual(similar.matches.map((m) => m.id), [2]);
+    assert.equal(workerBodies.length, 2);
+    for (const body of workerBodies) assert.deepEqual(body.scope, {
+      namespace: activeIndex.namespace, identityHash, dimensions: 2,
+    });
+    assert.equal(embeddingRequests, 2);
+
+    for (const patch of [
+      { embedding: { ...vectorConfig.embedding, model: 'same-dimensions-other-model' } },
+      { embedding: { ...vectorConfig.embedding, apiType: 'openai', apiKey: 'key' } },
+      { embedding: { ...vectorConfig.embedding, baseUrl: 'http://another-provider' } },
+      { embedding: { ...vectorConfig.embedding, dimensions: 3 } },
+      { workerUrl: 'http://another-target' }, { indexMode: 'readme' },
+      { activeIndex: undefined }, { activeIndex: null },
+      { activeIndex: { ...activeIndex, identityHash: 'f'.repeat(64) } },
+    ]) {
+      state.snapshot.vectorSearchConfig = { ...vectorConfig, ...patch };
+      assert.equal((await invoke()).reason, 'vector_index_rebuild_required');
+    }
+    assert.equal(embeddingRequests, 2, 'incompatible identities must fail before embedding');
+    assert.equal(workerBodies.length, 2, 'never retry an incompatible generation unscoped');
+    state.snapshot.vectorSearchConfig = vectorConfig;
+    protocolVersion = undefined;
+    assert.equal((await invoke()).reason, 'worker_upgrade_required');
+    assert.equal(embeddingRequests, 2);
+    protocolVersion = 2;
+    workerDimensions = 3;
+    assert.equal((await invoke()).reason, 'vector_dimensions_mismatch');
+    assert.equal(embeddingRequests, 2);
+    workerDimensions = 2;
+    values = [1];
+    assert.equal((await invoke()).reason, 'vector_dimensions_mismatch');
+    assert.equal(workerBodies.length, 2);
+    values = [0.1, 0.2];
+    contaminated = true;
+    assert.equal((await invoke()).reason, 'vector_identity_mismatch');
+    queryStatus = 409;
+    const countBefore = workerBodies.length;
+    assert.match((await invoke()).reason, /^worker_query_failed: 409/);
+    assert.equal(workerBodies.length, countBefore + 1, 'no unscoped retry after worker rejection');
   } finally {
     await local.stop();
     await new Promise((resolve) => embeddingUpstream.server.close(resolve));

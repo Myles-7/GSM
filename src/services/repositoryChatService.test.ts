@@ -4,6 +4,7 @@ import type { RepositoryChatSession, RepositoryChatToolEvent } from '../types/re
 
 const mocks = vi.hoisted(() => ({
   generateChatText: vi.fn(),
+  reviewAnswer: vi.fn(),
   generateChatTextStream: vi.fn(),
   generateWithTools: vi.fn(),
   getRepositoryTree: vi.fn(),
@@ -22,7 +23,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./aiService', () => ({
   AIService: class {
-    generateChatText = mocks.generateChatText;
+    generateChatText = (options: { system: string }) => options.system.startsWith('Review and improve a draft')
+      ? mocks.reviewAnswer(options) : mocks.generateChatText(options);
     generateChatTextStream = mocks.generateChatTextStream;
     generateWithTools = mocks.generateWithTools;
   },
@@ -52,6 +54,62 @@ vi.mock('./vectorSearchService', () => ({
 }));
 
 import { runRepositoryChatTurn } from './repositoryChatRunner';
+import { runModelRepositoryChatTurn } from './repositoryChatService';
+import { bindFileCacheIdentity } from './pinnedFileCache';
+
+describe('research latency regression', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.generateChatText.mockReset();
+    mocks.reviewAnswer.mockReset();
+    configureTreeAndFiles({ 'README.md': '# Notes\nA local note editor.' });
+  });
+
+  it('reads a complete small local document without redundant planning calls', async () => {
+    const read = vi.fn().mockResolvedValue({ path: 'README.md', content: '# Notes\nA local note editor.',
+      contentHash: 'a'.repeat(64), retrievedAt: new Date().toISOString() });
+    mocks.generateChatText.mockResolvedValue(answer('A local note editor.', '/README.md - 1-2', 'Overview'));
+    const result = await runRepositoryChatTurn({ ...turnInput(), localSource: {
+      entries: [{ path: 'README.md', type: 'blob' }], read,
+    } });
+    expect(read).toHaveBeenCalledOnce();
+    expect(mocks.generateChatText).toHaveBeenCalledOnce();
+    expect(mocks.reviewAnswer).toHaveBeenCalledOnce();
+    expect(result.evidences[0]).toMatchObject({ source: 'local', contentHash: 'a'.repeat(64),
+      excerpt: '# Notes\nA local note editor.' });
+  });
+
+  it('collects source evidence without generating per-repository answers for a later comparison', async () => {
+    const result = await runModelRepositoryChatTurn({ ...turnInput(), evidenceOnly: true });
+    expect(result.evidences).toHaveLength(1);
+    expect(result.content).toContain('A local note editor.');
+    expect(result.quality).toBe('unreviewed');
+    expect(mocks.generateChatText).not.toHaveBeenCalled();
+    expect(mocks.reviewAnswer).not.toHaveBeenCalled();
+  });
+
+  it('settles an unresponsive review before the total deadline and retains the answer', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.generateChatText.mockResolvedValue(answer('A local note editor.', '/README.md - 1-2', 'Overview'));
+      mocks.reviewAnswer.mockImplementation(() => new Promise(() => {}));
+      const pending = runRepositoryChatTurn({ ...turnInput(), aiConfig: {
+        id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'default', isActive: true,
+        agyMode: 'model', agyEffort: 'high', deviceBound: true,
+      }, agentBudget: { maxDurationMs: 30_000 } });
+      await vi.advanceTimersByTimeAsync(29_750);
+      const result = await pending;
+      expect(result.content).toContain('A local note editor.');
+      expect(result.quality).toBe('unreviewed');
+      expect(result.missing).toEqual([]);
+      expect(mocks.reviewAnswer.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { mocks.reviewAnswer.mockReset(); vi.useRealTimers(); }
+  });
+});
+
+// Each test supplies a new synthetic filesystem, even when its SHA is identical.
+beforeEach(() => bindFileCacheIdentity(''));
 
 const repository: Repository = {
   id: 1,
@@ -443,7 +501,7 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
     expect(result.content).toContain('/.github/workflows/build-release.yml - 237-261');
   });
 
-  it('honors the configured maximum evidence rounds before starting another retrieval plan', async () => {
+  it('stops retrieval at the round limit but answers from already collected evidence', async () => {
     mocks.generateChatText
       .mockResolvedValueOnce(understanding())
       .mockResolvedValueOnce(plan(target('README.md', ['Overview'], 'project overview')))
@@ -451,7 +509,8 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
         sufficient: false,
         requirements: [requirement('project overview', 'missing')],
         nextAction: 'retrieve_more',
-      }));
+      }))
+      .mockResolvedValueOnce(answer('The available overview describes the project.', '/README.md - 3-4', 'Project overview'));
 
     const result = await runRepositoryChatTurn({
       ...turnInput(),
@@ -459,8 +518,10 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
     });
 
     expect(readPaths()).toEqual(['README.md']);
-    expect(mocks.generateChatText).toHaveBeenCalledTimes(3);
-    expect(result.content).toContain('insufficient');
+    expect(mocks.generateChatText).toHaveBeenCalledTimes(4);
+    expect(mocks.reviewAnswer).toHaveBeenCalledTimes(1);
+    expect(result.content).toContain('The available overview describes the project.');
+    expect(result.missing).toContain('project overview');
   });
 
   it('honors a configured tool-call budget before issuing an additional repository file read', async () => {
@@ -751,13 +812,15 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
     expect(mocks.vectorWrites.cleanup).not.toHaveBeenCalled();
   });
 
-  it('streams the final answer incrementally and returns the source-verified text', async () => {
+  it('previews drafts immediately while legacy listeners receive only the final answer', async () => {
+    const events: Array<{ phase: string; content: string }> = [];
     mocks.generateChatText
       .mockResolvedValueOnce(understanding())
       .mockResolvedValueOnce(plan(target('README.md', ['Overview'], 'project overview')))
       .mockResolvedValueOnce(gate({ sufficient: true, requirements: [requirement('project overview', 'verified', [overviewRef])], nextAction: 'answer' }));
     mocks.generateChatTextStream.mockImplementation(async ({ onChunk }: { onChunk: (delta: string) => void }) => {
       onChunk('## Overview\n\nA documented ');
+      expect(events[events.length - 1]).toEqual({ phase: 'draft', content: '## Overview\n\nA documented ' });
       onChunk(`example project. \`${overviewRef}\``);
       return `## Overview\n\nA documented example project. \`${overviewRef}\``;
     });
@@ -766,11 +829,14 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
     const result = await runRepositoryChatTurn({
       ...turnInput(),
       streaming: true,
+      onAnswerEvent: event => events.push(event),
       onAnswerChunk: (fullText) => chunks.push(fullText),
     });
 
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toBe('## Overview\n\nA documented ');
+    expect(chunks).toEqual([result.content]);
+    expect(events.map(event => event.phase)).toEqual(['draft', 'draft', 'reviewing', 'final']);
+    expect(mocks.reviewAnswer).toHaveBeenCalledTimes(1);
+    expect(result.quality).toBe('unreviewed');
     expect(result.content).toContain(overviewRef);
     expect(mocks.generateChatText).toHaveBeenCalledTimes(3);
     expect(mocks.generateChatTextStream).toHaveBeenCalledTimes(1);
@@ -794,7 +860,7 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
 
     expect(result.content).toContain(overviewRef);
     expect(result.content).not.toContain('insufficient');
-    expect(chunks[chunks.length - 1]).toBe('');
+    expect(chunks[chunks.length - 1]).toBe(result.content);
     expect(mocks.generateChatText).toHaveBeenCalledTimes(4);
   });
 
@@ -816,7 +882,7 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
       onAnswerChunk: (fullText) => chunks.push(fullText),
     });
 
-    expect(chunks).toEqual([partial]);
+    expect(chunks).toEqual([result.content]);
     expect(result.content).toContain(overviewRef);
     expect(mocks.generateChatText).toHaveBeenCalledTimes(3);
   });
@@ -1086,6 +1152,20 @@ describe('runRepositoryChatTurn meta sources (releases / issues)', () => {
     },
   ];
   const releaseRef = '/release-v1.0.0.md - 1-2';
+
+  it.each([false, true])('can read releases without usable documentation (empty README: %s)', async (emptyReadme) => {
+    configureTreeAndFiles(emptyReadme ? { 'README.md': '' } : { 'main.go': 'package main' });
+    mocks.getRepositoryReleases.mockResolvedValue(releasesPayload);
+    mocks.generateChatText
+      .mockResolvedValueOnce(understanding({ expected_answer: ['recent release notes'], target: 'recent updates' }))
+      .mockResolvedValueOnce(plan(target('@meta/releases', [], 'recent release notes', 'meta')))
+      .mockResolvedValueOnce(gate({ sufficient: true, requirements: [requirement('recent release notes', 'verified', [releaseRef])] }))
+      .mockResolvedValueOnce(answer('Adds a dashboard.', releaseRef));
+    const result = await runRepositoryChatTurn(turnInput('What changed recently?'));
+    expect(mocks.getRepositoryReleases).toHaveBeenCalledOnce();
+    expect(result.evidences.some(evidence => evidence.path === 'release-v1.0.0.md')).toBe(true);
+    expect(result.content).toContain(releaseRef);
+  });
 
   it('auto-escalates to recent releases when documentation stalls on a recent-updates question', async () => {
     const events: RepositoryChatToolEvent[] = [];

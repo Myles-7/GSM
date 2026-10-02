@@ -1,6 +1,6 @@
 # Docker Deployment
 
-This application can be deployed using Docker with minimal configuration. Existing deployments use separate frontend and backend containers; an additional opt-in full-stack image is available for users who prefer a single container. The existing images and `docker-compose.yml` remain supported and unchanged.
+This application can be deployed using Docker with minimal configuration. Existing deployments use separate frontend and backend containers; an additional opt-in full-stack image is available for users who prefer a single container. Both deployment options remain supported. Both Compose files require a non-empty `API_SECRET` before startup.
 
 ## Prerequisites
 
@@ -10,6 +10,8 @@ This application can be deployed using Docker with minimal configuration. Existi
 ## Quick Start (Using Pre-built Images from GHCR)
 
 The fastest way to get started — no build required:
+
+First create a `.env` file in the repository root containing `API_SECRET=your-long-random-secret`, then enter the same secret in the application's backend connection settings. Preserve an existing secret when upgrading. MCP uses its own token configured in MCP settings.
 
 ```bash
 # Using Docker Compose (pulls images automatically)
@@ -85,7 +87,7 @@ IMAGE_TAG=0.8.4
 
 ### Migrate an Existing Docker Compose Deployment
 
-Migration is optional. Existing frontend-plus-backend deployments continue to work and require no action. If the current backend has an `API_SECRET`, preserve the exact value in the full-stack `.env`; this keeps current browser, API, and MCP clients authenticated without reconfiguration. If the existing backend has no `API_SECRET`, generate a strong new value in the full-stack `.env` and configure every direct API and MCP client with it after cutover; the full-stack Compose file intentionally does not start unauthenticated. If the existing service explicitly sets `ENCRYPTION_KEY`, copy the **same value** into the full-stack `.env` as well. Replace `<existing-backend-data-volume>` with the volume name returned by `docker volume ls`; when Compose is run from this repository with its default project name, it normally ends in `_backend-data`.
+Migration is optional. Existing frontend-plus-backend deployments remain supported. Both Compose files now require `API_SECRET`: preserve the existing value in `.env`, or create a strong new value and configure browser/backend API clients before the next startup. MCP uses a separate token configured in MCP settings; do not replace it with `API_SECRET`. If the existing service explicitly sets `ENCRYPTION_KEY`, copy the **same value** into the full-stack `.env` as well. Replace `<existing-backend-data-volume>` with the volume name returned by `docker volume ls`; when Compose is run from this repository with its default project name, it normally ends in `_backend-data`.
 
 ```bash
 # Stop all SQLite writers without deleting the named data volume.
@@ -170,7 +172,7 @@ docker run -d \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `API_SECRET` | Optional for standalone backend | `null` (auth disabled) | Bearer token for API authentication. It is required by `docker-compose.fullstack.yml` so the new single-container web service cannot start unauthenticated. |
+| `API_SECRET` | Required by both Compose files | No Compose default | Bearer token for API authentication. Direct standalone execution still allows omission (auth disabled); configure it for network deployments. MCP uses a separate token. |
 | `ENCRYPTION_KEY` | No | Auto-generated (saved to `data/.encryption-key`) | AES-256 key for encrypting stored secrets. Accepts any format — 64-char hex, shorter hex, base64, or plain text (all normalized via SHA-256) |
 | `PORT` | No | `3000` | Server listening port |
 | `DB_PATH` | No | `data/data.db` | Path to SQLite database file |
@@ -179,17 +181,17 @@ docker run -d \
 
 ## Full Stack with Docker Compose
 
-`docker-compose.yml` runs both frontend and backend:
+`docker-compose.yml` runs both frontend and backend. Create the `.env` file below before starting:
 
 ```bash
 docker-compose up -d
 ```
 
-To customize secrets and image versions, create a `.env` file in the project root:
+Set the required API secret and optional image versions in the project root `.env`:
 
 ```bash
 API_SECRET=my-strong-secret
-ENCRYPTION_KEY=my-encryption-key
+# ENCRYPTION_KEY=the-exact-existing-key # preserve it if previously configured
 BACKEND_IMAGE_TAG=0.8.4    # pin backend image version (default: latest)
 FRONTEND_IMAGE_TAG=0.8.4   # pin frontend image version (default: latest)
 # BACKEND_HOST=backend:3000 # target for the frontend's /api proxy (default: backend:3000)

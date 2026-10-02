@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, BookOpen, Copy, ExternalLink, MessageSquareText, Pin, PinOff, X } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, ArrowRight, BookOpen, Check, Copy, ExternalLink, MessageSquareText, Pin, PinOff, X } from 'lucide-react';
 import type { Repository } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n/useT';
-import { readRepositoryDetails } from '../features/repositories/application/repositoryDetailsSchema';
+import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
 import { RepositoryHealthPanel } from './RepositoryHealthPanel';
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
@@ -21,19 +21,23 @@ export interface RepositoryDetailsPanelProps {
   onPinnedChange?: (pinned: boolean) => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  analysisAction?: (repository: Repository) => ReactNode;
+  defaultDocked?: boolean;
 }
 
-export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, onPinnedChange, onPrevious, onNext }: RepositoryDetailsPanelProps) {
+export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, onPinnedChange, onPrevious, onNext, analysisAction, defaultDocked = false }: RepositoryDetailsPanelProps) {
   const t = useT('repositories');
   const language = useAppStore((state) => state.language);
   const releases = useAppStore((state) => state.releases);
-  const [pinned, setPinned] = useState(false);
+  const [pinned, setPinned] = useState(defaultDocked);
   const [canPin, setCanPin] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [readmeOpen, setReadmeOpen] = useState(false);
   const [detailTab, setDetailTab] = useState('overview');
   const readmeTrigger = useRef<HTMLButtonElement>(null);
-  const job = useRepositoryDetailAnalysisJob();
+  const job = useRepositoryDetailAnalysisJob(!analysisAction);
+  const autoDocked = useRef(false);
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
   const anchor = useRef<HTMLSpanElement>(null);
@@ -51,14 +55,18 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
       const width = anchor.current?.parentElement?.getBoundingClientRect().width || 0;
       const eligible = window.innerWidth >= 1280 && width >= 1080;
       setCanPin(eligible);
-      if (!eligible) setPinned(false);
+      if (!eligible) { setPinned(false); autoDocked.current = false; }
+      if (repository && defaultDocked && eligible && !autoDocked.current) {
+        autoDocked.current = true;
+        setPinned(true);
+      }
     };
     measure();
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
     if (anchor.current?.parentElement) observer?.observe(anchor.current.parentElement);
     window.addEventListener('resize', measure);
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [pinned, repository?.id]);
+  }, [pinned, repository, defaultDocked]);
   useEffect(() => {
     onPinnedChangeRef.current?.(pinned && isOpen);
     return () => onPinnedChangeRef.current?.(false);
@@ -67,6 +75,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     if (repository && !wasOpen.current) opener.current = document.activeElement as HTMLElement;
     if (!repository && wasOpen.current) {
       setPinned(false);
+      autoDocked.current = false;
       opener.current?.focus({ preventScroll: true });
     }
     wasOpen.current = !!repository;
@@ -81,6 +90,15 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     opener.current?.focus({ preventScroll: true });
   };
   const details = readRepositoryDetails(repository?.ai_details);
+  const overviewText = (repository?.custom_description ?? repository?.ai_summary ?? repository?.description ?? '').trim().toLowerCase();
+  const isProblemRedundant = Boolean(
+    details?.problem &&
+    overviewText &&
+    (details.problem.trim().toLowerCase() === overviewText ||
+      overviewText.includes(details.problem.trim().toLowerCase()) ||
+      details.problem.trim().toLowerCase().includes(overviewText))
+  );
+
   const iconButton = (label: string, handler: () => void, icon: React.ReactNode, disabled = false) =>
     <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" title={label} aria-label={label} onClick={handler} disabled={disabled}>{icon}</Button>;
   const body = repository && <>
@@ -99,12 +117,17 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     </TabsList>
     <div ref={scroller} className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4" onScroll={(event) => scrollPositions.current.set(repository.id, event.currentTarget.scrollTop)}>
       <p className="whitespace-pre-wrap break-words text-sm">{repository.custom_description ?? repository.ai_summary ?? repository.description ?? t('details.unknown')}</p>
-      <div className="flex flex-wrap items-center gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         {onAskRepository && <Button variant="outline" size="sm" onClick={() => onAskRepository(repository)}><MessageSquareText className="mr-2 h-4 w-4" />{t('repositoryCard.ask-this-repository')}</Button>}
         <Button ref={readmeTrigger} variant="outline" size="sm" onClick={() => setReadmeOpen(true)}><BookOpen className="mr-2 h-4 w-4" />{t('details.readme')}</Button>
-        <a href={repository.html_url} target="_blank" rel="noopener noreferrer" aria-label={t('repositoryCard.view-on-github')} title={t('repositoryCard.view-on-github')}><ExternalLink className="h-4 w-4" /></a>
+        <Button variant="outline" size="sm" asChild>
+          <a href={repository.html_url} target="_blank" rel="noopener noreferrer" title={t('repositoryCard.view-on-github')}>
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+            <span>GitHub</span>
+          </a>
+        </Button>
       </div>
-      <RepositoryDetailAnalysisAction repositories={[repository]} job={job} />
+      {analysisAction ? analysisAction(repository) : <RepositoryDetailAnalysisAction repositories={[repository]} job={job} />}
       <TabsContent value={detailTab} className="space-y-5">
       {!details && <p className="text-sm text-muted-foreground">{t('details.notAnalyzed')}</p>}
       {details && <>
@@ -112,10 +135,14 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
         <section><h3 className="mb-2 text-sm font-semibold">{t('details.softwareForms')}</h3><p className="text-sm">{details.software_forms?.length ? details.software_forms.map((form) => t(`details.forms.${form}`)).join(', ') : t('details.unknown')}</p></section>
         <section><h3 className="mb-2 text-sm font-semibold">{t('details.deploymentModes')}</h3><p className="text-sm">{details.deployment_modes?.length ? details.deployment_modes.map((mode) => t(`details.modes.${mode}`)).join(', ') : t('details.unknown')}</p></section>
         </>}
-        {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).filter(key =>
-          detailTab === 'overview' ? ['problem', 'features', 'scenarios'].includes(key) :
-          detailTab === 'usage' ? ['architecture', 'deployment', 'cost'].includes(key) : key === 'maintenance'
-        ).map((key) => <section key={key}>
+        {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).filter(key => {
+          if (detailTab === 'overview') {
+            if (key === 'problem' && isProblemRedundant) return false;
+            return ['problem', 'features', 'scenarios'].includes(key);
+          }
+          if (detailTab === 'usage') return ['architecture', 'deployment', 'cost'].includes(key);
+          return key === 'maintenance';
+        }).map((key) => <section key={key}>
           <h3 className="mb-2 text-sm font-semibold">{t(`details.${key}`)}</h3>
           {Array.isArray(details[key])
             ? <ul className="list-inside list-disc space-y-1 break-words text-sm">{(details[key] as string[]).length ? (details[key] as string[]).map((line, index) => <li key={index}>{line}</li>) : <li>{t('details.unknown')}</li>}</ul>
@@ -127,7 +154,18 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
             <p>{step.description}</p>
             {step.command && <div className="mt-1 flex items-start gap-2 bg-muted p-2">
               <code className="min-w-0 flex-1 whitespace-pre-wrap break-all">{step.command}</code>
-              {iconButton(t('details.copy'), () => { if (!navigator.clipboard) { setCopyFailed(true); return; } void navigator.clipboard.writeText(step.command!).then(() => setCopyFailed(false)).catch(() => setCopyFailed(true)); }, <Copy className="h-4 w-4" />)}
+              {iconButton(
+                t('details.copy'),
+                () => {
+                  if (!navigator.clipboard) { setCopyFailed(true); return; }
+                  void navigator.clipboard.writeText(step.command!).then(() => {
+                    setCopyFailed(false);
+                    setCopiedCommand(step.command!);
+                    setTimeout(() => setCopiedCommand(null), 2000);
+                  }).catch(() => setCopyFailed(true));
+                },
+                copiedCommand === step.command ? <Check className="h-4 w-4 text-emerald-500 animate-in zoom-in-50" /> : <Copy className="h-4 w-4" />
+              )}
             </div>}
           </div>)}
           {copyFailed && <p role="alert">{t('details.copyFailed')}</p>}
@@ -145,7 +183,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   return <>
     <span ref={anchor} className="hidden" />
     {repository && (pinned
-      ? <aside aria-label={t('details.title')} className="flex h-full max-h-[calc(100vh-5rem)] w-[400px] shrink-0 flex-col border-l bg-card" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
+      ? <aside aria-label={t('details.title')} className="sticky top-16 flex h-[calc(100vh-4rem)] w-[440px] xl:w-[480px] shrink-0 flex-col border-l border-border/60 bg-card/95 backdrop-blur-sm transition-all duration-200" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
       : <Dialog open onOpenChange={(open) => !open && close()}>
         <DialogContent showClose={false} aria-describedby={undefined} className="left-auto right-0 top-0 flex h-dvh max-h-dvh w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-[480px]" onCloseAutoFocus={(event) => { event.preventDefault(); if (!pinnedRef.current) opener.current?.focus({ preventScroll: true }); }}>
           <DialogTitle className="sr-only">{t('details.title')}</DialogTitle>{body}

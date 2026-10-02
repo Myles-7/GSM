@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "来源版本未变",
+    "freshness-changed": "来源已变化，请重新研究",
+    "freshness-unknown": "尚未确认当前版本",
+    "freshness-rebind": "重新绑定目录后检查",
+    "discovery": "发现任务",
+    "plugins": "插件任务",
+    "openPlugin": "打开插件设置",
+    "rerankUnavailable": "AI 重排序失败，已保留向量排序。",
+    "vectorUnavailable": "向量检索不可用，已改用关键词检索。",
+    "supported": "支持", "unsupported": "不支持",
+    "sources": "逐项目研究进度", "state": "状态", "complete": "已研究", "reused": "已复用同版本结果",
+    "changed": "版本已变更，已重新研究", "failed": "失败", "pending": "待处理",
+    "continue": "继续未完成项目", "fillMissing": "补充缺失项", "restart": "重新研究",
+    "question": "针对所选资料提问…", "mixed": "本地 + 所选仓库", "readFiles": "已读 {{count}} 个文件",
+    "claims": "断言与原文依据", "tasks": "AI 任务", "pause": "暂停", "resume": "继续", "stop": "停止",
+    "retry": "仅重试失败项", "interrupted": "已中断，等待手动继续", "paused": "已暂停", "running": "进行中",
+    "summary": "仓库摘要", "details": "仓库详情", "gists": "Gist 分析", "searchSummary": "{{mode}} · 扫描 {{total}} 项 · 返回 {{count}} 项",
+    "keyword": "关键词检索", "vector": "向量检索", "ai": "AI 筛选", "fallback": "已降级", "support": "有依据", "unknown": "未知"
+  },
+  "localResearch": {
+    "local": "本地项目",
+    "choose": "选择项目目录",
+    "deviceOnly": "仅本机历史，不参与备份",
+    "rebind": "继续前请重新选择项目目录；历史来源不代表当前文件。",
+    "projectChanged": "所选目录不是原项目。请重新选择原目录，或新建对话研究其他项目。",
+    "scope": "资料范围",
+    "configure": "请先选择可用的 AI 配置。",
+    "open": "打开研究工作台"
+  },
+  "answerReview": {
+      "draft": "草稿，尚未复核",
+      "reviewing": "草稿，正在复核要求与来源",
+      "interrupted": "已中断的草稿，未经复核",
+      "reviewed": "已经模型复核，非独立事实验证",
+      "unreviewed": "复核未完成",
+      "legacy": "未记录复核状态",
+      "coverage": "要求覆盖情况",
+      "answered": "已回答",
+      "unknown": "未知"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "关闭问答历史",
     "chat-history": "问答历史",
@@ -170,6 +211,13 @@
     "addSelected": "添加已收藏仓库",
     "moreResults": "查找更多",
     "unknown": "未知",
+    "added": "已添加",
+    "addedToContext": "已加入对话上下文",
+    "addedToContextTooltip": "已加入对话上下文（点击移除）",
+    "contextPrefix": "对话上下文:",
+    "clearAll": "清空",
+    "multilingualGeneral": "多语言 / 通用",
+    "viewNewProposals": "📋 查看新提案 ↓",
     "candidate": "候选项目",
     "verifying": "核实中",
     "verified": "已核实：查看证据",
@@ -267,6 +315,9 @@
     "skip": "不限",
     "searchAgain": "按新条件查找",
     "draftPreserved": "已保留你的修改，有新的 AI 建议待查看。",
-    "useNew": "替换为新建议"
+    "useNew": "替换为新建议",
+    "quickOptions": "快捷点选:",
+    "cyclePriority": "点击切换分组优先级",
+    "doubleClickToDelete": "双击快速删除"
   }
 }

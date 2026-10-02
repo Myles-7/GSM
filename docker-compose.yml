@@ -20,7 +20,7 @@ services:
     expose:
       - "3000"
     environment:
-      - API_SECRET=${API_SECRET:-}
+      - API_SECRET=${API_SECRET:?Set API_SECRET in .env before starting the deployment}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
     volumes:
       - backend-data:/app/data

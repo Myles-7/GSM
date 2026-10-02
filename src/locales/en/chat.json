@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "Source version unchanged",
+    "freshness-changed": "Source changed; research again",
+    "freshness-unknown": "Version not checked",
+    "freshness-rebind": "Rebind folder to check",
+    "discovery": "Discovery",
+    "plugins": "Plugins",
+    "openPlugin": "Open plugin settings",
+    "rerankUnavailable": "AI reranking failed; vector ranking retained.",
+    "vectorUnavailable": "Vector search unavailable; using keyword search.",
+    "supported": "Supported", "unsupported": "Not supported",
+    "sources": "Research by project", "state": "Status", "complete": "Researched", "reused": "Same-version result reused",
+    "changed": "Version changed; researched again", "failed": "Failed", "pending": "Pending",
+    "continue": "Continue unfinished projects", "fillMissing": "Fill missing requirements", "restart": "Research again",
+    "question": "Ask about the selected sources…", "mixed": "Local + selected repositories", "readFiles": "{{count}} files read",
+    "claims": "Claims and supporting excerpts", "tasks": "AI tasks", "pause": "Pause", "resume": "Resume", "stop": "Stop",
+    "retry": "Retry failed only", "interrupted": "Interrupted; resume manually", "paused": "Paused", "running": "Running",
+    "summary": "Repository summaries", "details": "Repository details", "gists": "Gist analysis", "searchSummary": "{{mode}} · {{total}} scanned · {{count}} returned",
+    "keyword": "Keyword search", "vector": "Vector search", "ai": "AI selection", "fallback": "Fallback used", "support": "Evidence available", "unknown": "Unknown"
+  },
+  "localResearch": {
+    "local": "Local project",
+    "choose": "Choose project folder",
+    "deviceOnly": "Device-only history, excluded from backups",
+    "rebind": "Select the project folder before continuing; historical sources may be outdated.",
+    "projectChanged": "This is a different project folder. Select the original folder or start a new conversation.",
+    "scope": "Source scope",
+    "configure": "Select an available AI configuration first.",
+    "open": "Open research workbench"
+  },
+  "answerReview": {
+      "draft": "Draft — not yet reviewed",
+      "reviewing": "Draft — reviewing requirements and sources",
+      "interrupted": "Interrupted draft — not reviewed",
+      "reviewed": "Model-reviewed; not independently verified",
+      "unreviewed": "Review incomplete",
+      "legacy": "Review status not recorded",
+      "coverage": "Requirement coverage",
+      "answered": "Answered",
+      "unknown": "Unknown"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Close chat history",
     "chat-history": "Chat history",
@@ -170,6 +211,13 @@
     "addSelected": "Add a starred repository",
     "moreResults": "Find more",
     "unknown": "Unknown",
+    "added": "Added",
+    "addedToContext": "Added to context",
+    "addedToContextTooltip": "Added to context (click to remove)",
+    "contextPrefix": "Context:",
+    "clearAll": "Clear all",
+    "multilingualGeneral": "Multilingual / General",
+    "viewNewProposals": "📋 View new proposals ↓",
     "candidate": "Candidate",
     "verifying": "Verifying",
     "verified": "Verified: view evidence",
@@ -267,6 +315,9 @@
     "skip": "No preference",
     "searchAgain": "Search with these conditions",
     "draftPreserved": "Your edits are preserved. New AI suggestions are available.",
-    "useNew": "Replace with new suggestions"
+    "useNew": "Replace with new suggestions",
+    "quickOptions": "Quick options:",
+    "cyclePriority": "Click to cycle priority",
+    "doubleClickToDelete": "Double-click to delete"
   }
 }

@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "소스 버전이 같습니다",
+    "freshness-changed": "소스가 변경되었습니다. 다시 조사하세요",
+    "freshness-unknown": "현재 버전 미확인",
+    "freshness-rebind": "폴더를 다시 연결하여 확인",
+    "discovery": "탐색 작업",
+    "plugins": "플러그인",
+    "openPlugin": "플러그인 설정 열기",
+    "rerankUnavailable": "AI 재정렬에 실패하여 벡터 순위를 유지합니다.",
+    "vectorUnavailable": "벡터 검색을 사용할 수 없어 키워드 검색을 사용합니다.",
+    "supported": "지원", "unsupported": "미지원",
+    "sources": "프로젝트별 조사", "state": "상태", "complete": "조사 완료", "reused": "같은 버전 결과 재사용",
+    "changed": "버전 변경으로 재조사 완료", "failed": "실패", "pending": "대기",
+    "continue": "미완료 조사 계속", "fillMissing": "누락된 요구 사항 보완", "restart": "다시 조사",
+    "question": "선택한 자료에 대해 질문…", "mixed": "로컬 + 선택한 저장소", "readFiles": "{{count}}개 파일 읽음",
+    "claims": "주장과 근거 발췌", "tasks": "AI 작업", "pause": "일시 정지", "resume": "계속", "stop": "중지",
+    "retry": "실패한 항목만 재시도", "interrupted": "중단됨, 수동으로 계속", "paused": "일시 정지됨", "running": "진행 중",
+    "summary": "저장소 요약", "details": "저장소 상세", "gists": "Gist 분석", "searchSummary": "{{mode}} · {{total}}개 검색 · {{count}}개 반환",
+    "keyword": "키워드 검색", "vector": "벡터 검색", "ai": "AI 선택", "fallback": "대체 검색 사용", "support": "근거 있음", "unknown": "알 수 없음"
+  },
+  "localResearch": {
+    "local": "로컬 프로젝트",
+    "choose": "프로젝트 폴더 선택",
+    "deviceOnly": "이 기기에만 저장, 백업 제외",
+    "rebind": "계속하려면 폴더를 선택하세요. 과거 출처는 최신이 아닐 수 있습니다.",
+    "projectChanged": "다른 프로젝트 폴더입니다. 원래 폴더를 선택하거나 새 대화를 시작하세요.",
+    "scope": "자료 범위",
+    "configure": "사용 가능한 AI 설정을 선택하세요.",
+    "open": "연구 작업 공간 열기"
+  },
+  "answerReview": {
+      "draft": "검토 전 초안",
+      "reviewing": "초안: 요구사항과 출처 검토 중",
+      "interrupted": "중단된 초안: 검토되지 않음",
+      "reviewed": "모델 검토 완료, 독립적인 사실 검증은 아님",
+      "unreviewed": "검토 미완료",
+      "legacy": "검토 상태 기록 없음",
+      "coverage": "요구사항 충족 현황",
+      "answered": "답변됨",
+      "unknown": "알 수 없음"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Q&A 기록 닫기",
     "chat-history": "Q&A 내역",
@@ -170,6 +211,13 @@
     "addSelected": "즐겨찾기 저장소 추가",
     "moreResults": "더 찾기",
     "unknown": "알 수 없음",
+    "added": "추가됨",
+    "addedToContext": "대화 컨텍스트에 추가됨",
+    "addedToContextTooltip": "대화 컨텍스트에 추가됨 (클릭하여 제거)",
+    "contextPrefix": "대화 컨텍스트:",
+    "clearAll": "모두 지우기",
+    "multilingualGeneral": "다국어 / 범용",
+    "viewNewProposals": "📋 새 제안 보기 ↓",
     "candidate": "후보",
     "verifying": "검증 중",
     "verified": "검증됨: 근거 보기",
@@ -267,6 +315,9 @@
     "skip": "상관없음",
     "searchAgain": "이 조건으로 검색",
     "draftPreserved": "수정사항이 보존되었습니다. 새로운 AI 제안이 있습니다.",
-    "useNew": "새 제안으로 교체"
+    "useNew": "새 제안으로 교체",
+    "quickOptions": "빠른 선택:",
+    "cyclePriority": "클릭하여 우선순위 전환",
+    "doubleClickToDelete": "더블 클릭하여 삭제"
   }
 }

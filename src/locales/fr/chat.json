@@ -1,4 +1,45 @@
 {
+  "research": {
+    "freshness-current": "Version de la source inchangée",
+    "freshness-changed": "Source modifiée ; relancer la recherche",
+    "freshness-unknown": "Version non vérifiée",
+    "freshness-rebind": "Reconnecter le dossier pour vérifier",
+    "discovery": "Découverte",
+    "plugins": "Extensions",
+    "openPlugin": "Ouvrir les paramètres des extensions",
+    "rerankUnavailable": "Échec du reclassement IA ; classement vectoriel conservé.",
+    "vectorUnavailable": "Recherche vectorielle indisponible ; recherche par mots-clés utilisée.",
+    "supported": "Pris en charge", "unsupported": "Non pris en charge",
+    "sources": "Recherche par projet", "state": "État", "complete": "Recherché", "reused": "Résultat de même version réutilisé",
+    "changed": "Version modifiée ; nouvelle recherche effectuée", "failed": "Échec", "pending": "En attente",
+    "continue": "Continuer les projets inachevés", "fillMissing": "Compléter les exigences manquantes", "restart": "Relancer la recherche",
+    "question": "Question sur les sources sélectionnées…", "mixed": "Local + dépôts sélectionnés", "readFiles": "{{count}} fichiers lus",
+    "claims": "Affirmations et extraits justificatifs", "tasks": "Tâches IA", "pause": "Pause", "resume": "Reprendre", "stop": "Arrêter",
+    "retry": "Réessayer uniquement les échecs", "interrupted": "Interrompu ; reprise manuelle", "paused": "En pause", "running": "En cours",
+    "summary": "Résumés des dépôts", "details": "Détails des dépôts", "gists": "Analyse Gist", "searchSummary": "{{mode}} · {{total}} examinés · {{count}} résultats",
+    "keyword": "Recherche par mots-clés", "vector": "Recherche vectorielle", "ai": "Sélection IA", "fallback": "Recherche de secours utilisée", "support": "Éléments probants disponibles", "unknown": "Inconnu"
+  },
+  "localResearch": {
+    "local": "Projet local",
+    "choose": "Choisir le dossier du projet",
+    "deviceOnly": "Historique local, exclu des sauvegardes",
+    "rebind": "Sélectionnez le dossier pour continuer ; les anciennes sources peuvent être obsolètes.",
+    "projectChanged": "Ce dossier correspond à un autre projet. Sélectionnez le dossier d’origine ou démarrez une nouvelle conversation.",
+    "scope": "Périmètre des sources",
+    "configure": "Sélectionnez une configuration IA disponible.",
+    "open": "Ouvrir la recherche"
+  },
+  "answerReview": {
+      "draft": "Brouillon non vérifié",
+      "reviewing": "Brouillon : vérification des exigences et des sources",
+      "interrupted": "Brouillon interrompu, non vérifié",
+      "reviewed": "Vérifié par le modèle, sans validation indépendante",
+      "unreviewed": "Vérification incomplète",
+      "legacy": "État de vérification non enregistré",
+      "coverage": "Couverture des exigences",
+      "answered": "Répondu",
+      "unknown": "Inconnu"
+  },
   "globalChatHistorySheet": {
     "close-chat-history": "Fermer l'historique des questions et réponses",
     "chat-history": "Historique des questions et réponses",
@@ -170,6 +211,13 @@
     "addSelected": "Ajouter un dépôt favori",
     "moreResults": "Rechercher davantage",
     "unknown": "Inconnu",
+    "added": "Ajouté",
+    "addedToContext": "Ajouté au contexte",
+    "addedToContextTooltip": "Ajouté au contexte (cliquer pour supprimer)",
+    "contextPrefix": "Contexte :",
+    "clearAll": "Tout effacer",
+    "multilingualGeneral": "Multilingue / Général",
+    "viewNewProposals": "📋 Voir les nouvelles propositions ↓",
     "candidate": "Candidat",
     "verifying": "Vérification",
     "verified": "Vérifié : voir les preuves",
@@ -267,6 +315,9 @@
     "skip": "Sans préférence",
     "searchAgain": "Rechercher avec ces conditions",
     "draftPreserved": "Vos modifications sont conservées. De nouvelles suggestions IA sont disponibles.",
-    "useNew": "Remplacer par les nouvelles suggestions"
+    "useNew": "Remplacer par les nouvelles suggestions",
+    "quickOptions": "Options rapides :",
+    "cyclePriority": "Cliquer pour changer la priorité",
+    "doubleClickToDelete": "Double-cliquer pour supprimer"
   }
 }

@@ -1,5 +1,5 @@
 import { Repository } from '../types';
-import { AIService } from './aiService';
+import { AIService, type RepositoryAnalysisRetryState } from './aiService';
 import { GitHubApiService } from './githubApi';
 import { backend } from './backendAdapter';
 import { shouldBypassBackend } from './routeMode';
@@ -25,6 +25,7 @@ export interface AnalysisResult {
 }
 
 export interface OptimizerConfig {
+  onTaskStart?: (repository: Repository) => void;
   initialConcurrency: number;
   maxConcurrency: number;
   minConcurrency: number;
@@ -43,7 +44,7 @@ const DEFAULT_CONFIG: OptimizerConfig = {
   minConcurrency: 1,
   targetResponseTime: 5000,
   batchDelayMs: 100,
-  maxRetries: 3,
+  maxRetries: 1,
   retryDelayBaseMs: 1000,
   enableAdaptiveConcurrency: true,
   rateLimiter: {
@@ -55,6 +56,22 @@ const DEFAULT_CONFIG: OptimizerConfig = {
     maxRetryAfterMs: 60000,
   },
 };
+
+function isTransientAnalysisError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { name?: string; status?: number; statusCode?: number; code?: string; message?: string };
+  if (e.name === 'AbortError') return false;
+  const status = e.status ?? e.statusCode;
+  if (typeof status === 'number') return [408, 429, 500, 502, 503, 504].includes(status);
+  const message = e.message ?? '';
+  if (message.startsWith('AGY_')) return /^AGY_(?:BUSY|RATE_LIMIT|TIMEOUT|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(message);
+  if (/\b(?:cancelled|canceled|aborted|unauthorized|forbidden|authentication|invalid api key)\b/i.test(message)) return false;
+  const httpStatus = message.match(/\b(?:HTTP|AI API error:?)\s*(\d{3})\b/i);
+  if (httpStatus) return [408, 429, 500, 502, 503, 504].includes(Number(httpStatus[1]));
+  return isRateLimitedError(error) || e.name === 'TimeoutError'
+    || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN'].includes(e.code ?? '')
+    || /failed to fetch|fetch failed|network(?:error| error| unavailable)|load failed|request timed out/i.test(message);
+}
 
 export class AIAnalysisOptimizer {
   private config: OptimizerConfig;
@@ -245,8 +262,10 @@ export class AIAnalysisOptimizer {
   ): Promise<AnalysisResult> {
     const startTime = Date.now();
     let lastError: Error | undefined;
+    const retryState: RepositoryAnalysisRetryState = { attempts: 0 };
+    const maxRetries = Math.min(1, Math.max(0, this.config.maxRetries));
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (this.aborted) {
         return {
           repo: task.repo,
@@ -274,7 +293,7 @@ export class AIAnalysisOptimizer {
           // 起算点放在 acquire 之后：限流排队时间不应计入 provider 响应时长，
           // 否则 429 冷却会把「并发调节」误判为 provider 变慢而持续降并发
           const analysisStart = Date.now();
-          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, this.batchAbortController.signal);
+          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, this.batchAbortController.signal, retryState);
           const analysisDuration = Date.now() - analysisStart;
           this.sharedLimiter.notifySuccess();
           this.recordResponseTime(analysisDuration);
@@ -302,11 +321,13 @@ export class AIAnalysisOptimizer {
         }
 
         // 429 / 限流：记入共享限流器，触发全局冷却并采纳服务端 Retry-After
-        if (isRateLimitedError(error)) {
+        const transient = isTransientAnalysisError(error);
+        if (transient && (isRateLimitedError(error) || lastError.message === 'AGY_RATE_LIMIT')) {
           this.sharedLimiter.notifyRateLimit(getRetryAfterMsFromError(error));
         }
 
-        if (attempt < this.config.maxRetries) {
+        if (!transient || attempt >= maxRetries) break;
+        if (attempt < maxRetries) {
           // 限流场景下，最短等待到全局冷却结束（含 Retry-After），避免与冷却窗口竞争
           const cooldownWait = this.sharedLimiter.getStatus().cooldownRemainingMs;
           const delayMs = Math.max(this.calculateRetryDelay(attempt), cooldownWait);
@@ -341,6 +362,7 @@ export class AIAnalysisOptimizer {
     let totalWorkersStarted = 0;
 
     const runTask = async (repo: Repository): Promise<AnalysisResult> => {
+      this.config.onTaskStart?.(repo);
       const readmeContent = readmeCache.get(repo.id) || '';
       const task: AnalysisTask = { repo, readmeContent, retries: 0 };
       return this.analyzeWithRetry(task, aiService, categoryNames, categoryHints);
@@ -463,6 +485,7 @@ export class AIAnalysisOptimizer {
 
           try {
             const readmeContent = await prefetchReadme(repo);
+            this.config.onTaskStart?.(repo);
 
             const readmePrefetchCount = Math.min(this.currentConcurrency * 2, pendingRepos.length);
             if (pendingRepos.length > 0) {
