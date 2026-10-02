@@ -34,5 +34,7 @@ export const githubMarkdownSchema = {
     ],
     svg: [...(defaultSchema.attributes?.svg ?? []), 'className', 'viewBox', 'width', 'height', 'ariaHidden'],
     path: [...(defaultSchema.attributes?.path ?? []), 'd'],
+    img: [...(defaultSchema.attributes?.img ?? []), 'srcSet', 'sizes'],
+    source: [...(defaultSchema.attributes?.source ?? []), 'type', 'media', 'sizes'],
   },
 };

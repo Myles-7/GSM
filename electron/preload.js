@@ -41,6 +41,8 @@ if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => ipcRenderer.invoke('x-auth:clear'),
   },
   telegramFetchChannel: (channel, before) => ipcRenderer.invoke('telegram-fetch-channel', channel, before),
+  webdavRequest: params => ipcRenderer.invoke('webdav-request', params),
+  webdavCancel: requestId => ipcRenderer.invoke('webdav-cancel', requestId),
   desktop: {
     getPrefs: () => ipcRenderer.invoke('desktop:getPrefs'),
     setAutoLaunch: (enabled) => ipcRenderer.invoke('desktop:setAutoLaunch', enabled),

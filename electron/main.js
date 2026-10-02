@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage, nativeTheme, shell, globalShortcut, ipcMain, dialog, net, protocol, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, clipboard, ClipboardItem, nativeImage, nativeTheme, shell, globalShortcut, ipcMain, dialog, net, protocol, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -6,7 +6,11 @@ const isDev = process.env.NODE_ENV === 'development';
 const { createMcpLocalServer } = require('./mcpLocalServer');
 const { createAgyDesktop } = require('./agyDesktop');
 const { registerAgyIpc } = require('./agyIpc');
+const { registerWebdavIpc, isTrustedWebdavFrame } = require('./webdavIpc');
+const { pathToFileURL } = require('url');
 const { createPluginManager } = require('./plugins/pluginManager');
+const { createPluginHostOperations } = require('./plugins/pluginHostOperations');
+const { createPluginIpcRegistrar, registerPluginPageNavigation } = require('./plugins/pluginIpc');
 const { downloadReleaseAsset } = require('./plugins/releaseDownload');
 const { loadPluginRegistry } = require('./plugins/pluginRegistryFeed');
 const { PAGE_SCHEME, pageCsp } = require('./plugins/pluginPage');
@@ -25,6 +29,8 @@ const {
 } = require('./xAuthStorage');
 
 let mainWindow;
+let trustedPluginHostURL = null;
+let pluginNavigation = null;
 let agyDesktop;
 let agyQuitReady = false;
 function getAgyDesktop() {
@@ -96,6 +102,8 @@ function createWindow() {
 
   // 添加错误处理和加载事件（fallback 只尝试一次，避免 did-fail-load 死循环）
   const agyOwner = mainWindow.webContents.id;
+  trustedPluginHostURL = null;
+  pluginNavigation = registerPluginPageNavigation(mainWindow.webContents, () => pluginManager);
   mainWindow.webContents.once('destroyed', () => agyDesktop?.cancel(agyOwner));
   mainWindow.webContents.on('render-process-gone', () => agyDesktop?.cancel(agyOwner));
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
@@ -111,6 +119,7 @@ function createWindow() {
     if (!fallbackAttempted && !alreadyOnFallback && fs.existsSync(fallbackPath)) {
       fallbackAttempted = true;
       console.log('Loading fallback page:', fallbackPath);
+      trustedPluginHostURL = pathToFileURL(fallbackPath).href;
       mainWindow.loadFile(fallbackPath);
     }
   });
@@ -159,6 +168,7 @@ function createWindow() {
 
     if (indexPath) {
       console.log('Loading application from:', indexPath);
+      trustedPluginHostURL = pathToFileURL(indexPath).href;
       mainWindow.loadFile(indexPath).catch(error => {
         console.error('Failed to load file:', error);
         // 加载失败时显示错误页面
@@ -904,13 +914,21 @@ function getPluginManager() {
   if (!pluginManager) {
     pluginManager = createPluginManager({
       pluginsRoot: path.join(app.getPath('userData'), 'plugins'),
+      hostOperations: createPluginHostOperations({
+        clipboard, nativeImage, ClipboardItem, dialog, fs, path, getWindow: () => mainWindow,
+      }),
     });
   }
   return pluginManager;
 }
 
-ipcMain.handle('plugins:list', async () => getPluginManager().list());
-ipcMain.handle('plugins:installFromDirectory', async () => {
+const handlePluginIpc = createPluginIpcRegistrar({
+  ipcMain, getWindow: () => mainWindow, getHostURL: () => trustedPluginHostURL,
+  getDevURL: () => isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined,
+  isNavigating: () => pluginNavigation?.isNavigating() ?? false,
+});
+handlePluginIpc('plugins:list', async () => getPluginManager().list(), { plugins: [], invalidPlugins: [] });
+handlePluginIpc('plugins:installFromDirectory', async () => {
   const selection = await dialog.showOpenDialog(mainWindow, {
     title: 'Select plugin directory',
     properties: ['openDirectory'],
@@ -918,16 +936,16 @@ ipcMain.handle('plugins:installFromDirectory', async () => {
   if (selection.canceled || selection.filePaths.length !== 1) return { success: false, canceled: true };
   return getPluginManager().installFromDirectory(selection.filePaths[0]);
 });
-ipcMain.handle('plugins:enable', async (_event, pluginId, grantedPermissions) =>
+handlePluginIpc('plugins:enable', async (_event, pluginId, grantedPermissions) =>
   getPluginManager().enable(pluginId, grantedPermissions)
 );
-ipcMain.handle('plugins:disable', async (_event, pluginId) =>
+handlePluginIpc('plugins:disable', async (_event, pluginId) =>
   getPluginManager().disable(pluginId)
 );
-ipcMain.handle('plugins:uninstall', async (_event, pluginId, removePluginData) =>
+handlePluginIpc('plugins:uninstall', async (_event, pluginId, removePluginData) =>
   getPluginManager().uninstall(pluginId, removePluginData)
 );
-ipcMain.handle('plugins:runAction', async (_event, request) => {
+handlePluginIpc('plugins:runAction', async (_event, request) => {
   const operation = await getPluginManager().runAction(request);
   if (operation.success && operation.result.type === 'open-external') {
     try {
@@ -941,16 +959,16 @@ ipcMain.handle('plugins:runAction', async (_event, request) => {
   }
   return operation;
 });
-ipcMain.handle('plugins:runProcessor', async (_event, request) =>
+handlePluginIpc('plugins:runProcessor', async (_event, request) =>
   getPluginManager().runProcessor(request)
 );
-ipcMain.handle('plugins:pushSnapshot', async (_event, snapshot) =>
+handlePluginIpc('plugins:pushSnapshot', async (_event, snapshot) =>
   getPluginManager().updateSnapshot(snapshot)
 );
-ipcMain.handle('plugins:runReleaseProcessor', async (_event, request) =>
+handlePluginIpc('plugins:runReleaseProcessor', async (_event, request) =>
   getPluginManager().runReleaseProcessor(request)
 );
-ipcMain.handle('plugins:downloadReleaseAsset', async (_event, request) => {
+handlePluginIpc('plugins:downloadReleaseAsset', async (_event, request) => {
   const resolved = getPluginManager().getDownloadAsset(
     request?.pluginId,
     request?.releaseId,
@@ -966,10 +984,10 @@ ipcMain.handle('plugins:downloadReleaseAsset', async (_event, request) => {
 });
 // 社区插件注册表（开发守则 §17）：主进程取回并逐条校验，渲染进程只拿到校验过的结构。
 // 这里不下载任何插件包，也不做任何安装动作。
-ipcMain.handle('plugins:loadRegistry', async () => loadPluginRegistry({
+handlePluginIpc('plugins:loadRegistry', async () => loadPluginRegistry({
   fetchImpl: (url, options) => net.fetch(url, options),
 }));
-ipcMain.handle('plugins:runExporter', async (_event, request) =>
+handlePluginIpc('plugins:runExporter', async (_event, request) =>
   getPluginManager().runExporter(request)
 );
 function isMainPluginFrame(event) {
@@ -977,30 +995,34 @@ function isMainPluginFrame(event) {
     event.senderFrame === mainWindow.webContents.mainFrame;
 }
 registerAgyIpc({ ipcMain, isMainFrame: isMainPluginFrame, getService: getAgyDesktop });
+registerWebdavIpc({
+  ipcMain,
+  isMainFrame: event => isTrustedWebdavFrame(
+    event, mainWindow, pathToFileURL(path.join(__dirname, '../dist/index.html')).href,
+    isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined,
+  ),
+  fetchImpl: (...args) => require('undici').fetch(...args),
+  getDispatcher: getFetchDispatcher,
+});
 
 const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlReading');
 app.whenReady().then(() => {
   const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
   registerHtmlReadingIpc({ ipcMain, isMainFrame: isMainPluginFrame, service, getWindow: () => mainWindow, powerMonitor: require('electron').powerMonitor });
 });
-ipcMain.handle('plugins:getPage', async (event, pluginId, pageId) => {
-  if (!isMainPluginFrame(event)) return { success: false, error: { code: 'PLUGIN_IPC_DENIED', message: 'Plugin IPC requires the main frame' } };
+handlePluginIpc('plugins:getPage', async (_event, pluginId, pageId) => {
   return getPluginManager().getPage(pluginId, pageId);
 });
-ipcMain.handle('plugins:requestPageCapability', async (event, request) => {
-  if (!isMainPluginFrame(event)) return { success: false, error: { code: 'PLUGIN_IPC_DENIED', message: 'Plugin IPC requires the main frame' } };
+handlePluginIpc('plugins:requestPageCapability', async (_event, request) => {
   return getPluginManager().requestPageCapability(request);
 });
-ipcMain.handle('plugins:getSearchEndpoint', async (event) => {
-  if (!isMainPluginFrame(event)) return { endpoint: null };
+handlePluginIpc('plugins:getSearchEndpoint', async () => {
   return getPluginManager().getSearchEndpoint();
-});
-ipcMain.handle('plugins:configureWebSearch', async (event, endpoint) => {
-  if (!isMainPluginFrame(event)) return { success: false, error: { code: 'PLUGIN_IPC_DENIED', message: 'Plugin IPC requires the main frame' } };
+}, { endpoint: null });
+handlePluginIpc('plugins:configureWebSearch', async (_event, endpoint) => {
   return getPluginManager().configureWebSearch(endpoint);
 });
-ipcMain.handle('plugins:searchWeb', async (event, request) => {
-  if (!isMainPluginFrame(event)) return { success: false, error: { code: 'PLUGIN_IPC_DENIED', message: 'Plugin IPC requires the main frame' } };
+handlePluginIpc('plugins:searchWeb', async (_event, request) => {
   return getPluginManager().searchWeb(request);
 });
 

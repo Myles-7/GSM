@@ -157,3 +157,19 @@ test('requires releases:read for release processors and accepts download permiss
     contributes: contribution,
   })).success, true);
 });
+
+test('opensPage actions need a declared page and card placement, but no Worker', () => {
+  const input = manifest({
+    contributes: {
+      pages: [{ id: 'card', title: 'Info Card', entry: 'ui/index.html' }],
+      repositoryActions: [{ id: 'open', title: 'Open', placement: 'repository-card', opensPage: 'card' }],
+    },
+  });
+  delete input.main;
+  assert.equal(validateManifest(input).success, true);
+  input.contributes.repositoryActions[0].opensPage = 'missing';
+  assert.equal(validateManifest(input).success, false);
+  input.contributes.repositoryActions[0].opensPage = 'card';
+  input.contributes.repositoryActions[0].placement = 'bulk-toolbar';
+  assert.equal(validateManifest(input).success, false);
+});

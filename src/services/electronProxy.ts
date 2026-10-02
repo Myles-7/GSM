@@ -62,7 +62,9 @@ export interface DesktopElectronAPI {
   show: () => Promise<{ success: boolean }>;
 }
 
-interface ElectronAPI {
+export interface ElectronAPI {
+  webdavRequest?: (params: DesktopDavRequest) => Promise<DesktopDavResult>;
+  webdavCancel?: (requestId: string) => Promise<{ success: boolean; error?: string }>;
   htmlReading?: import('../lib/html-reading/desktopApi').HtmlReadingApi;
   agy?: import('../types/agy').AgyDesktopAPI;
   setProxy: (config: ProxyConfig) => Promise<{ success: boolean }>;
@@ -96,6 +98,79 @@ declare global {
 export const isElectron = (): boolean => {
   return typeof window !== 'undefined' && !!window.electronAPI;
 };
+
+export interface DesktopDavRequest {
+  requestId: string;
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+}
+
+export interface DesktopDavResult {
+  success: boolean;
+  status?: number;
+  statusText?: string;
+  body?: string;
+  headers?: Record<string, string>;
+  error?: string;
+  timedOut?: boolean;
+  canceled?: boolean;
+}
+
+export const supportsDesktopDav = (): boolean =>
+  typeof window !== 'undefined' && typeof window.electronAPI?.webdavRequest === 'function'
+    && typeof window.electronAPI?.webdavCancel === 'function';
+
+/** Cancellation is a separate IPC message: AbortSignal cannot cross contextBridge. */
+export async function desktopDavFetch(url: string, init: RequestInit = {}, timeoutMs = 60000): Promise<Response> {
+  const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
+  if (!api?.webdavRequest || !api.webdavCancel) throw new Error('Desktop DAV unavailable');
+  if (init.signal?.aborted) throw new DOMException('DAV request canceled', 'AbortError');
+  if (init.body !== undefined && init.body !== null && typeof init.body !== 'string') {
+    throw new Error('Desktop DAV requires a text body');
+  }
+  const requestId = crypto.randomUUID();
+  const timeout = Math.min(300000, Math.max(1000, Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 60000));
+  let rejectAbort: (error: DOMException) => void = () => {};
+  let canceled = false;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const cancel = () => {
+    if (canceled) return;
+    canceled = true;
+    void api.webdavCancel!(requestId).catch(() => {});
+    rejectAbort(new DOMException('DAV request canceled', 'AbortError'));
+  };
+  const params: DesktopDavRequest = {
+    requestId, url, method: init.method || 'GET',
+    headers: Object.fromEntries(new Headers(init.headers).entries()),
+    ...(typeof init.body === 'string' ? { body: init.body } : {}),
+    timeoutMs: timeout,
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Send before subscribing: a cancel IPC must not overtake registration.
+    const request = api.webdavRequest(params);
+    init.signal?.addEventListener('abort', cancel, { once: true });
+    if (init.signal?.aborted) cancel();
+    timer = setTimeout(cancel, timeout);
+    const result = await Promise.race([request, aborted]);
+    if (canceled || init.signal?.aborted || result.timedOut || result.canceled) {
+      throw new DOMException('DAV request canceled or timed out', 'AbortError');
+    }
+    if (!result.success) throw new Error(result.error || 'DAV request failed');
+    const status = result.status;
+    if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599) throw new Error('Invalid DAV response');
+    const noBody = init.method?.toUpperCase() === 'HEAD' || [204, 205, 304].includes(status);
+    return new Response(noBody ? null : (result.body ?? ''), {
+      status, statusText: result.statusText, headers: result.headers,
+    });
+  } finally {
+    clearTimeout(timer);
+    init.signal?.removeEventListener('abort', cancel);
+  }
+}
 
 export const electronProxy = {
   async setProxy(config: ProxyConfig): Promise<void> {

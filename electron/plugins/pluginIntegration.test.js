@@ -155,3 +155,37 @@ test('installs and serves the V1.2 page-only example without starting a Worker',
   await manager.disable(pluginId);
   assert.equal(manager.readPageResource(page.url), null);
 });
+
+test('installs V1.4 Info Card without a Worker and revokes capabilities on reopen/disable/uninstall', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gsm-plugin-card-e2e-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  let workers = 0;
+  const manager = createPluginManager({
+    pluginsRoot: path.join(workspace, 'plugins'),
+    runtimeFactory: () => { workers++; throw new Error('Page actions must not start a Worker'); },
+  });
+  const pluginId = 'com.githubstarsmanager.repo-info-card';
+  assert.deepEqual(manager.installFromDirectory(path.resolve(__dirname, '../../examples/plugins/repo-info-card')),
+    { success: true, pluginId });
+  const permissions = ['repositories:read', 'ai:invoke', 'clipboard:write', 'downloads:create'];
+  assert.deepEqual(await manager.enable(pluginId, permissions), { success: true });
+  const page = manager.getPage(pluginId, 'info-card');
+  assert.equal(page.success, true);
+  assert.match(manager.readPageResource(page.url).body.toString(), /Repo Info Card/);
+  const request = { pluginId, pageId: 'info-card', sessionToken: page.sessionToken,
+    requestId: 'ai', method: 'ai.generate', args: { system: '', user: 'Example repository' } };
+  assert.deepEqual(await manager.requestPageCapability(request), { success: true, value: null });
+  assert.equal((await manager.requestPageCapability(request)).error.code, 'PLUGIN_PAGE_RATE_LIMITED');
+  const reopened = manager.getPage(pluginId, 'info-card');
+  assert.notEqual(reopened.sessionToken, page.sessionToken);
+  assert.equal((await manager.requestPageCapability({ ...request, requestId: 'old' })).error.code, 'PLUGIN_PAGE_CLOSED');
+  manager.revokePageSessions();
+  assert.equal((await manager.requestPageCapability({ ...request, sessionToken: reopened.sessionToken,
+    requestId: 'revoke' })).error.code, 'PLUGIN_PAGE_CLOSED');
+  await manager.disable(pluginId);
+  assert.equal(manager.readPageResource(page.url), null);
+  await manager.enable(pluginId, permissions);
+  assert.deepEqual(await manager.uninstall(pluginId), { success: true, dataRemoved: false });
+  assert.equal(manager.getPage(pluginId, 'info-card').error.code, 'PLUGIN_PAGE_NOT_FOUND');
+  assert.equal(workers, 0);
+});

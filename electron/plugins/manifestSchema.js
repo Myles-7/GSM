@@ -16,7 +16,7 @@ const TOP_LEVEL_FIELDS = new Set([
   'contributes',
 ]);
 const CONTRIBUTION_FIELDS = new Set(['repositoryActions', 'repositoryProcessors', 'releaseProcessors', 'exporters', 'pages']);
-const REPOSITORY_ACTION_FIELDS = new Set(['id', 'title', 'icon', 'placement']);
+const REPOSITORY_ACTION_FIELDS = new Set(['id', 'title', 'icon', 'placement', 'opensPage']);
 const PROCESSOR_FIELDS = new Set(['id', 'title']);
 const EXPORTER_FIELDS = new Set(['id', 'title', 'fileExtension', 'mimeType']);
 const PAGE_FIELDS = new Set(['id', 'title', 'entry']);
@@ -100,6 +100,10 @@ function validateRepositoryActions(actions) {
     }
     if ('icon' in action && (typeof action.icon !== 'string' || action.icon.trim() === '')) {
       return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.icon' must be a non-empty string`);
+    }
+    if ('opensPage' in action && (typeof action.opensPage !== 'string' ||
+      !CONTRIBUTION_ID_RE.test(action.opensPage) || action.placement !== 'repository-card')) {
+      return failure('MANIFEST_FIELD_INVALID', `Manifest field '${prefix}.opensPage' requires a valid page id and repository-card placement`);
     }
   }
   return null;
@@ -233,6 +237,12 @@ function validateManifest(input) {
     const error = validatePages(input.contributes.pages);
     if (error) return error;
   }
+  const pageIds = new Set((input.contributes.pages || []).map((page) => page.id));
+  for (const action of input.contributes.repositoryActions || []) {
+    if (action.opensPage && !pageIds.has(action.opensPage)) {
+      return failure('MANIFEST_FIELD_INVALID', `opensPage '${action.opensPage}' must name a page contributed by this plugin`);
+    }
+  }
   if ('repositoryProcessors' in input.contributes) {
     const error = validateSimpleContributions(
       input.contributes.repositoryProcessors,
@@ -292,7 +302,7 @@ function validateManifest(input) {
     return failure('MANIFEST_FIELD_REQUIRED', "Manifest requires either 'main' or a contributed page entry");
   }
   const hasRuntimeContribution = [
-    input.contributes.repositoryActions,
+    input.contributes.repositoryActions?.filter((action) => !action.opensPage),
     input.contributes.repositoryProcessors,
     input.contributes.releaseProcessors,
     input.contributes.exporters,

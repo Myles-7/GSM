@@ -5,9 +5,9 @@
 import { useT } from '../i18n/useT';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
-import React, { memo, useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import React, { memo, useState, useCallback, useContext, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -19,6 +19,8 @@ import { Copy, Check, Download } from 'lucide-react';
 import hljs from 'highlight.js';
 import MermaidBlock from './MermaidBlock';
 import { githubMarkdownSchema } from '../utils/sanitizeSchema';
+import { imageExtensionForMimeType } from '../utils/imageDownload';
+import { decodeAnchorFragment, resolveMarkdownHref, resolveMarkdownImageSrc, resolveMarkdownSrcSet } from '../utils/markdownResources';
 import 'highlight.js/styles/github.min.css';
 import '../styles/github-markdown.scoped.css';
 import { useAppStore } from '../store/useAppStore';
@@ -207,27 +209,7 @@ const MarkdownLink: React.FC<{ href?: string; children?: React.ReactNode; baseUr
   const isMailto = href.startsWith('mailto:');
   const isTel = href.startsWith('tel:');
 
-  const resolveHref = (link: string): string => {
-    if (link.startsWith('http://') || link.startsWith('https://') || link.startsWith('//')) {
-      return link;
-    }
-    if (link.startsWith('#')) {
-      return link;
-    }
-    if (link.startsWith('mailto:') || link.startsWith('tel:')) {
-      return link;
-    }
-    if (baseUrl) {
-      try {
-        return new URL(link, baseUrl + '/blob/HEAD/').href;
-      } catch {
-        return link;
-      }
-    }
-    return link;
-  };
-
-  const resolvedHref = resolveHref(href);
+  const resolvedHref = resolveMarkdownHref(href, baseUrl);
   const isHashLink = href.startsWith('#');
   const isSpecialLink = isMailto || isTel;
 
@@ -235,7 +217,7 @@ const MarkdownLink: React.FC<{ href?: string; children?: React.ReactNode; baseUr
     e.stopPropagation();
     if (isHashLink && headingIds) {
       e.preventDefault();
-      const anchorText = decodeURIComponent(href.substring(1));
+      const anchorText = decodeAnchorFragment(href.substring(1));
       const targetId = headingIds.get(anchorText);
       if (targetId) {
         const targetElement = document.getElementById(targetId);
@@ -263,19 +245,7 @@ const MarkdownLink: React.FC<{ href?: string; children?: React.ReactNode; baseUr
   );
 };
 
-const resolveImageSrc = (imageSrc: string, baseUrl?: string): string => {
-  if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://') || imageSrc.startsWith('//')) {
-    return imageSrc;
-  }
-  if (baseUrl) {
-    try {
-      return new URL(imageSrc, baseUrl + '/raw/HEAD/').href;
-    } catch {
-      return imageSrc;
-    }
-  }
-  return imageSrc;
-};
+const PictureSourcesContext = React.createContext<React.ReactNode>(null);
 
 const truncateUrl = (url: string, maxLength: number = 50): string => {
   if (url.length <= maxLength) return url;
@@ -292,8 +262,10 @@ const truncateUrl = (url: string, maxLength: number = 50): string => {
 };
 
 /** Image with skeleton loading, error fallback, relative-URL resolution and a lightbox. */
-const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> = ({
+const MarkdownImage: React.FC<{ src?: string; srcSet?: string; sizes?: string; alt?: string; baseUrl?: string }> = ({
   src,
+  srcSet,
+  sizes,
   alt,
   baseUrl
 }) => {
@@ -314,16 +286,26 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
   const imgRef = useRef<HTMLImageElement>(null);
   const zoomOverlayRef = useRef<HTMLDivElement>(null);
 
-  const imageUrl = useMemo(() => resolveImageSrc(src || '', baseUrl), [src, baseUrl]);
+  const imageUrl = useMemo(() => resolveMarkdownImageSrc(src || '', baseUrl), [src, baseUrl]);
+  const resolvedSrcSet = useMemo(() => resolveMarkdownSrcSet(srcSet, baseUrl), [srcSet, baseUrl]);
+  const pictureSources = useContext(PictureSourcesContext);
+  const [selectedImageUrl, setSelectedImageUrl] = useState(imageUrl);
+
+  useEffect(() => {
+    setSelectedImageUrl(imageUrl);
+    setHasError(false);
+    setIsLoading(true);
+    setImageSizeKnown(false);
+    setNaturalWidth(0);
+    setNaturalHeight(0);
+  }, [imageUrl, resolvedSrcSet]);
 
   useEffect(() => {
     if (!src) return;
     if (imgRef.current) {
       const parent = imgRef.current.closest('a');
       setIsInsideLink(!!parent);
-      if (parent) {
-        setParentLinkHref(parent.getAttribute('href'));
-      }
+      setParentLinkHref(parent?.getAttribute('href') ?? null);
     }
   }, [src]);
 
@@ -381,14 +363,16 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
     setIsDownloading(true);
     let objectUrl: string | null = null;
     try {
-      const response = await fetch(imageUrl);
+      const response = await fetch(selectedImageUrl);
+      if (!response.ok) throw new Error('Image download failed');
       const blob = await response.blob();
       objectUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = objectUrl;
+      const extension = imageExtensionForMimeType(blob.type);
       const fileName = alt
-        ? `${alt.replace(/[/\\?%*:|"<>]/g, '_')}.${blob.type.split('/')[1] || 'png'}`
-        : `image-${Date.now()}.${blob.type.split('/')[1] || 'png'}`;
+        ? `${alt.replace(/[/\\?%*:|"<>]/g, '_')}.${extension}`
+        : `image-${Date.now()}.${extension}`;
       a.download = fileName;
       document.body.appendChild(a);
       a.click();
@@ -396,7 +380,7 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
     } catch {
       try {
         const a = document.createElement('a');
-        a.href = imageUrl;
+        a.href = selectedImageUrl;
         a.download = alt ? alt.replace(/[/\\?%*:|"<>]/g, '_') : 'image';
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
@@ -410,7 +394,7 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       setIsDownloading(false);
     }
-  }, [imageUrl, alt, isDownloading]);
+  }, [selectedImageUrl, alt, isDownloading]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (zoomScale > 1 && e.touches.length === 1) {
@@ -442,13 +426,14 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
   }, []);
 
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    setSelectedImageUrl(e.currentTarget.currentSrc || imageUrl);
     setIsLoading(false);
     const w = (e.target as HTMLImageElement).naturalWidth;
     const h = (e.target as HTMLImageElement).naturalHeight;
     setNaturalWidth(w);
     setNaturalHeight(h);
     setImageSizeKnown(true);
-  }, []);
+  }, [imageUrl]);
 
   const handleImageError = useCallback(() => {
     setHasError(true);
@@ -464,6 +449,16 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
   }, []);
 
   const isSmallImage = imageSizeKnown && naturalWidth > 0 && naturalWidth < 300;
+
+  const renderMedia = (className: string, style: React.CSSProperties) => {
+    const image = (
+      <img ref={imgRef} src={imageUrl} srcSet={resolvedSrcSet} sizes={sizes} alt={alt || ''}
+        className={className} style={style}
+        onLoad={handleImageLoad} onError={handleImageError} onClick={handleImageClick} />
+    );
+    // Source selection only works when the image is a direct picture child.
+    return pictureSources === null ? image : <picture>{pictureSources}{image}</picture>;
+  };
 
   if (!src) return null;
 
@@ -496,11 +491,7 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
             <span className="w-20 h-7 bg-muted dark:bg-muted/40 rounded animate-pulse inline-block" />
           )}
           <span className="relative inline-block">
-            <img
-              ref={imgRef}
-              src={imageUrl}
-              alt={alt || ''}
-              className={`
+            {renderMedia(`
                 h-auto rounded
                 ${isInsideLink
                   ? 'hover:opacity-80'
@@ -508,16 +499,11 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
                 }
                 ${isLoading ? 'opacity-0 absolute' : 'opacity-100'}
                 min-h-[16px]
-              `}
-              style={{
+              `, {
                 maxWidth: `${naturalWidth}px`,
                 width: `${naturalWidth}px`,
                 objectFit: 'contain'
-              }}
-              onLoad={handleImageLoad}
-              onError={handleImageError}
-              onClick={handleImageClick}
-            />
+              })}
           </span>
         </span>
       ) : (
@@ -532,27 +518,18 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
           )}
 
           <span className={`relative inline-block rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow duration-300 ${isLoading ? 'hidden' : ''}`}>
-            <img
-              ref={imgRef}
-              src={imageUrl}
-              alt={alt || ''}
-              className={`
+            {renderMedia(`
                 h-auto rounded-xl
                 ${isInsideLink
                   ? 'hover:brightness-95 transition-all duration-200'
                   : 'hover:brightness-95 transition-all duration-200 cursor-pointer'
                 }
-              `}
-              style={{
+              `, {
                 maxHeight: '65vh',
                 maxWidth: '100%',
                 width: 'auto',
                 objectFit: 'contain'
-              }}
-              onLoad={handleImageLoad}
-              onError={handleImageError}
-              onClick={handleImageClick}
-            />
+              })}
             <span className="absolute inset-0 rounded-xl ring-1 ring-inset ring-foreground/5 dark:ring-foreground/10 pointer-events-none" />
           </span>
 
@@ -740,7 +717,7 @@ const MarkdownImage: React.FC<{ src?: string; alt?: string; baseUrl?: string }> 
             onTouchEnd={handleTouchEnd}
           >
             <img
-              src={imageUrl}
+              src={selectedImageUrl}
               alt={alt || ''}
               className="max-w-[90vw] max-h-[85vh] object-contain rounded-lg shadow-2xl transition-transform duration-100"
               style={{
@@ -861,6 +838,18 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
   const markdownComponents: Components = useMemo(() => ({
     a: (props) => <MarkdownLink {...props} baseUrl={baseUrl} headingIds={headingIds} />,
     img: (props) => <MarkdownImage {...props} baseUrl={baseUrl} />,
+    source: ({ srcSet, ...props }) =>
+      <source {...stripAstNode(props)} srcSet={resolveMarkdownSrcSet(srcSet, baseUrl)} />,
+    picture: ({ children, ...props }) => {
+      const nodes = React.Children.toArray(children);
+      const sources = nodes.filter(child => React.isValidElement(child)
+        && (child.props as React.ComponentPropsWithoutRef<'source'> & ExtraProps).node?.tagName === 'source');
+      const rest = nodes.filter(child => !sources.includes(child));
+      if (!rest.some(child => React.isValidElement(child))) {
+        return <picture {...stripAstNode(props)}>{children}</picture>;
+      }
+      return <PictureSourcesContext.Provider value={sources}>{rest}</PictureSourcesContext.Provider>;
+    },
     h1: ({ children }) => <h1 id={getHeadingId(children)}>{children}</h1>,
     h2: ({ children }) => <h2 id={getHeadingId(children)}>{children}</h2>,
     h3: ({ children }) => <h3 id={getHeadingId(children)}>{children}</h3>,

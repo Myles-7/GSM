@@ -1,8 +1,9 @@
 'use strict';
 
 const { protocolError } = require('./pluginProtocol');
+const { decodeBinary, validateFileName, argsBudget } = require('./pluginPageBridge');
 
-function createCapabilityRouter({ storage, logger, catalog }) {
+function createCapabilityRouter({ storage, logger, catalog, hostOperations = null }) {
   return {
     async handle(permissions, request) {
       if (!request || typeof request !== 'object' || typeof request.capability !== 'string') {
@@ -11,6 +12,33 @@ function createCapabilityRouter({ storage, logger, catalog }) {
       if (request.capability === 'log') {
         logger.log(request.operation, request.args?.message, request.args?.metadata);
         return null;
+      }
+      if (request.capability === 'clipboard' || request.capability === 'downloads') {
+        const permission = request.capability === 'clipboard' ? 'clipboard:write' : 'downloads:create';
+        if (!permissions.includes(permission)) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', `Permission '${permission}' is required`);
+        }
+        const operation = request.capability === 'clipboard'
+          ? ({ write: 'clipboardWrite', writeImage: 'clipboardWriteImage' })[request.operation]
+          : request.operation === 'saveFile' ? 'saveFile' : null;
+        if (!operation) throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', 'Unknown output operation');
+        if (typeof hostOperations?.[operation] !== 'function') {
+          throw protocolError('PLUGIN_CAPABILITY_UNAVAILABLE', 'System output is unavailable for this caller');
+        }
+        const args = request.args || {};
+        if (Buffer.byteLength(JSON.stringify(args), 'utf8') > argsBudget(`${request.capability}.${request.operation}`)) {
+          throw protocolError('PLUGIN_PAGE_REQUEST_TOO_LARGE', 'Output arguments are too large');
+        }
+        if (operation === 'clipboardWrite') {
+          if (typeof args.text !== 'string' || !args.text || args.text.length > 200_000) {
+            throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Clipboard text is invalid');
+          }
+          return hostOperations.clipboardWrite({ text: args.text });
+        }
+        const buffer = decodeBinary(args.dataBase64);
+        return hostOperations[operation]({ buffer,
+          ...(operation === 'saveFile' ? { fileName: validateFileName(args.fileName) } : {}),
+        });
       }
       if (request.capability === 'ai') {
         if (request.operation !== 'generate') {

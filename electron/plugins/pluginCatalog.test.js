@@ -49,3 +49,21 @@ test('does not partially update a repository when release validation fails', () 
   assert.equal(catalog.getRepository(1), null);
   assert.equal(catalog.getRelease(2), null);
 });
+
+test('sanitizes discarded fields and deduplicates before applying the 64 MiB budget', () => {
+  const catalog = createPluginCatalog();
+  const hugeIgnoredField = 'x'.repeat(65 * 1024 * 1024);
+  assert.deepEqual(catalog.update({ repositories: [{ ...repository(), privateIgnored: hugeIgnoredField }], releases: [] }), { repositories: 1, releases: 0 });
+  const duplicate = { ...repository(), description: 'x'.repeat(33 * 1024 * 1024) };
+  assert.deepEqual(catalog.update({ repositories: [duplicate, duplicate], releases: [] }), { repositories: 1, releases: 0 });
+});
+
+test('measures retained UTF-8 fields and keeps the old catalog on rejection', () => {
+  const catalog = createPluginCatalog();
+  catalog.update({ repositories: [repository()], releases: [] });
+  assert.throws(() => catalog.update({
+    repositories: [{ ...repository(), id: 9, description: '汉'.repeat(23 * 1024 * 1024) }], releases: [],
+  }), { code: 'PLUGIN_SNAPSHOT_INVALID' });
+  assert.equal(catalog.getRepository(1).description, 'Desktop manager');
+  assert.equal(catalog.getRepository(9), null);
+});

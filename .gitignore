@@ -76,3 +76,12 @@ docs/wiki/
 /home-backend/
 /.deployment-staging/
 /GSM-桌面端.lnk
+
+# Isolated selective-migration test profiles and generated caches
+/.identity-participant-test-cache/
+/output/plugin-native-smoke/
+/output/plugin-integration-smoke/
+/output/plugin-clipboard-probe/
+/output/import-release-vite-cache/
+/output/settings-qa/
+/output/p020-*/

@@ -1,11 +1,19 @@
 import { WebDAVConfig } from '../types';
 import { logger } from './logger';
+import { desktopDavFetch, supportsDesktopDav } from './electronProxy';
+
+const isAbortError = (error: unknown): boolean =>
+  !!error && typeof error === 'object' && 'name' in error && error.name === 'AbortError';
 
 export class WebDAVService {
   private config: WebDAVConfig;
 
   constructor(config: WebDAVConfig) {
     this.config = config;
+  }
+
+  private fetchDav(url: string, init: RequestInit, timeoutMs = 60000): Promise<Response> {
+    return supportsDesktopDav() ? desktopDavFetch(url, init, timeoutMs) : fetch(url, init);
   }
 
   // 压缩JSON数据，减少传输大小
@@ -48,6 +56,7 @@ export class WebDAVService {
         return await operation();
       } catch (error: unknown) {
         lastError = error as Error;
+        if (lastError.name === 'AbortError') throw lastError;
 
         if (attempt === maxRetries) {
           throw lastError;
@@ -84,6 +93,7 @@ export class WebDAVService {
   }
 
   private handleNetworkError(error: unknown, operation: string): never {
+    if (isAbortError(error)) throw error;
     logger.error('webdav', `WebDAV ${operation} failed`, error);
     
     const err = error as Error;
@@ -127,7 +137,7 @@ export class WebDAVService {
     throw new Error(`WebDAV ${operation} 失败: ${err.message || '未知错误'}`);
   }
 
-  async testConnection(): Promise<boolean> {
+  async testConnection(signal?: AbortSignal): Promise<boolean> {
     try {
       // 验证URL格式
       if (!this.config.url.startsWith('http://') && !this.config.url.startsWith('https://')) {
@@ -140,45 +150,51 @@ export class WebDAVService {
       // 先尝试 HEAD 请求检测基本可达性（某些服务器对 PROPFIND/OPTIONS 支持较差）
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+      const abort = () => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) controller.abort();
 
       try {
-        const headResponse = await fetch(dirUrl, {
+        const headResponse = await this.fetchDav(dirUrl, {
           method: 'HEAD',
           headers: {
             'Authorization': this.getAuthHeader(),
           },
           signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
+        }, 10000);
 
         if (headResponse.ok) return true;
 
         // HEAD 不可用时，尝试 PROPFIND（不少服务器返回 207 Multi-Status 表示成功）
-        const propfindResponse = await fetch(dirUrl, {
+        const propfindResponse = await this.fetchDav(dirUrl, {
           method: 'PROPFIND',
           headers: {
             'Authorization': this.getAuthHeader(),
             'Depth': '0',
           },
-        });
+          signal: controller.signal,
+        }, 10000);
 
         return propfindResponse.ok || propfindResponse.status === 207;
       } catch (fetchError: unknown) {
         clearTimeout(timeoutId);
         
+        if (signal?.aborted) throw fetchError;
         if ((fetchError as Error).name === 'AbortError') {
           throw new Error('连接超时。请检查WebDAV服务器是否可访问。');
         }
         
         throw fetchError;
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', abort);
       }
     } catch (error: unknown) {
       return this.handleNetworkError(error, '连接测试');
     }
   }
 
-  async uploadFile(filename: string, content: string): Promise<boolean> {
+  async uploadFile(filename: string, content: string, signal?: AbortSignal): Promise<boolean> {
     try {
       // 验证URL格式
       if (!this.config.url.startsWith('http://') && !this.config.url.startsWith('https://')) {
@@ -196,7 +212,7 @@ export class WebDAVService {
       logger.info('webdav', '文件大小', { sizeKB: fileAnalysis.sizeKB, compressedKB: Math.round(compressedContent.length / 1024) });
 
       // 确保目录存在
-      await this.ensureDirectoryExists();
+      await this.ensureDirectoryExists(signal);
 
       // 动态计算超时时间：基于压缩后文件大小，最小60秒，最大300秒
       const finalSizeKB = Math.round(compressedContent.length / 1024);
@@ -206,11 +222,14 @@ export class WebDAVService {
       const uploadOperation = async (): Promise<boolean> => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), dynamicTimeout);
+        const abort = () => controller.abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) controller.abort();
         const sanitizedPath = this.getFullPath(filename).replace(/^https?:\/\/[^/]+/, '');
         const startTime = Date.now();
 
         try {
-          const response = await fetch(this.getFullPath(filename), {
+          const response = await this.fetchDav(this.getFullPath(filename), {
             method: 'PUT',
             headers: {
               'Authorization': this.getAuthHeader(),
@@ -218,7 +237,7 @@ export class WebDAVService {
             },
             body: compressedContent,
             signal: controller.signal,
-          });
+          }, dynamicTimeout);
 
           clearTimeout(timeoutId);
 
@@ -246,15 +265,20 @@ export class WebDAVService {
         } catch (fetchError: unknown) {
           clearTimeout(timeoutId);
 
+          if (signal?.aborted) throw fetchError;
           if ((fetchError as Error).name === 'AbortError') {
             throw new Error(`上传超时 (${finalSizeKB}KB文件，${dynamicTimeout/1000}秒限制)。建议检查网络连接或联系管理员优化服务器配置。`);
           }
 
           throw fetchError;
+        } finally {
+          clearTimeout(timeoutId);
+          signal?.removeEventListener('abort', abort);
         }
       };
 
-      return await this.retryUpload(uploadOperation);
+      // An interrupted desktop PUT has an unknown outcome; never replay it automatically.
+      return supportsDesktopDav() ? await uploadOperation() : await this.retryUpload(uploadOperation);
     } catch (error: unknown) {
       const err = error as Error;
       if (err.message.includes('身份验证失败') || 
@@ -270,7 +294,7 @@ export class WebDAVService {
     }
   }
 
-  private async ensureDirectoryExists(): Promise<void> {
+  private async ensureDirectoryExists(signal?: AbortSignal): Promise<void> {
     try {
       if (!this.config.path || this.config.path === '/') {
         return; // 根目录总是存在
@@ -285,9 +309,10 @@ export class WebDAVService {
         currentPath += `/${seg}`;
         const full = `${this.config.url}${currentPath}`;
         try {
-          const res = await fetch(full, {
+          const res = await this.fetchDav(full, {
             method: 'MKCOL',
             headers: { 'Authorization': this.getAuthHeader() },
+            signal,
           });
 
           // 201 Created（新建）或 405 Method Not Allowed（已存在）都视为成功
@@ -299,31 +324,36 @@ export class WebDAVService {
             }
           }
         } catch (e) {
+          if (isAbortError(e)) throw e;
           logger.warn('webdav', '创建目录发生异常', { currentPath, error: e });
           break;
         }
       }
     } catch (error) {
+      if (isAbortError(error)) throw error;
       logger.warn('webdav', '目录创建检查失败', error);
       // 不在这里抛出错误，因为目录可能已经存在
     }
   }
 
-  async downloadFile(filename: string): Promise<string | null> {
+  async downloadFile(filename: string, signal?: AbortSignal): Promise<string | null> {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
+      const abort = () => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) controller.abort();
       const sanitizedPath = this.getFullPath(filename).replace(/^https?:\/\/[^/]+/, '');
       const startTime = Date.now();
 
       try {
-        const response = await fetch(this.getFullPath(filename), {
+        const response = await this.fetchDav(this.getFullPath(filename), {
           method: 'GET',
           headers: {
             'Authorization': this.getAuthHeader(),
           },
           signal: controller.signal,
-        });
+        }, 30000);
 
         clearTimeout(timeoutId);
 
@@ -347,11 +377,15 @@ export class WebDAVService {
       } catch (fetchError: unknown) {
         clearTimeout(timeoutId);
 
+        if (signal?.aborted) throw fetchError;
         if ((fetchError as Error).name === 'AbortError') {
           throw new Error('下载超时。请检查网络连接。');
         }
 
         throw fetchError;
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', abort);
       }
     } catch (error: unknown) {
       const err = error as Error;
@@ -366,38 +400,39 @@ export class WebDAVService {
     }
   }
 
-  async fileExists(filename: string): Promise<boolean> {
+  async fileExists(filename: string, signal?: AbortSignal): Promise<boolean> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
-
-      const response = await fetch(this.getFullPath(filename), {
+      const response = await this.fetchDav(this.getFullPath(filename), {
         method: 'HEAD',
         headers: {
           'Authorization': this.getAuthHeader(),
         },
-        signal: controller.signal,
-      });
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+      }, 10000);
 
       clearTimeout(timeoutId);
       return response.ok;
     } catch (error) {
+      if (signal?.aborted) throw error;
       logger.error('webdav', 'WebDAV文件检查失败', error);
       return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
-  async listFiles(): Promise<string[]> {
+  async listFiles(signal?: AbortSignal): Promise<string[]> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
-
       try {
         // 确保目录URL以斜杠结尾，避免部分服务器对集合路径的歧义
         const basePath = this.config.path.endsWith('/') ? this.config.path : `${this.config.path}/`;
         const collectionUrl = `${this.config.url}${basePath}`;
 
-        const response = await fetch(collectionUrl, {
+        const response = await this.fetchDav(collectionUrl, {
           method: 'PROPFIND',
           headers: {
             'Authorization': this.getAuthHeader(),
@@ -412,8 +447,8 @@ export class WebDAVService {
                 <D:getcontentlength/>
               </D:prop>
             </D:propfind>`,
-          signal: controller.signal,
-        });
+          signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        }, 15000);
 
         clearTimeout(timeoutId);
 
@@ -482,6 +517,7 @@ export class WebDAVService {
       } catch (fetchError: unknown) {
         clearTimeout(timeoutId);
         
+        if (signal?.aborted) throw fetchError;
         if ((fetchError as Error).name === 'AbortError') {
           throw new Error('列出文件超时。请检查网络连接。');
         }
@@ -495,6 +531,8 @@ export class WebDAVService {
         throw error;
       }
       return this.handleNetworkError(error, '列出文件');
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -526,13 +564,14 @@ export class WebDAVService {
   }
 
   // 新增：获取服务器信息
-  async getServerInfo(): Promise<{ server?: string; davLevel?: string }> {
+  async getServerInfo(signal?: AbortSignal): Promise<{ server?: string; davLevel?: string }> {
     try {
-      const response = await fetch(this.config.url, {
+      const response = await this.fetchDav(this.config.url, {
         method: 'OPTIONS',
         headers: {
           'Authorization': this.getAuthHeader(),
         },
+        signal,
       });
 
       if (response.ok) {
@@ -542,6 +581,7 @@ export class WebDAVService {
         };
       }
     } catch (error) {
+      if (signal?.aborted) throw error;
       logger.warn('webdav', '无法获取服务器信息', error);
     }
     

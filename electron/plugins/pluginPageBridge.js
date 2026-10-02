@@ -11,11 +11,42 @@ const METHODS = {
   'storage.delete': { capability: 'storage', operation: 'delete', fields: ['key'] },
   'ai.generate': { capability: 'ai', operation: 'generate', fields: ['system', 'user', 'maxTokens'] },
   'web.search': { capability: 'web', operation: 'search', fields: ['query', 'limit'] },
+  'clipboard.write': { capability: 'clipboard', operation: 'write', fields: ['text'] },
+  'clipboard.writeImage': { capability: 'clipboard', operation: 'writeImage', fields: ['dataBase64'] },
+  'downloads.saveFile': { capability: 'downloads', operation: 'saveFile', fields: ['fileName', 'dataBase64'] },
+  'page.close': { capability: 'page', operation: 'close', fields: [] },
 };
+
+function argsBudget(method) {
+  return method === 'clipboard.writeImage' || method === 'downloads.saveFile'
+    ? 10 * 1024 * 1024 : 1024 * 1024;
+}
+
+function decodeBinary(dataBase64) {
+  if (typeof dataBase64 !== 'string' || !dataBase64 || dataBase64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(dataBase64)) {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Base64 payload is invalid');
+  }
+  const buffer = Buffer.from(dataBase64, 'base64');
+  if (!buffer.length || buffer.toString('base64') !== dataBase64) {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Base64 payload is invalid');
+  }
+  return buffer;
+}
+
+function validateFileName(fileName) {
+  if (typeof fileName !== 'string' || !fileName.trim() || fileName.length > 200 ||
+    fileName !== fileName.trim() || /[\x00-\x1f\x7f<>:"/\\|?*]/.test(fileName) ||
+    fileName.startsWith('.') || /[. ]$/.test(fileName) ||
+    /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(fileName)) {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Download file name is invalid');
+  }
+  return fileName;
+}
 
 function validatePageCapabilityRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-    Object.keys(input).some((field) => !['pluginId', 'pageId', 'method', 'args'].includes(field))) {
+    Object.keys(input).some((field) => !['pluginId', 'pageId', 'method', 'args', 'sessionToken', 'requestId'].includes(field))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page request is invalid');
   }
   const { pluginId, pageId, method, args = {} } = input;
@@ -27,7 +58,11 @@ function validatePageCapabilityRequest(input) {
   if (Object.keys(args).some((field) => !definition.fields.includes(field))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page request has unknown arguments');
   }
-  if (Buffer.byteLength(JSON.stringify(args), 'utf8') > 1024 * 1024) {
+  let size;
+  try { size = Buffer.byteLength(JSON.stringify(args), 'utf8'); } catch {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page arguments must be JSON serializable');
+  }
+  if (size > argsBudget(method)) {
     throw protocolError('PLUGIN_PAGE_REQUEST_TOO_LARGE', 'Page request is too large');
   }
   if (method === 'repositories.search' &&
@@ -46,7 +81,7 @@ function validatePageCapabilityRequest(input) {
   }
   if (method === 'ai.generate' &&
     (typeof args.system !== 'string' || args.system.length > 2000 ||
-      typeof args.user !== 'string' || !args.user.trim() || args.user.length > 8000 ||
+      typeof args.user !== 'string' || !args.user.trim() || args.user.length > 160_000 ||
       (args.maxTokens !== undefined && (!Number.isInteger(args.maxTokens) || args.maxTokens < 1 || args.maxTokens > 4000)))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'AI request arguments are invalid');
   }
@@ -55,7 +90,12 @@ function validatePageCapabilityRequest(input) {
       (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 10)))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Web search arguments are invalid');
   }
+  if (method === 'clipboard.write' && (typeof args.text !== 'string' || !args.text || args.text.length > 200_000)) {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Clipboard text is invalid');
+  }
+  if (method === 'clipboard.writeImage' || method === 'downloads.saveFile') decodeBinary(args.dataBase64);
+  if (method === 'downloads.saveFile') validateFileName(args.fileName);
   return { pluginId, pageId, capability: definition.capability, operation: definition.operation, args };
 }
 
-module.exports = { validatePageCapabilityRequest };
+module.exports = { validatePageCapabilityRequest, argsBudget, decodeBinary, validateFileName };

@@ -37,15 +37,6 @@ function createPluginCatalog() {
       if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
         throw protocolError('PLUGIN_SNAPSHOT_INVALID', 'Plugin data snapshot must be an object');
       }
-      let snapshotBytes;
-      try {
-        snapshotBytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
-      } catch {
-        throw protocolError('PLUGIN_SNAPSHOT_INVALID', 'Plugin data snapshot must be JSON serializable');
-      }
-      if (snapshotBytes > MAX_SNAPSHOT_BYTES) {
-        throw protocolError('PLUGIN_SNAPSHOT_INVALID', 'Plugin data snapshot exceeds the size limit');
-      }
       if (!Array.isArray(snapshot.repositories) || snapshot.repositories.length > MAX_SNAPSHOT_REPOSITORIES) {
         throw protocolError('PLUGIN_SNAPSHOT_INVALID', 'Plugin repository snapshot is invalid');
       }
@@ -61,6 +52,14 @@ function createPluginCatalog() {
       for (const release of snapshot.releases) {
         const normalized = normalizeRelease(release);
         nextReleases.set(normalized.public.id, normalized);
+      }
+      // Count every retained field, including download URLs, after sanitizing and deduplicating.
+      const snapshotBytes = Buffer.byteLength(JSON.stringify({
+        repositories: [...nextRepositories.values()],
+        releases: [...nextReleases.values()],
+      }), 'utf8');
+      if (snapshotBytes > MAX_SNAPSHOT_BYTES) {
+        throw protocolError('PLUGIN_SNAPSHOT_INVALID', 'Plugin data snapshot exceeds the size limit');
       }
       repositories = nextRepositories;
       releases = nextReleases;

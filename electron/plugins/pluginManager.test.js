@@ -699,16 +699,20 @@ test('page requests use the declared Host capability and stop after disable', as
     updated_at: '2026-01-01', pushed_at: '2026-01-01', owner: { login: 'owner' }, topics: [],
   }], releases: [] });
   assert.deepEqual(await manager.enable(manifest.id, manifest.permissions), { success: true });
+  const { sessionToken } = manager.getPage(manifest.id, 'dashboard');
   const result = await manager.requestPageCapability({
+    sessionToken, requestId: 'search',
     pluginId: manifest.id, pageId: 'dashboard', method: 'repositories.search', args: { query: 'owner', limit: 5 },
   });
   assert.equal(result.success, true);
   assert.equal(result.value[0].full_name, 'owner/repo');
   assert.equal((await manager.requestPageCapability({
+    sessionToken, requestId: 'release',
     pluginId: manifest.id, pageId: 'dashboard', method: 'releases.get', args: { releaseId: 1 },
   })).error.code, 'PLUGIN_PERMISSION_DENIED');
   await manager.disable(manifest.id);
   assert.equal((await manager.requestPageCapability({
+    sessionToken, requestId: 'disabled',
     pluginId: manifest.id, pageId: 'dashboard', method: 'repositories.search', args: { query: 'owner' },
   })).error.code, 'PLUGIN_NOT_ACTIVE');
 });
@@ -727,6 +731,7 @@ test('AI page requests only authorize a declared and enabled permission', async 
   const request = { pluginId: manifest.id, pageId: 'dashboard', method: 'ai.generate', args: { system: '', user: 'Example' } };
   assert.equal((await manager.requestPageCapability(request)).error.code, 'PLUGIN_NOT_ACTIVE');
   assert.deepEqual(await manager.enable(manifest.id, manifest.permissions), { success: true });
+  Object.assign(request, { sessionToken: manager.getPage(manifest.id, 'dashboard').sessionToken, requestId: 'ai' });
   assert.deepEqual(await manager.requestPageCapability(request), { success: true, value: null });
   await manager.disable(manifest.id);
   assert.equal((await manager.requestPageCapability(request)).error.code, 'PLUGIN_NOT_ACTIVE');
@@ -749,13 +754,42 @@ test('web search uses only the user-configured endpoint after page authorization
   const request = { pluginId: manifest.id, pageId: 'dashboard', args: { query: 'Example', limit: 2 } };
   assert.equal((await manager.searchWeb(request)).error.code, 'PLUGIN_NOT_ACTIVE');
   assert.deepEqual(await manager.enable(manifest.id, manifest.permissions), { success: true });
+  Object.assign(request, { sessionToken: manager.getPage(manifest.id, 'dashboard').sessionToken, requestId: 'search-config' });
   assert.equal((await manager.searchWeb(request)).error.code, 'PLUGIN_SEARCH_NOT_CONFIGURED');
   assert.equal(manager.configureWebSearch('http://localhost:8888').error.code, 'PLUGIN_SEARCH_ENDPOINT_INVALID');
   assert.deepEqual(manager.configureWebSearch('https://search.example.com'), { success: true });
+  request.requestId = 'search-run';
   assert.deepEqual(await manager.searchWeb(request), { success: true, value: [{ title: 'Example' }] });
   assert.deepEqual(calls, [['https://search.example.com', { query: 'Example', limit: 2 }]]);
   assert.deepEqual(manager.getSearchEndpoint(), { endpoint: 'https://search.example.com' });
   await manager.disable(manifest.id);
   assert.equal((await manager.searchWeb(request)).error.code, 'PLUGIN_NOT_ACTIVE');
   assert.equal(calls.length, 1);
+});
+
+test('holds page request slots through async web execution and drops late results after revoke', async (t) => {
+  const root = createWorkspace(t);
+  const statePath = path.join(root, '..', `${path.basename(root)}-state.json`);
+  t.after(() => fs.rmSync(statePath, { force: true }));
+  const manifest = validManifest('com.example.async-page', {
+    permissions: ['web:search'],
+    contributes: { pages: [{ id: 'dashboard', title: 'Async', entry: 'ui/index.html' }] },
+  });
+  delete manifest.main;
+  writePlugin(root, 'async-page', manifest, { 'ui/index.html': '<!doctype html>' });
+  const finish = [];
+  const manager = createPluginManager({
+    pluginsRoot: root, statePath,
+    webSearch: () => new Promise((resolve) => finish.push(resolve)),
+  });
+  await manager.enable(manifest.id, manifest.permissions);
+  manager.configureWebSearch('https://search.example.com');
+  const sessionToken = manager.getPage(manifest.id, 'dashboard').sessionToken;
+  const request = { pluginId: manifest.id, pageId: 'dashboard', sessionToken, args: { query: 'Example' } };
+  const pending = Array.from({ length: 8 }, (_, index) => manager.searchWeb({ ...request, requestId: String(index) }));
+  assert.equal((await manager.searchWeb({ ...request, requestId: '9' })).error.code, 'PLUGIN_PAGE_RATE_LIMITED');
+  assert.equal(finish.length, 8);
+  manager.revokePageSessions();
+  finish.forEach((resolve) => resolve([]));
+  for (const result of await Promise.all(pending)) assert.equal(result.error.code, 'PLUGIN_PAGE_CLOSED');
 });

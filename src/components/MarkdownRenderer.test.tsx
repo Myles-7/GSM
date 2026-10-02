@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 
@@ -384,5 +384,113 @@ describe('MarkdownRenderer', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(container.querySelector('.katex')).toBeNull();
     });
+  });
+});
+
+describe('Markdown desktop resource stability', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('malformed anchor fragments do not throw and still scroll to their target', () => {
+    const { container } = render(<MarkdownRenderer
+      content={'# Coverage\n\n[Jump](#100%-coverage)'}
+      headingIds={new Map([['Coverage', 'target-coverage'], ['100%-coverage', 'target-coverage']])} />);
+    const scroll = vi.spyOn(container.querySelector('h1')!, 'scrollIntoView');
+    fireEvent.click(container.querySelector('a')!);
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+  });
+
+  it('protocol-relative links and image URLs use HTTPS, never the desktop file scheme', () => {
+    const { container } = render(<MarkdownRenderer content={'[Link](//example.com/link)\n\n![Image](//cdn.example/image.svg)'} />);
+    expect(container.querySelector('a')).toHaveAttribute('href', 'https://example.com/link');
+    expect(container.querySelector('img')).toHaveAttribute('src', 'https://cdn.example/image.svg');
+  });
+
+  it('picture keeps sources and image as direct children and resolves MIME/media/srcset', () => {
+    const { container } = render(<MarkdownRenderer enableHtml baseUrl="https://github.com/o/r/issues/123"
+      content={'<picture><source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="./dark.svg 1x, //cdn.example/dark.svg 2x"><img src="/light.svg" alt="Theme"></picture>'} />);
+    const picture = container.querySelector('picture')!;
+    expect(picture).toBeInTheDocument();
+    expect(picture.children).toHaveLength(2);
+    expect(picture.children[0].tagName).toBe('SOURCE');
+    expect(picture.children[1].tagName).toBe('IMG');
+    expect(picture.children[0]).toHaveAttribute('type', 'image/svg+xml');
+    expect(picture.children[0]).toHaveAttribute('media', '(prefers-color-scheme: dark)');
+    expect(picture.children[0]).toHaveAttribute('srcset', 'https://github.com/o/r/raw/HEAD/dark.svg 1x, https://cdn.example/dark.svg 2x');
+    expect(picture.children[1]).toHaveAttribute('src', 'https://github.com/o/r/raw/HEAD/light.svg');
+  });
+
+  it('img srcset also resolves every candidate while dropping unsafe schemes', () => {
+    const { container } = render(<MarkdownRenderer enableHtml baseUrl="https://github.com/o/r"
+      content={'<img src="fallback.png" srcset="file:///secret 1x, ./high.png 2x, javascript:alert(1) 3x" sizes="100vw" alt="Candidates">'} />);
+    expect(container.querySelector('img')).toHaveAttribute('srcset', 'https://github.com/o/r/raw/HEAD/high.png 2x');
+    expect(container.querySelector('img')).toHaveAttribute('sizes', '100vw');
+  });
+
+  it('HTML sanitization strips executable elements, unsafe URLs and handlers', () => {
+    const { container } = render(<MarkdownRenderer enableHtml
+      content={'<script>alert(1)</script><iframe src="https://evil.example"></iframe><img src="https://cdn.example/a.png" onerror="alert(1)"><a href="javascript:alert(1)">Unsafe</a><source srcset="data:image/png;base64,AAAA 1x, https://cdn.example/safe.png 2x" onload="alert(1)">'} />);
+    expect(container.querySelector('script,iframe')).toBeNull();
+    expect(container.querySelector('[onerror],[onload]')).toBeNull();
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(container.querySelector('source')).toHaveAttribute('srcset', 'https://cdn.example/safe.png 2x');
+  });
+
+  it('lightbox and download follow currentSrc including a dark source reselection', async () => {
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fixture');
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const downloads: string[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { downloads.push(this.download); });
+    vi.mocked(window.fetch).mockResolvedValue(new Response('<svg/>', { headers: { 'Content-Type': 'image/svg+xml;charset=utf-8' } }));
+    try {
+      const { container } = render(<MarkdownRenderer enableHtml baseUrl="https://github.com/o/r"
+        content={'<picture><source media="(prefers-color-scheme: dark)" srcset="dark.svg"><img src="light.svg" alt="Theme"></picture>'} />);
+      const image = container.querySelector('img')!;
+      Object.defineProperty(image, 'currentSrc', { configurable: true, value: 'https://github.com/o/r/raw/HEAD/dark.svg' });
+      Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 600 });
+      fireEvent.load(image);
+      fireEvent.click(image);
+      const preview = document.querySelector('img[draggable="false"]')!;
+      expect(preview).toHaveAttribute('src', 'https://github.com/o/r/raw/HEAD/dark.svg');
+      Object.defineProperty(image, 'currentSrc', { configurable: true, value: 'https://cdn.example/reselected-dark.svg' });
+      fireEvent.load(image);
+      expect(preview).toHaveAttribute('src', 'https://cdn.example/reselected-dark.svg');
+      fireEvent.click(document.querySelector('button[title="下载图片"]')!);
+      await waitFor(() => expect(window.fetch).toHaveBeenCalledWith('https://cdn.example/reselected-dark.svg'));
+      await waitFor(() => expect(downloads).toEqual(['Theme.svg']));
+      expect(revoke).toHaveBeenCalledWith('blob:fixture');
+    } finally { create.mockRestore(); revoke.mockRestore(); click.mockRestore(); }
+  });
+
+  it('an image URL change clears old errors and stale selected resources', () => {
+    const { container, rerender } = render(<MarkdownRenderer content="![Image](https://cdn.example/old.png)" />);
+    fireEvent.error(container.querySelector('img')!);
+    expect(container.querySelector('img')).toBeNull();
+    rerender(<MarkdownRenderer content="![Image](https://cdn.example/new.png)" />);
+    expect(container.querySelector('img')).toHaveAttribute('src', 'https://cdn.example/new.png');
+  });
+
+  it('a picture with no fallback image remains valid inert markup', () => {
+    const { container } = render(<MarkdownRenderer enableHtml content='<picture><source srcset="//cdn.example/a.svg" type="image/svg+xml"></picture>' />);
+    expect(container.querySelector('picture > source')).toHaveAttribute('srcset', 'https://cdn.example/a.svg');
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('failed download fallback opens the selected resource without saving an HTTP error body', async () => {
+    const downloads: Array<{ href: string; target: string; rel: string }> = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ href: this.href, target: this.target, rel: this.rel });
+    });
+    vi.mocked(window.fetch).mockResolvedValue(new Response('not an image', { status: 404 }));
+    try {
+      const { container } = render(<MarkdownRenderer content="![Theme](https://cdn.example/fallback.svg)" />);
+      const image = container.querySelector('img')!;
+      Object.defineProperty(image, 'currentSrc', { configurable: true, value: 'https://cdn.example/selected.svg' });
+      fireEvent.load(image);
+      fireEvent.click(container.querySelector('img')!);
+      fireEvent.click(document.querySelector('button[title="下载图片"]')!);
+      await waitFor(() => expect(downloads).toEqual([{
+        href: 'https://cdn.example/selected.svg', target: '_blank', rel: 'noopener noreferrer',
+      }]));
+    } finally { click.mockRestore(); }
   });
 });

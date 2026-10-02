@@ -17,6 +17,7 @@ const { createCapabilityRouter } = require('./capabilityRouter');
 const { createPluginCatalog } = require('./pluginCatalog');
 const { pageUrl, readPageResource } = require('./pluginPage');
 const { validatePageCapabilityRequest } = require('./pluginPageBridge');
+const { createPageSessions } = require('./pluginPageSessions');
 const { searchUrl, searchSearxng } = require('./webSearch');
 
 const MAX_PLUGIN_PACKAGE_FILES = 2000;
@@ -146,6 +147,7 @@ function createPluginManager({
   logsRoot,
   catalog = createPluginCatalog(),
   webSearch = searchSearxng,
+  hostOperations = null,
 }) {
   if (typeof pluginsRoot !== 'string' || pluginsRoot.trim() === '') {
     throw new TypeError('pluginsRoot must be a non-empty string');
@@ -160,6 +162,7 @@ function createPluginManager({
   const runtimes = new Map();
   const activations = new Map();
   const lifecycleQueues = new Map();
+  const pageSessions = createPageSessions();
   let initialized = false;
   let scanCache = null;
 
@@ -182,6 +185,7 @@ function createPluginManager({
   }
 
   function recordError(pluginId, error) {
+    pageSessions.revoke(pluginId);
     const current = stateFor(pluginId);
     state.plugins[pluginId] = {
       ...current,
@@ -202,7 +206,7 @@ function createPluginManager({
     return scanResult.plugins.find((plugin) => plugin.manifest.id === pluginId) || null;
   }
 
-  async function authorizePageRequest(request) {
+  async function authorizePageRequest(request, execute) {
     let validated;
     try { validated = validatePageCapabilityRequest(request); }
     catch (error) { return { success: false, error: safeError(error) }; }
@@ -213,17 +217,28 @@ function createPluginManager({
     if (!stateFor(validated.pluginId).enabled || (plugin.manifest.main && !runtimes.has(validated.pluginId))) {
       return { success: false, error: { code: 'PLUGIN_NOT_ACTIVE', message: 'Plugin is not active' } };
     }
+    if (request.method === 'page.close') {
+      pageSessions.close(request);
+      return { success: true, value: null };
+    }
+    let release;
     try {
+      release = pageSessions.acquire(request);
+      const isCurrent = () => pageSessions.current(request) && stateFor(validated.pluginId).enabled;
       const router = createCapabilityRouter({
         storage: createPluginStorage({ dataRoot: resolvedDataRoot, pluginId: validated.pluginId }),
         logger: createPluginLogger({ logsRoot: resolvedLogsRoot, pluginId: validated.pluginId }),
         catalog,
+        hostOperations: hostOperations && Object.fromEntries(Object.entries(hostOperations).map(([name, handler]) =>
+          [name, (args) => handler({ ...args, isCurrent })])),
       });
-      const value = await router.handle(plugin.manifest.permissions, validated);
+      let value = await router.handle(plugin.manifest.permissions, validated);
+      if (execute) value = await execute();
+      if (!isCurrent()) throw Object.assign(new Error('Plugin page session expired'), { code: 'PLUGIN_PAGE_CLOSED' });
       return { success: true, value };
     } catch (error) {
       return { success: false, error: safeError(error) };
-    }
+    } finally { release?.(); }
   }
 
   function activatePlugin(plugin) {
@@ -476,6 +491,7 @@ function createPluginManager({
       });
     },
     async disable(pluginId) {
+      pageSessions.revoke(pluginId);
       return runLifecycle(pluginId, async () => {
         const plugin = findPlugin(pluginId);
         if (!plugin) {
@@ -515,7 +531,7 @@ function createPluginManager({
       if (!stateFor(pluginId).enabled || (plugin.manifest.main && !runtimes.has(pluginId))) {
         return { success: false, error: { code: 'PLUGIN_NOT_ACTIVE', message: 'Plugin is not active' } };
       }
-      return { success: true, url: pageUrl(pluginId, pageId) };
+      return { success: true, url: pageUrl(pluginId, pageId), sessionToken: pageSessions.open(pluginId, pageId) };
     },
     readPageResource(urlValue) {
       let pluginId;
@@ -540,16 +556,12 @@ function createPluginManager({
       return { success: true };
     },
     async searchWeb(request) {
-      const authorization = await authorizePageRequest({ ...request, method: 'web.search' });
-      if (!authorization.success) return authorization;
-      if (!state.searchEndpoint) {
-        return { success: false, error: { code: 'PLUGIN_SEARCH_NOT_CONFIGURED', message: 'Web search service is not configured' } };
-      }
-      try {
-        return { success: true, value: await webSearch(state.searchEndpoint, request.args) };
-      } catch (error) {
-        return { success: false, error: safeError(error) };
-      }
+      return authorizePageRequest({ ...request, method: 'web.search' }, () => {
+        if (!state.searchEndpoint) {
+          throw Object.assign(new Error('Web search service is not configured'), { code: 'PLUGIN_SEARCH_NOT_CONFIGURED' });
+        }
+        return webSearch(state.searchEndpoint, request.args);
+      });
     },
     async uninstall(pluginId, removePluginData) {
       if (removePluginData !== undefined && typeof removePluginData !== 'boolean') {
@@ -767,8 +779,12 @@ function createPluginManager({
       }
     },
     shutdown() {
+      pageSessions.revoke();
       for (const runtime of runtimes.values()) runtime.terminate();
       runtimes.clear();
+    },
+    revokePageSessions(pluginId) {
+      pageSessions.revoke(pluginId);
     },
   };
 }
