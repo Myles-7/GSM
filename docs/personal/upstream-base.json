@@ -15,23 +15,45 @@
   },
   "upstreamVersion": "0.8.4",
   "upstreamCommit": "ade5901c20c1a98512b3a09bce0ff176d16079d8",
-  "personalVersion": "P0.2.0",
-  "personalCommit": "121069916a0ec82dee05a36b7c84d273d06bec8b",
-  "personalCommitScope": "validated source commit; delivery tag also includes subsequent records",
-  "deliveryTag": "personal-P0.2.0",
+  "personalVersion": "P0.2.1",
+  "personalCommit": "8754dce39add1fb2fd4522e204f28a3877b16ebb",
+  "personalCommitScope": "validated desktop maintenance source commit; local delivery tag includes subsequent records",
+  "deliveryTag": "personal-P0.2.1",
   "upgradeDate": "2026-10-02",
   "upgradeBranch": "codex/selective-v0.8.5-p0.2.0-implementation",
   "upgradeKind": "selective-forward-port",
   "upstreamMergeCommit": "393ae26edad8e58bc357d14cbd36a4032a8bddd0",
   "upstreamMergeCommitScope": "last complete upstream merge, v0.8.4; unchanged by P0.2.0",
   "previousPersonalRelease": {
+    "personalVersion": "P0.2.0",
+    "personalCommit": "121069916a0ec82dee05a36b7c84d273d06bec8b",
+    "deliveryTag": "personal-P0.2.0",
+    "deliveryTagCommit": "9aa17a9e5e95e551fa80638452e06b516987ca46",
+    "validatedOn": "2026-10-02"
+  },
+  "earlierPersonalRelease": {
     "personalVersion": "P0.1.1",
     "personalCommit": "2406b00de044a67ea6a4b572ee7e532e09bb4c29",
     "deliveryTag": "personal-P0.1.1",
     "validatedOn": "2026-09-27"
   },
   "desktopDevUrl": "http://127.0.0.1:5174",
-  "desktopProductionEntry": "scripts/start-home-desktop.cjs -> dist/index.html (file-origin)",
+  "desktopProductionEntry": "scripts/start-desktop.vbs -> scripts/start-home-desktop.cjs -> dist/index.html (file-origin); both everyday shortcuts",
+  "personalMaintenancePatches": [
+    {
+      "version": "P0.2.1",
+      "status": "validated-local",
+      "validatedOn": "2026-10-02",
+      "sourceCommit": "8754dce39add1fb2fd4522e204f28a3877b16ebb",
+      "scope": "hidden production startup, EPIPE and secondary-instance guards, manual-only upstream reference updates, non-sensitive timing marks",
+      "record": "upgrades/P0.2.1-desktop-startup.md",
+      "packageVersion": "0.8.4",
+      "storeVersion": 17,
+      "serverMigration": 4,
+      "dataRekeyExecuted": false,
+      "pushed": false
+    }
+  ],
   "rollout": {
     "date": "2026-10-02",
     "status": "live-validated-published",
@@ -162,6 +184,7 @@
     "remotesConfigured": true,
     "fullHistoryFetched": true,
     "sourceComparedWithUpstream": true,
-    "pushed": true
+    "pushed": false,
+    "lastPublishedPersonalVersion": "P0.2.0"
   }
 }

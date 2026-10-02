@@ -8,13 +8,15 @@
 （`20f861a5d8174db67ba4541c93158e6d9cf0bef4`），父提交是 v0.8.3。
 恢复标签为 `recovery/pre-v0.8.4`。这属于根据源码差异重建历史，不是恢复原始个人提交。
 v0.8.4 完整升级已通过验收，随后仅移植 v0.8.5 的已选改动，当前本地交付为
-P0.2.0，完整上游基线和应用 package 仍为 0.8.4，固定开发地址仍为
+P0.2.1（P0.2.0 的桌面启动维护补丁），完整上游基线和应用 package 仍为 0.8.4，固定开发地址仍为
 `http://127.0.0.1:5174`。选择性范围、提交与验收结论见
 `upgrades/v0.8.5-development-plan.md`、`upgrades/P0.2.0-migration-ledger.md`、
 `upgrades/P0.2.0-validation.md` 和 `upstream-base.json`；个人功能列表见 `features.md`。
 
 P0.2.0 已快进合入 `D:/桌面/GSM`，日常只需这个目录和已有 `GSM-桌面端.lnk`。
 常用入口加载构建后的 file-origin；5174 是保留的独立开发入口，不能混用两套存储。
+P0.2.1 已同时修正遗留桌面快捷方式，关闭自动上游更新提示；维护记录见
+[桌面启动修复](upgrades/P0.2.1-desktop-startup.md)。本维护版本尚未推送远端。
 原账号、仓库 AI/分类及 Workbench 历史已通过实际生产界面验证；常用 Store 为 v17，
 本机服务为 migration 4，身份 dry-run 无候选，未执行历史重键或远端向量部署。
 完整记录见 [本机交付](upgrades/P0.2.0-rollout.md)。恢复材料不属于运行依赖；

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 全页面中文翻译/恢复原文 | App、PageTranslationButton、usePageTranslation、pageTranslationClient | 固定 translate.js 4.0.0，动态 DOM/Portal 可翻译，跳过代码/敏感内容，不持久化译文 |
 | 翻译偏好 | 原 Store 的 pageTranslationEnabled | P0.2.0 以 v17 保留个人偏好，继续清理退休字段，不恢复旧服务/按钮 |
-| 桌面热更新 | scripts/dev-desktop.mjs、desktop-dev-address.mjs | 默认自动选端口；快捷方式显式固定原数据端口，占用时报错；Vite 就绪后启动 Electron |
+| 桌面开发热更新 | scripts/dev-desktop.mjs、desktop-dev-address.mjs | 保留固定开发 origin 及端口占用保护；仅用于调试，日常快捷方式加载生产 file-origin |
 | 开发地址 | electron/main.js 的 GSM_DEV_SERVER_URL | 保留环境变量和默认地址回退 |
 | 本地启动/停止 | scripts/launch.mjs、stop.mjs、start-gsm.bat、stop-gsm.bat | 保留既有桌面快捷方式，不随意终止无关进程 |
 | 个人图标 | public/app.ico | 保留 |
@@ -39,4 +39,11 @@
 - 外观菜单独立，向量索引操作独立；徽标只计算本地可确认待处理，不自动发 README 或 AI 请求。
 - Store v17、明确身份 dry-run、持久迁移日志及跨库共同恢复；未确认名称匹配不自动合并。
 - Workbench、Organization、AGY、HTML Reading、Custom Discovery、整页翻译、Home 与原桌面入口回归通过。原数据、真实远端和生产部署未自动操作。
-- 实现、提交、实际 Electron 与未触及 lint 基线见 `upgrades/P0.2.0-validation.md` 和迁移账本。源码位于隔离分支，原启动入口尚未切换。
+- 实现、提交、实际 Electron 与未触及 lint 基线见 `upgrades/P0.2.0-validation.md` 和迁移账本。上述隔离验收后已合入原目录并验证真实数据，见 `upgrades/P0.2.0-rollout.md`。
+
+## P0.2.1 桌面维护
+
+- 桌面与文件夹快捷方式统一隐藏式生产启动，不依赖 Vite/5174；重复点击唤回已有实例。
+- 启动日志与真实失败提示保留，EPIPE 断管及失锁第二进程初始化已修复。
+- 禁止自动上游更新提示，设置中保留有超时与取消的手动参考查询；package/完整上游基线仍为 0.8.4。
+- 不改变 Store v17、服务 migration 4、数据来源或迁移选择。真实数据、响应性与回归证据见 `upgrades/P0.2.1-desktop-startup.md`。
