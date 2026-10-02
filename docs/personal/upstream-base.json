@@ -34,7 +34,7 @@
   "desktopProductionEntry": "scripts/start-home-desktop.cjs -> dist/index.html (file-origin)",
   "rollout": {
     "date": "2026-10-02",
-    "status": "live-validated-push-pending",
+    "status": "live-validated-published",
     "directory": "D:/桌面/GSM",
     "branch": "codex/selective-v0.8.5-p0.2.0",
     "releaseTagCommit": "9aa17a9e5e95e551fa80638452e06b516987ca46",
@@ -45,7 +45,20 @@
     "identityMappingsApplied": 0,
     "liveStarOrPaidAIExecuted": false,
     "remoteVectorWorkerDeployed": false,
-    "singleUsageDirectory": true
+    "singleUsageDirectory": true,
+    "implementationWorktree": "archived by Codex after publication; not a runtime dependency"
+  },
+  "publication": {
+    "verifiedOn": "2026-10-02",
+    "remote": "origin",
+    "branch": "codex/selective-v0.8.5-p0.2.0",
+    "initialPublishedBranchCommit": "568dc16bf2b6630ff462a2899107e64ff3af31e1",
+    "tag": "personal-P0.2.0",
+    "verifiedTagObject": "b2d481cdec218596c1b9abf039d8c32f7e36ab1c",
+    "verifiedTagCommit": "9aa17a9e5e95e551fa80638452e06b516987ca46",
+    "verification": "atomic push followed by ls-remote; this follow-up records the verified initial publication without moving the delivery tag",
+    "remoteMainChanged": false,
+    "installersPublished": false
   },
   "historyReconstruction": {
     "method": "full upstream history, read-tree without worktree replacement, personal differences committed on v0.8.3",
@@ -146,6 +159,6 @@
     "remotesConfigured": true,
     "fullHistoryFetched": true,
     "sourceComparedWithUpstream": true,
-    "pushed": false
+    "pushed": true
   }
 }
