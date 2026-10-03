@@ -1,3 +1,9 @@
+> **Personal edition — Myles-7/GSM.** The maintained default branch is `personal/main`;
+> the original `main` is historical upstream reference. This edition supports Chinese and English,
+> uses the v0.8.4 upstream baseline with selected v0.8.5 changes, and preserves personal desktop features.
+> See [personal delivery records](docs/personal/README.md) and [repository governance](docs/personal/repository-governance.md).
+> Upstream releases and download links below refer to the upstream application.
+
 <p align="center">
   <img src="./assets/readme/hero.svg" width="100%" alt="GithubStarsManager — AI organizes your GitHub stars so you can actually find them. Vector search, repository Q&amp;A, MCP, and release tracking, all local-first.">
 </p>

@@ -8,6 +8,8 @@ import { EmbeddingClient, VectorSearchService } from '../../../services/vectorSe
 import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIdentity';
 import { createGitHubApiService, createGitHubListsApiService } from '../../../services/githubApiFactory';
 import { forceSyncToBackend } from '../../../services/autoSync';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
+import { bindTaskSignal, taskConfigSnapshot } from '../../../services/taskExecution';
 import { useDialog } from '../../../hooks/useDialog';
 import type { GitHubList } from '../../../services/githubListsApi';
 import type { VectorQueryResult } from '../../../services/vectorSearchService';
@@ -349,6 +351,10 @@ export const useSearchActions = (): SearchActions => {
     const controller = new AbortController();
     aiSearchAbortRef.current = controller;
     const initial = { ...useAppStore.getState() };
+    const searchConfig = initial.aiConfigs.find(item => item.id === initial.activeAIConfig);
+    const task = aiTaskJournal.begin(String(initial.user?.id ?? ''), 'search', [{ id: 'search', label: initial.language.startsWith('zh') ? '仓库搜索' : 'Repository search' }], searchConfig?.id,
+      undefined, { config: searchConfig ? taskConfigSnapshot(searchConfig, 'repository-rerank') : undefined, target: { view: 'repositories' } });
+    bindTaskSignal(controller.signal, task); task.bind({ stop: () => controller.abort() }); task.item('search', 'running');
     const check = () => {
       controller.signal.throwIfAborted();
       const current = useAppStore.getState();
@@ -502,6 +508,7 @@ export const useSearchActions = (): SearchActions => {
       await keywordSearch(query, applyFilters, { signal: controller.signal });
     } catch (error) {
       // 取消不是失败：静默结束当前搜索（不产出结果），不当作可恢复的 AI 失败
+      if (!isAbortError(error)) task.item('search', 'failed', error);
       if (isAbortError(error)) {
         console.log('🚫 AI search cancelled');
         return;
@@ -509,6 +516,8 @@ export const useSearchActions = (): SearchActions => {
       console.error('💥 Search failed:', error);
     } finally {
       // 仅当本次搜索仍是"当前搜索"时才复位状态：被新搜索取代的旧搜索
+      if (!controller.signal.aborted && !aiTaskJournal.snapshot().find(record => record.id === task.id)?.items.some(item => item.state === 'failed')) task.item('search', 'complete');
+      task.finish(controller.signal.aborted ? 'canceled' : undefined);
       // 不把新搜索的 isSearching/searchPhase 状态清掉
       if (aiSearchAbortRef.current === controller) {
         aiSearchAbortRef.current = null;
@@ -525,6 +534,8 @@ export const useSearchActions = (): SearchActions => {
     }
 
     setSyncingStars(true);
+    const task = aiTaskJournal.begin(String(user?.id ?? ''), 'refresh', [{ id: 'stars', label: 'GitHub Stars' }], undefined, undefined, { title: 'GitHub Stars', target: { view: 'repositories' } });
+    task.item('stars', 'running');
     try {
       const githubApi = createGitHubApiService(githubToken);
       const newRepositories = await githubApi.getAllStarredRepositories();
@@ -583,6 +594,7 @@ export const useSearchActions = (): SearchActions => {
             toast(t('useSearchActions.list-sync-complete', { lists: lists.length, newCount: createdCategoriesCount }), 'info');
           }
         } catch (listError) {
+          task.error(listError);
           console.error('List sync failed:', listError);
           toast(t('useSearchActions.list-sync-failed-starred-repositories-were-synce'), 'error');
           // 不中断：星标同步结果仍然生效
@@ -596,6 +608,7 @@ export const useSearchActions = (): SearchActions => {
       await forceSyncToBackend();
 
       setLastSync(new Date().toISOString());
+      task.item('stars', 'complete');
 
       if (newRepoCount > 0) {
         toast(t('useSearchActions.sync-completed-found-newrepocount-new-repositori', { newRepoCount: newRepoCount }), 'success');
@@ -604,6 +617,7 @@ export const useSearchActions = (): SearchActions => {
       }
 
     } catch (error) {
+      task.item('stars', 'failed', error);
       console.error('Sync failed:', error);
       if (error instanceof Error && error.message.includes('token')) {
         toast(t('useSearchActions.github-token-has-expired-or-is-invalid-please-lo'), 'error');
@@ -611,6 +625,7 @@ export const useSearchActions = (): SearchActions => {
         toast(t('useSearchActions.sync-failed-please-check-your-network-connection'), 'error');
       }
     } finally {
+      task.finish(aiTaskJournal.snapshot().find(record => record.id === task.id)?.error ? 'partial' : undefined);
       setSyncingStars(false);
     }
   }, [githubToken, setSyncingStars, syncMode, user, t, toast, addCustomCategory, customCategories, language, defaultCategoryOverrides, setRepositories, setLastSync]);

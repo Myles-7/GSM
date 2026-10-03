@@ -255,6 +255,13 @@ function createAgyDesktop({ userDataPath, selectExecutable, selectDirectory = as
       const savedPrefs = request?.revision === undefined ? prefs : revisions.get(request.revision);
       if (!savedPrefs) return { ok: false, code: 'CONFIG_CHANGED' };
       const profile = resolveProfile(savedPrefs, feature);
+      if (request.profileOverride !== undefined) {
+        const override = request.profileOverride;
+        if (!override || typeof override.model !== 'string' || override.model.length > 200 || /[\r\n\0]/.test(override.model)
+          || !['low', 'medium', 'high', 'max'].includes(override.effort) || !Number.isInteger(override.timeoutSeconds)
+          || override.timeoutSeconds < 20 || override.timeoutSeconds > 600) return { ok: false, code: 'INVALID_REQUEST' };
+        Object.assign(profile, override);
+      }
       const observerKey = `${owner}:${id}`;
       if (observers.has(observerKey)) return { ok: false, code: 'DUPLICATE_REQUEST' };
       observers.set(observerKey, onEvent);

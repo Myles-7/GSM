@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Repository } from '../types';
 import { RepositoryDetailsPanel } from './RepositoryDetailsPanel';
 
-vi.mock('../i18n/useT', () => ({ useT: () => (key: string) => key }));
+vi.mock('../i18n/useT', () => ({ useT: () => (key: string) => key, makeT: () => (key: string) => key }));
 vi.mock('../store/useAppStore', () => ({
   useAppStore: (select: (state: unknown) => unknown) => select({ language: 'en', releases: [], aiConfigs: [] }),
 }));
@@ -34,6 +34,7 @@ describe('RepositoryDetailsPanel', () => {
     expect(screen.queryByText('Original')).not.toBeInTheDocument();
   });
   beforeEach(() => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 1200 } as DOMRect);
   });
@@ -46,7 +47,7 @@ describe('RepositoryDetailsPanel', () => {
     expect(screen.getByText('details.notAnalyzed')).toBeInTheDocument();
     expect(screen.getByText('health-facts')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'details.readme' })).toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toHaveClass('right-0', 'h-dvh', 'w-full', 'sm:max-w-[480px]');
+    expect(screen.getByRole('dialog')).toHaveClass('left-0', 'h-dvh', 'w-screen', 'sm:max-w-[480px]');
   });
   it('opens the lazy in-app README instead of navigating externally', async () => {
     render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} />);
@@ -58,7 +59,7 @@ describe('RepositoryDetailsPanel', () => {
     render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} onPinnedChange={onPinnedChange} />);
     fireEvent.click(screen.getByRole('button', { name: 'details.pin' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByRole('complementary')).toHaveClass('w-[440px]');
+    expect(screen.getByRole('complementary')).toHaveClass('w-[440px]', 'h-[calc(100dvh-4rem)]');
     expect(onPinnedChange).toHaveBeenLastCalledWith(true);
     act(() => { Object.defineProperty(window, 'innerWidth', { value: 1000 }); window.dispatchEvent(new Event('resize')); });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -71,7 +72,13 @@ describe('RepositoryDetailsPanel', () => {
   });
   it('keeps per-repository scroll position while switching repositories', () => {
     const { rerender } = render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} />);
-    const scroller = screen.getByText('Custom summary').parentElement!;
+    const scroller = screen.getByText('Custom summary').closest('.overflow-y-auto')!;
+    expect(scroller).toHaveClass('overscroll-contain');
+    const toolbar = screen.getByTestId('repository-details-toolbar');
+    expect(scroller.contains(toolbar)).toBe(false);
+    expect(toolbar).toHaveClass('shrink-0');
+    expect(toolbar.contains(screen.getByRole('button', { name: 'details.readme' }))).toBe(true);
+    expect(toolbar.contains(screen.getByRole('button', { name: 'opt-in-analysis' }))).toBe(true);
     fireEvent.scroll(scroller, { target: { scrollTop: 180 } });
     rerender(<RepositoryDetailsPanel repository={{ ...repository, id: 2 }} onClose={vi.fn()} />);
     expect(scroller.scrollTop).toBe(0);
@@ -100,7 +107,7 @@ describe('RepositoryDetailsPanel', () => {
       deployment: null, cost: null, maintenance: null,
       quickstart: [{ description: 'Install', command: 'npm install' }],
     } }} onClose={vi.fn()} />);
-    expect(screen.getByText(/details.stale/)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Saved analysis may be stale/ })).toBeInTheDocument();
     expect(screen.getByText('Documented problem')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'README source' })).toHaveAttribute('href', 'https://github.com/owner/repo#readme');
     expect(writeText).not.toHaveBeenCalled();

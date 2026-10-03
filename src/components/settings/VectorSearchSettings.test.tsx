@@ -67,6 +67,7 @@ describe('vector settings integration', () => {
 
   it('allows long connection and command buttons to wrap on narrow screens', () => {
     render(<VectorSearchSettings t={t} />);
+    fireEvent.click(screen.getByText(t('vectorSearchSettings.delete-index')));
     for (const key of ['test-embedding-connection', 'test-worker-connection', 'copy-delete-command', 'copy-create-command']) {
       const button = screen.getByRole('button', { name: t(`vectorSearchSettings.${key}`) });
       expect(button).toHaveClass('max-w-full', 'whitespace-normal');

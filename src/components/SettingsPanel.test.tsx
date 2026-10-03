@@ -39,6 +39,20 @@ const changeTab = (tab: string) => {
 };
 
 describe('Settings navigation', () => {
+  it('keeps the last click when tabs are switched rapidly', () => {
+    render(<SettingsPanel />);
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Appearance' })[0]);
+    fireEvent.click(screen.getAllByRole('tab', { name: /AI/ })[0]);
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('AI and AGY controls');
+  });
+  it('filters the grouped sidebar and restores it when search is cleared', () => {
+    render(<SettingsPanel />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search settings' }), { target: { value: 'Appearance' } });
+    expect(screen.getAllByRole('tab', { name: 'Appearance' })).toHaveLength(2);
+    expect(screen.getAllByRole('tab', { name: 'Plugin Management' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(screen.getAllByRole('tab', { name: 'Plugin Management' })).toHaveLength(2);
+  });
   it('adds Appearance without removing HTML Reading or AI/AGY and renames plugin management', () => {
     render(<SettingsPanel />);
     expect(screen.getAllByRole('tab', { name: 'Appearance' })).toHaveLength(2);

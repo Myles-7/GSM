@@ -93,7 +93,7 @@ describe('real release discovery',()=>{
  });
  it('bounds the candidate search even when its transport ignores the abort signal',async()=>{
    vi.useFakeTimers();
-   const github=vi.fn((_path:string,_optional?:boolean,_request?:{timeoutMs:number;signal:AbortSignal})=>new Promise<unknown>(()=>{}));
+   const github=vi.fn<(_path:string,_optional?:boolean,_request?:{timeoutMs:number;signal:AbortSignal})=>Promise<unknown>>(()=>new Promise<unknown>(()=>{}));
    const result=releaseFeed(github,releaseInput).catch(error=>error);
    await vi.advanceTimersByTimeAsync(20000);
    expect(await result).toMatchObject({code:'DISCOVERY_UPSTREAM_UNAVAILABLE'});
@@ -102,7 +102,7 @@ describe('real release discovery',()=>{
  });
  it('includes candidate search time in the 60 second budget and reports only attempted repositories',async()=>{
    vi.useFakeTimers();const started=Date.now();
-   const github=vi.fn((path:string,_optional?:boolean,_request?:{timeoutMs:number;signal:AbortSignal})=>{
+   const github=vi.fn<(path:string,_optional?:boolean,_request?:{timeoutMs:number;signal:AbortSignal})=>Promise<unknown>>((path)=>{
      if(path.startsWith('/search'))return new Promise<unknown>(resolve=>setTimeout(()=>resolve({items:Array.from({length:30},(_,i)=>repository(i+1)),total_count:30}),15000));
      if(path.startsWith('/repos/owner/repo1/'))return Promise.resolve([release]);
      return new Promise<unknown>(()=>{});

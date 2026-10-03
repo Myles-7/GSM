@@ -25,6 +25,7 @@ import { logger } from './logger';
 import { waitForRequest, withDeadline } from '../utils/requestDeadline';
 import { isReadmeCandidateItem, type GitHubReadmeCandidateItem } from '../utils/readmeVariants';
 import { extractInertRssHtml } from '../utils/inertRssHtml';
+import { verifyRecentReleases } from './recentReleaseVerification';
 
 interface GitHubContentResponse {
   content?: string;
@@ -1959,39 +1960,45 @@ export class GitHubApiService {
   async getHotReleaseRepositories(
     platform: DiscoveryPlatform,
     page: number = 1,
-    perPage: number = 20
+    perPage: number = 20,
+    options: { prereleases?: boolean; signal?: AbortSignal; onProgress?: (progress: { current: number; total: number; failed: number }) => void } = {},
   ): Promise<PaginatedDiscoveryRepositories> {
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const platformQuery = this.buildPlatformQuery(platform);
 
-    let query = `stars:>10 archived:false pushed:>=${fourteenDaysAgo}`;
+    const candidateCount = Math.min(40, Math.max(1, perPage * 2));
+    let query = 'stars:>10 archived:false is:public';
     if (platformQuery) {
       query += ` ${platformQuery}`;
     }
 
-    const data = await this.makeRequest<GitHubSearchRepoResponse>(
-      `/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${perPage}&page=${page}`
-    );
+    const data = await withDeadline(signal => this.makeRequest<GitHubSearchRepoResponse>(
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=${candidateCount}&page=${page}`,
+      undefined, signal,
+    ), 15000, options.signal);
+    const { matches, verification } = await verifyRecentReleases(data.items || [], this.token,
+      (repo, releasePage, signal) => this.getRepositoryReleasesPage(repo.owner.login, repo.name, releasePage, 100, signal), options);
 
-    const repos = (data.items || []).map((repo, index) => ({
+    const repos = (data.items || []).filter(repo => matches.has(repo.id)).map((repo, index) => ({
       ...repo,
       rank: (page - 1) * perPage + index + 1,
       channel: 'hot-release' as DiscoveryChannelId,
       platform,
+      recentRelease: matches.get(repo.id),
     }));
 
     return {
       repos,
-      hasMore: repos.length === perPage,
+      hasMore: page * candidateCount < Math.min(data.total_count, 1000),
       nextPageIndex: page + 1,
-      totalCount: data.total_count,
+      verification,
     };
   }
 
   async getMostPopular(
     platform: DiscoveryPlatform,
     page: number = 1,
-    perPage: number = 20
+    perPage: number = 20,
+    signal?: AbortSignal
   ): Promise<PaginatedDiscoveryRepositories> {
     const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -2003,7 +2010,7 @@ export class GitHubApiService {
     }
 
     const data = await this.makeRequest<GitHubSearchRepoResponse>(
-      `/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${perPage}&page=${page}`
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${perPage}&page=${page}`, {}, signal
     );
 
     const repos = (data.items || []).map((repo, index) => ({
@@ -2015,7 +2022,7 @@ export class GitHubApiService {
 
     return {
       repos,
-      hasMore: repos.length === perPage,
+      hasMore: repos.length === perPage && page * perPage < Math.min(data.total_count, 1000),
       nextPageIndex: page + 1,
       totalCount: data.total_count,
     };
@@ -2025,7 +2032,8 @@ export class GitHubApiService {
     searchKeywords: string,
     platform: DiscoveryPlatform,
     page: number = 1,
-    perPage: number = 20
+    perPage: number = 20,
+    signal?: AbortSignal
   ): Promise<PaginatedDiscoveryRepositories> {
     const platformQuery = this.buildPlatformQuery(platform);
 
@@ -2035,7 +2043,7 @@ export class GitHubApiService {
     }
 
     const data = await this.makeRequest<GitHubSearchRepoResponse>(
-      `/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${perPage}&page=${page}`
+      `/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${perPage}&page=${page}`, {}, signal
     );
 
     const repos = (data.items || []).map((repo, index) => ({
@@ -2057,7 +2065,8 @@ export class GitHubApiService {
     topic: TopicCategory,
     platform: DiscoveryPlatform,
     page: number = 1,
-    perPage: number = 20
+    perPage: number = 20,
+    signal?: AbortSignal
   ): Promise<PaginatedDiscoveryRepositories> {
     const topicKeywords: Record<TopicCategory, string> = {
       'ai': 'artificial-intelligence machine-learning ai',
@@ -2070,7 +2079,7 @@ export class GitHubApiService {
       'game': 'game game-engine unity unreal',
     };
 
-    return this.searchByTopic(topicKeywords[topic], platform, page, perPage);
+    return this.searchByTopic(topicKeywords[topic], platform, page, perPage, signal);
   }
 
   async searchRepositories(
@@ -2080,7 +2089,8 @@ export class GitHubApiService {
     sortBy: SortBy,
     sortOrder: SortOrder,
     page: number = 1,
-    perPage: number = 20
+    perPage: number = 20,
+    signal?: AbortSignal
   ): Promise<PaginatedDiscoveryRepositories> {
     const platformQuery = this.buildPlatformQuery(platform);
     const languageQuery = this.buildLanguageQuery(language);
@@ -2099,7 +2109,7 @@ export class GitHubApiService {
       url += `&sort=${sort}&order=${order}`;
     }
 
-    const data = await this.makeRequest<GitHubSearchRepoResponse>(url);
+    const data = await this.makeRequest<GitHubSearchRepoResponse>(url, {}, signal);
 
     const repos = (data.items || []).map((repo, index) => ({
       ...repo,

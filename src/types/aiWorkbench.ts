@@ -3,6 +3,16 @@ import type { OrganizationDraft } from './aiOrganization';
 
 export type WorkbenchScope = 'github' | 'selected' | 'project' | 'library' | 'local' | 'mixed';
 export type WorkbenchDepth = 'quick' | 'standard' | 'deep';
+export type WorkbenchInputIntent = 'search' | 'results' | 'research';
+export interface WorkbenchOverview {
+  summary: string;
+  category: string;
+  categoryDescription: string;
+  kind: 'tool' | 'library' | 'resource' | 'other';
+  status: 'ready' | 'insufficient' | 'failed';
+  basis: 'metadata' | 'readme' | 'existing';
+  error?: string;
+}
 export interface WorkbenchRequirements {
   purpose: string;
   required: string[];
@@ -18,6 +28,7 @@ export interface WorkbenchCandidate {
   limitations: string[];
   sources: string[];
   status: 'candidate' | 'verifying' | 'verified' | 'insufficient';
+  overview?: WorkbenchOverview;
 }
 export interface WorkbenchSearchBatch {
   id: string;
@@ -26,6 +37,7 @@ export interface WorkbenchSearchBatch {
   candidates: WorkbenchCandidate[];
   queries: string[];
   nextPage: number;
+  overviewSummary?: string;
 }
 export interface WorkbenchProject {
   id: string;
@@ -70,6 +82,7 @@ export interface WorkbenchSessionData {
   selectedRepositories: Repository[];
   requirements?: WorkbenchRequirements;
   searchBatches: WorkbenchSearchBatch[];
+  inputIntent?: WorkbenchInputIntent;
 }
 export interface WorkbenchTaskState {
   sessionId: string | null;

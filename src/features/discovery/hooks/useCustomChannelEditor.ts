@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCustomChannelActions } from './useCustomChannelActions';
 import { currentAccount } from '../custom/runner';
-import { effectiveRules, type CandidatePreview, type CompiledSubscriptionPlan, type CustomDiscoveryChannel, type RuleOverrides, type TaskIssue, type TaskProgress } from '../custom/model';
+import { effectiveRules, overrideSchema, rulesFingerprint, type CandidatePreview, type CompiledSubscriptionPlan, type CustomDiscoveryChannel, type RuleOverrides, type TaskIssue, type TaskProgress } from '../custom/model';
 import { selectCustomChannel, startCustomRun, updateCustomData, useCustomDiscovery } from '../custom/store';
 import { taskIssue } from '../custom/taskStatus';
 
@@ -29,11 +29,13 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
   const controllers = useRef<{ parse?: AbortController; preview?: AbortController }>({});
   const mounted = useRef(true);
   const sequence = useRef(0);
+  const previewSequence = useRef(0);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
   const cancelWork = useCallback(() => {
     sequence.current++;
+    previewSequence.current++;
     controllers.current.parse?.abort();
     controllers.current.preview?.abort();
     controllers.current = {};
@@ -63,11 +65,15 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
     cancelWork(); setInstruction(value); setPreview(null); setIssue(null); setConflicts([]);
   };
   const changeOverrides = (value: RuleOverrides) => {
+    const checked = overrideSchema.safeParse(value);
+    if (!checked.success) { setIssue({ kind: 'invalid' }); return false; }
     // Overrides may change during parsing. They survive the new AI response.
     controllers.current.preview?.abort();
+    previewSequence.current++;
     controllers.current.preview = undefined;
     setPreviewing(false); setProgress(null);
-    setOverrides(value); setPreview(null); setIssue(null);
+    setOverrides(checked.data); setPreview(null); setIssue(null);
+    return true;
   };
   let rules: ReturnType<typeof effectiveRules> | null = null;
   let validationIssue: TaskIssue | null = null;
@@ -76,7 +82,10 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
     catch (error) { validationIssue = taskIssue(error); }
   }
   const stale = parsedInstruction !== instruction;
-  const canSave = Boolean(name.trim() && plan && rules && !stale && !parsing && !saving && plan.conflicts.length === 0);
+  const fingerprint = rules ? rulesFingerprint(rules) : '';
+  const fingerprintRef = useRef(fingerprint);
+  fingerprintRef.current = fingerprint;
+  const canSave = Boolean(name.trim() && plan && rules && !stale && !parsing && !saving && issue?.kind !== 'invalid' && plan.conflicts.length === 0);
   const createDraft = (): CustomDiscoveryChannel => {
     if (!plan || !rules) throw new Error('INVALID_RULES');
     const changed = !channel || channel.instruction !== instruction || channel.ai !== ai
@@ -101,7 +110,7 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
     try {
       const result = await actions.compile(instruction, controller.signal);
       if (!validSession() || controller.signal.aborted || id !== sequence.current) return;
-      setPlan(result); setRawPlan(result); setParsedInstruction(instruction); setConflicts(result.conflicts);
+      setPlan(result); setParsedInstruction(instruction); setConflicts(result.conflicts);
     } catch (error) {
       if (validSession() && id === sequence.current) setIssue(taskIssue(error));
     } finally {
@@ -113,12 +122,14 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
     controllers.current.preview?.abort();
     const controller = new AbortController();
     controllers.current.preview = controller;
+    const id = ++previewSequence.current;
+    const requestedFingerprint = fingerprint;
     setPreviewing(true); setPreview(null); setIssue(null);
     try {
       const result = await actions.preview(createDraft(), controller.signal, p => {
         if (!controller.signal.aborted && validSession()) setProgress(p);
       });
-      if (controller.signal.aborted || !validSession()) return;
+      if (controller.signal.aborted || !validSession() || id !== previewSequence.current || requestedFingerprint !== fingerprintRef.current) return;
       setPreview(result);
     } catch (error) {
       if (!controller.signal.aborted && validSession()) setIssue(taskIssue(error));
@@ -128,22 +139,14 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
       }
     }
   };
-  const [rawPlan, setRawPlan] = useState<CompiledSubscriptionPlan | null>(channel?.plan ?? null);
-
   const removeCondition = (kind: 'required' | 'excluded' | 'preferred', index: number) => {
-    setPlan(prev => {
-      if (!prev) return null;
-      return { ...prev, [kind]: prev[kind].filter((_, i) => i !== index) };
-    });
+    if (rules) changeOverrides({ ...overrides, [kind]: rules.plan[kind].filter((_, i) => i !== index) });
   };
   const addCondition = (kind: 'required' | 'excluded' | 'preferred', text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    setPlan(prev => {
-      if (!prev || prev[kind].length >= 12) return prev;
-      if (prev[kind].some(item => item.text.trim().toLowerCase() === trimmed.toLowerCase())) return prev;
-      return { ...prev, [kind]: [...prev[kind], { text: trimmed, source: trimmed }] };
-    });
+    if (!rules || rules.plan[kind].some(item => item.text.toLowerCase() === trimmed.toLowerCase())) return false;
+    return changeOverrides({ ...overrides, [kind]: [...rules.plan[kind], { text: trimmed, source: trimmed }] });
   };
   const removeBranch = (index: number) => {
     const currentBranches = overrides.branches || plan?.branches || [];
@@ -158,23 +161,16 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
     if (currentBranches.length >= 6) return;
     const terms = trimmed.split(/[,|]/).map(t => t.trim()).filter(Boolean);
     if (!terms.length) return;
-    const next = [...currentBranches, { terms, readme: false }];
-    changeOverrides({ ...overrides, branches: next });
+    const next = [...currentBranches, { terms, readme: false, role: 'synonym' as const }];
+    return changeOverrides({ ...overrides, branches: next });
   };
   const resetPlanConditions = () => {
-    if (rawPlan) {
-      setPlan({
-        ...rawPlan,
-        filters: plan?.filters ?? rawPlan.filters,
-      });
-    }
+    const next = { ...overrides };
+    delete next.required; delete next.excluded; delete next.preferred;
+    changeOverrides(next);
   };
   const canResetConditions = Boolean(
-    rawPlan && plan && (
-      JSON.stringify(rawPlan.required) !== JSON.stringify(plan.required)
-      || JSON.stringify(rawPlan.excluded) !== JSON.stringify(plan.excluded)
-      || JSON.stringify(rawPlan.preferred) !== JSON.stringify(plan.preferred)
-    )
+    overrides.required || overrides.excluded || overrides.preferred
   );
 
   const save = async (runNow = false) => {
@@ -187,7 +183,8 @@ export function useCustomChannelEditor(channel: CustomDiscoveryChannel | undefin
         if (!validSession()) throw new DOMException('Account changed', 'AbortError');
         const existing = data.channels.find(c => c.id === draft.id);
         if (channel && (!existing || existing.revision !== channel.revision)) throw new Error('INVALID_STALE_RULE');
-        const next = { ...draft, recommended: existing?.recommended || {}, blocked: existing?.blocked || [], read: existing?.read || [] };
+        const next = { ...draft, recommended: existing?.recommended || {}, manualAccepted: existing?.manualAccepted,
+          blocked: existing?.blocked || [], read: existing?.read || [] };
         const index = data.channels.findIndex(c => c.id === next.id);
         if (index < 0) data.channels.push(next);
         else data.channels[index] = next;

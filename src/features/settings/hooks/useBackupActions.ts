@@ -7,6 +7,8 @@ import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { WebDAVService } from '../../../services/webdavService';
 import { incomingOrganizationSnapshot } from '../../../store/helpers/repositoryOrganization';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
+import { exportDiscoveryWorkspaceBackup, importDiscoveryWorkspaceBackup, validateDiscoveryWorkspaceBackup } from '../../../services/discoveryWorkspaceBackup';
 
 export interface BackupActions {
   activeConfig: WebDAVConfig | undefined;
@@ -23,6 +25,7 @@ export interface BackupActions {
 export const useBackupActions = (): BackupActions => {
   const t = useT('settings');
   const state = useAppStore(useShallow((store) => ({
+    user: store.user,
     repositories: store.repositories,
     releases: store.releases,
     customCategories: store.customCategories,
@@ -68,8 +71,13 @@ export const useBackupActions = (): BackupActions => {
       return;
     }
     setIsBackingUp(true);
+    const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'backup', [{ id: 'backup', label: activeConfig.name }], undefined, undefined, { target: { view: 'settings', tab: 'backup' } });
+    task.item('backup', 'running');
     try {
+      const account = String(state.user?.id ?? '');
+      if (String(useAppStore.getState().user?.id ?? '') !== account) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
       const backupData = {
+        ...(account ? { discoveryWorkspace: await exportDiscoveryWorkspaceBackup(account) } : {}),
         repositories: state.repositories,
         releases: state.releases,
         customCategories: state.customCategories,
@@ -101,19 +109,24 @@ export const useBackupActions = (): BackupActions => {
         exportedAt: new Date().toISOString(),
         version: '1.2',
       };
+      if (String(useAppStore.getState().user?.id ?? '') !== account) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
       const filename = `github-stars-backup-${new Date().toISOString().split('T')[0]}.json`;
       const success = await new WebDAVService(activeConfig).uploadFile(filename, JSON.stringify(backupData, null, 2));
       if (success) {
+        task.item('backup', 'complete');
         state.setLastBackup(new Date().toISOString());
         toast(t('useBackupActions.data-backup-successful'), 'success');
       } else {
+        task.item('backup', 'failed', 'WebDAV upload failed');
         console.error('Backup failed: uploadFile returned falsy');
         toast(t('useBackupActions.data-backup-failed'), 'error');
       }
     } catch (error) {
+      task.item('backup', 'failed', error);
       console.error('Backup failed:', error);
       toast(`${t('useBackupActions.backup-failed')}: ${(error as Error).message}`, 'error');
     } finally {
+      task.finish();
       setIsBackingUp(false);
     }
   }, [activeConfig, state, t, toast]);
@@ -131,20 +144,32 @@ export const useBackupActions = (): BackupActions => {
     if (!confirmed) return;
 
     setIsRestoring(true);
+    const restoreAccount = String(useAppStore.getState().user?.id ?? '');
+    const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'restore', [{ id: 'restore', label: activeConfig.name }], undefined, undefined, { target: { view: 'settings', tab: 'backup' } });
+    task.item('restore', 'running');
+    let restoreWarnings = 0;
     try {
       const service = new WebDAVService(activeConfig);
       const files = await service.listFiles();
       const backupFiles = files.filter((file) => file.startsWith('github-stars-backup-'));
       if (backupFiles.length === 0) {
+        task.item('restore', 'failed', 'No backup files found');
         toast(t('useBackupActions.no-backup-files-found'), 'error');
         return;
       }
       const content = await service.downloadFile(backupFiles.sort().reverse()[0]);
       if (!content) {
+        task.item('restore', 'failed', 'Backup file is empty');
         toast(t('useBackupActions.backup-file-is-empty-cannot-restore'), 'error');
         return;
       }
       const backupData = JSON.parse(content) as Record<string, unknown>;
+      const account = restoreAccount;
+      if (String(useAppStore.getState().user?.id ?? '') !== account) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
+      validateDiscoveryWorkspaceBackup(account, backupData.discoveryWorkspace);
+      await importDiscoveryWorkspaceBackup(account, backupData.discoveryWorkspace, 'replace');
+      if (String(useAppStore.getState().user?.id ?? '') !== account) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
+      task.state('committing');
       const backupIncludedKeys = backupData.includeKeysInBackup ?? true;
       useAppStore.setState(current => incomingOrganizationSnapshot(current, backupData,
         Array.isArray(backupData.repositories) ? backupData.repositories as typeof current.repositories : undefined));
@@ -161,6 +186,7 @@ export const useBackupActions = (): BackupActions => {
           useAppStore.setState({ readReleases: new Set(values) });
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复 Release 订阅与已读状态时发生问题：', error);
       }
 
@@ -168,25 +194,14 @@ export const useBackupActions = (): BackupActions => {
         if (Array.isArray(backupData.aiConfigs)) {
           const currentMap = new Map(useAppStore.getState().aiConfigs.map((config: AIConfig) => [config.id, config]));
           const backupConfigs = backupData.aiConfigs as AIConfig[];
-          const backupIds = new Set(backupConfigs.map((config) => config?.id).filter(Boolean));
-          for (const [id] of currentMap) if (!backupIds.has(id)) state.deleteAIConfig(id);
-          for (const config of backupConfigs) {
-            if (!config?.id) continue;
-            const existing = currentMap.get(config.id);
-            if (isAgyConfig(config)) {
-              if (existing) state.deleteAIConfig(config.id);
-              state.addAIConfig(inertAgyDescriptor(config));
-              continue;
-            }
-            const apiKey = backupIncludedKeys && config.apiKey && config.apiKey !== '***' ? config.apiKey : existing?.apiKey ?? '';
-            if (existing) {
-              state.updateAIConfig(config.id, { ...config, apiKey, isActive: existing.isActive });
-            } else {
-              state.addAIConfig({ ...config, apiKey, isActive: config.isActive });
-            }
-          }
+          const restored = restoreAIConfigs([...currentMap.values()], backupConfigs.filter(config => config?.id), !!backupIncludedKeys);
+          const current = useAppStore.getState();
+          current.setAIConfigs(restored);
+          if (!restored.some(config => config.id === current.activeAIConfig)) current.setActiveAIConfig(null);
+          if (!restored.some(config => config.id === current.repositoryChatSettings.chatConfigId)) current.setRepositoryChatSettings({ chatConfigId: null });
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复 AI 配置时发生问题：', error);
       }
 
@@ -208,6 +223,7 @@ export const useBackupActions = (): BackupActions => {
           }
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复 WebDAV 配置时发生问题：', error);
       }
 
@@ -220,6 +236,7 @@ export const useBackupActions = (): BackupActions => {
           });
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复代理配置时发生问题：', error);
       }
       try {
@@ -231,6 +248,7 @@ export const useBackupActions = (): BackupActions => {
           });
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复远程下载配置时发生问题：', error);
       }
       // routeMode 是本地偏好：仅接受合法枚举，缺失/非法回退 auto（随 1.2 备份导出）
@@ -243,6 +261,7 @@ export const useBackupActions = (): BackupActions => {
           useAppStore.getState().setRouteMode(next);
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复网络路由偏好时发生问题：', error);
       }
       try {
@@ -250,17 +269,22 @@ export const useBackupActions = (): BackupActions => {
           state.setBackendApiSecret(typeof backupData.backendApiSecret === 'string' ? backupData.backendApiSecret : null);
         }
       } catch (error) {
+        restoreWarnings++; task.error(error);
         console.warn('恢复后端 API 密钥时发生问题：', error);
       }
+      task.item('restore', 'complete');
+      if (restoreWarnings) task.finish('partial');
       toast(t('useBackupActions.data-restored-from-backup-repositories-v1-releas', { v1: (backupData.repositories as unknown[] | undefined)?.length ?? 0, v2: (backupData.releases as unknown[] | undefined)?.length ?? 0, v3: (backupData.customCategories as unknown[] | undefined)?.length ?? 0 }), 'success');
     } catch (error) {
+      task.item('restore', 'failed', error);
       console.error('Restore failed:', error);
       toast(`${t('useBackupActions.restore-failed')}: ${(error as Error).message}`, 'error');
     } finally {
+      task.finish();
       setIsRestoring(false);
     }
   }, [activeConfig, confirm, state, t, toast]);
 
   return { activeConfig, isBackingUp, isRestoring, backup, restore };
 };
-import { backupAIConfig, inertAgyDescriptor, isAgyConfig } from '../../../utils/aiConfig';
+import { backupAIConfig, restoreAIConfigs } from '../../../utils/aiConfig';

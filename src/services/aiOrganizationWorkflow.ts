@@ -85,5 +85,5 @@ export async function runOrganizationGeneration(input: {
       }
       throw error;
     }
-  });
+  }, { kind: 'organization', title: input.scopeName, aiConfig: useAppStore.getState().aiConfigs.find(config => config.id === input.configId) });
 }

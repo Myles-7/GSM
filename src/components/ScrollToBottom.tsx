@@ -85,7 +85,7 @@ export const ScrollToBottom: React.FC<ScrollToBottomProps> = ({
       size="icon"
       onClick={scrollToBottom}
       className={`
-        fixed z-[1000]
+        fixed z-40
         flex items-center justify-center
         w-12 h-12
         bg-card dark:bg-accent/60

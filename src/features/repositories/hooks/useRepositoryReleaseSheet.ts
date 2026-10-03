@@ -12,6 +12,7 @@ import { shouldBypassBackend } from '../../../services/routeMode';
 import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { computeRpcDownloadKey, useReleaseArtifactActions } from '../../../hooks/useReleaseArtifactActions';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import type { ReleaseDownloadLink } from '../../../utils/releaseDownloadLinks';
 
 const REMOTE_RELEASE_PAGE_SIZE = 100;
@@ -142,7 +143,7 @@ export const useRepositoryReleaseSheet = (repository: Repository) => {
   const cancelPendingRequests = useCallback(() => {
     fetchAbortRef.current?.abort();
     fetchAbortRef.current = null;
-    cancelSummaryRequests();
+    if (!aiTaskJournal.hasHost()) cancelSummaryRequests();
   }, [cancelSummaryRequests]);
 
   useEffect(() => cancelPendingRequests, [cancelPendingRequests]);

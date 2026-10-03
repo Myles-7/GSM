@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
+      - personal/main
+      - 'codex/**'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -85,3 +88,30 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  server:
+    name: Server quality gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          # better-sqlite3 v11 aborts in Statement cleanup under Linux/Node 24.
+          # Validate the native server suite on Node 22 until a separate addon
+          # upgrade is exercised against the deployed runtime.
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+      - name: Install server dependencies
+        run: npm ci --prefix server
+      - name: Test server
+        run: npm --prefix server test
+      - name: Build server
+        run: npm --prefix server run build

@@ -9,6 +9,7 @@ import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganiz
 import { flushDesktopHome, getDesktopHomeSync } from '../home/desktop';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
 import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
+import { aiTaskJournal } from './aiTaskJournal';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
 // the store subscription would trigger a push TO backend. This flag blocks that.
@@ -293,6 +294,9 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
 
   const doSync = async () => {
   const startTime = Date.now();
+  const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'sync', [{ id: 'pull', label: 'Backend → Device' }], undefined, undefined,
+    { trigger: options.force ? 'manual' : 'automatic', target: { view: 'settings', tab: 'backend' } });
+  task.item('pull', 'running');
   try {
     const repositoriesBeforeFetch = useAppStore.getState().repositories;
     const [reposResult, releasesResult, aiResult, webdavResult, embeddingResult, vectorSearchResult, settingsResult] = await Promise.allSettled([
@@ -304,6 +308,8 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       backend.fetchVectorSearchConfig(),
       backend.fetchSettings(),
     ]);
+    const pullFailures = [reposResult, releasesResult, aiResult, webdavResult, embeddingResult, vectorSearchResult, settingsResult].filter(result => result.status === 'rejected');
+    if (pullFailures.length) { task.error(pullFailures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; ')); task.item('pull', 'failed'); }
 
     // Local edits made during the fetch must be pushed before applying the
     // stale snapshot. The fetched repositories still matter: the queued full
@@ -577,8 +583,11 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
 
     logger.info('sync.pullFromBackend', 'Synced from backend (data changed)', { ...changed, durationMs: Date.now() - startTime });
   } catch (err) {
+    task.item('pull', 'failed', err);
     logger.errorFromError('sync.pullFromBackend', 'Failed to sync from backend', err, { durationMs: Date.now() - startTime });
   } finally {
+    if (!aiTaskJournal.snapshot().find(record => record.id === task.id)?.items.some(item => item.state === 'failed')) task.item('pull', 'complete');
+    task.finish();
     setRepositorySyncVisualState(false);
     _isSyncingFromBackend = false;
     _isSyncingFromBackendActive = false;
@@ -645,6 +654,9 @@ export async function syncToBackend(): Promise<boolean> {
  * for the next push.
  */
 async function pushToBackend(): Promise<boolean> {
+  const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'sync', [{ id: 'push', label: 'Device → Backend' }], undefined, undefined,
+    { trigger: 'automatic', target: { view: 'settings', tab: 'backend' } });
+  task.item('push', 'running');
   _isPushingToBackend = true;
   _hasPendingPush = false;
   _hasPendingLocalChanges = false;
@@ -679,9 +691,11 @@ async function pushToBackend(): Promise<boolean> {
 
     const failures = results.filter(r => r.status === 'rejected');
     if (failures.length > 0) {
+      task.item('push', 'failed', failures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; '));
       logger.warn('sync.pushToBackend', `Synced to backend with ${failures.length} error(s)`, { failureCount: failures.length, durationMs: Date.now() - pushStartTime });
       _hasPendingLocalChanges = true;
     } else {
+      task.item('push', 'complete');
       logger.info('sync.pushToBackend', 'Synced to backend', { durationMs: Date.now() - pushStartTime });
     }
 
@@ -713,10 +727,12 @@ async function pushToBackend(): Promise<boolean> {
     }
     return failures.length === 0;
   } catch (err) {
+    task.item('push', 'failed', err);
     logger.errorFromError('sync.pushToBackend', 'Failed to sync to backend', err, { durationMs: Date.now() - pushStartTime });
     _hasPendingLocalChanges = true;
     return false;
   } finally {
+    task.finish();
     setRepositorySyncVisualState(false);
     _isPushingToBackend = false;
   }

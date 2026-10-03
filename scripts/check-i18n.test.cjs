@@ -84,7 +84,8 @@ function withRepo(callback) {
 test('APP_LANGUAGES and namespaces stay in sync with the TypeScript source', () => {
   const languagesTs = fs.readFileSync(path.join(__dirname, '..', 'src', 'i18n', 'languages.ts'), 'utf8');
   const indexTs = fs.readFileSync(path.join(__dirname, '..', 'src', 'i18n', 'index.ts'), 'utf8');
-  const codes = [...languagesTs.matchAll(/code: '([^']+)'/g)].map((match) => match[1]);
+  const languageBlock = languagesTs.match(/export const APP_LANGUAGES[^=]*= \[([\s\S]*?)\];/)[1];
+  const codes = [...languageBlock.matchAll(/code: '([^']+)'/g)].map((match) => match[1]);
   const namespaceBlock = indexTs.match(/export const I18N_NAMESPACES = \[([\s\S]*?)\];/)[1];
   const namespaces = [...namespaceBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(codes, LANGUAGES);
@@ -119,10 +120,10 @@ test('full-tree parity passes on a complete fixture', () =>
 
 test('missing locale keys fail the full-tree gate', () =>
   withRepo((root) => {
-    writeJson(path.join(root, 'src', 'locales', 'ja', 'app.json'), {});
+    writeJson(path.join(root, 'src', 'locales', 'en', 'app.json'), {});
     const result = runScript(root);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /ja: missing/);
+    assert.match(result.stderr, /en: missing/);
   }));
 
 test('unknown t() keys fail the full-tree gate', () =>

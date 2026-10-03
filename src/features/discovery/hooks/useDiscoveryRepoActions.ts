@@ -8,6 +8,8 @@ import { forceSyncToBackend } from '../../../services/autoSync';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { useDialog } from '../../../hooks/useDialog';
 import { applyDiscoveryAnalysisFailure, applyDiscoveryAnalysisSuccess } from '../application/discoveryRepoPatches';
+import { applyRepositoryAnalysisAsset, assertRepositoryAnalysisAssetWrite, beginRepositoryAnalysisAssetWrite } from '../../../services/repositoryAnalysisAssets';
+import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 
 export interface UseDiscoveryRepoActionsOptions {
   repo: DiscoveryRepo;
@@ -123,6 +125,7 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     if (!githubToken || isStarring) return;
 
     setIsStarring(true);
+    const started = useAppStore.getState();
 
     try {
       const githubApi = createGitHubApiService(githubToken);
@@ -133,7 +136,13 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
 
       await githubApi.starRepository(owner, name);
 
-      addRepository(discoveryRepoToRepository(repo, new Date().toISOString()));
+      const latest = useAppStore.getState();
+      if (latest.user?.id !== started.user?.id || latest.githubToken !== githubToken) { setOptimisticStarred(null); return; }
+      const existing = latest.repositories.find(item => item.id === repo.id);
+      const source = existing ?? latest.discoveryRepos?.[repo.channel]?.find(item => item.id === repo.id) ?? repo;
+      const analyzed = applyRepositoryAnalysisAsset(String(latest.user?.id ?? ''), source, latest.language);
+      if (existing) latest.updateRepository(analyzed);
+      else addRepository(discoveryRepoToRepository(analyzed as DiscoveryRepo, new Date().toISOString()));
 
       if (onStar) {
         onStar(repo);
@@ -186,8 +195,18 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     abortControllerRef.current = controller;
 
     setIsAnalyzing(true);
+    const accountId = useAppStore.getState().user?.id;
+    const mergeWrite = beginRepositoryAnalysisWrite(accountId ?? 0, repo.id);
+    const mergeDiscoveryWrite = (latest: Repository, proposed: Repository): DiscoveryRepo => {
+      const merged = mergeWrite(latest, proposed);
+      for (const key of Object.keys(merged) as (keyof Repository)[]) {
+        if (!(key in latest) && !(key in proposed)) delete merged[key];
+      }
+      return merged as DiscoveryRepo;
+    };
 
     try {
+      const assetVersion = accountId === undefined ? undefined : await beginRepositoryAnalysisAssetWrite(String(accountId), repo.id);
       const allCategories = getAllCategories(customCategories, language);
 
       const result = await analyzeRepository({
@@ -198,34 +217,46 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
         categories: allCategories,
         signal: controller.signal,
       });
+      if (assetVersion) await assertRepositoryAnalysisAssetWrite(assetVersion);
 
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || useAppStore.getState().user?.id !== accountId || useAppStore.getState().githubToken !== githubToken) return;
 
-      const updatedRepo = applyDiscoveryAnalysisSuccess(repo, {
+      const current = useAppStore.getState().discoveryRepos?.[repo.channel]?.find(item => item.id === repo.id) ?? repo;
+      const updatedRepo = mergeDiscoveryWrite(current, applyDiscoveryAnalysisSuccess(current, {
         summary: result.summary,
         tags: result.tags,
         platforms: result.platforms,
         analyzedAt: result.analyzed_at,
         analysisFailed: result.analysis_failed,
-      });
+      }));
       updateDiscoveryRepo(updatedRepo);
+      const latest = useAppStore.getState();
+      const starred = latest.repositories.find(item => item.id === repo.id);
+      if (starred) latest.updateRepository(mergeWrite(starred, { ...starred,
+        ai_summary: updatedRepo.ai_summary, ai_tags: updatedRepo.ai_tags, ai_platforms: updatedRepo.ai_platforms,
+        analyzed_at: updatedRepo.analyzed_at, analysis_failed: false, analysis_error: undefined,
+      }));
 
       if (onAnalyzed) {
         onAnalyzed(updatedRepo);
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       if (!controller.signal.aborted) {
         console.error('AI analysis error:', error);
         const errorMsg = error instanceof Error && error.message
           ? error.message
           : t('useDiscoveryRepoActions.ai-analysis-failed-please-check-ai-configuration');
         const failedResult = createFailedAnalysisResult(errorMsg);
-        const failedRepo = applyDiscoveryAnalysisFailure(repo, {
+        const latest = useAppStore.getState();
+        if (latest.user?.id !== accountId || latest.githubToken !== githubToken) return;
+        const source = applyRepositoryAnalysisAsset(String(accountId ?? ''), latest.discoveryRepos?.[repo.channel]?.find(item => item.id === repo.id) ?? repo, latest.language);
+        const failedRepo = applyDiscoveryAnalysisFailure(source as DiscoveryRepo, {
           analyzedAt: failedResult.analyzed_at,
           analysisFailed: failedResult.analysis_failed,
           analysisError: failedResult.analysis_error,
         });
-        updateDiscoveryRepo(failedRepo);
+        updateDiscoveryRepo(mergeDiscoveryWrite(source, failedRepo));
         toast(t('useDiscoveryRepoActions.ai-analysis-failed-please-check-your-ai-configur'), 'error');
       }
     } finally {

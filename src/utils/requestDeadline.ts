@@ -1,3 +1,5 @@
+import { inheritTaskSignal } from './taskSignals';
+
 /** Abort the transport AND settle even when a provider ignores cancellation. */
 export function withDeadline<T>(
   work: (signal: AbortSignal) => Promise<T>,
@@ -6,6 +8,7 @@ export function withDeadline<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const controller = new AbortController();
+    inheritTaskSignal(parent, controller.signal);
     let settled = false;
     const finish = (error: unknown, value?: T) => {
       if (settled) return;

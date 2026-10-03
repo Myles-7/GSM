@@ -7,10 +7,10 @@ const DB_VERSION = 1;
 const canUseIndexedDB = () => typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs = 2000): Promise<T> => {
-  return await Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('IndexedDB timeout')), timeoutMs)),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error('IndexedDB timeout')), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
 };
 
 const safeLocalStorageGet = (key: string): string | null => {

@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyData, type ChannelDailyEdition } from './model';
+import { emptyData, type ChannelDailyEdition, type CustomDiscoveryData } from './model';
 import { makeChannel } from './fixtures.test-support';
 import { clearCustomEditions, deleteCustomEdition, useCustomDiscovery } from './store';
 
 vi.mock('./storage', () => ({
   loadData: async () => useCustomDiscovery.getState().data,
-  transact: async (_acc: string, change: (d: any) => void) => {
+  transact: async (_acc: string, change: (d: CustomDiscoveryData) => void) => {
     const data = useCustomDiscovery.getState().data;
     change(data);
     useCustomDiscovery.setState({ data: { ...data } });
   },
 }));
 
-function makeEdition(channelId: any, date: string, revision = 1, generatedAt = `${date}T10:00:00.000Z`): ChannelDailyEdition {
+function makeEdition(channelId: ChannelDailyEdition['channelId'], date: string, revision = 1, generatedAt = `${date}T10:00:00.000Z`): ChannelDailyEdition {
   return {
     channelId,
     date,
@@ -90,7 +90,7 @@ describe('custom discovery store edition management', () => {
   it('deletes an edition when generatedAt is undefined or empty string', async () => {
     const channelId = useCustomDiscovery.getState().data.channels[0].id;
     const legacyEdition = makeEdition(channelId, '2026-09-26', 1);
-    delete (legacyEdition as any).generatedAt;
+    delete (legacyEdition as Partial<ChannelDailyEdition>).generatedAt;
     useCustomDiscovery.getState().data.editions.push(legacyEdition);
 
     // Using the key format produced by getEditionKey

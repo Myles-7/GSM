@@ -85,6 +85,143 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+it('preserves compatibility by re-exporting the pure remapping implementations', async () => {
+  const participants = await import('./repositoryIdentityParticipants');
+  const pure = await import('../utils/repositoryIdentityRemap');
+  expect(participants.validateParticipantMappings).toBe(pure.validateParticipantMappings);
+  expect(participants.assertRepositoryIdentityName).toBe(pure.assertRepositoryIdentityName);
+  expect(participants.remapParticipantRepositoryIds).toBe(pure.remapParticipantRepositoryIds);
+  expect(participants.remapParticipantRepositoryList).toBe(pure.remapParticipantRepositoryList);
+});
+
+describe('discovery workspace identity participant', () => {
+  const details = {
+    version: 1, generated_at: '2026-10-02T00:00:00Z', repository_pushed_at: null, model: 'model', sources: [],
+    summary: 'Historical content', tags: [], platforms: [], software_forms: [], deployment_modes: [],
+    problem: null, features: [], scenarios: [], architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
+  };
+  async function seedDiscovery() {
+    const workspace = await import('../features/discovery/workspace/storage');
+    const assets = await import('./repositoryAnalysisAssets');
+    await workspace.saveBrowsePage('alice', { key: 'reading', channelId: 'most-popular', signature: '',
+      items: [repository()], nextPage: 4, hasMore: true, totalCount: 60, mode: 'replace' });
+    await workspace.saveReadingAnchor('alice', { sessionKey: 'reading', itemKey: `repo:${oldId}`, offset: 72,
+      previousKeys: [`repo:${oldId}`], updatedAt: 1 });
+    await assets.importRepositoryAnalysisAssets('alice', { version: 1, accountId: 'alice', assets: [{ version: 1,
+      accountId: 'alice', repositoryId: oldId, fullName: 'owner/repo', language: 'en',
+      schemaVersion: 'detail-prompt-v2', configIdentity: null, details }] }, 'replace');
+    return { workspace, assets };
+  }
+
+  it('migrates new stores without custom channels and predicts the coordinator recovery fingerprint', async () => {
+    const { workspace, assets } = await seedDiscovery();
+    const { backupParticipantIdentities, remapWorkbench } = await import('./repositoryIdentityParticipants');
+    const backup = await backupParticipantIdentities('alice');
+    expect(backup.customDiscovery).toBeNull();
+    const predicted = structuredClone(backup);
+    remapWorkbench(predicted.workbench, 'alice', mappings);
+    await migrateWorkbenchRepositoryIdentities({ ownerId: 'alice' }, mappings);
+    const after = await backupParticipantIdentities('alice');
+    expect(after).toEqual(predicted);
+    expect((await workspace.exportDiscoveryWorkspace('alice')).sessions[0]).toMatchObject({ itemKeys: [`repo:${newId}`], nextPage: 4 });
+    expect((await workspace.exportDiscoveryWorkspace('alice')).anchors[0]).toMatchObject({ itemKey: `repo:${newId}`, offset: 72 });
+    expect((await assets.exportRepositoryAnalysisAssets('alice')).assets[0]).toMatchObject({ repositoryId: newId, details });
+  });
+
+  it.each(['', 'OWNER/REPO'])('matches asset normalization and canonical naming for legacy fullName=%j', async fullName => {
+    const { assets } = await seedDiscovery();
+    const snapshot = await assets.exportRepositoryAnalysisAssets('alice');
+    snapshot.assets[0].fullName = fullName;
+    snapshot.assets[0].language = ' EN_us ';
+    await assets.importRepositoryAnalysisAssets('alice', snapshot, 'replace');
+    const { backupParticipantIdentities, remapWorkbench } = await import('./repositoryIdentityParticipants');
+    const predicted = await backupParticipantIdentities('alice');
+    remapWorkbench(predicted.workbench, 'alice', mappings);
+    await migrateWorkbenchRepositoryIdentities({ ownerId: 'alice' }, mappings);
+    expect(await backupParticipantIdentities('alice')).toEqual(predicted);
+    expect((await assets.exportRepositoryAnalysisAssets('alice')).assets[0]).toMatchObject({ repositoryId: newId,
+      fullName: 'owner/repo', language: 'en-us', details });
+  });
+
+  it('predicts merging equivalent canonical assets without overwriting canonical provenance', async () => {
+    const { assets } = await seedDiscovery();
+    const snapshot = await assets.exportRepositoryAnalysisAssets('alice');
+    snapshot.assets[0].fullName = '';
+    snapshot.assets.push({ ...snapshot.assets[0], repositoryId: newId, fullName: 'owner/repo', configIdentity: 'canonical-config' });
+    await assets.importRepositoryAnalysisAssets('alice', snapshot, 'replace');
+    const { backupParticipantIdentities, remapWorkbench } = await import('./repositoryIdentityParticipants');
+    const predicted = await backupParticipantIdentities('alice');
+    remapWorkbench(predicted.workbench, 'alice', mappings);
+    await migrateWorkbenchRepositoryIdentities({ ownerId: 'alice' }, mappings);
+    expect(await backupParticipantIdentities('alice')).toEqual(predicted);
+    expect((await assets.exportRepositoryAnalysisAssets('alice')).assets).toMatchObject([{ repositoryId: newId,
+      fullName: 'owner/repo', configIdentity: 'canonical-config' }]);
+  });
+
+  it('restores new store backups while the identity writer gate stays held', async () => {
+    const { workspace, assets } = await seedDiscovery();
+    const { backupParticipantIdentities, restoreParticipantIdentities } = await import('./repositoryIdentityParticipants');
+    const { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites, assertRepositoryIdentityWritable } = await import('./repositoryIdentityGate');
+    const backup = await backupParticipantIdentities('alice');
+    holdRepositoryIdentityWrites('alice', 'journal');
+    try {
+      await migrateWorkbenchRepositoryIdentities({ ownerId: 'alice' }, mappings);
+      await restoreParticipantIdentities('alice', backup);
+      expect((await workspace.exportDiscoveryWorkspace('alice')).projects[0].value.id).toBe(oldId);
+      expect((await assets.exportRepositoryAnalysisAssets('alice')).assets[0].repositoryId).toBe(oldId);
+      expect(() => assertRepositoryIdentityWritable('alice')).toThrow('MAINTENANCE');
+    } finally { releaseRepositoryIdentityWrites('alice'); }
+  });
+
+  it('validates all new blocks before restoring any existing Workbench references', async () => {
+    const storage = await seedWorkbench();
+    await seedDiscovery();
+    const { backupParticipantIdentities, restoreParticipantIdentities } = await import('./repositoryIdentityParticipants');
+    const backup = await backupParticipantIdentities('alice');
+    backup.workbench.sessions[0].title = 'must not be committed';
+    backup.workbench.discoveryWorkspace!.analyses!.assets[0].accountId = 'bob';
+    await expect(restoreParticipantIdentities('alice', backup)).rejects.toThrow('ACCOUNT');
+    expect((await storage.getSession('session-alice'))?.title).toBe(String(oldId));
+  });
+
+  it('accepts old participant snapshots without clearing new store data', async () => {
+    const { workspace, assets } = await seedDiscovery();
+    const { backupParticipantIdentities, restoreParticipantIdentities } = await import('./repositoryIdentityParticipants');
+    const backup = await backupParticipantIdentities('alice');
+    const before = backup.workbench.discoveryWorkspace;
+    delete backup.workbench.discoveryWorkspace;
+    await restoreParticipantIdentities('alice', backup);
+    expect(await workspace.exportDiscoveryWorkspace('alice')).toEqual(before!.workspace);
+    expect(await assets.exportRepositoryAnalysisAssets('alice')).toEqual(before!.analyses);
+  });
+
+  it('rejects a new-store identity collision before committing Workbench migration', async () => {
+    const storage = await seedWorkbench();
+    const { workspace } = await seedDiscovery();
+    await workspace.saveBrowsePage('alice', { key: 'reading', channelId: 'most-popular', signature: '',
+      items: [repository(newId, 'different/repo')], nextPage: 5, hasMore: false, totalCount: 60, mode: 'append' });
+    await expect(migrateWorkbenchRepositoryIdentities({ ownerId: 'alice' }, mappings)).rejects.toThrow(/DUPLICATE|COLLISION|CONFLICT/);
+    expect((await storage.getSession('session-alice'))?.repoId).toBe(oldId);
+  });
+
+  it('enumerates partial transaction states for interrupted coordinator recovery and ignores new stores for old journals', async () => {
+    const storage = await seedWorkbench();
+    const { workspace } = await seedDiscovery();
+    const { backupParticipantIdentities, participantIdentityRecoverySnapshots, participantIdentityRecoveryView, remapWorkbench } = await import('./repositoryIdentityParticipants');
+    const backup = await backupParticipantIdentities('alice');
+    const predictions = participantIdentityRecoverySnapshots(backup, mappings);
+    await storage.mutateRepositoryIdentityReferences('alice', snapshot => remapWorkbench(snapshot, 'alice', mappings));
+    expect(predictions).toContainEqual(await backupParticipantIdentities('alice'));
+    await workspace.migrateDiscoveryWorkspaceIdentities('alice', mappings);
+    const partial = await backupParticipantIdentities('alice');
+    expect(predictions).toContainEqual(partial);
+    const legacy = structuredClone(backup);
+    delete legacy.workbench.discoveryWorkspace;
+    expect(participantIdentityRecoveryView(partial, legacy).workbench).not.toHaveProperty('discoveryWorkspace');
+    expect(backup.workbench.discoveryWorkspace!.workspace!.projects[0].value.id).toBe(oldId);
+  });
+});
+
 describe.each(['indexeddb', 'fallback'] as const)('Workbench participant (%s)', mode => {
   beforeEach(() => { if (mode === 'fallback') vi.stubGlobal('indexedDB', undefined); });
 

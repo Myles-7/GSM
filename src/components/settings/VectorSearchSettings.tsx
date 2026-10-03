@@ -504,11 +504,11 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
       </div>
 
       {/* Section 4: Index Content */}
-      <div className="border border-border rounded-lg p-4 space-y-4">
-        <h3 className="font-medium text-foreground dark:text-foreground flex items-center gap-2">
+      <details className="border border-border rounded-lg p-4 space-y-4">
+        <summary className="cursor-pointer font-medium text-foreground dark:text-foreground">
           <span className="text-xs bg-accent dark:bg-muted px-2 py-0.5 rounded">④</span>
           {t('vectorSearchSettings.index-content')}
-        </h3>
+        </summary>
 
         {/* 索引内容选择 */}
         <div className="space-y-2">
@@ -588,14 +588,14 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
           {workerSaved ? `✓ ${t('vectorSearchSettings.saved')}` : t('vectorSearchSettings.save-index-config')}
         </Button>
 
-      </div>
+      </details>
 
       {/* Section 5: Search Parameters */}
-      <div className="border border-border rounded-lg p-4 space-y-4">
-        <h3 className="font-medium text-foreground dark:text-foreground flex items-center gap-2">
+      <details className="border border-border rounded-lg p-4 space-y-4">
+        <summary className="cursor-pointer font-medium text-foreground dark:text-foreground">
           <span className="text-xs bg-accent dark:bg-muted px-2 py-0.5 rounded">⑤</span>
           {t('vectorSearchSettings.search-parameters')}
-        </h3>
+        </summary>
 
         {/* Similarity Threshold */}
         <div className="space-y-1">
@@ -682,14 +682,14 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         >
           {workerSaved ? `✓ ${t('vectorSearchSettings.saved')}` : t('vectorSearchSettings.save-search-parameters')}
         </Button>
-      </div>
+      </details>
 
       {/* Section 6: Delete Index */}
-      <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="font-medium text-foreground dark:text-foreground flex items-center gap-2">
+      <details className="border border-border rounded-lg p-4 space-y-3">
+        <summary className="cursor-pointer font-medium text-foreground dark:text-foreground">
           <span className="text-xs bg-accent dark:bg-muted px-2 py-0.5 rounded">⑥</span>
           {t('vectorSearchSettings.delete-index')}
-        </h3>
+        </summary>
         <p className="text-sm text-muted-foreground dark:text-muted-foreground">
           {t('vectorSearchSettings.if-you-changed-the-embedding-model-different-dim')}
         </p>
@@ -726,7 +726,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         <p className="text-xs text-muted-foreground dark:text-muted-foreground">
           {t('vectorSearchSettings.run-these-commands-in-the-cloudflare-worker-dire')}
         </p>
-      </div>
+      </details>
 
       {/* Section 7: Deploy Guide */}
       <div className="border border-border rounded-lg overflow-hidden">

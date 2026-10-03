@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Release } from '../types';
 import { computeRpcDownloadKey, useReleaseArtifactActions } from './useReleaseArtifactActions';
+import { aiTaskJournal } from '../services/aiTaskJournal';
 
 const mocks = vi.hoisted(() => ({
   useAppStore: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../services/aiService', () => ({
 }));
 
 const createStoreState = () => ({
+  user: undefined as { id: number } | undefined,
   language: 'zh' as const,
   backendApiSecret: 'secret-1' as string | null,
   aiConfigs: [{
@@ -190,7 +192,7 @@ describe('useReleaseArtifactActions.generateSummary', () => {
       { repoName: 'owner/repo', tagName: 'v1.0.0', releaseName: 'Version 1.0.0' },
       expect.any(AbortSignal),
     );
-    expect(result.current.summaries[100]).toEqual({ status: 'done', content: '# Summary' });
+    expect(result.current.summaries[100]).toMatchObject({ status: 'done', content: '# Summary' });
   });
 
   it('skips regeneration while loading or when a done summary exists', async () => {
@@ -245,7 +247,7 @@ describe('useReleaseArtifactActions.generateSummary', () => {
     const { result } = renderHook(() => useReleaseArtifactActions());
     await act(async () => { await result.current.generateSummary(release); });
     expect(mocks.toast).not.toHaveBeenCalled();
-    expect(result.current.summaries[100]).toEqual({ status: 'loading' });
+    expect(result.current.summaries[100]).toBeUndefined();
   });
 
   it('aborts all in-flight summary requests on unmount', async () => {
@@ -261,6 +263,40 @@ describe('useReleaseArtifactActions.generateSummary', () => {
     expect(signals[0].aborted).toBe(false);
     unmount();
     expect(signals[0].aborted).toBe(true);
+  });
+
+  it('keeps hosted generation running after navigation and exposes its cached result on remount', async () => {
+    storeState.user = { id: 77701 };
+    const detach = aiTaskJournal.attachHost();
+    let finish!: (value: string) => void;
+    let signal!: AbortSignal;
+    mocks.analyzeReleaseSummary.mockImplementation((_body: string, _meta: unknown, input: AbortSignal) => {
+      signal = input;
+      return new Promise<string>(resolve => { finish = resolve; });
+    });
+    try {
+      const hook = renderHook(() => useReleaseArtifactActions());
+      let pending!: Promise<void>;
+      act(() => { pending = hook.result.current.generateSummary(release); });
+      hook.unmount(); expect(signal.aborted).toBe(false);
+      finish('# background result'); await act(async () => { await pending; });
+      const next = renderHook(() => useReleaseArtifactActions());
+      expect(next.result.current.summaries[100]).toMatchObject({ status: 'done', content: '# background result' });
+      next.unmount();
+    } finally { detach(); }
+  });
+
+  it('clears visible summaries on account switch and rejects late content', async () => {
+    storeState.user = { id: 77702 };
+    let finish!: (value: string) => void;
+    mocks.analyzeReleaseSummary.mockImplementation(() => new Promise<string>(resolve => { finish = resolve; }));
+    const hook = renderHook(() => useReleaseArtifactActions());
+    let pending!: Promise<void>;
+    act(() => { pending = hook.result.current.generateSummary(release); });
+    storeState.user = { id: 77703 }; hook.rerender();
+    finish('# stale account'); await act(async () => { await pending; });
+    expect(hook.result.current.summaries[100]).toBeUndefined();
+    expect(aiTaskJournal.snapshot().filter(task => task.owner === '77702').slice(-1)[0]?.state).toBe('canceled');
   });
 
   it('cancelSummaryRequests aborts in-flight requests without unmounting', async () => {
@@ -346,7 +382,7 @@ describe('useReleaseArtifactActions.generateSummary', () => {
       await result.current.sendRpcDownload({ url: 'https://x/a.zip', name: 'a.zip' });
       await result.current.generateSummary(release);
     });
-    expect(result.current.summaries[100]).toEqual({ status: 'done', content: '# Summary' });
+    expect(result.current.summaries[100]).toMatchObject({ status: 'done', content: '# Summary' });
     act(() => {
       result.current.reset();
     });

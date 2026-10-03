@@ -125,9 +125,9 @@ describe('organization apply and restore safety', () => {
     expect(mocks.writes).toBe(0);
   });
   it('rolls back uncommitted additions from createdCategoryIds when apply throws, allowing retry', async () => {
-    const originalApply = (mocks.state as any).applyAIOrganization;
+    const originalApply = mocks.state.applyAIOrganization;
     let failOnce = true;
-    (mocks.state as any).applyAIOrganization = (input: any) => {
+    mocks.state.applyAIOrganization = (input) => {
       if (failOnce) {
         failOnce = false;
         throw new Error('Simulated store write failure');
@@ -148,7 +148,6 @@ describe('organization apply and restore safety', () => {
     expect(retried.organization?.entries.every(e => e.status === 'success')).toBe(true);
     expect(mocks.state.customCategories.map(c => c.id)).toEqual(['new-main']);
 
-    (mocks.state as any).applyAIOrganization = originalApply;
+    mocks.state.applyAIOrganization = originalApply;
   });
 });
-

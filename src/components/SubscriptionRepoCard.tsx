@@ -1,7 +1,8 @@
 import { getIntlLocale } from '../i18n/format';
 import { useT } from "../i18n/useT";
 import React, { useState, useMemo, useCallback } from 'react';
-import { Star, StarOff, ExternalLink, Bot, GitFork, Sparkles, BookOpen, AlertTriangle, FileText, Calendar } from 'lucide-react';
+import { Star, StarOff, ExternalLink, Bot, GitFork, Sparkles, BookOpen, AlertTriangle, FileText, Calendar, MessageSquareText, Tag } from 'lucide-react';
+import { RepositoryTextBlock } from './RepositoryTextBlock';
 import { getPlatformIcon as getSharedPlatformIcon } from './platformMeta';
 import type { DiscoveryRepo } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -20,9 +21,16 @@ interface SubscriptionRepoCardProps {
   onStar?: (repo: DiscoveryRepo) => void;
   onAnalyze?: (repo: DiscoveryRepo) => void;
   desktopSafeMode?: boolean;
+  onDetails?: () => void;
+  onAsk?: () => void;
+  onRequestAnalysis?: () => void;
+  active?: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
+  analysisStatus?: React.ReactNode;
 }
 
-export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo, onStar, onAnalyze, desktopSafeMode = false }) => {
+export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo, onStar, onAnalyze, desktopSafeMode = false, onDetails, onAsk, onRequestAnalysis, active, selected, onSelect, analysisStatus }) => {
   const language = useAppStore(state => state.language);
   const githubToken = useAppStore(state => state.githubToken);
 
@@ -145,13 +153,26 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
 
   return (
     <>
+    {onDetails ? <RepositoryTextBlock repo={repo} onDetails={onDetails} active={active} selected={selected} onSelect={onSelect} status={analysisStatus}
+      actions={<>
+        {onAsk && <Button variant="ghost" size="icon" aria-label={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'} title={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'} onClick={onAsk}><MessageSquareText className="h-4 w-4" /></Button>}
+        <Button variant="ghost" size="icon" title={t('subscriptionRepoCard.ai-analyze')} aria-label={t('subscriptionRepoCard.ai-analyze')} onClick={onRequestAnalysis ?? (() => void analyze(onAnalyze))}><Sparkles className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" title="README" aria-label="README" onClick={() => setReadmeModalOpen(true)}><BookOpen className="h-4 w-4" /></Button>
+        <Button variant="ghost" size="icon" asChild><a href={repo.html_url} target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub"><ExternalLink className="h-4 w-4" /></a></Button>
+        <Button variant="ghost" size="icon" disabled={isStarred || isStarring} aria-label={isStarred ? (language.startsWith('zh') ? '已 Star' : 'Starred') : 'Star'} title={isStarred ? 'Starred' : 'Star'} onClick={event => { event.stopPropagation(); void star(onStar); }}><Star className={`h-4 w-4 ${isStarred ? 'fill-current text-amber-500' : ''}`} /></Button>
+      </>}>
+      {repo.recentRelease && <a href={repo.recentRelease.html_url} target="_blank" rel="noopener noreferrer" className="mt-3 flex flex-wrap items-center gap-2 text-xs text-primary hover:underline"><Tag className="h-3.5 w-3.5" />{repo.recentRelease.tag_name} · {new Date(repo.recentRelease.published_at).toLocaleDateString()}{repo.recentRelease.prerelease && ` · ${language.startsWith('zh') ? '预发布' : 'Prerelease'}`}</a>}
+      {(repo.weeklyIssue || repo.xTweet || repo.telegram) && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {repo.weeklyIssue && <><span>{isWeeklyCollected ? t('subscriptionRepoCard.in-weekly') : `#${repo.weeklyIssue.number}`}</span><Button variant="link" size="sm" onClick={handleOpenIssue}>{t('subscriptionRepoCard.view-original-post')}</Button></>}
+        {repo.xTweet && <><span>@{repo.xTweet.handle}</span><Button variant="link" size="sm" onClick={handleOpenTweet}>{t('subscriptionRepoCard.view-original-post')}</Button></>}
+        {repo.telegram && <><span>@{repo.telegram.channel}</span><Button variant="link" size="sm" onClick={handleOpenTelegramMessage}>{t('subscriptionRepoCard.view-original-channel-message')}</Button></>}
+      </div>}
+    </RepositoryTextBlock> :
     <div 
-      onClick={handleCardClick}
+      onClick={event => { if (event.target instanceof Element && event.target.closest('button,a,input,summary,details')) return; if (!window.getSelection()?.toString()) handleCardClick(); }}
+      tabIndex={0}
+      onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); handleCardClick(); } }}
       className="ui-card p-5 transition-all duration-200 cursor-pointer"
-      style={{ userSelect: 'none' }}
-      onCopy={(e) => e.preventDefault()}
-      onCut={(e) => e.preventDefault()}
-      onSelect={(e) => e.preventDefault()}
     >
       <div className="flex items-start gap-3 sm:gap-4">
         {/* Rank badge */}
@@ -419,7 +440,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
           </div>
         </div>
       </div>
-    </div>
+    </div>}
 
     {/* Unstar Confirm Modal */}
     <Modal

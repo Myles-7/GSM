@@ -8,7 +8,7 @@ import type { AppState, Repository } from '../../../types';
 vi.unmock('../../../store/useAppStore');
 
 const mocks = vi.hoisted(() => ({
-  prepare: vi.fn(), search: vi.fn(), answer: vi.fn(), propose: vi.fn(), execute: vi.fn(), restore: vi.fn(),
+  prepare: vi.fn(), search: vi.fn(), answer: vi.fn(), overviewAnswer: vi.fn(), retryOverview: vi.fn(), propose: vi.fn(), execute: vi.fn(), restore: vi.fn(),
   bindLocal: vi.fn(), getLocal: vi.fn(), researchLocal: vi.fn(),
 }));
 vi.mock('../../../services/localResearchGrants', () => ({
@@ -20,6 +20,8 @@ vi.mock('../../../services/aiWorkbenchService', async (original) => ({
   prepareWorkbenchRequirements: mocks.prepare,
   searchWorkbench: mocks.search,
   answerWorkbench: mocks.answer,
+  answerWorkbenchOverview: mocks.overviewAnswer,
+  overviewWorkbenchBatch: mocks.retryOverview,
 }));
 vi.mock('../../../services/aiWorkbenchOperations', () => ({
   proposeWorkbenchOperations: mocks.propose,
@@ -43,12 +45,52 @@ beforeEach(() => {
   });
   mocks.prepare.mockResolvedValue(requirements);
   mocks.answer.mockResolvedValue({ content: 'Evidence-backed answer', evidences: [] });
+  mocks.overviewAnswer.mockResolvedValue({ content: 'A local editor; cloud sync is unknown.', evidences: [], quality: 'unreviewed' });
   mocks.getLocal.mockReturnValue(undefined);
   mocks.bindLocal.mockResolvedValue({ id: 'grant', name: 'fixture', identity: 'a'.repeat(64), entries: [], truncated: false });
   mocks.researchLocal.mockResolvedValue({ content: 'Local answer', evidences: [], quality: 'model-reviewed', claims: [], coverage: [] });
 });
 
 describe('AI workbench integration', () => {
+  it('routes result follow-ups to the overview without another requirements interview or deep research', async () => {
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.createSession(); });
+    await waitFor(() => expect(hook.result.current.active).not.toBeNull());
+    await act(async () => { await hook.result.current.send('Explain this batch', false, false, { intent: 'results', candidates: [{
+      repository, summary: 'Editor', reasons: [], limitations: [], sources: [], status: 'candidate',
+    }] }); });
+    expect(mocks.overviewAnswer).toHaveBeenCalledOnce();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.answer).not.toHaveBeenCalled();
+    expect((await storage.listMessages(hook.result.current.active!.id)).slice(-1)[0]).toMatchObject({ status: 'complete', answerPhase: 'final', quality: 'unreviewed' });
+    hook.unmount();
+  });
+
+  it('passes recent answered conditions into requirements preparation', async () => {
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.send('Find a local editor'); });
+    await waitFor(() => expect(hook.result.current.active).not.toBeNull());
+    await act(async () => { await hook.result.current.send('Windows only, no cloud services'); });
+    expect(mocks.prepare.mock.calls[1][0].messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: 'Find a local editor' })]));
+    hook.unmount();
+  });
+
+  it('appends pagination into the same result set and enables overview mode', async () => {
+    const hook = renderHook(useAIWorkbench);
+    await act(async () => { await hook.result.current.createSession(); });
+    await waitFor(() => expect(hook.result.current.active).not.toBeNull());
+    const first = { id: 'batch', createdAt: new Date().toISOString(), requirements, candidates: [{ repository, summary: 'First', reasons: [], limitations: [], sources: [], status: 'candidate' as const }], queries: ['modeling'], nextPage: 2 };
+    await act(async () => { await hook.result.current.patchData(hook.result.current.active!.id, { searchBatches: [first] }); });
+    mocks.search.mockImplementation(async input => { await input.onUpdate({ ...input.previous, nextPage: 3 }); });
+    await act(async () => { await hook.result.current.search(requirements, 2, 'batch'); });
+    expect(mocks.search.mock.calls[0][0]).toMatchObject({ overview: true, previous: { id: 'batch' } });
+    const session = await storage.getSession(hook.result.current.active!.id);
+    expect(session?.workbench?.searchBatches).toHaveLength(1);
+    expect(session?.workbench?.searchBatches[0].nextPage).toBe(3);
+    expect(session?.workbench?.inputIntent).toBe('results');
+    hook.unmount();
+  });
+
   it('publishes running status within 300ms and an arriving draft within 500ms, then atomically replaces it', async () => {
     useAppStore.setState({ aiConfigs: [{ id: 'http', name: 'Fixture', apiKey: 'fixture', baseUrl: 'https://example.com',
       model: 'fixture', apiType: 'openai', isActive: true }], activeAIConfig: 'http' });

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   syncLocalGitHubTokenToBackend: vi.fn(),
   tryRestoreAuthFromBackend: vi.fn(),
+  flushDesktopHome: vi.fn(),
   useAppStore: Object.assign(vi.fn(), { setState: vi.fn() }),
 }));
 
@@ -35,6 +36,7 @@ vi.mock('../../../services/autoSync', () => ({
 vi.mock('../../../hooks/useDialog', () => ({
   useDialog: () => ({ toast: mocks.toast, confirm: mocks.confirm }),
 }));
+vi.mock('../../../home/desktop', () => ({ flushDesktopHome: mocks.flushDesktopHome }));
 
 const storeState = {
   language: 'zh',
@@ -69,6 +71,7 @@ describe('useBackendSettingsActions 后端地址配置', () => {
     mocks.backendInit.mockResolvedValue(undefined);
     mocks.backendCheckHealth.mockResolvedValue({ version: '1.0.0', timestamp: '2026-09-05T00:00:00Z' });
     mocks.backendVerifyAuth.mockResolvedValue(true);
+    mocks.flushDesktopHome.mockResolvedValue(false);
     mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (
       selector ? selector(storeState) : storeState
     )) as never);
@@ -113,6 +116,7 @@ describe('useBackendSettingsActions 后端地址配置', () => {
   });
 
   it('认证失败时恢复先前的后端连接且不记住候选地址', async () => {
+    storeState.backendApiSecret = 'original-key';
     const { result } = render();
     act(() => {
       result.current.setUrlInput('https://new.example.com');
@@ -126,6 +130,7 @@ describe('useBackendSettingsActions 后端地址配置', () => {
 
     expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining('后端连接失败'), 'error');
     expect(mocks.backendInit).toHaveBeenLastCalledWith('https://stored.example/api');
+    expect(mocks.setBackendApiSecret).toHaveBeenLastCalledWith('original-key');
     expect(mocks.backendRememberActiveUrl).not.toHaveBeenCalled();
   });
 
@@ -139,5 +144,27 @@ describe('useBackendSettingsActions 后端地址配置', () => {
 
     expect(mocks.backendInit.mock.calls.every((call) => call[0] === undefined)).toBe(true);
     expect(mocks.toast).toHaveBeenCalledWith('后端连接成功！', 'success');
+  });
+  it('同步异常会提示并释放锁，之后仍可重试', async () => {
+    const { result } = render();
+    mocks.flushDesktopHome.mockRejectedValueOnce(new Error('fixture sync failure'));
+    await act(async () => { await result.current.syncToBackend(); });
+    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining('fixture sync failure'), 'error');
+    expect(result.current.isSyncingToBackend).toBe(false);
+    mocks.flushDesktopHome.mockResolvedValueOnce(true);
+    await act(async () => { await result.current.syncToBackend(); });
+    expect(mocks.flushDesktopHome).toHaveBeenCalledTimes(2);
+  });
+  it('同步期间拒绝重复提交和反方向同步', async () => {
+    const { result } = render();
+    let finish!: (value: boolean) => void;
+    mocks.flushDesktopHome.mockReturnValueOnce(new Promise<boolean>(resolve => { finish = resolve; }));
+    let first!: Promise<void>;
+    act(() => { first = result.current.syncToBackend(); });
+    expect(result.current.isSyncingToBackend).toBe(true);
+    await act(async () => { await result.current.syncToBackend(); await result.current.syncFromBackend(); });
+    expect(mocks.flushDesktopHome).toHaveBeenCalledOnce();
+    await act(async () => { finish(true); await first; });
+    expect(result.current.isSyncingToBackend).toBe(false);
   });
 });

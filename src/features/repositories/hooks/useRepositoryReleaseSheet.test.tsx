@@ -287,6 +287,6 @@ describe('useRepositoryReleaseSheet', () => {
     resolveSummary('# Summary');
     await act(async () => { await pending; });
 
-    expect(result.current.summaries[sheetRelease.id]).toEqual({ status: 'done', content: '# Summary' });
+    expect(result.current.summaries[sheetRelease.id]).toMatchObject({ status: 'done', content: '# Summary' });
   });
 });

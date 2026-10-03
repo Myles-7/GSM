@@ -4,6 +4,10 @@ import type { AIConfig, Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { analyzeRepositoryDetails } from '../../../services/repositoryDetailAnalysis';
 import { useRepositoryDetailAnalysisJob } from './useRepositoryDetailAnalysisJob';
+import { IDBFactory } from 'fake-indexeddb';
+import { applyRepositoryAnalysisAsset, deleteRepositoryAnalysisAssets, hasRepositoryAnalysisAsset, initializeRepositoryAnalysisAssets } from '../../../services/repositoryAnalysisAssets';
+import { transact } from '../../discovery/custom/storage';
+import { analysisKey, claimAnalysis, commitAnalysis } from '../../discovery/custom/analysis';
 
 vi.mock('../../../store/useAppStore', async () => {
   const { create } = await import('zustand');
@@ -21,12 +25,16 @@ const repos = Array.from({ length: 4 }, (_, i) => ({ id: 700 + i, full_name: `te
 const config: AIConfig = { id: 'agy-cli-local', name: 'AGY', provider: 'agy-cli', deviceBound: true, isActive: true,
   model: 'fixture', agyEffort: 'high', agyMode: 'model', concurrency: 5, agyFeatureOverrides: { 'repository-details': { concurrency: 2 } } };
 let releases: (() => void)[];
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks(); releases = [];
+  vi.stubGlobal('indexedDB', new IDBFactory());
   vi.stubGlobal('electronAPI', { agy: {} });
   useAppStore.setState({ user: { id: 7 } as never, githubToken: 'fixture-token', aiConfigs: [config], activeAIConfig: config.id, repositories: repos.map(repo => ({ ...repo })) });
+  await initializeRepositoryAnalysisAssets('7', []);
   vi.mocked(analyzeRepositoryDetails).mockImplementation(({ repository }) => new Promise(resolve => releases.push(() => resolve({
     summary: `details ${repository.id}`, tags: ['test'], platforms: [], generated_at: new Date().toISOString(),
+    version: 1, repository_pushed_at: null, model: 'fixture', sources: [], problem: null, features: [], scenarios: [],
+    architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
   } as never))));
 });
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -39,12 +47,13 @@ it('dispatches two detail tasks, pauses new dispatch, resumes and preserves manu
   act(() => hook.result.current.pause());
   await act(async () => { releases.splice(0).forEach(resolve => resolve()); });
   expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(2);
-  expect(hook.result.current.progress.current).toBe(2);
+  await waitFor(() => expect(hook.result.current.progress.current).toBe(2));
   act(() => hook.result.current.resume());
   await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(4));
   await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
   expect(hook.result.current.progress.current).toBe(4);
   expect(useAppStore.getState().repositories.every(repo => repo.ai_summary === `details ${repo.id}` && repo.custom_description === 'manual')).toBe(true);
+  expect(applyRepositoryAnalysisAsset('7', repos[0], 'zh').ai_summary).toBe(`details ${repos[0].id}`);
   hook.unmount();
 });
 
@@ -58,5 +67,48 @@ it('stops all active detail requests and refuses late results after account chan
   await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
   expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(2);
   expect(useAppStore.getState().repositories.every(repo => repo.ai_summary === 'old')).toBe(true);
+  hook.unmount();
+});
+
+it('uses the same atomic claim as discovery and waits for a live owner before requesting the model', async () => {
+  const repo = repos[0];
+  const key = analysisKey(repo, 'zh', config);
+  await transact('7', data => claimAnalysis(data, { key, channelId: 'custom:test', revision: 1, force: true }, 'discovery-owner'));
+  const hook = renderHook(() => useRepositoryDetailAnalysisJob());
+  let running!: Promise<void>;
+  act(() => { running = hook.result.current.run([repo]); });
+  await waitFor(() => expect(hook.result.current.running).toBe(true));
+  expect(analyzeRepositoryDetails).not.toHaveBeenCalled();
+  await transact('7', data => commitAnalysis(data, key, 'discovery-owner', { status: 'failed' }));
+  await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledOnce(), { timeout: 2000 });
+  await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
+  expect(applyRepositoryAnalysisAsset('7', repo, 'en').ai_summary).toBe(`details ${repo.id}`);
+  hook.unmount();
+});
+
+it('preserves a previous successful asset and personal fields when reanalysis fails', async () => {
+  const hook = renderHook(() => useRepositoryDetailAnalysisJob());
+  let running!: Promise<void>;
+  act(() => { running = hook.result.current.run([repos[0]]); });
+  await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledOnce());
+  await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
+  vi.mocked(analyzeRepositoryDetails).mockRejectedValueOnce(new Error('provider failed'));
+  await act(async () => { await hook.result.current.run([repos[0]]); });
+  expect(hook.result.current.failures).toHaveLength(1);
+  expect(applyRepositoryAnalysisAsset('7', repos[0], 'zh').ai_summary).toBe(`details ${repos[0].id}`);
+  expect(useAppStore.getState().repositories[0].custom_description).toBe('manual');
+  hook.unmount();
+});
+
+it('rejects late model results when the analysis is explicitly deleted while the task is running', async () => {
+  const hook = renderHook(() => useRepositoryDetailAnalysisJob());
+  let running!: Promise<void>;
+  act(() => { running = hook.result.current.run([repos[0]]); });
+  await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledOnce());
+  await deleteRepositoryAnalysisAssets('7', [repos[0].id]);
+  await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
+  expect(hasRepositoryAnalysisAsset('7', repos[0], 'zh')).toBe(false);
+  expect(useAppStore.getState().repositories[0]).toMatchObject({ ai_summary: 'old', custom_description: 'manual' });
+  expect(hook.result.current.failures).toHaveLength(0);
   hook.unmount();
 });

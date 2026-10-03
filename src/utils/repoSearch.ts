@@ -164,7 +164,7 @@ export function applyRepoFilters<T extends Repository>(
       const rawPlatforms = repo.ai_platforms || [];
       return platforms.some(
         (platform) =>
-          canonicalPlatforms.includes(platform as any) ||
+          canonicalPlatforms.some((canonical) => canonical === platform) ||
           rawPlatforms.includes(platform)
       );
     });

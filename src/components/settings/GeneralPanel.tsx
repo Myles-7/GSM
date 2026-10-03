@@ -16,7 +16,6 @@ import { Switch } from '../ui/switch';
 import { useDesktopActions } from '../../features/settings/hooks/useDesktopActions';
 import { useGitHubTokenActions } from '../../features/settings/hooks/useGitHubTokenActions';
 import { GitHubTokenPermissions as TokenPermissionsGuide } from '../GitHubTokenPermissions';
-import { RepositoryIdentityMigrationPanel } from './RepositoryIdentityMigrationPanel';
 
 interface GeneralPanelProps {
   t: TranslateFn;
@@ -80,8 +79,6 @@ export const GeneralPanel: React.FC<GeneralPanelProps> = ({ t }) => {
           <TokenPermissionsGuide />
         </DialogContent>
       </Dialog>
-
-      <RepositoryIdentityMigrationPanel />
 
       {desktop.supported && (
         <Card>

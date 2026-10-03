@@ -28,7 +28,7 @@ export interface AgyDeviceState {
 export interface AgyModel { id: string; label: string }
 export interface AgyLocalProject { id: string; name: string; identity?: string; entries: { path: string; type: string; bytes: number }[]; truncated: boolean }
 export interface AgyLocalFile { path: string; content: string; contentHash: string; retrievedAt: string }
-export interface AgyGenerationRequest { system: string; user: string; model: string; effort: AgyDevicePrefs['effort']; feature?: AgyFeature; revision?: number; priority?: 'interactive' | 'background'; }
+export interface AgyGenerationRequest { system: string; user: string; model: string; effort: AgyDevicePrefs['effort']; feature?: AgyFeature; revision?: number; priority?: 'interactive' | 'background'; profileOverride?: Pick<AgyProfile, 'model' | 'effort' | 'timeoutSeconds'>; }
 export interface AgyGenerationResult { text: string; usage: Record<string, number>; }
 export interface AgyEvent { requestId: string; session: string; type: 'queued' | 'running' | 'text' | 'scheduler'; text?: string; position?: number; pool?: AgyDeviceState['pool']; }
 export type AgyResult<T> = { ok: true; value: T } | { ok: false; code: string };

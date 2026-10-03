@@ -31,6 +31,8 @@ export const I18N_NAMESPACES = [
 
 export type I18nNamespace = (typeof I18N_NAMESPACES)[number];
 
+// Keep legacy resources available to explicit historical API callers; the UI
+// and personal-edition completeness gate only offer Chinese and English.
 const localeModules = import.meta.glob<{ default: Record<string, unknown> }>('../locales/*/*.json');
 
 const loadedLanguages = new Set<AppLanguage>();
@@ -73,6 +75,7 @@ export function getCurrentAppLanguage(): AppLanguage {
 let languageSwitchSeq = 0;
 
 export async function changeAppLanguage(language: AppLanguage): Promise<void> {
+  language = isAppLanguage(language) ? language : FALLBACK_LANGUAGE;
   const requestId = ++languageSwitchSeq;
   await Promise.all([ensureLanguageLoaded(language), ensureLanguageLoaded(FALLBACK_LANGUAGE)]);
   // 快速连续切换时仅应用最后一次请求，避免旧请求晚到覆盖新语言

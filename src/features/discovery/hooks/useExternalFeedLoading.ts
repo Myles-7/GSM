@@ -3,6 +3,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { loadExternalDiscoveryFeed, type ExternalFeedRepositoryApi } from '../../../services/externalDiscoveryFeed';
 import type { ExternalDiscoveryChannelId } from '../../../types/externalFeed';
 import { startExternalFeedRequest } from '../application/externalFeedRequest';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 
 /** External feeds never enter Custom Discovery's database, AI runner or scheduler. */
 export function useExternalFeedLoading() {
@@ -25,6 +26,9 @@ export function useExternalFeedLoading() {
     previous?.finish();
     const request = startExternalFeedRequest(useAppStore, channelId);
     requests.current.set(channelId, request);
+    const journal = aiTaskJournal.begin(String(state.user.id), 'refresh', [{ id: channelId, label: channel.name }], undefined, channelId,
+      { title: channel.name, phase: 'reading', target: { view: 'subscription', id: `builtin:${channelId}` } });
+    journal.item(channelId, 'running'); journal.bind({ stop: () => request.cancel() });
     const isCurrent = () => requests.current.get(channelId) === request && request.isCurrent();
     const onAbort = () => {
       const current = useAppStore.getState();
@@ -49,11 +53,14 @@ export function useExternalFeedLoading() {
       if (!publish(current => current.setDiscoveryNextPage(channelId, result.nextPageIndex))) return;
       if (!publish(current => current.setDiscoveryTotalCount(channelId, result.totalCount))) return;
       publish(current => current.setDiscoveryLastRefresh(channelId, new Date().toISOString()));
+      if (isCurrent()) journal.item(channelId, 'complete');
     } catch (cause) {
       if (!isCurrent()) return;
+      journal.item(channelId, 'failed', cause);
       useAppStore.getState().setDiscoveryLoadMoreError(channelId,
         cause instanceof Error ? cause.message : 'Could not read the feed.');
     } finally {
+      journal.finish(request.signal.aborted || !isCurrent() ? 'canceled' : undefined);
       request.signal.removeEventListener('abort', onAbort);
       if (isCurrent()) useAppStore.getState().setDiscoveryLoading(channelId, false);
       request.finish();

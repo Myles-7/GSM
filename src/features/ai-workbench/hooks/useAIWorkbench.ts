@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../../i18n/useT';
 import { repositoryChatStorage as storage } from '../../../services/repositoryChatStorage';
 import {
-  answerWorkbench, prepareWorkbenchRequirements, searchWorkbench,
+  answerWorkbench, answerWorkbenchOverview, overviewWorkbenchBatch, prepareWorkbenchRequirements, searchWorkbench,
   starWorkbenchRepository, workbenchRuntime,
 } from '../../../services/aiWorkbenchService';
 import {
@@ -13,9 +13,10 @@ import {
 import type { Repository } from '../../../types';
 import type { RepositoryChatMessage, RepositoryChatSession, ToolEvidence } from '../../../types/repositoryChat';
 import type {
-  WorkbenchProject, WorkbenchProposal, WorkbenchRequirements, WorkbenchSessionData,
+  WorkbenchCandidate, WorkbenchInputIntent, WorkbenchProject, WorkbenchProposal, WorkbenchRequirements, WorkbenchSessionData,
 } from '../../../types/aiWorkbench';
 import { AIService } from '../../../services/aiService';
+import { taskForSignal } from '../../../services/taskExecution';
 import { forAgyFeature } from '../../../services/agyProfiles';
 import { runOrganizationGeneration } from '../../../services/aiOrganizationWorkflow';
 import { bindLocalResearchGrant, getLocalResearchGrant } from '../../../services/localResearchGrants';
@@ -24,6 +25,7 @@ import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import { useEvidenceFreshness } from './useEvidenceFreshness';
 import { resolveProjectRepositories } from '../../../home/projectCandidates';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
+import { mergeWorkbenchCandidates, sameWorkbenchRequirements } from '../../../services/workbenchOverview';
 
 const HISTORY_EVENT = 'gsm:global-chat-history-changed';
 const ACTIVE_KEY = 'gsm:ai-workbench-session';
@@ -57,8 +59,8 @@ export function useAIWorkbench() {
   activeRef.current = activeId;
 
   const refresh = useCallback(async () => {
+    if (!ownerId || activeRef.current !== activeId || String(useAppStore.getState().user?.id ?? '') !== ownerId) return;
     const request = ++revision.current;
-    if (!ownerId) return;
     const [nextSessions, nextProjects, nextActive] = await Promise.all([
       storage.listWorkbenchSessions(ownerId, mode), storage.listProjects(ownerId),
       activeId ? storage.getSession(activeId) : Promise.resolve(null),
@@ -68,7 +70,8 @@ export function useAIWorkbench() {
       ? await Promise.all([storage.listMessages(owned.id), storage.listProposals(ownerId, owned.id)])
       : [[], []];
     const nextEvidence = await storage.listEvidence(nextMessages.flatMap((m) => m.evidenceIds));
-    if (!mounted.current || request !== revision.current) return;
+    if (!mounted.current || request !== revision.current || activeRef.current !== activeId
+      || String(useAppStore.getState().user?.id ?? '') !== ownerId) return;
     setSessions(nextSessions.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt.localeCompare(a.updatedAt))); setProjects(nextProjects); setActive(owned);
     setMessages(nextMessages.map(message => message.status === 'streaming'
       ? previews.current.get(message.id) ?? message : message));
@@ -179,17 +182,20 @@ export function useAIWorkbench() {
     await workbenchRuntime.run(record.id, ownerId, async (signal, stage) => {
       await requireOwned(record.id);
       await action(signal, stage);
-    });
+    }, { title: record.title, aiConfig: useAppStore.getState().aiConfigs.find(config => config.id ===
+      (useAppStore.getState().repositoryChatSettings.chatConfigId ?? useAppStore.getState().activeAIConfig)) });
   };
 
-  const send = async (question: string, manage = false, resumeResearch = false) => {
+  const send = async (question: string, manage = false, resumeResearch = false, options?: {
+    intent?: WorkbenchInputIntent; candidates?: WorkbenchCandidate[]; repositories?: Repository[];
+  }) => {
     if (!question.trim()) return;
     if (task.running) throw new Error(t('workbench.busy'));
     const record = active ?? await createSession();
     if (record.deletedAt || record.archived) throw new Error(t('workbench.restoreFirst'));
     const organization = (await storage.listProposals(ownerId, record.id)).filter(p => p.organization)
       .sort((a, b) => b.organization!.revision - a.organization!.revision)[0];
-    if (organization) {
+    if (organization && options?.intent !== 'results' && !options?.repositories) {
       await runOrganizationGeneration({ sessionId: record.id, previous: organization,
         repositories: useAppStore.getState().repositories.filter(r => organization.organization!.scope.repositoryIds.includes(r.id)),
         scopeName: organization.organization!.scope.name, configId: settings.chatConfigId ?? organization.organization!.configId,
@@ -197,7 +203,9 @@ export function useAIWorkbench() {
       return;
     }
     const context = record.workbench ?? data;
-    const localScope = context.scope === 'local' || context.scope === 'mixed';
+    if (options?.repositories) await patchData(record.id, { scope: 'selected', selectedRepositories: options.repositories, inputIntent: 'research' });
+    const intent = options?.intent ?? context.inputIntent ?? 'search';
+    const localScope = !options?.repositories && intent !== 'results' && (context.scope === 'local' || context.scope === 'mixed');
     const localGrant = localScope ? getLocalResearchGrant(record.id, ownerId) : undefined;
     if (localScope && !localGrant) throw new Error(t('localResearch.rebind'));
     await withTask(record, async (signal, stage) => {
@@ -222,7 +230,20 @@ export function useAIWorkbench() {
       await storage.saveMessage(reply);
       await patchSession(record.id, { title: history.length ? record.title : question.trim().slice(0, 72) });
       try {
-        if (context.scope === 'local' && localGrant) {
+        if (intent === 'results' && !manage) {
+          stage('answer');
+          const result = await answerWorkbenchOverview({ question, candidates: options?.candidates
+            ?? mergeWorkbenchCandidates(...context.searchBatches.map(batch => batch.candidates)), messages: history, signal,
+            onChunk: content => {
+              if (signal.aborted) return;
+              reply.content = content; reply.answerPhase = 'draft';
+              previews.current.set(reply.id, { ...reply });
+              if (mounted.current && activeRef.current === record.id) setMessages([...history, userMessage, { ...reply }]);
+            },
+          });
+          signal.throwIfAborted();
+          Object.assign(reply, { content: result.content, answerPhase: 'final', quality: result.quality });
+        } else if (context.scope === 'local' && localGrant) {
           const state = useAppStore.getState();
           const config = state.aiConfigs.find(item => item.id === (state.repositoryChatSettings.chatConfigId ?? state.activeAIConfig));
           if (!config || !isAIConfigAvailable(config)) throw new Error(t('localResearch.configure'));
@@ -250,17 +271,17 @@ export function useAIWorkbench() {
           signal.throwIfAborted();
           await storage.saveProposal(proposal);
           reply.content = t('workbench.reviewProposal');
-        } else if (context.scope === 'github') {
+        } else if (context.scope === 'github' && intent !== 'research') {
           stage('requirements');
-          const requirements = await prepareWorkbenchRequirements({ question, previous: context.requirements, project, signal });
+          const requirements = await prepareWorkbenchRequirements({ question, previous: context.requirements, project, messages: history, signal });
           signal.throwIfAborted();
           await patchData(record.id, { requirements });
           reply.content = requirements.questions.length ? requirements.questions.join('\n\n') : t('workbench.confirmRequirements');
         } else {
           stage('verification');
-          let sources = context.scope === 'project' ? project?.repositories ?? []
-            : context.scope === 'library' ? repositories : context.selectedRepositories;
-          if (context.scope === 'project' && project?.selectedRepositoryNames) {
+          let sources = options?.repositories ?? (context.scope === 'project' ? project?.repositories ?? []
+            : context.scope === 'library' ? repositories : context.selectedRepositories);
+          if (!options?.repositories && context.scope === 'project' && project?.selectedRepositoryNames) {
             const github = createGitHubApiService(useAppStore.getState().githubToken ?? '');
             sources = await resolveProjectRepositories(project, repositories, async fullName => {
               signal.throwIfAborted();
@@ -269,7 +290,7 @@ export function useAIWorkbench() {
             });
             signal.throwIfAborted();
           }
-          if (context.scope === 'project' || context.scope === 'library') {
+          if (!options?.repositories && (context.scope === 'project' || context.scope === 'library')) {
             const state = useAppStore.getState();
             const config = state.aiConfigs.find((c) => c.id === (state.repositoryChatSettings.chatConfigId ?? state.activeAIConfig));
             if (config && sources.length) {
@@ -321,6 +342,7 @@ export function useAIWorkbench() {
         }
         reply.status = 'complete';
       } catch (e) {
+        if (!signal.aborted) { taskForSignal(signal)?.error(e); taskForSignal(signal)?.item(record.id, 'failed', e); }
         reply.status = signal.aborted ? 'aborted' : 'error';
         reply.answerPhase = reply.content ? 'draft' : undefined;
         reply.quality = undefined;
@@ -336,7 +358,15 @@ export function useAIWorkbench() {
     });
   };
 
-  const search = async (requirements: WorkbenchRequirements, page = 1) => {
+  const saveBatch = async (sessionId: string, batch: import('../../../types/aiWorkbench').WorkbenchSearchBatch, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    const latest = await requireOwned(sessionId);
+    const current = latest.workbench ?? defaults();
+    await patchData(sessionId, { inputIntent: 'results', searchBatches: current.searchBatches.some(item => item.id === batch.id)
+      ? current.searchBatches.map(item => item.id === batch.id ? batch : item) : [...current.searchBatches, batch] });
+  };
+
+  const search = async (requirements: WorkbenchRequirements, page = 1, batchId?: string) => {
     if (!active) return;
     const record = active;
     await withTask(record, async (signal, stage) => {
@@ -345,22 +375,18 @@ export function useAIWorkbench() {
       if (!confirmed.queries.length) {
         const prepared = await prepareWorkbenchRequirements({
           question: JSON.stringify({ purpose: confirmed.purpose, required: confirmed.required, preferred: confirmed.preferred, excluded: confirmed.excluded }),
-          previous: confirmed, project, signal,
+          previous: confirmed, project, messages: await storage.listMessages(record.id), signal,
         });
         signal.throwIfAborted();
         confirmed.queries = prepared.queries;
       }
       await patchData(record.id, { requirements: confirmed });
+      const latest = await requireOwned(record.id);
+      const previous = page > 1 ? latest.workbench?.searchBatches.find(batch => batchId ? batch.id === batchId
+        : sameWorkbenchRequirements(batch.requirements, confirmed)) : undefined;
       await searchWorkbench({
-        requirements: confirmed, depth: data.depth, page, signal,
-        onUpdate: async (batch) => {
-          signal.throwIfAborted();
-          const latest = await requireOwned(record.id);
-          const current = latest.workbench ?? defaults();
-          await patchData(record.id, {
-            searchBatches: [...current.searchBatches.filter((b) => b.id !== batch.id), batch],
-          });
-        },
+        requirements: confirmed, depth: data.depth, page, previous, overview: true, signal, onStage: stage,
+        onUpdate: batch => saveBatch(record.id, batch, signal),
       });
     });
   };
@@ -397,6 +423,23 @@ export function useAIWorkbench() {
     proposals, project, data, error, task, guard, refresh, repositories, aiConfigs,
     modelId: settings.chatConfigId ?? activeAIConfig ?? '', settings, setSettings,
     createSession, createProject, saveProject, patchSession, patchData, send, search, addRepository,
+    addRepositories: async (items: Repository[]) => {
+      const record = active ?? await createSession();
+      const latest = await requireOwned(record.id);
+      const merged = new Map((latest.workbench?.selectedRepositories ?? []).map(item => [item.full_name.toLowerCase(), item]));
+      items.forEach(item => merged.set(item.full_name.toLowerCase(), item));
+      await patchData(record.id, { selectedRepositories: [...merged.values()] });
+    },
+    retryOverview: async (batchId: string) => {
+      if (!active) return;
+      const record = active;
+      await withTask(record, async (signal, stage) => {
+        stage('overview');
+        const latest = await requireOwned(record.id);
+        const batch = latest.workbench?.searchBatches.find(item => item.id === batchId);
+        if (batch) await overviewWorkbenchBatch({ batch, signal, onUpdate: updated => saveBatch(record.id, updated, signal) });
+      });
+    },
     execute, stop: workbenchRuntime.stop,
     localProject: active ? getLocalResearchGrant(active.id, ownerId) : undefined,
     chooseLocalProject: async () => {

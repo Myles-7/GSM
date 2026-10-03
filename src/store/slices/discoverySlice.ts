@@ -74,33 +74,7 @@ export const createDiscoverySlice: AppStoreSlice<Pick<import('../types').AppActi
       };
     }),
     // Discovery actions
-    setSelectedDiscoveryChannel: (selectedDiscoveryChannel) => set((state) => ({
-      selectedDiscoveryChannel,
-      discoveryRepos: {
-        ...state.discoveryRepos,
-        [selectedDiscoveryChannel]: []
-      },
-      discoveryNextPage: {
-        ...state.discoveryNextPage,
-        [selectedDiscoveryChannel]: 1
-      },
-      discoveryHasMore: {
-        ...state.discoveryHasMore,
-        [selectedDiscoveryChannel]: false
-      },
-      discoveryTotalCount: {
-        ...state.discoveryTotalCount,
-        [selectedDiscoveryChannel]: 0
-      },
-      discoveryIsLoadingMore: {
-        ...state.discoveryIsLoadingMore,
-        [selectedDiscoveryChannel]: false
-      },
-      discoveryLoadMoreError: {
-        ...state.discoveryLoadMoreError,
-        [selectedDiscoveryChannel]: null
-      }
-    })),
+    setSelectedDiscoveryChannel: (selectedDiscoveryChannel) => set({ selectedDiscoveryChannel }),
     setDiscoveryLoading: (channel, loading) => set((state) => ({
       discoveryIsLoading: { ...state.discoveryIsLoading, [channel]: loading },
     })),

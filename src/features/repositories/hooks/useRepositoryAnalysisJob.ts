@@ -1,7 +1,7 @@
 import { useT } from "../../../i18n/useT";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { Category, Repository } from '../../../types';
+import type { Category, Repository, AIConfig } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { AIAnalysisOptimizer, type AnalysisResult } from '../../../services/aiAnalysisOptimizer';
@@ -12,6 +12,7 @@ import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/ca
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
+import { bindTaskSignal, taskConfigSnapshot } from '../../../services/taskExecution';
 
 export type RepositoryAnalysisScope = 'all' | 'unanalyzed' | 'failed' | 'selected';
 
@@ -24,6 +25,7 @@ interface RunRepositoryAnalysisOptions {
   scope: RepositoryAnalysisScope;
   syncOnComplete: boolean;
   configId?: string;
+  retry?: { config: AIConfig; parentId: string };
 }
 
 export interface RepositoryAnalysisJob {
@@ -39,7 +41,7 @@ export interface RepositoryAnalysisJob {
 const createOptimizer = (concurrency?: number, requestsPerMinute?: number, agy = false, onTaskStart?: (repo: Repository) => void) => new AIAnalysisOptimizer({
   onTaskStart,
   initialConcurrency: concurrency || 3,
-  maxConcurrency: agy ? concurrency || 5 : 10,
+  maxConcurrency: concurrency || (agy ? 5 : 3),
   minConcurrency: 1,
   targetResponseTime: 5000,
   batchDelayMs: 100,
@@ -162,6 +164,7 @@ export const useRepositoryAnalysisJob = ({
     scope,
     syncOnComplete,
     configId,
+    retry,
   }: RunRepositoryAnalysisOptions) => {
     if (isRunningRef.current) return false;
 
@@ -170,7 +173,7 @@ export const useRepositoryAnalysisJob = ({
       return false;
     }
 
-    const activeConfig = aiConfigs.find((config) => config.id === (configId ?? activeAIConfig));
+    const activeConfig = retry?.config ?? aiConfigs.find((config) => config.id === (configId ?? activeAIConfig));
     if (!activeConfig) {
       toast(t('useRepositoryAnalysisJob.please-configure-ai-service-in-settings-first'), 'error');
       return false;
@@ -228,6 +231,8 @@ export const useRepositoryAnalysisJob = ({
     const journal = startState.user ? aiTaskJournal.begin(String(startState.user.id), 'summary',
       repositories.map(repo => ({ id: String(repo.id), label: repo.full_name })), activeConfig.id) : null;
     journalRef.current = journal;
+    if (journal && optimizer.signal) bindTaskSignal(optimizer.signal, journal);
+    journal?.metadata({ config: taskConfigSnapshot(activeConfig, 'repository-summary'), parentId: retry?.parentId, target: { view: 'repositories' } });
     journal?.bind({ pause, resume, stop: () => { stopRequestedRef.current = true; optimizer.abort(); } });
     const unsubscribe = useAppStore.subscribe?.((next, previous) => {
       if (next.user?.id !== previous.user?.id || next.githubToken !== previous.githubToken) {
@@ -257,7 +262,7 @@ export const useRepositoryAnalysisJob = ({
       const aiCategoryHints = buildCategoryHints(allCategories);
       const onResult = (result: AnalysisResult) => {
         if ((!mountedRef.current && !journal) || optimizerRef.current !== optimizer || !currentAccount()) return;
-        journal?.item(String(result.repo.id), result.success ? 'complete' : 'failed');
+        journal?.item(String(result.repo.id), result.success ? 'complete' : 'failed', result.success ? undefined : result.error);
         const latest = useAppStore.getState().repositories.find(repo => repo.id === result.repo.id);
         if (!latest) return;
         const merge = writes.get(result.repo.id)!;

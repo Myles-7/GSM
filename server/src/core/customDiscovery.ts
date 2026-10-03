@@ -1,6 +1,6 @@
 // Pure desktop custom-discovery rule model, mirrored for the standalone server build.
 import { z } from 'zod';
-type Repository = Record<string, any> & {id:number;full_name:string;description:string|null;topics:string[];language:string|null;stargazers_count:number;created_at:string;pushed_at:string};
+export type Repository = Record<string, unknown> & {id:number;full_name:string;description:string|null;topics:string[];language:string|null;stargazers_count:number;created_at:string;pushed_at:string};
 
 
 const text = z.string().trim().min(1).max(240);
@@ -22,6 +22,7 @@ export const planSchema = z.object({
   branches: z.array(z.object({
     terms: z.array(term).min(1).max(3),
     readme: z.boolean(),
+    role: z.enum(['core', 'synonym', 'ecosystem']).optional(),
   }).strict()).min(1).max(6),
   filters: z.object({
     language: z.string().max(40).regex(/^[\p{L}\p{N} +#.-]*$/u).nullable(),
@@ -51,6 +52,9 @@ export const overrideSchema = z.object({
   excludeStarred: z.boolean().optional(),
   excludeRecommended: z.boolean().optional(),
   branches: planSchema.shape.branches.optional(),
+  required: planSchema.shape.required.optional(),
+  excluded: planSchema.shape.excluded.optional(),
+  preferred: planSchema.shape.preferred.optional(),
 }).strict();
 export type RuleOverrides = z.infer<typeof overrideSchema>;
 export interface EffectiveRules {
@@ -72,7 +76,8 @@ export function effectiveRules(plan: CompiledSubscriptionPlan, overrides: RuleOv
     throw new Error('INVALID_STAR_RANGE');
   }
   return {
-    plan: { ...plan, filters, branches: o.branches ?? plan.branches },
+    plan: { ...plan, filters, branches: o.branches ?? plan.branches,
+      required: o.required ?? plan.required, excluded: o.excluded ?? plan.excluded, preferred: o.preferred ?? plan.preferred },
     sort: o.sort ?? plan.retrieval?.sort?.value ?? 'relevance',
     scope: o.scope ?? plan.retrieval?.scope?.value,
     excludeArchived: o.excludeArchived ?? plan.retrieval?.excludeArchived?.value ?? true,
@@ -98,6 +103,7 @@ export interface CustomDiscoveryChannel {
   blocked: number[];
   read: number[];
   recommended: Record<string, string>;
+  manualAccepted?: Record<string, string>;
   lastCompletedDate?: string;
   lastRefresh?: string;
   retryAt?: number;
@@ -111,6 +117,8 @@ export interface CandidateAssessment {
   relevance: number;
   preference: number;
   screening?: boolean;
+  relation?: 'direct' | 'ecosystem';
+  acceptance?: { sourceEditionKey: string; sourceRevision: number; acceptedAt: string };
 }
 export interface ChannelDailyEdition {
   channelId: string;

@@ -1,6 +1,6 @@
 /**
  * 应用支持的语言注册表。`zh` / `en` 是历史持久化值（保持不变以保证老用户
- * 数据无需迁移），其余为 i18n 扩展语言。语言代码同时作为 i18next 的语言键
+ * 数据无需迁移）。个人版仅选择中英；其余语言定义保留用于历史数据及 AI API 兼容。语言代码同时作为 i18next 的语言键
  * 与 `src/locales/{code}/` 目录名。
  */
 export type AppLanguage = 'zh' | 'en' | 'ja' | 'es' | 'pt-BR' | 'ru' | 'zh-TW' | 'fr' | 'de' | 'ko';
@@ -18,6 +18,9 @@ export interface LanguageDefinition {
 export const APP_LANGUAGES: LanguageDefinition[] = [
   { code: 'zh', nativeName: '中文', englishName: 'Simplified Chinese', intlLocale: 'zh-CN' },
   { code: 'en', nativeName: 'English', englishName: 'English', intlLocale: 'en' },
+];
+
+const LEGACY_LANGUAGES: LanguageDefinition[] = [
   { code: 'ja', nativeName: '日本語', englishName: 'Japanese', intlLocale: 'ja' },
   { code: 'es', nativeName: 'Español', englishName: 'Spanish', intlLocale: 'es' },
   { code: 'pt-BR', nativeName: 'Português (Brasil)', englishName: 'Brazilian Portuguese', intlLocale: 'pt-BR' },
@@ -31,9 +34,12 @@ export const APP_LANGUAGES: LanguageDefinition[] = [
 export const DEFAULT_LANGUAGE: AppLanguage = 'zh';
 export const FALLBACK_LANGUAGE: AppLanguage = 'en';
 
-const LANGUAGE_BY_CODE = new Map(APP_LANGUAGES.map((definition) => [definition.code, definition]));
+const LANGUAGE_BY_CODE = new Map([...APP_LANGUAGES, ...LEGACY_LANGUAGES].map((definition) => [definition.code, definition]));
 
 export const isAppLanguage = (value: unknown): value is AppLanguage =>
+  APP_LANGUAGES.some((definition) => definition.code === value);
+
+export const isKnownLanguage = (value: unknown): value is AppLanguage =>
   typeof value === 'string' && LANGUAGE_BY_CODE.has(value as AppLanguage);
 
 export const languageDefinition = (code: AppLanguage): LanguageDefinition =>
@@ -45,15 +51,6 @@ export const languageDefinition = (code: AppLanguage): LanguageDefinition =>
  * 让非中英文用户首屏即可读。无 navigator 的环境回退简体中文（历史默认）。
  */
 const LANGUAGE_MATCHERS: Array<[AppLanguage, RegExp]> = [
-  // zh-TW 必须显式带地区/文字后缀；'zh'/'zh-CN'/'zh-Hans' 落到简体
-  ['zh-TW', /^zh[-_](?:tw|hk|mo|hant)\b/i],
-  ['ja', /^ja\b/i],
-  ['ko', /^ko\b/i],
-  ['ru', /^ru\b/i],
-  ['fr', /^fr\b/i],
-  ['de', /^de\b/i],
-  ['es', /^es\b/i],
-  ['pt-BR', /^pt\b/i],
   ['en', /^en\b/i],
   ['zh', /^zh\b/i],
 ];

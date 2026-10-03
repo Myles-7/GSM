@@ -5,6 +5,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { selectReleaseTimelineState } from '../../../store/selectors';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { forceSyncToBackend } from '../../../services/autoSync';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { backend } from '../../../services/backendAdapter';
 import { useDialog } from '../../../hooks/useDialog';
 import {
@@ -58,12 +59,18 @@ export const useReleaseTimelineActions = () => {
     }
 
     setReleaseIsRefreshing(true);
+    const owner = currentState.user?.id;
+    const task = aiTaskJournal.begin(String(owner ?? ''), 'refresh', subscribedRepos.map(repo => ({ id: String(repo.id), label: repo.full_name })), undefined, undefined,
+      { title: 'Release', target: { view: 'releases' } });
     try {
       const githubApi = createGitHubApiService(githubToken);
       const { releases: newReleases, latestReleases, failedRepos } = await githubApi.getMultipleRepositoryReleases(
         subscribedRepos,
         { includePreRelease, refreshExistingAssets: true },
       );
+      if (useAppStore.getState().user?.id !== owner || useAppStore.getState().githubToken !== githubToken) { task.finish('canceled'); return; }
+      subscribedRepos.forEach(repo => task.item(String(repo.id), failedRepos.some(failure => failure.repoId === repo.id) ? 'failed' : 'complete',
+        failedRepos.some(failure => failure.repoId === repo.id) ? 'Release retrieval failed' : undefined));
       const now = new Date().toISOString();
       const failedRepoIds = new Set(failedRepos.map(repo => repo.repoId));
       for (const entry of resolvedSources.entries) {
@@ -100,9 +107,11 @@ export const useReleaseTimelineActions = () => {
         : (t('useReleaseTimelineActions.refresh-completed-found-v1-new-releases-updatedp-2', { v1: actuallyNewReleases.length, updatedPart: updatedPart }));
       toast(message, actuallyNewReleases.length > 0 || updatedReleases.length > 0 ? 'success' : 'info');
     } catch (error) {
+      task.error(error); subscribedRepos.forEach(repo => task.item(String(repo.id), 'failed', error));
       console.error('Refresh failed:', error);
       toast(t('useReleaseTimelineActions.release-refresh-failed-please-check-your-network'), 'error');
     } finally {
+      task.finish();
       setReleaseIsRefreshing(false);
     }
   }, [state, toast, t]);

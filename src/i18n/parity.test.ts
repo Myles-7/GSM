@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { APP_LANGUAGES } from './languages';
 
 /**
- * 翻译键集一致性检查：内置语言必须与 zh 键集完全相等。
+ * 翻译键集一致性检查：个人版中英文必须严格一致。
  * 缺键会露出 raw key 或回退英文；孤儿键说明源字典改了名却没清干净。
  * 值是否各自翻译由 scripts/check-i18n.cjs 在 PR diff 上检查。
  */
@@ -41,7 +41,8 @@ describe('i18n 字典键集一致性', () => {
 
   it.each(APP_LANGUAGES)('$code 与 zh 键集严格相等', (language) => {
     const zhKeys = [...keys.zh].sort();
-    const current = [...keys[language.code]].sort();
+    const currentKeys = new Set(keys[language.code]);
+    const current = [...currentKeys].sort();
     expect(current).toEqual(zhKeys);
   });
 });

@@ -1,7 +1,7 @@
 import { useAppStore, getAllCategories } from '../store/useAppStore';
 import { getDefaultCategory } from '../utils/categoryUtils';
 import { loadData } from '../features/discovery/custom/storage';
-import { discoveryAnalysisStorage } from './discoveryAnalysisStorage';
+import { discoveryAnalysisIdentity } from '../features/discovery/custom/analysisIdentity';
 import { createGitHubApiService } from './githubApiFactory';
 import { analysisFields, emptyReadingState, settingsSchema, type ReadingItem, type ReadingSettings, type ReadingSnapshot, type ReadingSection } from '../lib/html-reading/model';
 import { loadReadingData, rememberSnapshot } from '../lib/html-reading/storage';
@@ -24,15 +24,17 @@ export async function generateReadingSnapshot(settings: ReadingSettings, warning
   const state = useAppStore.getState(); const repositories = structuredClone(state.repositories);
   const discovery = structuredClone(state.discoveryRepos); const refreshes = { ...state.discoveryLastRefresh };
   const categories = getAllCategories(state.customCategories, state.language, state.hiddenDefaultCategoryIds, state.defaultCategoryOverrides);
-  const [custom, reading, cachedAnalyses] = await Promise.all([loadData(account), loadReadingData(account), discoveryAnalysisStorage.loadAllAnalyses()]);
+  const [custom, reading] = await Promise.all([loadData(account), loadReadingData(account)]);
   if (readingAccount() !== account) throw new Error('账户已变更，请重新生成。');
   const canonical = new Map(repositories.map(repo=>[repo.id,repo]));
-  const details = new Map(Object.entries(custom.analyses ?? {}).filter(([,a])=>a.status==='done'&&a.details).sort((a,b)=>a[1].updatedAt-b[1].updatedAt).flatMap(([key,a])=>{try{return [[Number(JSON.parse(key)[0]),a.details] as const];}catch{return [];}}));
+  const config = state.aiConfigs?.find(c => c.id === state.activeAIConfig);
   const readable = (repo: Repository) => Number.isSafeInteger(repo.id)&&repo.id>0&&/^[\w.-]+\/[\w.-]+$/.test(repo.full_name)&& !(settings.hideIgnored && reading.states[repo.id]?.interest==='ignored') && !(settings.unreadOnly && reading.states[repo.id]?.read);
   const present = (raw: Repository, reason = ''): ReadingItem => {
-    const repo = { ...raw, ...cachedAnalyses.get(raw.id), ...canonical.get(raw.id) };
+    const cached = custom.analyses?.[discoveryAnalysisIdentity(raw, state.language, config)]?.details;
+    const saved = canonical.get(raw.id);
+    const repo = saved ? { ...raw, ...saved } : { ...raw, ai_details: cached, ai_summary: cached?.summary ?? undefined, ai_tags: cached?.tags, ai_platforms: cached?.platforms, analyzed_at: cached?.generated_at };
     const category = getDefaultCategory(repo,categories); const categoryId = categories.find(c=>c.name===category)?.id ?? 'none';
-    const analysis = repo.ai_details ?? details.get(repo.id);
+    const analysis = repo.ai_details;
     const summary = settings.fields.summary ? repo.ai_summary || analysis?.summary || '' : '';
     const texts = (v: unknown): string => Array.isArray(v) ? v.filter(x=>typeof x==='string').join('\n• ') : typeof v==='string' ? v.trim() : '';
     const blocks = Object.entries(analysisFields).filter(([key])=>settings.analysis[key as keyof typeof analysisFields]).map(([key,title])=>({ title, text: key==='quickstart' ? (analysis?.quickstart??[]).map(x=>[x.description,x.command].filter(Boolean).join('\n')).join('\n\n') : texts(analysis?.[key as keyof typeof analysisFields]) })).filter(x=>x.text && !/^(未知|暂无|unknown|n\/a)$/i.test(x.text));

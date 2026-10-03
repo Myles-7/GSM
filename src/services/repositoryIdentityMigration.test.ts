@@ -1,7 +1,9 @@
 import { webcrypto } from 'node:crypto';
+import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppState, Repository } from '../types';
 import type { RepositoryIdentityParticipantBackup } from './repositoryIdentityParticipants';
+import type { RepositoryChatSession } from '../types/repositoryChat';
 import { assertRepositoryIdentityWritable, releaseRepositoryIdentityWrites } from './repositoryIdentityGate';
 import {
   readRepositoryIdentityJournal, remapIdentityStoreSnapshot,
@@ -99,6 +101,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   releaseRepositoryIdentityWrites('42');
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -187,6 +190,17 @@ describe('identity migration coordinator', () => {
     expect(fixture.restore).not.toHaveBeenCalled();
   });
 
+  it('refuses resume after an interrupted migration when new participant edits are detected', async () => {
+    fixture.workbench.mockRejectedValueOnce(new Error('interrupted'));
+    await expect(runRepositoryIdentityMigration(mappings)).rejects.toThrow('interrupted');
+    fixture.participants.workbench.projects.push({ id: 'new-user-edit', ownerId: '42' } as never);
+    await expect(runRepositoryIdentityMigration()).rejects.toThrow('RECOVERY_LOCAL_CHANGED');
+    expect(fixture.workbench).toHaveBeenCalledTimes(1);
+    expect(fixture.restore).not.toHaveBeenCalled();
+    expect(fixture.state.repositories[0].id).toBe(oldId);
+    expect(() => assertRepositoryIdentityWritable('42')).toThrow('MAINTENANCE');
+  });
+
   it('allows coordinated recovery from an unacknowledged Workbench write', async () => {
     fixture.participants.workbench.sessions.push({
       id: 'session', ownerId: '42', repoId: oldId, repoFullName: 'owner/repo',
@@ -235,5 +249,163 @@ describe('identity migration coordinator', () => {
     expect(patch.releases?.[0].id).toBe(9);
     expect(patch.searchResults?.[0].id).toBe(123);
     expect(patch.repositories?.[0].category_id).toBe('category');
+  });
+});
+
+describe('identity coordinator across real participant databases', () => {
+  const session = (ownerId = '42'): RepositoryChatSession => ({
+    id: `session-${ownerId}`, ownerId, repoId: oldId, repoFullName: 'owner/repo', title: 'Keep history',
+    sourceRefSha: 'sha', kind: 'repository', createdAt: '2026-10-02', updatedAt: '2026-10-02',
+  });
+  const details = {
+    version: 1 as const, generated_at: '2026-10-02T00:00:00Z', repository_pushed_at: null, model: 'fixture', sources: [],
+    summary: 'Keep analysis', tags: [], platforms: [], software_forms: [], deployment_modes: [],
+    problem: null, features: [], scenarios: [], architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
+  };
+
+  async function seedDatabases(custom = false) {
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    const participants = await vi.importActual<typeof import('./repositoryIdentityParticipants')>('./repositoryIdentityParticipants');
+    const { repositoryChatStorage: workbench } = await import('./repositoryChatStorage');
+    const workspace = await import('../features/discovery/workspace/storage');
+    const assets = await import('./repositoryAnalysisAssets');
+    const customStorage = await import('../features/discovery/custom/storage');
+    for (const account of ['42', '43']) {
+      await workbench.saveSession(session(account));
+      await workspace.saveBrowsePage(account, { key: 'reading', channelId: 'most-popular', signature: '',
+        items: [repo()], mode: 'replace', nextPage: 4, hasMore: true, totalCount: 60 });
+      await workspace.saveReadingAnchor(account, { sessionKey: 'reading', itemKey: `repo:${oldId}`, offset: 72,
+        previousKeys: [], updatedAt: 1 });
+      await assets.importRepositoryAnalysisAssets(account, { version: 1, accountId: account, assets: [{ version: 1,
+        accountId: account, repositoryId: oldId, fullName: 'owner/repo', language: 'en',
+        schemaVersion: 'detail-prompt-v2', configIdentity: null, details }] }, 'replace');
+    }
+    if (custom) await customStorage.transact('42', data => {
+      data.channels = [{ id: 'custom:one', name: 'one', instruction: '', revision: 1, plan: {} as never,
+        enabled: true, paused: false, ai: false, limit: 10, hour: 8, cursors: [], blocked: [oldId],
+        read: [oldId], recommended: { [oldId]: '2026-10-02' } }];
+    });
+    fixture.backup.mockImplementation(participants.backupParticipantIdentities);
+    fixture.restore.mockImplementation(participants.restoreParticipantIdentities);
+    fixture.workbench.mockImplementation(participants.migrateWorkbenchRepositoryIdentities);
+    fixture.custom.mockImplementation(participants.migrateCustomDiscoveryRepositoryIdentities);
+    return { participants, workbench, workspace, assets, customStorage };
+  }
+
+  async function expectIdentities(databases: Awaited<ReturnType<typeof seedDatabases>>, id: number) {
+    expect((await databases.workbench.getSession('session-42'))?.repoId).toBe(id);
+    const workspace = await databases.workspace.exportDiscoveryWorkspace('42');
+    expect(workspace.sessions[0]).toMatchObject({ itemKeys: [`repo:${id}`], nextPage: 4 });
+    expect(workspace.anchors[0]).toMatchObject({ itemKey: `repo:${id}`, offset: 72 });
+    expect(workspace.projects[0].value.id).toBe(id);
+    expect((await databases.assets.exportRepositoryAnalysisAssets('42')).assets[0]).toMatchObject({ repositoryId: id, details });
+  }
+
+  const interruptions = ['workbench', 'workspace', 'analyses', 'custom'] as const;
+  async function interruptAfter(phase: typeof interruptions[number], databases: Awaited<ReturnType<typeof seedDatabases>>) {
+    if (phase === 'workbench') vi.spyOn(databases.workspace, 'migrateDiscoveryWorkspaceIdentities').mockRejectedValueOnce(new Error('after workbench commit'));
+    if (phase === 'workspace') vi.spyOn(databases.assets, 'migrateRepositoryAnalysisAssetIdentities').mockRejectedValueOnce(new Error('after workspace commit'));
+    if (phase === 'analyses') fixture.workbench.mockImplementationOnce(async (...args: Parameters<typeof databases.participants.migrateWorkbenchRepositoryIdentities>) => {
+      await databases.participants.migrateWorkbenchRepositoryIdentities(...args);
+      throw new Error('after analyses commit before ACK');
+    });
+    if (phase === 'custom') fixture.custom.mockImplementationOnce(async (...args: Parameters<typeof databases.participants.migrateCustomDiscoveryRepositoryIdentities>) => {
+      await databases.participants.migrateCustomDiscoveryRepositoryIdentities(...args);
+      throw new Error('after custom commit before ACK');
+    });
+    await expect(runRepositoryIdentityMigration(mappings)).rejects.toThrow(`after ${phase} commit`);
+    const journal = await readRepositoryIdentityJournal('42');
+    expect(journal?.phase).toBe('applying');
+    expect(journal?.steps).not.toContain(phase === 'custom' ? 'custom-discovery' : 'workbench');
+    expect(() => assertRepositoryIdentityWritable('42')).toThrow('MAINTENANCE');
+    return journal!;
+  }
+
+  it.each(interruptions)('rolls back all owned stores after the %s transaction commits without ACK', async phase => {
+    const databases = await seedDatabases(phase === 'custom');
+    const before = await databases.participants.backupParticipantIdentities('42');
+    const foreign = await databases.participants.backupParticipantIdentities('43');
+    const journal = await interruptAfter(phase, databases);
+    expect(journal.recoveryFingerprints!.participants.length).toBeGreaterThan(4);
+    await restoreRepositoryIdentityMigration();
+    await expectIdentities(databases, oldId);
+    expect(await databases.participants.backupParticipantIdentities('42')).toEqual(before);
+    expect(await databases.participants.backupParticipantIdentities('43')).toEqual(foreign);
+    expect(fixture.state.repositories[0].id).toBe(oldId);
+    expect((await readRepositoryIdentityJournal('42'))?.phase).toBe('restored');
+    expect(() => assertRepositoryIdentityWritable('42')).not.toThrow();
+  });
+
+  it.each(interruptions)('resumes after the %s transaction without changing the durable journal', async phase => {
+    const databases = await seedDatabases(phase === 'custom');
+    const foreign = await databases.participants.backupParticipantIdentities('43');
+    const original = await interruptAfter(phase, databases);
+    await runRepositoryIdentityMigration();
+    await expectIdentities(databases, 123);
+    expect(await databases.participants.backupParticipantIdentities('43')).toEqual(foreign);
+    expect(await readRepositoryIdentityJournal('42')).toMatchObject({ id: original.id, phase: 'complete' });
+    expect(fixture.state.repositories[0].id).toBe(123);
+    expect(() => assertRepositoryIdentityWritable('42')).not.toThrow();
+  });
+
+  it.each(['workbench', 'workspace'] as const)('retries recovery after restoring %s before the next database fails', async phase => {
+    const databases = await seedDatabases();
+    const before = await databases.participants.backupParticipantIdentities('42');
+    await runRepositoryIdentityMigration(mappings);
+    const original = await readRepositoryIdentityJournal('42');
+    if (phase === 'workbench') vi.spyOn(databases.workspace, 'importDiscoveryWorkspace').mockRejectedValueOnce(new Error('rollback interrupted'));
+    else vi.spyOn(databases.assets, 'importRepositoryAnalysisAssets').mockRejectedValueOnce(new Error('rollback interrupted'));
+    await expect(restoreRepositoryIdentityMigration()).rejects.toThrow('rollback interrupted');
+    expect((await readRepositoryIdentityJournal('42'))?.phase).toBe('restoring');
+    expect(() => assertRepositoryIdentityWritable('42')).toThrow('MAINTENANCE');
+    expect((await databases.workbench.getSession('session-42'))?.repoId).toBe(oldId);
+    await expect(runRepositoryIdentityMigration()).rejects.toThrow('CONTINUE_RECOVERY');
+    await restoreRepositoryIdentityMigration();
+    expect(await databases.participants.backupParticipantIdentities('42')).toEqual(before);
+    expect(await readRepositoryIdentityJournal('42')).toMatchObject({ id: original!.id, phase: 'restored' });
+    expect(() => assertRepositoryIdentityWritable('42')).not.toThrow();
+  });
+
+  it('refuses recovery when an owned analysis changes after a partial commit', async () => {
+    const databases = await seedDatabases();
+    await interruptAfter('workspace', databases);
+    const changed = await databases.assets.exportRepositoryAnalysisAssets('42');
+    changed.assets[0].details.summary = 'Unexpected user edit';
+    await databases.assets.importRepositoryAnalysisAssets('42', changed, 'replace', true);
+    await expect(restoreRepositoryIdentityMigration()).rejects.toThrow('RECOVERY_LOCAL_CHANGED');
+    expect(fixture.restore).not.toHaveBeenCalled();
+    expect((await databases.workbench.getSession('session-42'))?.repoId).toBe(123);
+    expect((await databases.assets.exportRepositoryAnalysisAssets('42')).assets[0].details.summary).toBe('Unexpected user edit');
+  });
+
+  it('recovers an old journal without clearing discovery stores absent from its backup', async () => {
+    const databases = await seedDatabases();
+    fixture.backup.mockImplementation(async account => {
+      const backup = await databases.participants.backupParticipantIdentities(account);
+      delete backup.workbench.discoveryWorkspace;
+      return backup;
+    });
+    await runRepositoryIdentityMigration(mappings);
+    const saved = await readRepositoryIdentityJournal('42');
+    expect(saved!.backup.participants.workbench).not.toHaveProperty('discoveryWorkspace');
+    fixture.backup.mockImplementation(databases.participants.backupParticipantIdentities);
+    const local = await databases.participants.backupParticipantIdentities('42');
+    await restoreRepositoryIdentityMigration();
+    expect((await databases.workbench.getSession('session-42'))?.repoId).toBe(oldId);
+    expect((await databases.participants.backupParticipantIdentities('42')).workbench.discoveryWorkspace).toEqual(local.workbench.discoveryWorkspace);
+    expect((await readRepositoryIdentityJournal('42'))?.phase).toBe('restored');
+  });
+
+  it.each(['resume', 'restore'] as const)('expands older checkpoint fingerprints from the durable backup for %s', async action => {
+    const databases = await seedDatabases();
+    const journal = await interruptAfter('workspace', databases);
+    // Prior coordinators retained only initial and fully migrated Workbench checkpoints.
+    journal.recoveryFingerprints!.participants = [journal.recoveryFingerprints!.participants[0]];
+    fixture.journals.set('gsm-identity-journal:42', JSON.stringify(journal));
+    if (action === 'resume') await runRepositoryIdentityMigration();
+    else await restoreRepositoryIdentityMigration();
+    await expectIdentities(databases, action === 'resume' ? 123 : oldId);
+    expect((await readRepositoryIdentityJournal('42'))?.recoveryFingerprints?.participants.length).toBeGreaterThan(4);
+    expect(() => assertRepositoryIdentityWritable('42')).not.toThrow();
   });
 });

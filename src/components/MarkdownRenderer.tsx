@@ -37,6 +37,7 @@ interface MarkdownRendererProps {
   fontSize?: 'small' | 'medium' | 'large';
   /** Convert single newlines to <br> (GitHub READMEs do not; AI summaries rely on it). */
   breaks?: boolean;
+  isGenerating?: boolean;
   /**
    * 可选的行内 code 自定义渲染（如仓库问答的引用 Badge）：返回 ReactNode 时替换
    * 默认的 <code>（含 0、''、false 等合法节点）；返回 null/undefined 时保持原样式。
@@ -71,10 +72,10 @@ function stripAstNode<T extends { node?: unknown }>(props: T): Omit<T, 'node'> {
 const CodeBlock: React.FC<{
   children: React.ReactNode;
   language: string;
-}> = ({ children, language }) => {
+  highlight?: boolean;
+}> = memo(({ children, language, highlight = true }) => {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
-  const codeRef = useRef<HTMLElement>(null);
   const { language: uiLanguage } = useAppStore(useShallow((state) => ({
     language: state.language,
   })));
@@ -113,15 +114,11 @@ const CodeBlock: React.FC<{
     return String(children).replace(/\n$/, '');
   }, [children]);
 
-  useEffect(() => {
-    if (codeRef.current) {
-      try {
-        hljs.highlightElement(codeRef.current);
-      } catch (error) {
-        console.warn('highlight.js failed:', error);
-      }
-    }
-  }, [children, normalizedLanguage]);
+  const highlightedCode = useMemo(() => {
+    if (!highlight || !normalizedLanguage || !hljs.getLanguage(normalizedLanguage)) return null;
+    try { return hljs.highlight(codeText, { language: normalizedLanguage, ignoreIllegals: true }).value; }
+    catch { return null; }
+  }, [codeText, normalizedLanguage, highlight]);
 
   const handleCopy = useCallback(async () => {
     setCopyError(null);
@@ -189,13 +186,13 @@ const CodeBlock: React.FC<{
         </Button>
       </div>
       <pre className="!my-0 !rounded-t-none !border-0 !bg-transparent p-3 font-mono text-[13px] leading-relaxed text-zinc-100 overflow-x-auto">
-        <code ref={codeRef} className={normalizedLanguage ? `language-${normalizedLanguage}` : undefined}>
-          {codeText}
-        </code>
+        {highlightedCode === null ? <code>{codeText}</code>
+          : <code className={`hljs language-${normalizedLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedCode }} />}
       </pre>
     </div>
   );
-};
+});
+CodeBlock.displayName = 'CodeBlock';
 
 /** Anchor that externalizes non-anchor links and keeps in-page TOC jumps smooth. */
 const MarkdownLink: React.FC<{ href?: string; children?: React.ReactNode; baseUrl?: string; headingIds?: Map<string, string> }> = ({
@@ -754,6 +751,19 @@ const extractTextFromChildren = (children: React.ReactNode): string => {
   return inner(children).replace(/\s+/g, ' ').trim();
 };
 
+const GenerationContext = React.createContext({ content: '', generating: false });
+function GeneratedCode({ language, children, node }: { language: string; children: React.ReactNode; node?: ExtraProps['node'] }) {
+  const { content, generating } = useContext(GenerationContext);
+  const raw = content.slice(node?.position?.start.offset ?? 0, node?.position?.end.offset ?? content.length);
+  const lines = raw.trimEnd().split('\n');
+  const opening = /^\s*(`{3,}|~{3,})/.exec(lines[0] || '');
+  const last = /^\s*(`{3,}|~{3,})\s*$/.exec(lines[lines.length - 1] || '');
+  const closed = !generating || Boolean(lines.length > 1 && opening && last && last[1][0] === opening[1][0] && last[1].length >= opening[1].length);
+  const code = typeof children === 'string' ? children.replace(/\n$/, '') : String(children);
+  if (/^mermaid$/i.test(language) && !generating) return <MermaidBlock code={code} />;
+  return <CodeBlock language={language} highlight={closed && !/^mermaid$/i.test(language)}>{children}</CodeBlock>;
+}
+
 const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
   content,
   className = '',
@@ -763,6 +773,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
   headingIds,
   fontSize = 'medium',
   breaks = false,
+  isGenerating = false,
   renderInlineCode
 }) => {
   const headingCounterRef = useRef(headingIds?.size ?? 0);
@@ -894,11 +905,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
         return <code {...stripAstNode(props)}>{children}</code>;
       }
 
-      const codeText = typeof children === 'string' ? children : String(children);
-      if (/^mermaid$/i.test(language)) {
-        return <MermaidBlock code={codeText.replace(/\n$/, '')} />;
-      }
-      return <CodeBlock language={language}>{children}</CodeBlock>;
+      return <GeneratedCode language={language} node={props.node}>{children}</GeneratedCode>;
     },
     pre: ({ children }) => {
       // 给 code 子元素添加标记，表明它是代码块而不是行内代码
@@ -932,13 +939,13 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
 
   return (
     <div className={`markdown-body max-w-none ${className}`} style={{ fontSize: fontSizePx }}>
-      <ReactMarkdown
+      <GenerationContext.Provider value={{ content, generating: isGenerating }}><ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={markdownComponents}
       >
         {content}
-      </ReactMarkdown>
+      </ReactMarkdown></GenerationContext.Provider>
     </div>
   );
 });

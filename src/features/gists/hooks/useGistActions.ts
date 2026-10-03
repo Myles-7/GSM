@@ -1,7 +1,7 @@
 import { makeT, useT } from "../../../i18n/useT";
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { Gist } from '../../../types';
+import type { Gist, AIConfig } from '../../../types';
 import type { GistCreateInput, GistUpdateInput } from '../../../services/githubApi';
 import { useAppStore } from '../../../store/useAppStore';
 import { selectGistViewState } from '../../../store/selectors';
@@ -11,6 +11,7 @@ import { useDialog } from '../../../hooks/useDialog';
 import { filterAndSortGists } from '../../../utils/gistUtils';
 import { withDeadline } from '../../../utils/requestDeadline';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
+import { bindTaskSignal, taskConfigSnapshot, taskForSignal } from '../../../services/taskExecution';
 
 const ANALYSIS_DEADLINE_MS = 120_000;
 // Cards and the batch view mount separate instances of this hook.
@@ -51,6 +52,7 @@ export const useGistActions = () => {
   const [isAnalyzingAll, setIsAnalyzingAll] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
   const analysisTasks = useRef(new Set<AbortController>());
+  const detachedTasks = useRef(new Set<AbortController>());
   const analysisGeneration = useRef(0);
   const mounted = useRef(false);
   const batchTask = useRef<AnalysisTask | null>(null);
@@ -77,8 +79,8 @@ export const useGistActions = () => {
     });
     return () => {
       mounted.current = false;
-      if (backgroundController.current && aiTaskJournal.hasHost()) {
-        for (const controller of analysisTasks.current) if (controller !== backgroundController.current) controller.abort();
+      if (aiTaskJournal.hasHost() && (backgroundController.current || detachedTasks.current.size)) {
+        for (const controller of analysisTasks.current) if (controller !== backgroundController.current && !detachedTasks.current.has(controller)) controller.abort();
         backgroundCleanup.current = unsubscribe;
         return;
       }
@@ -94,10 +96,13 @@ export const useGistActions = () => {
     analysisTasks.current.add(controller);
     return {
       controller,
-      isCurrent: () => (mounted.current || backgroundController.current === controller) && !controller.signal.aborted
+      isCurrent: () => (mounted.current || backgroundController.current === controller || detachedTasks.current.has(controller)) && !controller.signal.aborted
         && generation === analysisGeneration.current
         && identity === analysisIdentity(useAppStore.getState()),
-      finish: () => { analysisTasks.current.delete(controller); },
+      finish: () => {
+        analysisTasks.current.delete(controller); detachedTasks.current.delete(controller);
+        if (!mounted.current && !analysisTasks.current.size) { backgroundCleanup.current?.(); backgroundCleanup.current = null; }
+      },
     };
   }, [state]);
   const analyzeTarget = useCallback(async (
@@ -139,6 +144,7 @@ export const useGistActions = () => {
       return true;
     } catch (error) {
       if (!canCommit() || ((error instanceof Error || error instanceof DOMException) && error.name === 'AbortError')) return null;
+      taskForSignal(task.controller.signal)?.item(gist.id, 'failed', error);
       const current = readCurrentGist();
       if (!current) return null;
       useAppStore.getState().updateGist(applyGistAnalysisFailure(current, error instanceof Error ? error.message : String(error), new Date().toISOString()));
@@ -164,6 +170,8 @@ export const useGistActions = () => {
       return;
     }
     setIsRefreshing(true);
+    const journal = aiTaskJournal.begin(String(state.user?.id ?? ''), 'refresh', [{ id: 'gists', label: 'Gist' }], undefined, undefined, { title: 'Gist', target: { view: 'gists' } });
+    journal.item('gists', 'running');
     try {
       const api = createGitHubApiService(state.githubToken);
       const [mine, starred] = await Promise.all([
@@ -173,10 +181,13 @@ export const useGistActions = () => {
       const starredIds = new Set(starred.map(gist => gist.id));
       state.setGists(mine.map(gist => ({ ...gist, starred: starredIds.has(gist.id) || gist.starred })));
       state.setStarredGists(starred);
+      journal.item('gists', 'complete');
       toast(t('useGistActions.gists-synced'), 'success');
     } catch (error) {
+      journal.item('gists', 'failed', error);
       toast(error instanceof Error ? error.message : t('useGistActions.failed-to-sync-gists'), 'error');
     } finally {
+      journal.finish();
       setIsRefreshing(false);
     }
   }, [state, t, toast]);
@@ -198,6 +209,10 @@ export const useGistActions = () => {
     const task = beginAnalysis();
     if (!task) return;
     searchTask.current = task;
+    if (aiTaskJournal.hasHost()) detachedTasks.current.add(task.controller);
+    const journal = aiTaskJournal.begin(String(state.user?.id ?? ''), 'search', [{ id: 'gists', label: 'Gist' }], activeConfig.id, undefined,
+      { title: 'Gist', config: taskConfigSnapshot(activeConfig, 'gist-rerank'), target: { view: 'gists' } });
+    bindTaskSignal(task.controller.signal, journal); journal.bind({ stop: () => task.controller.abort() }); journal.item('gists', 'running');
     setIsSearching(true);
     try {
       const aiService = new AIService(activeConfig, state.language);
@@ -208,9 +223,12 @@ export const useGistActions = () => {
       onReranked();
       state.setGistSearchFilters({ query });
       state.setGistSearchResults(ranked);
-    } catch {
+      journal.item('gists', 'complete');
+    } catch (error) {
+      if (!task.controller.signal.aborted) journal.item('gists', 'failed', error);
       if (task.isCurrent()) state.setGistSearchFilters({ query });
     } finally {
+      journal.finish(task.controller.signal.aborted ? 'canceled' : undefined);
       task.finish();
       if (searchTask.current === task) {
         searchTask.current = null;
@@ -219,12 +237,12 @@ export const useGistActions = () => {
     }
   }, [state, beginAnalysis]);
 
-  const analyzeVisibleGists = useCallback(async (requestedIds?: string[], configId?: string) => {
+  const analyzeVisibleGists = useCallback(async (requestedIds?: string[], configId?: string, retry?: { config: AIConfig; parentId: string }) => {
     if (!state.githubToken) {
       toast(t('useGistActions.github-token-not-found-please-login-again'), 'error');
       return;
     }
-    const activeConfig = state.aiConfigs.find(config => config.id === (configId ?? state.activeAIConfig));
+    const activeConfig = retry?.config ?? state.aiConfigs.find(config => config.id === (configId ?? state.activeAIConfig));
     if (!activeConfig) {
       toast(t('useGistActions.please-configure-ai-service-in-settings-first'), 'error');
       return;
@@ -258,6 +276,8 @@ export const useGistActions = () => {
       if (aiTaskJournal.busy(String(state.user?.id ?? ''), 'gists')) return;
       journal = aiTaskJournal.begin(String(state.user?.id ?? ''), 'gists',
         targets.map(gist => ({ id: gist.id, label: gist.description || gist.id })), activeConfig.id);
+      journal.metadata({ config: taskConfigSnapshot(activeConfig, 'gist-summary'), parentId: retry?.parentId, target: { view: 'gists' } });
+      bindTaskSignal(task.controller.signal, journal);
       journal.bind({ pause: () => { paused = true; journal?.state('paused'); },
         resume: () => { paused = false; journal?.state('running'); }, stop: () => task.controller.abort() });
       if (aiTaskJournal.hasHost()) backgroundController.current = task.controller;
@@ -279,10 +299,8 @@ export const useGistActions = () => {
     } catch {
       // Confirmation can be cancelled or expire before any work starts.
     } finally {
-      journal?.finish();
+      journal?.finish(task.controller.signal.aborted ? 'canceled' : undefined);
       if (backgroundController.current === task.controller) backgroundController.current = null;
-      backgroundCleanup.current?.();
-      backgroundCleanup.current = null;
       task.finish();
       if (batchTask.current === task) {
         batchTask.current = null;
@@ -354,6 +372,7 @@ export const useGistActions = () => {
     if (analysisOwners.has(gist.id)) return;
     const task = beginAnalysis();
     if (!task) return;
+    let journal: ReturnType<typeof aiTaskJournal.begin> | undefined;
     try {
       if (gist.analyzed_at) {
         const shouldContinue = await withDeadline(
@@ -366,13 +385,19 @@ export const useGistActions = () => {
         );
         if (!shouldContinue || !task.isCurrent()) return;
       }
+      journal = aiTaskJournal.begin(String(state.user?.id ?? ''), 'gists', [{ id: gist.id, label: gist.description || gist.id }], activeConfig.id, undefined,
+        { config: taskConfigSnapshot(activeConfig, 'gist-summary'), target: { view: 'gists', id: gist.id } });
+      bindTaskSignal(task.controller.signal, journal); journal.bind({ stop: () => task.controller.abort() }); journal.item(gist.id, 'running');
+      if (aiTaskJournal.hasHost()) detachedTasks.current.add(task.controller);
       const result = await analyzeTarget(gist, task, activeConfig);
+      if (result !== null) journal.item(gist.id, result ? 'complete' : 'failed');
       if (result !== null && task.isCurrent()) {
         toast(t(result ? 'useGistActions.gist-ai-analysis-completed' : 'useGistActions.gist-ai-analysis-failed'), result ? 'success' : 'error');
       }
     } catch {
       // Confirmation can be cancelled or expire before any work starts.
     } finally {
+      journal?.finish(task.controller.signal.aborted ? 'canceled' : undefined);
       task.finish();
     }
   }, [state, t, toast, confirm, beginAnalysis, analyzeTarget]);

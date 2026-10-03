@@ -6,6 +6,7 @@ import { Input } from '../../../components/ui/input';
 import { Textarea } from '../../../components/ui/textarea';
 import type { WorkbenchDepth, WorkbenchRequirements } from '../../../types/aiWorkbench';
 import { useAppStore } from '../../../store/useAppStore';
+import { sameWorkbenchRequirements } from '../../../services/workbenchOverview';
 
 type ConditionGroup = 'required' | 'preferred' | 'excluded';
 const groups: ConditionGroup[] = ['required', 'preferred', 'excluded'];
@@ -18,7 +19,7 @@ function extractQuestionOptions(question: string, isZh: boolean): string[] {
   const q = question.trim();
 
   // 1. Explicit bracketed options: [A / B / C] or (A / B / C) or 【A / B / C】 or （A / B / C）
-  const bracketMatch = q.match(/[\(\[（【]([^()（）\[\]【】]{3,})[\)\]）】]/);
+  const bracketMatch = q.match(/[([（【]([^()（）[\]【】]{3,})[)\]）】]/);
   if (bracketMatch) {
     const candidate = bracketMatch[1].trim();
     if (/(?:\/|\||、|\s+or\s+|\s+或者\s+)/i.test(candidate)) {
@@ -31,7 +32,7 @@ function extractQuestionOptions(question: string, isZh: boolean): string[] {
   }
 
   // 2. Explicit numbered list in text: e.g. "1. Option A 2. Option B" or lines
-  const numberPrefixRegex = /(?:^|[\s:：、,，;；?？(（\[【])([1-9][.)\)、]|[①②③④])(?:\s+|(?=[^\d.]))/g;
+  const numberPrefixRegex = /(?:^|[\s:：、,，;；?？(（[【])([1-9][.)、]|[①②③④])(?:\s+|(?=[^\d.]))/g;
   const matches: { start: number; end: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = numberPrefixRegex.exec(q)) !== null) {
@@ -180,7 +181,7 @@ export function RequirementsEditor({ value, disabled, depth, searchedValue, onSe
     const next = {
       ...draft, purpose: draft.purpose.trim(),
       required: clean(draft.required), preferred: clean([...draft.preferred, note]),
-      excluded: clean(draft.excluded), queries: [],
+      excluded: clean(draft.excluded), queries: sameWorkbenchRequirements({ ...draft, preferred: clean([...draft.preferred, note]) }, value) ? value.queries : [],
     };
     setSubmitting(true); setError(''); setCollapsed(true);
     try {
@@ -558,4 +559,3 @@ export function RequirementsEditor({ value, disabled, depth, searchedValue, onSe
     </section>
   );
 }
-

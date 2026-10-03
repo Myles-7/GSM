@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { AIWorkbench } from './AIWorkbench';
-import type { WorkbenchProposal } from '../../../types/aiWorkbench';
+import type { WorkbenchProposal, WorkbenchScope, WorkbenchSearchBatch } from '../../../types/aiWorkbench';
+import type { Repository } from '../../../types';
 
 const mockWorkbench = {
   active: { id: 's1', title: 'Test Session', createdAt: new Date().toISOString() },
@@ -10,25 +11,25 @@ const mockWorkbench = {
   sessions: [{ id: 's1', title: 'Test Session', repoFullName: 'user/repo' }],
   projects: [],
   data: {
-    scope: 'github' as const,
+    scope: 'github' as WorkbenchScope,
     depth: 'standard' as const,
     requirements: undefined,
-    selectedRepositories: [] as any[],
-    searchBatches: [] as any[],
+    selectedRepositories: [] as Repository[],
+    searchBatches: [] as Omit<WorkbenchSearchBatch, 'createdAt' | 'queries'>[],
   },
   task: { running: false, stage: 'idle', sessionId: 's1', elapsedSeconds: 0 },
   settings: { retainSessionDays: 90, chatConfigId: null },
   aiConfigs: [{ id: 'c1', name: 'DeepSeek', model: 'deepseek-chat', apiKey: 'k', baseUrl: 'url', apiType: 'openai', isActive: true }],
   modelId: 'c1',
-  messages: [] as any[],
+  messages: [] as unknown[],
   proposals: [] as WorkbenchProposal[],
-  evidence: [] as any[],
+  evidence: [] as unknown[],
   freshness: {} as Record<string, string>,
   mode: 'active' as const,
   project: null,
   localProject: null,
   error: null,
-  guard: vi.fn((fn: () => any) => fn()),
+  guard: vi.fn((fn: () => unknown) => fn()),
   createSession: vi.fn().mockResolvedValue({ id: 's2', title: 'New' }),
   select: vi.fn(),
   send: vi.fn(),
@@ -122,7 +123,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
               owner: { login: 'facebook', avatar_url: '' },
               stargazers_count: 200000,
               description: 'The library for web and native UIs',
-            } as any,
+            } as Repository,
             reason: 'Categorize under frontend framework',
             before: {
               custom_category: undefined,
@@ -236,13 +237,13 @@ describe('AIWorkbench Component (Phase 1)', () => {
   });
 
   it('correctly localizes scope labels for local and mixed research scopes on mobile toolbar', () => {
-    mockWorkbench.data.scope = 'local' as any;
+    mockWorkbench.data.scope = 'local';
     const { rerender } = render(<AIWorkbench />);
 
     // Mobile toolbar button displays currentScopeLabel
     expect(screen.getByTitle('参数设置')).toHaveTextContent(/本地项目/);
 
-    mockWorkbench.data.scope = 'mixed' as any;
+    mockWorkbench.data.scope = 'mixed';
     rerender(<AIWorkbench />);
     expect(screen.getByTitle('参数设置')).toHaveTextContent(/本地 \+ 所选仓库/);
   });
@@ -295,7 +296,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
           nextPage: 2,
           candidates: [
             {
-              repository: repo1 as any,
+              repository: repo1 as Repository,
               summary: 'React library summary',
               reasons: [],
               limitations: [],
@@ -316,7 +317,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       expect(mockWorkbench.addRepository).toHaveBeenCalledWith(repo1);
 
       // Now re-render with repo1 in selectedRepositories
-      mockWorkbench.data.selectedRepositories = [repo1 as any];
+      mockWorkbench.data.selectedRepositories = [repo1 as Repository];
       rerender(<AIWorkbench />);
 
       // Candidate card button should now show "已添加"
@@ -324,7 +325,8 @@ describe('AIWorkbench Component (Phase 1)', () => {
 
       // Context badge should be displayed above textarea
       expect(screen.getByText('对话上下文:')).toBeInTheDocument();
-      expect(screen.getAllByText('facebook/react').length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText('facebook/react')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'react' })).toHaveAttribute('href', 'https://github.com/facebook/react');
 
       // Click remove button in context badge
       const removeBtn = screen.getByTitle('移出上下文');
@@ -367,8 +369,8 @@ describe('AIWorkbench Component (Phase 1)', () => {
           requirements: { purpose: 'Testing', required: [], preferred: [], excluded: [], questions: [], queries: [] },
           nextPage: 2,
           candidates: [
-            { repository: repoWithTopics as any, summary: 'AI model', reasons: [], limitations: [], sources: [], status: 'candidate' },
-            { repository: repoUnknown as any, summary: 'Random tools', reasons: [], limitations: [], sources: [], status: 'candidate' },
+            { repository: repoWithTopics as Repository, summary: 'AI model', reasons: [], limitations: [], sources: [], status: 'candidate' },
+            { repository: repoUnknown as Repository, summary: 'Random tools', reasons: [], limitations: [], sources: [], status: 'candidate' },
           ],
         },
       ];
@@ -423,7 +425,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
         description: 'Vue core', language: 'TypeScript',
       };
 
-      mockWorkbench.data.selectedRepositories = [repo1 as any, repo2 as any];
+      mockWorkbench.data.selectedRepositories = [repo1 as Repository, repo2 as Repository];
       render(<AIWorkbench />);
 
       expect(screen.getByText('facebook/react')).toBeInTheDocument();
@@ -458,8 +460,8 @@ describe('AIWorkbench Component (Phase 1)', () => {
           requirements: { purpose: 'Testing', required: [], preferred: [], excluded: [], questions: [], queries: [] },
           nextPage: 2,
           candidates: [
-            { repository: repoVue as any, summary: 'UI components', reasons: [], limitations: [], sources: [], status: 'candidate' },
-            { repository: repoRust as any, summary: 'Fast parser', reasons: [], limitations: [], sources: [], status: 'candidate' },
+            { repository: repoVue as Repository, summary: 'UI components', reasons: [], limitations: [], sources: [], status: 'candidate' },
+            { repository: repoRust as Repository, summary: 'Fast parser', reasons: [], limitations: [], sources: [], status: 'candidate' },
           ],
         },
       ];
@@ -483,14 +485,14 @@ describe('AIWorkbench Component (Phase 1)', () => {
         description: 'Tool', language: 'Go',
       };
 
-      mockWorkbench.data.selectedRepositories = [repoNone as any, repoOther as any];
+      mockWorkbench.data.selectedRepositories = [repoNone as Repository, repoOther as Repository];
       mockWorkbench.data.searchBatches = [
         {
           id: 'b1',
           requirements: { purpose: 'Test', required: [], preferred: [], excluded: [], questions: [], queries: [] },
           nextPage: 2,
           candidates: [
-            { repository: repoNone as any, summary: 'NLP', reasons: [], limitations: [], sources: [], status: 'candidate' },
+            { repository: repoNone as Repository, summary: 'NLP', reasons: [], limitations: [], sources: [], status: 'candidate' },
           ],
         },
       ];
@@ -529,7 +531,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
         createdAt: '2026-01-01',
         updatedAt: '2026-01-01',
         operations: [],
-      } as any];
+      } as WorkbenchProposal];
 
       render(<AIWorkbench />);
       expect(screen.getByTestId('badge-mobile-left')).toBeInTheDocument();
@@ -595,5 +597,3 @@ describe('AIWorkbench Component (Phase 1)', () => {
     });
   });
 });
-
-

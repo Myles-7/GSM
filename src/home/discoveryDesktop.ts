@@ -2,7 +2,7 @@ import type { AppState } from '../types';
 import type { HomeDatabase } from './database';
 import type { Collection, HomeRecord } from './types';
 import { loadData, transact } from '../features/discovery/custom/storage';
-import { planSchema, type CustomDiscoveryData, type CustomDiscoveryChannel, type ChannelDailyEdition } from '../features/discovery/custom/model';
+import { planSchema, overrideSchema, type CustomDiscoveryData, type CustomDiscoveryChannel, type ChannelDailyEdition } from '../features/discovery/custom/model';
 import { normalizeTrendingSnapshot } from '../utils/trendingSnapshots';
 import { normalizeDiscoveryChannels, externalChannelSelection } from '../store/helpers/discoveryChannels';
 import { isExternalDiscoveryChannelId } from '../services/externalFeedConfig';
@@ -93,6 +93,7 @@ export function projectCustomDiscovery(data: CustomDiscoveryData, records: HomeR
   const editions = new Map(data.editions.map(edition => [editionId(edition), edition]));
   for (const row of records) {
     if (row.collection === 'discovery_subscriptions' && row.id.startsWith('custom:')) {
+      if (!row.deleted && !overrideSchema.safeParse(row.data?.ruleOverrides ?? {}).success) continue;
       const id = row.id as CustomDiscoveryChannel['id'];
       if (row.deleted) channels.delete(id);
       else if (row.data?.id === row.id && typeof row.data.name === 'string' && typeof row.data.instruction === 'string' && planSchema.safeParse(row.data.plan).success && Array.isArray(row.data.read) && Array.isArray(row.data.cursors) && Array.isArray(row.data.blocked) && !!row.data.recommended && typeof row.data.recommended === 'object' && typeof row.data.revision === 'number' && typeof row.data.limit === 'number' && typeof row.data.hour === 'number') channels.set(id, { ...channels.get(id), ...row.data } as unknown as CustomDiscoveryChannel);

@@ -7,6 +7,7 @@ import { selectForkTimelineState } from '../../../store/selectors';
 import type { GitHubApiService } from '../../../services/githubApi';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { logger } from '../../../services/logger';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { useDialog } from '../../../hooks/useDialog';
 import { useAuthSessionGeneration, type AuthSessionGeneration } from '../../../hooks/useAuthSessionGeneration';
 
@@ -159,6 +160,10 @@ export const useForkTimelineActions = () => {
     refreshRequestRef.current = refreshRequest;
     const startTime = Date.now();
     state.setForkIsRefreshing(true);
+    const journal = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'refresh', [{ id: 'forks', label: ownerLogin }], undefined, undefined,
+      { title: `Forks · ${ownerLogin}`, target: { view: 'forks' } });
+    journal.item('forks', 'running'); journal.bind({});
+    let incomplete = false;
     try {
       const api = createGitHubApiService(state.githubToken);
       const isPersonalOwner = isSameGitHubLogin(ownerLogin, personalOwnerLogin);
@@ -229,7 +234,8 @@ export const useForkTimelineActions = () => {
               } : item),
             }));
           }
-        } catch {
+        } catch (error) {
+          incomplete = true; journal.error(error);
           if (isCurrentSession(requestSession)) {
             setNeedsSyncMap(previous => ({ ...previous, [fork.id]: false }));
           }
@@ -250,12 +256,15 @@ export const useForkTimelineActions = () => {
         }
       }
       toast(newCount > 0 ? t('useForkTimelineActions.refresh-completed-found-newcount-new-forks', { newCount: newCount }) : t('useForkTimelineActions.refresh-completed'), newCount > 0 ? 'success' : 'info');
+      journal.item('forks', 'complete');
     } catch (error) {
       if (!isCurrentSession(requestSession)) return;
+      journal.item('forks', 'failed', error);
       console.error('Fork refresh failed:', error);
       logger.error('githubApi', 'Refresh forks failed', { owner: ownerLogin, error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - startTime });
       toast(t('useForkTimelineActions.fork-refresh-failed-please-check-your-network-co'), 'error');
     } finally {
+      journal.finish(!isCurrentSession(requestSession) ? 'canceled' : incomplete ? 'partial' : undefined);
       if (refreshRequestRef.current?.id === refreshRequest.id) {
         refreshRequestRef.current = null;
         state.setForkIsRefreshing(false);

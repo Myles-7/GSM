@@ -1,5 +1,8 @@
 import React, { memo, useEffect, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { safeWriteText } from '../utils/clipboardUtils';
+import { Button } from './ui/button';
+import { Copy, Check } from 'lucide-react';
 
 type MermaidModule = (typeof import('mermaid'))['default'];
 
@@ -26,14 +29,17 @@ const MermaidBlock: React.FC<{ code: string }> = ({ code }) => {
   const uiLanguage = useAppStore((state) => state.language);
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setSvg(null); setError(null);
     loadMermaid()
       .then(async (mermaid) => {
         if (initializedTheme !== theme) {
           mermaid.initialize({
-            startOnLoad: false,
+            startOnLoad: false, suppressErrorRendering: true,
             securityLevel: 'strict',
             theme: theme === 'dark' ? 'dark' : 'default',
           });
@@ -68,7 +74,10 @@ const MermaidBlock: React.FC<{ code: string }> = ({ code }) => {
         <p className="font-semibold">
           {uiLanguage === 'zh' ? 'Mermaid 图表渲染失败' : 'Failed to render Mermaid diagram'}
         </p>
-        <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">{error}</pre>
+        <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">{code}</pre>
+        <Button variant="ghost" size="sm" onClick={() => void safeWriteText(code).then(result => { setCopied(result.success); setCopyFailed(!result.success); })}>
+          {copied ? <Check className="mr-1 h-4 w-4" /> : <Copy className="mr-1 h-4 w-4" />}{uiLanguage.startsWith('zh') ? copied ? '已复制' : '复制源文' : copied ? 'Copied' : 'Copy source'}
+        </Button>{copyFailed && <p role="alert">{uiLanguage.startsWith('zh') ? '复制失败，请手动选择源文' : 'Copy failed. Select the source manually.'}</p>}
       </div>
     );
   }

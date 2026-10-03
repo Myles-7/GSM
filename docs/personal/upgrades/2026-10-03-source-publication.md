@@ -1,0 +1,74 @@
+# 2026-10-03 源码集成与仓库治理
+
+日期使用 Asia/Shanghai。源码集成：`fda2d9aeeeb7438c83d53271c83581ed426d8dd8`。
+此前尚未推送的 P0.2.1 源码 `8754dce` 与验证记录 `51d9e67` 一起保存。
+本轮是源码提交与个人仓库治理，不发布安装包、不部署服务、不执行真实 AI 或账号写入。
+
+## 保存范围
+
+保存现有任务中心、发现阅读与工作区、仓库分析资产、工作台概览、设置配置与备份流程，
+以及相关前端、Electron、服务端测试和交付/审计文档。
+这些功能共享任务、存储、身份和界面接口，因此以一个依赖完整的源码集成提交保存，
+仓库治理和文档另行提交；不是声称逐个子功能已经独立拆分验证。
+
+个人版界面和完整性检查只支持简体中文与英语。历史语言定义、资源和显式 AI API 调用
+保持兼容，不再要求八种历史语言覆盖个人版新功能。
+修复 lint 类型与正则错误，排除本机部署生成文件的扫描；没有禁用源码 lint 规则。
+
+新增 `.gitignore` 排除 output、内部研究交接和临时截图；这些本机文件保留。
+暂存区 GitHub/provider credential 与 private-key 模式扫描未发现真实凭据；
+命中的一个 `sk-` 翻译键为文案标识，已人工确认。该检查不声称证明全历史没有秘密。
+修改前在本机 TEMP 保存跟踪补丁和新增源码/文档恢复副本；Git 备份不覆盖运行数据。
+
+## 本地验证
+
+| 检查 | 结果 |
+| --- | --- |
+| 完整 `npm run test:run` | 前端 275 文件 / 2,945 项；Electron/Node 测试链 314 项全部通过 |
+| `npm --prefix server test` | 38 文件 / 358 项通过 |
+| Typecheck | 通过 |
+| Lint | 0 errors / 14 warnings；警告涉及 Hook dependencies/ref cleanup 和 Fast Refresh |
+| 中英 i18n、PR 差异文案、PR 版本文件 | 通过 |
+| 前端分层、插件注册表、向量 Worker 源码/产物一致性 | 通过 |
+| 前端生产构建及 bundle budget | 通过，legacy entry 1,796.31 KiB，现有上限 3,000 KiB |
+| 服务端构建 | 通过 |
+| 暂存差异空白检查 | 通过 |
+
+中英范围调整曾暴露历史 AI 本地化回归，保留显式 API 兼容后完整测试复跑通过。
+这些测试使用已有隔离 fixtures，没有新增真实模型调用。
+本轮没有重新执行打包版 Electron 人工交互、真实 AGY/API/SMTP/WebDAV 连通性或
+数据库恢复测试；既有交付记录中的限制继续有效。14 条 lint warnings 仍是待办。
+
+## GitHub 管理规则
+
+`personal/main` 用作个人默认分支，原 `main` 保留作上游历史参考。
+CI 增加个人分支推送和手动触发，服务端测试/构建成为独立 job。
+通过 PR 集成源码，默认分支要求前端与服务端检查成功并解决讨论，禁止非快进和删除。
+公开 Issues 用于无敏感数据的工程待办。README 明确个人版与官方发布的区别。
+GitHub 在线运行与分支保护是否生效以仓库实际配置、PR 和 Actions 记录为准，
+本表中的通过结论只描述本轮已执行的本地检查。
+
+首次在线服务端 CI 暴露独立安装缺少 fake-indexeddb 测试依赖和 Linux/Node 24 原生
+SQLite Statement 清理崩溃。显式补充服务端测试依赖，服务端 CI 改用 Node 22；
+该运行时选择不修改生产服务。Linux/Node 24 的原生模块兼容性仍需后续单独升级验证。
+继承的桌面与 Docker 发布工作流在个人仓库停用，CI 保持启用。
+
+## 在线验证与治理执行记录
+
+源码及 CI 修复提交 `a395bd274b2193475e5e7e937c5f3a0bbf3ffe3a` 的
+[PR 检查](https://github.com/Myles-7/GSM/actions/runs/37092372403)与
+[推送检查](https://github.com/Myles-7/GSM/actions/runs/37092369057)
+均完成：Quality gates 与 Server quality gates 全部成功。
+后续补充的分析文档不修改已验证源码，仍由 PR 检查覆盖最终提交。
+
+- [PR #1](https://github.com/Myles-7/GSM/pull/1) 集成个人默认分支。
+- 默认分支要求 GitHub Actions（app id 15368）提供两项成功检查、PR 和已解决讨论；
+  管理员也受规则约束。个人默认分支与历史 main 均禁止强推和删除。
+- 密钥扫描、推送保护已启用；核查时开放 secret-scanning alerts 为 0。
+  Dependency vulnerability alerts 已启用，不自动升级依赖或宣称没有依赖漏洞。
+- Issues 与个人版贡献模板已启用，工程待办记录在 [#2](https://github.com/Myles-7/GSM/issues/2)、
+  [#3](https://github.com/Myles-7/GSM/issues/3)、[#4](https://github.com/Myles-7/GSM/issues/4)、
+  [#5](https://github.com/Myles-7/GSM/issues/5)。
+- 本轮后生成的综合架构分析一并归档；它与其他产品分析一样属于建议，未在本轮实施。
+
+后续优先核查可信 Renderer/IPC 来源、所有数据域的备份与删除覆盖，见本轮工程审计。

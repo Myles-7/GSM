@@ -1,5 +1,8 @@
 
 import { TranslateFn } from '../../i18n/useT';
+import { aiTaskJournal } from '../../services/aiTaskJournal';
+import { exportDiscoveryWorkspaceBackup, importDiscoveryWorkspaceBackup, validateDiscoveryWorkspaceBackup,
+  type DiscoveryWorkspaceBackup } from '../../services/discoveryWorkspaceBackup';
 import type { AppLanguage } from '../../i18n/languages';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
@@ -60,6 +63,7 @@ import { isThemePresetId } from '../../constants/themePresets';
 import type { ThemePresetId } from '../../constants/themePresets';
 import { indexedDBStorage } from '../../services/indexedDbStorage';
 import { IncludeKeysToggle } from './IncludeKeysToggle';
+import { RepositoryIdentityMigrationPanel } from './RepositoryIdentityMigrationPanel';
 import type { 
   Repository, 
   Release, 
@@ -123,6 +127,7 @@ interface ExportData {
     customCategories?: Category[];
     assetFilters?: AssetFilter[];
     discoveryRepos?: Record<string, DiscoveryRepo[]>;
+    discoveryWorkspace?: DiscoveryWorkspaceBackup;
     discoveryTotalCount?: Record<string, number>;
     discoveryHasMore?: Record<string, boolean>;
     discoveryNextPage?: Record<string, number>;
@@ -201,6 +206,7 @@ const IMPORT_DATA_KEYS = [
   'customCategories',
   'assetFilters',
   'discoveryRepos',
+  'discoveryWorkspace',
   'discoveryTotalCount',
   'discoveryHasMore',
   'discoveryNextPage',
@@ -217,6 +223,7 @@ const IMPORT_DATA_KEYS = [
 ] as const;
 
 const IMPORT_KEY_ALIASES: Record<string, string> = {
+  discoveryWorkspace: 'discoveryRepos',
   discoveryTotalCount: 'discoveryRepos',
   discoveryHasMore: 'discoveryRepos',
   discoveryNextPage: 'discoveryRepos',
@@ -411,8 +418,10 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
   const deleteAIConfigs = async () => {
     try {
       const store = useAppStore.getState();
-      store.setAIConfigs([]);
-      store.setActiveAIConfig(null);
+      const retained = store.aiConfigs.filter(config => isAgyConfig(config) && config.deviceBound);
+      store.setAIConfigs(retained);
+      if (!retained.some(config => config.id === store.activeAIConfig)) store.setActiveAIConfig(null);
+      if (!retained.some(config => config.id === store.repositoryChatSettings.chatConfigId)) store.setRepositoryChatSettings({ chatConfigId: null });
       addLog(t('dataManagementPanel.delete-ai-service-configs'), true);
       showSuccess(t('dataManagementPanel.ai-service-configs-deleted'));
     } catch (error) {
@@ -617,6 +626,8 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
   };
 
   const exportData = useCallback(async (selectedTypes: string[]) => {
+    const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'export', [{ id: 'export', label: selectedTypes.join(', ') }], undefined, undefined, { target: { view: 'settings', tab: 'data' } });
+    task.item('export', 'running');
     setIsExporting(true);
     try {
       const store = useAppStore.getState();
@@ -653,6 +664,8 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         exportDataObj.data.assetFilters = store.assetFilters;
       }
       if (selectedTypes.includes('discoveryRepos')) {
+        const account = String(store.user?.id ?? '');
+        if (account) exportDataObj.data.discoveryWorkspace = await exportDiscoveryWorkspaceBackup(account);
         exportDataObj.data.discoveryRepos = store.discoveryRepos;
         exportDataObj.data.discoveryTotalCount = store.discoveryTotalCount;
         exportDataObj.data.discoveryHasMore = store.discoveryHasMore;
@@ -697,6 +710,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           : (store.backendApiSecret ? MASKED_SECRET : null);
       }
 
+      if (String(useAppStore.getState().user?.id ?? '') !== String(store.user?.id ?? '')) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
       const blob = new Blob([JSON.stringify(exportDataObj, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -708,11 +722,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       URL.revokeObjectURL(url);
 
       addLog(t('dataManagementPanel.export-data'), true);
+      task.item('export', 'complete');
       showSuccess(t('dataManagementPanel.data-exported-successfully'));
     } catch (error) {
+      task.item('export', 'failed', error);
       addLog(t('dataManagementPanel.export-data'), false, String(error));
       showError(t('dataManagementPanel.export-failed-please-try-again'));
     } finally {
+      task.finish();
       setIsExporting(false);
     }
   }, [addLog, showSuccess, showError, t]);
@@ -743,11 +760,19 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
 
   const importData = useCallback(async (selectedTypes: string[], mode: 'merge' | 'replace') => {
     if (!importPreview.data) return;
+    const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'import', [{ id: 'import', label: selectedTypes.join(', ') }], undefined, undefined, { target: { view: 'settings', tab: 'data' } });
+    task.item('import', 'running'); task.state('committing');
 
     setIsImporting(true);
     try {
       const store = useAppStore.getState();
       const importedData = importPreview.data.data;
+      const account = String(store.user?.id ?? '');
+      validateDiscoveryWorkspaceBackup(account, importedData.discoveryWorkspace);
+      if (selectedTypes.includes('discoveryRepos') && importedData.discoveryWorkspace !== undefined) {
+        await importDiscoveryWorkspaceBackup(account, importedData.discoveryWorkspace, mode);
+      }
+      if (String(useAppStore.getState().user?.id ?? '') !== account) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
       // Legacy compatibility: treat missing flag as true (older exports contained keys)
       const wasIncluded = importedData.includeKeysInBackup ?? true;
 
@@ -759,11 +784,10 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           store.setReleases(importedData.releases, { allowEmpty: true });
         }
         if (selectedTypes.includes('aiConfigs') && importedData.aiConfigs) {
-          const restoredConfigs = importedData.aiConfigs.map(cfg => isAgyConfig(cfg) ? inertAgyDescriptor(cfg) : ({
-            ...cfg,
-            apiKey: wasIncluded && isRealSecret(cfg.apiKey) ? cfg.apiKey : store.aiConfigs.find(c => c.id === cfg.id)?.apiKey || ''
-          }));
+          const restoredConfigs = restoreAIConfigs(store.aiConfigs, importedData.aiConfigs, !!wasIncluded);
           store.setAIConfigs(restoredConfigs);
+          if (!restoredConfigs.some(config => config.id === store.activeAIConfig)) store.setActiveAIConfig(null);
+          if (!restoredConfigs.some(config => config.id === store.repositoryChatSettings.chatConfigId)) store.setRepositoryChatSettings({ chatConfigId: null });
         }
         if (selectedTypes.includes('webdavConfigs') && importedData.webdavConfigs) {
           const restoredConfigs = importedData.webdavConfigs.map(cfg => ({
@@ -1097,11 +1121,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       }
 
       addLog(t('dataManagementPanel.import-data'), true);
+      task.item('import', 'complete');
       setImportPreview({ data: null, isOpen: false, fileName: '' });
     } catch (error) {
+      task.item('import', 'failed', error);
       addLog(t('dataManagementPanel.import-data'), false, String(error));
       showError(t('dataManagementPanel.import-failed-please-try-again'));
     } finally {
+      task.finish();
       setIsImporting(false);
     }
   }, [importPreview, addLog, showSuccess, showError, t, setBackendApiSecret]);
@@ -1512,7 +1539,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       key: 'aiConfigs',
       label: t('dataManagementPanel.ai-service-configs'),
       description: t('dataManagementPanel.ai-analysis-service-configs-including-api-keys-m'),
-      count: aiConfigs.length,
+      count: aiConfigs.filter(config => !isAgyConfig(config)).length,
       icon: <Bot className="w-5 h-5" />,
       color: 'text-muted-foreground dark:text-muted-foreground',
       bgColor: 'bg-muted dark:bg-muted/40',
@@ -1583,7 +1610,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
   ];
 
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 space-y-8">
       {/* Success Message */}
       {showSuccessMessage && (
         <div className="fixed top-4 right-4 z-50 flex items-center space-x-2 px-4 py-3 bg-popover text-popover-foreground border border-border rounded-lg shadow-lg animate-in slide-in-from-top-2">
@@ -1600,6 +1627,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         </div>
       )}
 
+      <RepositoryIdentityMigrationPanel />
       {/* Data Statistics */}
       <section>
         <h3 className="text-lg font-semibold text-foreground dark:text-foreground mb-4 flex items-center">
@@ -1714,7 +1742,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
               <p className="text-sm text-muted-foreground dark:text-muted-foreground mb-2">
                 {t('dataManagementPanel.click-to-select-or-drag-file-here')}
               </p>
-              <Input type="file" accept=".json" onChange={handleImportFile} className="peer sr-only" id="import-file-input" />
+              <Input type="file" accept=".json" onChange={handleImportFile} className="peer sr-only w-px" id="import-file-input" />
               <label
                 htmlFor="import-file-input"
                 className="cursor-pointer px-4 py-2 bg-muted dark:bg-muted/40 hover:bg-accent dark:hover:bg-accent text-foreground dark:text-muted-foreground rounded-lg transition-colors inline-block peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2"
@@ -1775,12 +1803,11 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       )}
 
       {/* Selective Data Deletion */}
-      <section>
-        <h3 className="text-lg font-semibold text-foreground dark:text-foreground mb-4 flex items-center">
-          <Trash2 className="w-5 h-5 mr-2 text-muted-foreground dark:text-muted-foreground " />
+      <details className="rounded-lg border border-border p-4">
+        <summary className="cursor-pointer text-base font-semibold text-foreground">
           {t('dataManagementPanel.selective-data-deletion')}
-        </h3>
-        <div className="bg-card dark:bg-card rounded-lg border border-border dark:border-border overflow-hidden">
+        </summary>
+        <div className="mt-4 bg-card dark:bg-card rounded-lg border border-border dark:border-border overflow-hidden">
           <div className="divide-y divide-border/60 dark:divide-border">
             {dataStats.map((stat) => (
               <div
@@ -1814,7 +1841,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
             ))}
           </div>
         </div>
-      </section>
+      </details>
 
       {/* Delete All Data */}
       <section>
@@ -2111,4 +2138,4 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     </div>
   );
 };
-import { backupAIConfig, inertAgyDescriptor, isAgyConfig } from '../../utils/aiConfig';
+import { backupAIConfig, inertAgyDescriptor, isAgyConfig, restoreAIConfigs } from '../../utils/aiConfig';

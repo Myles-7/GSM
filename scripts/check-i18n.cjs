@@ -29,7 +29,7 @@ const ts = require('typescript');
 
 const DEFAULT_ROOT = path.resolve(__dirname, '..');
 
-const APP_LANGUAGES = ['zh', 'en', 'ja', 'es', 'pt-BR', 'ru', 'zh-TW', 'fr', 'de', 'ko'];
+const APP_LANGUAGES = ['zh', 'en'];
 const I18N_NAMESPACES = [
   'common',
   'app',

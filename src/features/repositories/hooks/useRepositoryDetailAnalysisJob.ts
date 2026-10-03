@@ -1,13 +1,16 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
-import type { Repository } from '../../../types';
+import type { Repository, AIConfig } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { analyzeRepositoryDetails } from '../../../services/repositoryDetailAnalysis';
-import { clearRepositoryDetailReadmeCache } from '../../../services/repositoryDetailReadme';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { agyFeatureConcurrency, forAgyFeature } from '../../../services/agyProfiles';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
+import { bindTaskSignal, taskConfigSnapshot } from '../../../services/taskExecution';
+import { assertRepositoryAnalysisAssetWrite, beginRepositoryAnalysisAssetWrite, claimRepositoryAnalysisTaskLease, clearRepositoryAnalysisRuntime,
+  finishRepositoryAnalysisTaskLease, renewRepositoryAnalysisTaskLease, repositoryAnalysisTaskKey, saveRepositoryAnalysisAsset } from '../../../services/repositoryAnalysisAssets';
+import { waitForRequest } from '../../../utils/requestDeadline';
 
 interface JobState {
   running: boolean;
@@ -55,20 +58,24 @@ function stop() {
   publish({ paused: false });
 }
 
-async function run(repositories: Repository[], expectedAccountId?: number, configId?: string) {
+async function run(repositories: Repository[], expectedAccountId?: number, configId?: string, retry?: { config: AIConfig; parentId: string }) {
   const state = useAppStore.getState();
   const accountId = state.user?.id;
   if (active || !repositories.length || accountId === undefined || (expectedAccountId !== undefined && expectedAccountId !== accountId)) return;
-  const selectedConfig = state.aiConfigs.find((item) => item.id === (configId ?? state.activeAIConfig));
+  const selectedConfig = retry?.config ?? state.aiConfigs.find((item) => item.id === (configId ?? state.activeAIConfig));
   if (!isAIConfigAvailable(selectedConfig)) return;
   const config = forAgyFeature({ ...selectedConfig }, 'repository-details', repositories.length === 1 ? 'interactive' : 'background');
   const job = { accountId, stopped: false, accountChanged: false, controller: new AbortController() };
   active = job;
   const isCurrentAccount = () => useAppStore.getState().user?.id === job.accountId;
-  const canContinue = () => active === job && !job.stopped && isCurrentAccount();
+  const canContinue = () => active === job && !job.stopped && !job.controller.signal.aborted
+    && isCurrentAccount() && useAppStore.getState().githubToken === state.githubToken;
   const queue = [...new Map(repositories.map((repo) => [repo.id, repo])).values()];
-  const writes = new Map(queue.map(repo => [repo.id, beginRepositoryAnalysisWrite(accountId, repo.id, true)]));
+  const versions = new Map(queue.map(repo => [repo.id, beginRepositoryAnalysisAssetWrite(String(accountId), repo.id)
+    .then(version => ({ version }), error => ({ error }))]));
   const journal = aiTaskJournal.begin(String(accountId), 'details', queue.map(repo => ({ id: String(repo.id), label: repo.full_name })), config.id);
+  journal.metadata({ config: taskConfigSnapshot(config), parentId: retry?.parentId, target: { view: 'repositories', id: queue.length === 1 ? String(queue[0].id) : undefined } });
+  bindTaskSignal(job.controller.signal, journal);
   activeJournal = journal;
   journal.bind({ pause, resume, stop });
   publish({ ...emptyState(), running: true, progress: { current: 0, total: queue.length } });
@@ -91,18 +98,49 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
       if (!repository) continue;
       journal.item(String(repository.id), 'running');
       nextRequestAt = Date.now() + requestInterval;
+      const key = repositoryAnalysisTaskKey(repository, state.language, selectedConfig);
+      const owner = crypto.randomUUID();
+      let claimed = false;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       try {
+        const initialWrite = await versions.get(repository.id)!;
+        if ('error' in initialWrite) throw initialWrite.error;
+        const assetVersion = initialWrite.version;
+        await assertRepositoryAnalysisAssetWrite(assetVersion);
+        const deadline = Date.now() + 90000;
+        while (!claimed && canContinue()) {
+          claimed = await claimRepositoryAnalysisTaskLease(String(accountId), key, owner, canContinue);
+          if (!claimed) {
+            if (Date.now() >= deadline) throw new Error('Analysis lease wait timed out');
+            await waitForRequest(1000, job.controller.signal);
+          }
+        }
+        if (!canContinue()) break;
+        await assertRepositoryAnalysisAssetWrite(assetVersion);
+        if (!canContinue()) break;
+        const mergeWrite = beginRepositoryAnalysisWrite(accountId, repository.id, true);
+        heartbeat = setInterval(() => {
+          void renewRepositoryAnalysisTaskLease(String(accountId), key, owner, canContinue)
+            .then(renewed => { if (!renewed) job.controller.abort(); }).catch(() => job.controller.abort());
+        }, 20000);
         const details = await analyzeRepositoryDetails({
           repository, accountId, aiConfig: config, githubToken: state.githubToken || '',
           language: state.language, signal: job.controller.signal,
-          onStage: stage => { if (canContinue()) publish({ stage, currentRepository: repository.full_name }); },
+          onStage: stage => { if (canContinue()) { publish({ stage, currentRepository: repository.full_name }); journal.metadata({ phase: stage }); } },
         });
+        if (!canContinue()) break;
+        await assertRepositoryAnalysisAssetWrite(assetVersion);
+        if (!canContinue()) break;
+        const committed = await finishRepositoryAnalysisTaskLease(String(accountId), key, owner, 'done', details, canContinue);
+        if (!committed) throw new Error('Analysis lease lost before save');
+        await saveRepositoryAnalysisAsset(String(accountId), repository, state.language, selectedConfig, details, assetVersion);
+        await assertRepositoryAnalysisAssetWrite(assetVersion);
         if (!canContinue()) break;
         const latestState = useAppStore.getState();
         const latest = latestState.repositories.find((item) => item.id === repository.id);
         if (latest && latestState.user?.id === accountId) {
           publish({ stage: 'saving' });
-          latestState.updateRepository(writes.get(repository.id)!(latest, {
+          latestState.updateRepository(mergeWrite(latest, {
             ...latest, ai_details: details,
             ai_summary: details.summary ?? details.problem ?? latest.ai_summary,
             ai_tags: details.tags?.length ? details.tags : latest.ai_tags,
@@ -115,11 +153,19 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
         }
       } catch (error) {
         if (!canContinue()) break;
-        const message = (error instanceof Error ? error.message : String(error))
-          .split(config.apiKey || '\u0000').join('[redacted]')
-          .split(state.githubToken || '\u0000').join('[redacted]').slice(0, 500);
-        publish({ failures: [...snapshot.failures, repository], errors: [...snapshot.errors, { repository: repository.full_name, message }] });
-        journal.item(String(repository.id), 'failed');
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          journal.item(String(repository.id), 'canceled');
+        } else {
+          const message = (error instanceof Error ? error.message : String(error))
+            .split(config.apiKey || '\u0000').join('[redacted]')
+            .split(state.githubToken || '\u0000').join('[redacted]').slice(0, 500);
+          publish({ failures: [...snapshot.failures, repository], errors: [...snapshot.errors, { repository: repository.full_name, message }] });
+          journal.item(String(repository.id), 'failed', message);
+        }
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+        if (claimed) await finishRepositoryAnalysisTaskLease(String(accountId), key, owner,
+          canContinue() ? 'failed' : 'cancelled').catch(() => {});
       }
       current += 1;
       publish({ progress: { current, total: queue.length } });
@@ -154,7 +200,7 @@ export function useRepositoryDetailAnalysisJob(enabled = true) {
         if (next.user?.id === previous.user?.id && next.githubToken === previous.githubToken) return;
         if (active) active.accountChanged = true;
         stop();
-        clearRepositoryDetailReadmeCache();
+        clearRepositoryAnalysisRuntime();
         publish({ ...emptyState(), running: !!active });
       });
     }

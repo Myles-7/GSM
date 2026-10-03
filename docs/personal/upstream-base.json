@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "recordedOn": "2026-10-02",
+  "recordedOn": "2026-10-03",
   "timeZone": "Asia/Shanghai",
   "status": "validated-local-release",
   "repositories": {
@@ -10,7 +10,7 @@
     },
     "origin": {
       "url": "https://github.com/Myles-7/GSM.git",
-      "defaultBranch": "main"
+      "defaultBranch": "personal/main"
     }
   },
   "upstreamVersion": "0.8.4",
@@ -51,7 +51,7 @@
       "storeVersion": 17,
       "serverMigration": 4,
       "dataRekeyExecuted": false,
-      "pushed": false
+      "pushed": true
     }
   ],
   "rollout": {
@@ -179,12 +179,15 @@
   ],
   "local": {
     "packageVersion": "0.8.4",
-    "intendedBranch": "codex/selective-v0.8.5-p0.2.0",
+    "intendedBranch": "personal/main",
     "gitInitialized": true,
     "remotesConfigured": true,
     "fullHistoryFetched": true,
     "sourceComparedWithUpstream": true,
-    "pushed": false,
-    "lastPublishedPersonalVersion": "P0.2.0"
+    "pushed": true,
+    "lastPublishedPersonalVersion": "P0.2.1",
+    "sourceIntegrationCommit": "fda2d9aeeeb7438c83d53271c83581ed426d8dd8",
+    "sourceIntegrationRecord": "upgrades/2026-10-03-source-publication.md",
+    "supportedLanguages": ["zh", "en"]
   }
 }

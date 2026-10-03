@@ -98,13 +98,10 @@ describe('GeneralPanel desktop section', () => {
     expect(within(dialog).queryByRole('textbox')).toBeNull();
   });
 
-  it('embeds the main-owned migration section independently of Token and Appearance', () => {
+  it('keeps historical identity maintenance out of daily general settings', () => {
     mocks.isSupported.mockReturnValue(false);
     render(<GeneralPanel t={t} />);
-    const section = screen.getByRole('region', { name: 'Identity migration' });
-    expect(within(section).getByRole('button', { name: 'Dry Run' })).toBeTruthy();
-    expect(within(section).getByRole('button', { name: 'Apply Confirmed Mappings' })).toBeTruthy();
-    expect(within(section).getByRole('button', { name: 'Resume Migration' })).toBeTruthy();
-    expect(within(section).queryByLabelText('GitHub Personal Access Token')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Identity migration' })).toBeNull();
+    expect(screen.getByLabelText('GitHub Personal Access Token')).toBeTruthy();
   });
 });

@@ -1,20 +1,26 @@
-import type { Repository } from '../types';
 import type { WorkbenchProject, WorkbenchProposal } from '../types/aiWorkbench';
 import type { RepositoryChatSession } from '../types/repositoryChat';
+import type { RepositoryIdentityMapping } from '../utils/repositoryIdentity';
 import {
-  validateRepositoryIdentityMappings,
-  type RepositoryIdentityMapping,
-} from '../utils/repositoryIdentity';
-import type { CustomDiscoveryData } from '../features/discovery/custom/model';
+  assertRepositoryIdentityName, remapParticipantRepositoryIds, remapParticipantRepositoryList,
+  validateParticipantMappings, type RepositoryIdentityParticipantResult,
+} from '../utils/repositoryIdentityRemap';
+import { remapCustomDiscoveryRepositoryIdentityData, type CustomDiscoveryData } from '../features/discovery/custom/model';
 import type { VectorSearchService, VectorRepositoryIdentityBackup } from './vectorSearchService';
+import { exportDiscoveryWorkspaceBackup, importDiscoveryWorkspaceBackup, remapDiscoveryWorkspaceBackup,
+  validateDiscoveryWorkspaceBackup, type DiscoveryWorkspaceBackup } from './discoveryWorkspaceBackup';
 
 export type { RepositoryIdentityMapping } from '../utils/repositoryIdentity';
+export {
+  assertRepositoryIdentityName, remapParticipantRepositoryIds, remapParticipantRepositoryList, validateParticipantMappings,
+} from '../utils/repositoryIdentityRemap';
+export type { RepositoryIdentityParticipantResult } from '../utils/repositoryIdentityRemap';
 export interface WorkbenchRepositoryIdentityScope { ownerId: string }
-export interface RepositoryIdentityParticipantResult { changed: number }
 export interface WorkbenchRepositoryIdentitySnapshot {
   sessions: RepositoryChatSession[];
   projects: WorkbenchProject[];
   proposals: WorkbenchProposal[];
+  discoveryWorkspace?: DiscoveryWorkspaceBackup;
 }
 export interface RepositoryIdentityParticipantBackup {
   account: string;
@@ -29,10 +35,12 @@ export async function backupParticipantIdentities(account: string): Promise<Repo
   const [{ repositoryChatStorage }, { backupCustomRepositoryIdentityData }] = await Promise.all([
     import('./repositoryChatStorage'), import('../features/discovery/custom/storage'),
   ]);
-  const [workbench, customDiscovery] = await Promise.all([
+  const [workbench, customDiscovery, discoveryWorkspace] = await Promise.all([
     repositoryChatStorage.backupRepositoryIdentityReferences(account),
     backupCustomRepositoryIdentityData(account),
+    exportDiscoveryWorkspaceBackup(account, false),
   ]);
+  workbench.discoveryWorkspace = discoveryWorkspace;
   return { account, workbench, customDiscovery, vectors: { storage: 'remote-vectorize', backedUp: false } };
 }
 
@@ -40,62 +48,68 @@ export async function backupParticipantIdentities(account: string): Promise<Repo
 export async function restoreParticipantIdentities(account: string, backup: RepositoryIdentityParticipantBackup): Promise<void> {
   if (!account?.trim() || backup?.account !== account) throw new Error('PARTICIPANT_BACKUP_ACCOUNT_CONFLICT');
   if (!backup.workbench || !['sessions', 'projects', 'proposals'].every(name =>
-    Array.isArray(backup.workbench[name as keyof WorkbenchRepositoryIdentitySnapshot])
-    && backup.workbench[name as keyof WorkbenchRepositoryIdentitySnapshot].every(row => row.ownerId === account))) {
+    Array.isArray(backup.workbench[name as 'sessions' | 'projects' | 'proposals'])
+    && backup.workbench[name as 'sessions' | 'projects' | 'proposals'].every(row => row.ownerId === account))) {
     throw new Error('PARTICIPANT_BACKUP_ACCOUNT_CONFLICT');
   }
+  validateDiscoveryWorkspaceBackup(account, backup.workbench.discoveryWorkspace);
   if (backup.customDiscovery && (!Array.isArray(backup.customDiscovery.channels)
     || !Array.isArray(backup.customDiscovery.editions) || !backup.customDiscovery.cache)) {
     throw new Error('INVALID_CUSTOM_DISCOVERY_IDENTITY_BACKUP');
   }
   const { repositoryChatStorage } = await import('./repositoryChatStorage');
   await repositoryChatStorage.restoreRepositoryIdentityReferences(account, backup.workbench);
+  await importDiscoveryWorkspaceBackup(account, backup.workbench.discoveryWorkspace, 'replace', true);
   if (backup.customDiscovery) {
     const { restoreCustomRepositoryIdentityData } = await import('../features/discovery/custom/storage');
     await restoreCustomRepositoryIdentityData(account, backup.customDiscovery);
   }
 }
 
-export function validateParticipantMappings(mappings: ReadonlyArray<RepositoryIdentityMapping>): void {
-  validateRepositoryIdentityMappings(mappings);
-  const names = new Set<string>();
-  for (const mapping of mappings) {
-    const name = mapping.fullName.toLowerCase();
-    if (names.has(name)) throw new Error('AMBIGUOUS_IDENTITY_NAME');
-    names.add(name);
+/** The coordinator should fingerprint every cross-database intermediate state before migration. */
+export function participantIdentityRecoverySnapshots(
+  backup: RepositoryIdentityParticipantBackup,
+  mappings: readonly RepositoryIdentityMapping[],
+): RepositoryIdentityParticipantBackup[] {
+  const original = structuredClone(backup);
+  const migrated = structuredClone(backup);
+  remapWorkbench(migrated.workbench, backup.account, mappings);
+  if (migrated.customDiscovery) remapCustomDiscoveryRepositoryIdentityData(migrated.customDiscovery, mappings);
+  const variants: RepositoryIdentityParticipantBackup[] = [];
+  for (let mask = 0; mask < 16; mask++) {
+    const candidate = structuredClone(original);
+    if (mask & 1) Object.assign(candidate.workbench, {
+      sessions: migrated.workbench.sessions, projects: migrated.workbench.projects, proposals: migrated.workbench.proposals,
+    });
+    const discovery = candidate.workbench.discoveryWorkspace;
+    if (discovery && migrated.workbench.discoveryWorkspace) {
+      if (mask & 2) discovery.workspace = migrated.workbench.discoveryWorkspace.workspace;
+      if (mask & 4) discovery.analyses = migrated.workbench.discoveryWorkspace.analyses;
+    }
+    if (mask & 8) candidate.customDiscovery = migrated.customDiscovery;
+    variants.push(candidate);
   }
+  return variants;
 }
 
-export function assertRepositoryIdentityName(id: number, name: string, mappings: ReadonlyArray<RepositoryIdentityMapping>): void {
-  const mapping = mappings.find(item => item.oldId === id || item.newId === id);
-  if (mapping && (typeof name !== 'string' || name.toLowerCase() !== mapping.fullName.toLowerCase())) {
-    throw new Error('REPOSITORY_IDENTITY_NAME_CONFLICT');
-  }
-}
-
-/** Only explicit repository fields are rewritten; counters, text and historical evidence are not. */
-export function remapParticipantRepositoryList(repositories: Repository[], mappings: ReadonlyArray<RepositoryIdentityMapping>): Repository[] {
-  const ids = new Set<number>();
-  let changed = false;
-  const result = repositories.map(repo => {
-    assertRepositoryIdentityName(repo.id, repo.full_name, mappings);
-    const mapping = mappings.find(item => item.oldId === repo.id);
-    const id = mapping?.newId ?? repo.id;
-    if (ids.has(id)) throw new Error('REPOSITORY_IDENTITY_COLLISION');
-    ids.add(id);
-    if (!mapping) return repo;
-    changed = true;
-    return { ...repo, id };
-  });
-  return changed ? result : repositories;
-}
-
-export function remapParticipantRepositoryIds(ids: number[], mappings: ReadonlyArray<RepositoryIdentityMapping>): number[] {
-  const result = ids.map(id => mappings.find(item => item.oldId === id)?.newId ?? id);
-  return result.some((id, index) => id !== ids[index]) ? [...new Set(result)] : ids;
+/** Older journals predate these optional stores and must compare only the stores they captured. */
+export function participantIdentityRecoveryView(
+  current: RepositoryIdentityParticipantBackup,
+  original: RepositoryIdentityParticipantBackup,
+): RepositoryIdentityParticipantBackup {
+  const result = structuredClone(current);
+  if (original.workbench.discoveryWorkspace === undefined) delete result.workbench.discoveryWorkspace;
+  return result;
 }
 
 export function remapWorkbench(snapshot: WorkbenchRepositoryIdentitySnapshot, ownerId: string, mappings: ReadonlyArray<RepositoryIdentityMapping>): RepositoryIdentityParticipantResult {
+  validateParticipantMappings(mappings);
+  const discoveryWorkspace = snapshot.discoveryWorkspace
+    ? structuredClone(snapshot.discoveryWorkspace) : undefined;
+  if (discoveryWorkspace) {
+    validateDiscoveryWorkspaceBackup(ownerId, discoveryWorkspace);
+    remapDiscoveryWorkspaceBackup(discoveryWorkspace, mappings);
+  }
   let changed = 0;
   snapshot.sessions = snapshot.sessions.map(session => {
     if (session.ownerId !== ownerId) {
@@ -180,6 +194,10 @@ export function remapWorkbench(snapshot: WorkbenchRepositoryIdentitySnapshot, ow
     changed++;
     return { ...proposal, operations, organization };
   });
+  if (discoveryWorkspace) {
+    if (JSON.stringify(discoveryWorkspace) !== JSON.stringify(snapshot.discoveryWorkspace)) changed++;
+    snapshot.discoveryWorkspace = discoveryWorkspace;
+  }
   return { changed };
 }
 
@@ -192,7 +210,17 @@ export async function migrateWorkbenchRepositoryIdentities(
   validateParticipantMappings(mappings);
   if (!mappings.length) return { changed: 0 };
   const { repositoryChatStorage } = await import('./repositoryChatStorage');
-  return repositoryChatStorage.mutateRepositoryIdentityReferences(scope.ownerId, snapshot => remapWorkbench(snapshot, scope.ownerId, mappings));
+  const discoveryWorkspace = await exportDiscoveryWorkspaceBackup(scope.ownerId, false);
+  // Preflight the new stores before committing the existing participant.
+  remapDiscoveryWorkspaceBackup(structuredClone(discoveryWorkspace), mappings);
+  const workbench = await repositoryChatStorage.mutateRepositoryIdentityReferences(scope.ownerId, snapshot => remapWorkbench(snapshot, scope.ownerId, mappings));
+  const [{ migrateDiscoveryWorkspaceIdentities }, { migrateRepositoryAnalysisAssetIdentities }] = await Promise.all([
+    import('../features/discovery/workspace/storage'), import('./repositoryAnalysisAssets'),
+  ]);
+  const workspace = discoveryWorkspace.workspace ? await migrateDiscoveryWorkspaceIdentities(scope.ownerId, mappings) : { changed: 0 };
+  const analyses = discoveryWorkspace.analyses?.assets.some(asset => mappings.some(row => row.oldId === asset.repositoryId))
+    ? await migrateRepositoryAnalysisAssetIdentities(scope.ownerId, mappings) : { changed: 0 };
+  return { changed: workbench.changed + workspace.changed + analyses.changed };
 }
 
 export async function migrateCustomDiscoveryRepositoryIdentities(

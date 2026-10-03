@@ -27,6 +27,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { isElectron } from '../services/electronProxy';
 import { useBackendAvailability } from '../features/settings/hooks/useBackendAvailability';
@@ -64,6 +65,42 @@ interface SettingsPanelProps {
   isOpen?: boolean;
   onClose?: () => void;
   isModal?: boolean;
+}
+
+const SETTINGS_GROUPS: Array<{ key: string; ids: SettingsTab[] }> = [
+  { key: 'basics', ids: ['general', 'appearance', 'menu'] },
+  { key: 'workflows', ids: ['ai', 'starSync', 'category', 'vectorSearch', 'htmlReading'] },
+  { key: 'storage', ids: ['backup', 'webdav', 'backend', 'data'] },
+  { key: 'advanced', ids: ['network', 'plugins', 'mcp', 'logs'] },
+];
+
+function SettingsNav({ tabs, activeTab, onTabChange }: MobileTabNavProps) {
+  const t = useT('app');
+  const ux = useT('settings');
+  const [query, setQuery] = useState('');
+  const visible = tabs.filter(tab => tab.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  return <div className="p-3">
+    <div className="relative mb-4">
+      <Search size={14} className="pointer-events-none absolute left-2.5 top-3 text-muted-foreground" />
+      <Input value={query} onChange={event => setQuery(event.target.value)} aria-label={ux('settingsUx.searchSettings')} placeholder={ux('settingsUx.searchSettings')} className="h-9 pl-8 pr-8 text-sm" />
+      {query && <Button variant="ghost" size="icon" className="absolute right-0 top-0 h-9 w-8" onClick={() => setQuery('')} aria-label={ux('settingsUx.clearSearch')}><X size={14} /></Button>}
+    </div>
+    <nav role="tablist" aria-orientation="vertical" aria-label={t('app:settingsPanel.settings-tabs')}>
+      {SETTINGS_GROUPS.map(group => {
+        const items = group.ids.flatMap(id => visible.filter(tab => tab.id === id));
+        return items.length > 0 && <div key={group.key} className="mb-4 last:mb-0">
+          <p className="mb-1 px-2 text-[11px] font-medium tracking-wide text-muted-foreground">{ux(`settingsUx.groups.${group.key}`)}</p>
+          {items.map(tab => <Button key={tab.id} type="button" variant={activeTab === tab.id ? 'secondary' : 'ghost'} onClick={() => onTabChange(tab.id)}
+            role="tab" id={`settings-tab-${tab.id}`} aria-selected={activeTab === tab.id} aria-controls={`settings-tabpanel-${tab.id}`}
+            className="h-9 w-full justify-start gap-2.5 px-2 text-left text-sm">
+            {tab.icon}<span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
+            {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
+          </Button>)}
+        </div>;
+      })}
+    </nav>
+    {visible.length === 0 && <p role="status" className="px-2 py-3 text-sm text-muted-foreground">{ux('settingsUx.noResults')}</p>}
+  </div>;
 }
 
 // 移动端标签导航组件
@@ -229,9 +266,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   })));
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [displayTab, setDisplayTab] = useState<SettingsTab>('general');
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const tabChangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tabResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const t = useT('app');
   const backendAvailable = useBackendAvailability();
@@ -245,40 +279,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     }
   };
 
-  // 处理标签切换，添加过渡动画
-  // 动画顺序：1.淡出当前内容 2.切换标签 3.淡入新内容
+  // Switching settings should respond immediately, including rapid repeated clicks.
   const handleTabChange = useCallback((tabId: SettingsTab) => {
-    if (tabId === activeTab || isTransitioning) return;
-
-    if (tabChangeTimeoutRef.current) {
-      clearTimeout(tabChangeTimeoutRef.current);
-    }
-    if (tabResetTimeoutRef.current) {
-      clearTimeout(tabResetTimeoutRef.current);
-    }
-
-    setIsTransitioning(true);
-
-    tabChangeTimeoutRef.current = setTimeout(() => {
-      setActiveTab(tabId);
-      setDisplayTab(tabId);
-
-      tabResetTimeoutRef.current = setTimeout(() => {
-        setIsTransitioning(false);
-      }, 120);
-    }, 100);
-  }, [activeTab, isTransitioning]);
-
-  // 清理定时器
-  useEffect(() => {
-    return () => {
-      if (tabChangeTimeoutRef.current) {
-        clearTimeout(tabChangeTimeoutRef.current);
-      }
-      if (tabResetTimeoutRef.current) {
-        clearTimeout(tabResetTimeoutRef.current);
-      }
-    };
+    setActiveTab(tabId);
+    setDisplayTab(tabId);
   }, []);
 
   // Valid SettingsTab values for runtime validation
@@ -286,10 +290,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     () => new Set(['general', 'appearance', 'starSync', 'ai', 'webdav', 'backup', 'backend', 'category', 'menu', 'data', 'logs', 'network', 'vectorSearch', 'mcp', 'plugins', 'htmlReading']),
     []
   );
-
-  // Ref to hold a pending tab navigation request (handles race condition
-  // where the event fires before the component mounts / handleTabChange is ready)
-  const pendingTabRef = useRef<SettingsTab | null>(null);
 
   // Check sessionStorage for a pending tab (set by DebugModeIndicator before
   // the view switch, so it survives the SettingsPanel remount)
@@ -312,107 +312,97 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     const onNavigate = (e: Event) => {
       const tab = (e as CustomEvent<{ tab: SettingsTab }>).detail?.tab;
       if (!tab || !VALID_TABS.has(tab)) return;
-      // If handleTabChange is ready (not transitioning), apply immediately
-      if (!isTransitioning) {
-        handleTabChange(tab);
-      } else {
-        // Store in ref so the second useEffect can pick it up
-        pendingTabRef.current = tab;
-      }
+      handleTabChange(tab);
     };
     window.addEventListener('gsm:navigate-to-settings-tab', onNavigate);
     return () => window.removeEventListener('gsm:navigate-to-settings-tab', onNavigate);
-  }, [handleTabChange, isTransitioning, VALID_TABS]);
-
-  // Apply any pending tab navigation captured before the listener was ready
-  useEffect(() => {
-    if (pendingTabRef.current && !isTransitioning) {
-      const tab = pendingTabRef.current;
-      pendingTabRef.current = null;
-      handleTabChange(tab);
-    }
-  }, [handleTabChange, isTransitioning]);
+  }, [handleTabChange, VALID_TABS]);
 
   const tabs: SettingsTabItem[] = [
     { id: 'htmlReading', label: '每日 HTML', icon: <FileText className="w-5 h-5" /> },
     {
       id: 'general',
-      label: t('settingsPanel.general'),
+      label: t('app:settingsPanel.general'),
       icon: <Globe className="w-5 h-5" />,
     },
     {
       id: 'appearance',
-      label: t('settingsPanel.appearance', { defaultValue: 'Appearance' }),
+      label: t('app:settingsPanel.appearance', { defaultValue: 'Appearance' }),
       icon: <Palette className="w-5 h-5" />,
     },
     {
       id: 'starSync',
-      label: t('settingsPanel.star-sync'),
+      label: t('app:settingsPanel.star-sync'),
       icon: <Star className="w-5 h-5" />,
     },
     {
       id: 'ai',
-      label: t('settingsPanel.ai-config'),
+      label: t('app:settingsPanel.ai-config'),
       icon: <Bot className="w-5 h-5" />,
     },
     {
       id: 'webdav',
-      label: t('settingsPanel.webdav'),
+      label: t('app:settingsPanel.webdav'),
       icon: <Cloud className="w-5 h-5" />,
     },
     {
       id: 'backup',
-      label: t('settingsPanel.backup'),
+      label: t('app:settingsPanel.backup'),
       icon: <Database className="w-5 h-5" />,
     },
     {
       id: 'backend',
-      label: t('settingsPanel.backend'),
+      label: t('app:settingsPanel.backend'),
       icon: <Server className="w-5 h-5" />,
     },
     {
       id: 'category',
-      label: t('settingsPanel.categories'),
+      label: t('app:settingsPanel.categories'),
       icon: <Package className="w-5 h-5" />,
     },
     {
       id: 'menu',
-      label: t('settingsPanel.menu'),
+      label: t('app:settingsPanel.menu'),
       icon: <Layout className="w-5 h-5" />,
     },
     {
       id: 'data',
-      label: t('settingsPanel.data-management'),
+      label: t('app:settingsPanel.data-management'),
       icon: <Trash2 className="w-5 h-5" />,
     },
     {
       id: 'logs',
-      label: t('settingsPanel.diagnostic-logs'),
+      label: t('app:settingsPanel.diagnostic-logs'),
       icon: <ScrollText className="w-5 h-5" />,
     },
     ...((isElectron() || backendAvailable) ? [{
       id: 'network' as SettingsTab,
-      label: t('settingsPanel.network'),
+      label: t('app:settingsPanel.network'),
       icon: <Wifi className="w-5 h-5" />,
     }] : []),
     ...(isElectron() ? [{
       id: 'plugins' as SettingsTab,
-      label: t('settingsPanel.plugin-management', { defaultValue: 'Plugin Management' }),
+      label: t('app:settingsPanel.plugin-management', { defaultValue: 'Plugin Management' }),
       icon: <Plug className="w-5 h-5" />,
     }] : []),
     {
       id: 'vectorSearch' as SettingsTab,
-      label: t('settingsPanel.vector-search'),
+      label: t('app:settingsPanel.vector-search'),
       icon: <Search className="w-5 h-5" />,
       badge: localVectorPendingCount,
     },
     // MCP requires a long-lived process: backend or Electron main. Hide for pure SPA.
     ...((isElectron() || backendAvailable) ? [{
       id: 'mcp' as SettingsTab,
-      label: t('settingsPanel.mcp-server'),
+      label: t('app:settingsPanel.mcp-server'),
       icon: <Cable className="w-5 h-5" />,
     }] : []),
   ];
+
+  tabs.sort((a, b) => {
+    const order = SETTINGS_GROUPS.flatMap(group => group.ids);
+    return order.indexOf(a.id) - order.indexOf(b.id);
+  });
 
   const renderTabContent = () => {
     const content = (() => {
@@ -458,11 +448,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       <div
         role="tabpanel"
         id={`settings-tabpanel-${displayTab}`}
-        aria-label={tabs.find((tab) => tab.id === displayTab)?.label ?? t('settingsPanel.settings-content')}
-        className={`
-          transition-all duration-100 ease-out
-          ${isTransitioning ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'}
-        `}
+        aria-label={tabs.find((tab) => tab.id === displayTab)?.label ?? t('app:settingsPanel.settings-content')}
+        className="min-w-0"
       >
         {content}
       </div>
@@ -481,36 +468,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <div className="flex items-center space-x-3">
                 <Settings className="h-6 w-6 text-muted-foreground dark:text-muted-foreground" />
                 <DialogTitle id="settings-modal-title" className="text-xl font-semibold text-foreground dark:text-foreground">
-                  {t('settingsPanel.settings')}
+                  {t('app:settingsPanel.settings')}
                 </DialogTitle>
               </div>
-              <Button type="button" variant="ghost" size="icon" onClick={handleClose} aria-label={t('settingsPanel.close-settings')}>
+              <Button type="button" variant="ghost" size="icon" onClick={handleClose} aria-label={t('app:settingsPanel.close-settings')}>
                 <X className="h-5 w-5 text-muted-foreground dark:text-muted-foreground" />
               </Button>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-              <div className="hidden w-64 overflow-y-auto border-r ui-divider bg-background dark:bg-card md:block">
-                <nav className="space-y-1 p-4" role="tablist" aria-label={t('settingsPanel.settings-tabs')}>
-                  {tabs.map((tab) => (
-                    <Button
-                      key={tab.id}
-                      type="button"
-                      variant={activeTab === tab.id ? 'secondary' : 'ghost'}
-                      onClick={() => handleTabChange(tab.id)}
-                      size="sm"
-                      role="tab"
-                      id={`settings-tab-${tab.id}`}
-                      aria-selected={activeTab === tab.id}
-                      aria-controls={`settings-tabpanel-${tab.id}`}
-                      className="h-9 w-full justify-start gap-3 px-3 text-left"
-                    >
-                      {tab.icon}
-                      <span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
-                      {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
-                    </Button>
-                  ))}
-                </nav>
+              <div className="hidden w-56 shrink-0 overflow-y-auto border-r ui-divider bg-background dark:bg-card md:block">
+                <SettingsNav tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
               </div>
 
               <div className="md:hidden">
@@ -529,37 +497,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   // 独立页面模式（兼容原有代码）
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="mx-auto min-w-0 max-w-6xl">
       <div className="flex items-center space-x-3 mb-6">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h2 className="text-lg font-semibold tracking-tight text-foreground">
-          {t('settingsPanel.settings')}
+          {t('app:settingsPanel.settings')}
         </h2>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6">
         {/* 桌面端侧边栏 */}
-        <div className="hidden lg:block w-64 flex-shrink-0 lg:sticky lg:top-4 lg:self-start">
+        <div className="hidden lg:block w-56 flex-shrink-0 lg:sticky lg:top-4 lg:self-start max-h-[calc(100vh-6rem)] overflow-y-auto">
           <div className="ui-panel overflow-hidden rounded-md">
-            <nav className="p-2 space-y-1" role="tablist" aria-label={t('settingsPanel.settings-tabs')}>
-              {tabs.map((tab) => (
-                <Button
-                  key={tab.id}
-                  type="button"
-                  variant={activeTab === tab.id ? 'secondary' : 'ghost'}
-                  onClick={() => handleTabChange(tab.id)}
-                  role="tab"
-                  id={`settings-tab-${tab.id}`}
-                  aria-selected={activeTab === tab.id}
-                  aria-controls={`settings-tabpanel-${tab.id}`}
-                  className="h-auto w-full justify-start gap-3 px-4 py-3 text-left"
-                >
-                  {tab.icon}
-                  <span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
-                  {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
-                </Button>
-              ))}
-            </nav>
+            <SettingsNav tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
           </div>
         </div>
 
@@ -574,7 +524,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
         {/* 内容区域 */}
         <div className="flex-1 min-w-0">
-          <div className="ui-panel rounded-md p-4 sm:p-6">
+          <div className="ui-panel min-w-0 rounded-xl p-4 sm:p-6">
             {renderTabContent()}
           </div>
         </div>

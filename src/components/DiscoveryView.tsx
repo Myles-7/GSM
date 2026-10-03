@@ -5,13 +5,19 @@
 import { discoveryPlatformName } from '../i18n/discoveryNames';
 import { discoveryChannelDisplayName as discoveryChannelName } from '../features/discovery/application/discoveryChannelDisplayName';
 import { useT } from '../i18n/useT';
+import { useTaskTarget } from '../hooks/useTaskTarget';
 import type { AppLanguage } from '../i18n/languages';
 import { Button } from './ui/button';
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useDiscoveryEntryLoading } from '../features/discovery/hooks/useDiscoveryEntryLoading';
+import { useDiscoveryCacheAge } from '../features/discovery/hooks/useDiscoveryCacheAge';
+import { useAutomaticDiscoveryLoading, useChannelReadingPreferences, useDiscoveryBrowseRestore, useReadingAnchor } from '../features/discovery/hooks/useDiscoveryReading';
+import { discoverySourceSignature } from '../features/discovery/workspace/source';
+import { DiscoveryReadingSettings } from '../features/discovery/components/DiscoveryReadingSettings';
+import { deleteRepositoryAnalysisAssets } from '../services/repositoryAnalysisAssets';
 import {
   RefreshCw,
   TrendingUp,
-  Bot,
   Loader2,
   Rocket,
   Tag,
@@ -23,7 +29,11 @@ import {
   X,
   Calendar,
   Newspaper,
-  Users
+  Users,
+  Settings2,
+  ArrowUp,
+  ListRestart,
+  Square
 } from 'lucide-react';
 import { SiAndroid, SiApple, SiLinux, SiX, SiTelegram } from '@icons-pack/react-simple-icons';
 import { SiWindows } from './SiWindows';
@@ -40,7 +50,10 @@ import { startExternalFeedRequest } from '../features/discovery/application/exte
 import type { ExternalDiscoveryChannelId } from '../types/externalFeed';
 import { TrendingHistoryPanel } from '../features/discovery/components/TrendingHistoryPanel';
 import { useTrendingSnapshotCapture } from '../features/discovery/hooks/useTrendingSnapshotCapture';
-import { SubscriptionRepoCard } from './SubscriptionRepoCard';
+import { BuiltinRepositoryResults } from '../features/discovery/components/BuiltinRepositoryResults';
+import { RepositoryTextSkeletons } from './RepositoryTextBlock';
+import { issueLabel } from '../features/discovery/custom/taskStatus';
+import { updateCustomData, reportCustomError } from '../features/discovery/custom/store';
 import { CodeSearchView } from './CodeSearchView';
 import { SortAlgorithmTooltip } from './SortAlgorithmTooltip';
 import { ScrollToBottom } from './ScrollToBottom';
@@ -477,6 +490,8 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const [externalFeedOpen, setExternalFeedOpen] = useState(false);
   const removeExternalFeed = useAppStore(state => state.removeExternalDiscoveryChannel);
   const accountIdentity = useAppStore(state => `${state.user?.id ?? ''}\u0000${state.githubToken ?? ''}`);
+  const account = useAppStore(state => state.user ? String(state.user.id) : '');
+  const [readingSettingsOpen, setReadingSettingsOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const toggleDiscoveryChannel = useAppStore(state => state.toggleDiscoveryChannel);
   const {
@@ -491,7 +506,6 @@ export const DiscoveryView: React.FC = React.memo(() => {
     selectedDiscoveryChannel,
     setSelectedDiscoveryChannel,
     setDiscoveryScrollPosition,
-    analysisProgress,
     discoveryPlatform,
     setDiscoveryPlatform,
     discoveryLanguage,
@@ -521,9 +535,9 @@ export const DiscoveryView: React.FC = React.memo(() => {
     t,
     isAnalyzing,
     refreshChannel,
-    handleAnalyzePage,
-    handleAbortAnalysis,
-  } = useDiscoveryActions(scrollContainerRef);
+    channelLoadStates,
+    cancelChannel,
+  } = useDiscoveryActions();
 
   const [searchInput, setSearchInput] = useState(discoverySearchQuery);
   
@@ -538,12 +552,21 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 用于在频道切换时直接读取最新滚动位置，避免订阅整个 map 导致 effect 重跑
   const discoveryScrollPositionsRef = useRef<Record<string, number>>({});
-  // 用于记录最近一次自动拉取的频道，防止空频道无限循环拉取
-  const autoFetchChannelRef = useRef<string | null>(null);
-  useEffect(() => { autoFetchChannelRef.current = null; }, [accountIdentity]);
-  const appliedTopicRef = useRef<{ topic: string | null; platform: DiscoveryPlatform } | null>(null);
+  const appliedTopicRef = useRef({ topic: discoverySelectedTopic, platform: discoveryPlatform });
+  useTaskTarget('subscription', id => {
+    if (customState.data.channels.some(channel => channel.id === id)) selectCustomChannel(id as CustomDiscoveryChannel['id']);
+    else if (id.startsWith('builtin:')) { selectCustomChannel(null); setSelectedDiscoveryChannel(id.slice(8) as DiscoveryChannelId); }
+  });
+  const sourceSignature = discoverySourceSignature(useAppStore.getState(), selectedDiscoveryChannel, customState.data.builtinPreferences?.['hot-release']?.prereleases === true);
+  const reading = useChannelReadingPreferences(account, selectedDiscoveryChannel, {
+    autoAnalyze: customState.data.builtinPreferences?.[selectedDiscoveryChannel]?.autoAnalyze === true,
+    autoAnalysisLimit: customState.data.builtinPreferences?.[selectedDiscoveryChannel]?.autoAnalysisLimit ?? 10,
+  });
+  const browse = useDiscoveryBrowseRestore(account, selectedDiscoveryChannel, sourceSignature, !customChannel);
+  const anchor = useReadingAnchor(account, browse.key, scrollContainerRef, reading.preferences.resumeReading && !customChannel,
+    !customChannel && browse.ready && reading.ready);
+  useDiscoveryEntryLoading(account ? `${accountIdentity}:${browse.key}` : '', selectedDiscoveryChannel, !customChannel && browse.ready, refreshChannel);
 
-  const isAnalyzingThisChannel = isAnalyzing && analysisProgress.total > 0;
   const isDesktopSafeMode = useMemo(() => {
     if (typeof window === 'undefined') return false;
     return window.location.protocol === 'file:' || navigator.userAgent.includes('Electron');
@@ -559,7 +582,9 @@ export const DiscoveryView: React.FC = React.memo(() => {
     [discoveryRepos, selectedDiscoveryChannel]
   );
 
+  const loadState = channelLoadStates?.[selectedDiscoveryChannel];
   const currentLastRefresh = discoveryLastRefresh?.[selectedDiscoveryChannel] ?? null;
+  const cacheExpired = useDiscoveryCacheAge(selectedDiscoveryChannel, currentLastRefresh);
 
   // Trending 快照（开发守则 §7）：只记 trending 频道，每天同一「周期 × 平台」保留一份
   useTrendingSnapshotCapture(
@@ -601,27 +626,17 @@ export const DiscoveryView: React.FC = React.memo(() => {
 
 
 
-  // 切换频道时恢复滚动位置，并自动加载空数据
-  useEffect(() => {
-    // 恢复当前频道的滚动位置（从 ref 读取最新值，避免订阅整个 map）
-    const savedPosition = discoveryScrollPositionsRef.current[selectedDiscoveryChannel] || 0;
-    window.scrollTo({ top: savedPosition, behavior: 'auto' });
-    
-    // 取消持久化后，首次打开或切换到空频道时自动加载（代码搜索走本地实时请求，不参与自动拉取）
-    const hasRepos = useAppStore.getState().discoveryRepos[selectedDiscoveryChannel]?.length > 0;
-    const isLoading = useAppStore.getState().discoveryIsLoading[selectedDiscoveryChannel];
-    if (selectedDiscoveryChannel !== 'topic' && selectedDiscoveryChannel !== 'code-search' && !hasRepos && !isLoading && autoFetchChannelRef.current !== selectedDiscoveryChannel) {
-      autoFetchChannelRef.current = selectedDiscoveryChannel;
-      refreshChannel(selectedDiscoveryChannel, 1, false);
-    }
-  }, [accountIdentity, selectedDiscoveryChannel, refreshChannel]);
+  // Channel navigation restores reading position without resetting cached results.
 
   // 趋势时间范围改变时刷新数据
+  const previousTrendingRange = useRef(trendingTimeRange);
   useEffect(() => {
-    if (selectedDiscoveryChannel === 'trending' && trendingTimeRange) {
+    if (previousTrendingRange.current === trendingTimeRange) return;
+    previousTrendingRange.current = trendingTimeRange;
+    if (selectedDiscoveryChannel === 'trending' && !customChannel) {
       refreshChannel('trending', 1, false);
     }
-  }, [trendingTimeRange, selectedDiscoveryChannel, refreshChannel]);
+  }, [trendingTimeRange, selectedDiscoveryChannel, customChannel, refreshChannel]);
 
   // 周刊收录过滤器切换时重建列表：只在偏好值真正变化时触发（挂载/切频道不触发，
   // 避免与空频道自动加载 effect 双重调用导致增量同步被中止重启）
@@ -661,12 +676,12 @@ export const DiscoveryView: React.FC = React.memo(() => {
 
   // 主题改变时刷新数据
   useEffect(() => {
-    if (selectedDiscoveryChannel !== 'topic' || !githubToken) return;
     const applied = appliedTopicRef.current;
     if (applied?.topic === discoverySelectedTopic && applied.platform === discoveryPlatform) return;
     appliedTopicRef.current = { topic: discoverySelectedTopic, platform: discoveryPlatform };
+    if (selectedDiscoveryChannel !== 'topic' || !githubToken || customChannel) return;
     refreshChannel('topic', 1, false);
-  }, [githubToken, discoverySelectedTopic, discoveryPlatform, selectedDiscoveryChannel, refreshChannel]);
+  }, [githubToken, discoverySelectedTopic, discoveryPlatform, selectedDiscoveryChannel, customChannel, refreshChannel]);
 
   const formatLastRefresh = useCallback((timestamp: string | null) => {
     if (!timestamp) return '';
@@ -747,6 +762,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
     refreshChannel
   ]);
 
+  useAutomaticDiscoveryLoading(scrollContainerRef, !customChannel && browse.ready && reading.preferences.loading === 'auto',
+    currentIsLoading || currentIsLoadingMore, discoveryHasMore[selectedDiscoveryChannel] || false, !!currentLoadMoreError,
+    () => { void handleLoadMore(); }, browse.key);
+
   const refreshAll = useCallback(async () => {
     const request = startExternalFeedRequest(useAppStore);
     try {
@@ -790,6 +809,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
             return;
           }
           const scrollTop = window.scrollY;
+          anchor.persist();
           discoveryScrollPositionsRef.current[selectedDiscoveryChannel] = scrollTop;
           setDiscoveryScrollPosition(selectedDiscoveryChannel, scrollTop);
           setSelectedDiscoveryChannel(channel);
@@ -819,6 +839,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
                 return;
               }
               const scrollTop = window.scrollY;
+              anchor.persist();
               discoveryScrollPositionsRef.current[selectedDiscoveryChannel] = scrollTop;
               setDiscoveryScrollPosition(selectedDiscoveryChannel, scrollTop);
               setSelectedDiscoveryChannel(channel);
@@ -858,8 +879,17 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     )}
                   </div>
                 </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button variant="ghost" size="icon" title={language.startsWith('zh') ? '回到顶部' : 'Back to top'} aria-label={language.startsWith('zh') ? '回到顶部' : 'Back to top'} onClick={() => window.scrollTo({ top: 0, behavior: 'auto' })}><ArrowUp className="h-4 w-4" /></Button>
+                  {selectedDiscoveryChannel !== 'code-search' && <Button variant="ghost" size="icon" title={language.startsWith('zh') ? '频道设置' : 'Channel settings'} aria-label={language.startsWith('zh') ? '频道设置' : 'Channel settings'} onClick={() => setReadingSettingsOpen(true)}><Settings2 className="h-4 w-4" /></Button>}
                 {selectedDiscoveryChannel !== 'code-search' && (
-                <div className="relative group/refresh shrink-0">
+                <div className="relative group/refresh flex shrink-0 items-center gap-1">
+                  {cacheExpired && <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2 text-xs"
+                    disabled={currentIsLoading} onClick={() => void refreshChannel(selectedDiscoveryChannel, 1, false)}
+                    title={language.startsWith('zh') ? '缓存已过期，可能有新内容；刷新后确认。' : 'Cached data is stale; refresh to check for new content.'}>
+                    <RefreshCw className={`h-3.5 w-3.5 ${currentIsLoading ? 'animate-spin' : ''}`} />
+                    {language.startsWith('zh') ? '有更新' : 'Update available'}
+                  </Button>}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -870,21 +900,25 @@ export const DiscoveryView: React.FC = React.memo(() => {
                   >
                     <RefreshCw className={`w-4 h-4 ${currentIsLoading ? 'animate-spin' : ''}`} />
                   </Button>
+                  {currentIsLoading && <Button variant="ghost" size="icon" aria-label={language.startsWith('zh') ? '取消刷新' : 'Cancel refresh'} title={language.startsWith('zh') ? '取消刷新' : 'Cancel refresh'} onClick={() => cancelChannel(selectedDiscoveryChannel)}><Square className="h-4 w-4" /></Button>}
+                  {selectedDiscoveryChannel === 'most-popular' && <Button variant="ghost" size="icon" disabled={currentIsLoading} title={language.startsWith('zh') ? '更新榜单顺序' : 'Update ranking order'} aria-label={language.startsWith('zh') ? '更新榜单顺序' : 'Update ranking order'} onClick={() => { anchor.persist(); void refreshChannel('most-popular', 1, false, { reorder: true }); }}><ListRestart className="h-4 w-4" /></Button>}
                   {selectedDiscoveryChannel === 'hot-release' && (
                     <div className="absolute top-full mt-2 right-0 z-50 opacity-0 group-hover/refresh:opacity-100 translate-y-1 group-hover/refresh:translate-y-0 transition-all duration-200 pointer-events-none">
                       <div className="bg-popover text-popover-foreground border border-border text-xs rounded-lg px-3 py-2 whitespace-nowrap shadow-lg">
-                        {t('discoveryView.each-refresh-shows-different-content')}
+                        {t('discoveryView.refresh')}
                       </div>
                       <div className="absolute -top-1 right-3 w-2 h-2 bg-popover border-t border-l border-border rotate-45" />
                     </div>
                   )}
                 </div>
                 )}
+                </div>
               </div>
               
               {/* 第二行：筛选和操作按钮（代码搜索频道使用自有工具条，此处隐藏仓库维度控件） */}
               {selectedDiscoveryChannel !== 'code-search' && (
               <div className="flex items-center gap-2 flex-wrap">
+                {selectedDiscoveryChannel === 'hot-release' && <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={customState.data.builtinPreferences?.['hot-release']?.prereleases === true} onChange={event => { const prereleases = event.target.checked; void updateCustomData(d => { d.builtinPreferences ??= {}; d.builtinPreferences['hot-release'] = { ...d.builtinPreferences['hot-release'], prereleases }; }).then(() => refreshChannel('hot-release', 1, false)).catch(reportCustomError); }} />{language.startsWith('zh') ? '包含预发布' : 'Include prereleases'}</label>}
                 {selectedDiscoveryChannel === 'trending' && (
             <div className="flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-muted-foreground dark:text-muted-foreground" />
@@ -982,51 +1016,6 @@ export const DiscoveryView: React.FC = React.memo(() => {
                     channelId={selectedDiscoveryChannel}
                     language={language}
                   />
-                  {isAnalyzingThisChannel ? (
-                    <div className="flex items-center gap-1">
-                      <div className="relative">
-                        <div className="px-2 py-1.5 rounded-lg bg-muted dark:bg-muted/40 text-muted-foreground dark:text-muted-foreground flex items-center gap-1.5 overflow-hidden">
-                          <div 
-                            className="absolute left-0 top-0 h-full bg-gradient-to-r from-primary/50 via-primary/70 to-primary/50 transition-all duration-400 ease-out"
-                            style={{
-                              width: analysisProgress.total > 0
-                                ? `${Math.min((analysisProgress.current / analysisProgress.total) * 100, 100)}%`
-                                : '0%',
-                            }}
-                          />
-                          <div className="relative flex items-center gap-1.5 z-10">
-                            <Bot className="w-4 h-4" />
-                            <span className="text-xs font-medium">
-                              {analysisProgress.current}/{analysisProgress.total}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={handleAbortAnalysis}
-                        aria-label={t('discoveryView.stop-analysis')}
-                        title={t('discoveryView.stop')}
-                        className="h-8 w-8"
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="default"
-                      onClick={handleAnalyzePage}
-                      disabled={isAnalyzing || currentIsLoading}
-                      className="h-9 shrink-0 gap-1.5 px-3 py-1.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                      title={t('discoveryView.analyze-with-ai')}
-                    >
-                      <Bot className="w-4 h-4" />
-                      <span className="hidden sm:inline">{t('discoveryView.ai-analyze')}</span>
-                    </Button>
-                  )}
                   <DataStats
                     currentCount={allRepos.length}
                     totalCount={currentTotalCount}
@@ -1041,8 +1030,13 @@ export const DiscoveryView: React.FC = React.memo(() => {
           {/* 内容区域 */}
           <div
             ref={scrollContainerRef}
-            className="flex-1 overflow-y-auto space-y-4 pr-2"
+            className="flex-1 min-w-0 space-y-4 pr-2"
           >
+            {(browse.issue || reading.issue || anchor.issue || loadState?.unsaved) && <p role="alert" className="text-sm text-destructive">{language.startsWith('zh') ? '未保存：本地存储不可用，当前内容仍可阅读。' : 'Not saved: local storage is unavailable. Current content remains readable.'}</p>}
+            {loadState?.readingProgress && <div role="status" className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              {language.startsWith('zh') ? (loadState.readingProgress.reorder ? '更新榜单顺序' : '更新阅读队列') : 'Updating reading queue'} {loadState.readingProgress.current}/{loadState.readingProgress.total}
+              {loadState.status === 'partial' && <Button variant="outline" size="sm" onClick={() => void refreshChannel('most-popular', 1, false, { reorder: loadState.readingProgress!.reorder })}>{language.startsWith('zh') ? '继续更新' : 'Continue update'}</Button>}
+            </div>}
             {selectedDiscoveryChannel === 'code-search' && <CodeSearchView />}
             {selectedDiscoveryChannel !== 'code-search' && (
             <>
@@ -1119,32 +1113,13 @@ export const DiscoveryView: React.FC = React.memo(() => {
               </div>
             )}
 
-            {currentIsLoading && allRepos.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-16 gap-4">
-                <div className="relative">
-                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-accent to-background dark:from-accent/40 dark:to-transparent flex items-center justify-center">
-                    <Loader2 className="w-7 h-7 animate-spin text-primary" />
-                  </div>
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-status-green rounded-full animate-ping opacity-75" />
-                </div>
-                <div className="text-center space-y-1.5">
-                  <p className="text-foreground dark:text-muted-foreground font-medium text-sm">
-                    {t('discoveryView.fetching-data')}
-                  </p>
-                  <p className="text-xs text-muted-foreground dark:text-muted-foreground">
-                    {selectedDiscoveryChannel === 'weekly' && weeklyStatusText
-                      ? weeklyStatusText
-                      : selectedDiscoveryChannel === 'x-tweet' && xTweetStatusText
-                      ? xTweetStatusText
-                      : selectedDiscoveryChannel === 'telegram' && telegramStatusText
-                      ? telegramStatusText
-                      : t('discoveryView.waiting-for-github-api-response')}
-                  </p>
-                </div>
-              </div>
-            )}
+            {loadState?.issue && <div role="alert" className="flex flex-wrap items-center gap-2 border-l-2 border-destructive pl-3 text-sm text-destructive">
+              {issueLabel(loadState.issue, language.startsWith('zh'))}<Button variant="outline" size="sm" onClick={() => void refreshChannel(selectedDiscoveryChannel, 1, false)}>{t('discoveryView.retry')}</Button>
+            </div>}
+            {loadState?.verification && <p role="status" className="text-xs text-muted-foreground">{language.startsWith('zh') ? 'Release 核实' : 'Release verification'} {loadState.verification.current}/{loadState.verification.total}{loadState.verification.partial && (language.startsWith('zh') ? ' · 部分完成，可重试' : ' · Partial; retry available')}</p>}
+            {currentIsLoading && allRepos.length === 0 && <RepositoryTextSkeletons />}
 
-            {!currentIsLoading && allRepos.length === 0 && (
+            {!currentIsLoading && !loadState?.issue && allRepos.length === 0 && (
               <div className="flex flex-col items-center justify-center py-16 gap-5 text-center">
                 {selectedDiscoveryChannel === 'search' ? (
                   <>
@@ -1320,15 +1295,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
               <TrendingHistoryPanel period={trendingTimeRange} platform={discoveryPlatform} />
             )}
 
-            {allRepos.length > 0 && (
-              <div className={isDesktopSafeMode ? 'space-y-3' : 'space-y-4'}>
-                {allRepos.map((repo, index) => (
-                  <div key={repo.id} data-repo-index={index}>
-                    <SubscriptionRepoCard repo={repo} desktopSafeMode={isDesktopSafeMode} />
-                  </div>
-                ))}
-              </div>
-            )}
+            <BuiltinRepositoryResults key={`${selectedDiscoveryChannel}:${accountIdentity}`} items={allRepos} channelId={selectedDiscoveryChannel} desktopSafeMode={isDesktopSafeMode} />
 
             {currentIsLoadingMore && (
               <div className="flex items-center justify-center py-6 gap-3">
@@ -1378,7 +1345,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
             )}
 
             {/* Load More Button */}
-            {!currentIsLoading && !currentIsLoadingMore && allRepos.length > 0 && (
+            {!currentIsLoading && !currentIsLoadingMore && (allRepos.length > 0 || discoveryHasMore[selectedDiscoveryChannel]) && (
               <LoadMoreButton
                 onLoadMore={handleLoadMore}
                 isLoading={false}
@@ -1392,6 +1359,12 @@ export const DiscoveryView: React.FC = React.memo(() => {
 
 
           </div>
+          <DiscoveryReadingSettings channelName={currentChannel?.name || ''} open={readingSettingsOpen} onClose={() => setReadingSettingsOpen(false)} preferences={reading.preferences}
+            supportsAnalysis={selectedDiscoveryChannel !== 'code-search'} supportsLoading={selectedDiscoveryChannel !== 'code-search' && !isExternalDiscoveryChannelId(selectedDiscoveryChannel)}
+            onSave={async value => { await reading.save(value); await updateCustomData(d => { d.builtinPreferences ??= {}; d.builtinPreferences[selectedDiscoveryChannel] = { ...d.builtinPreferences[selectedDiscoveryChannel], autoAnalyze: value.autoAnalyze, autoAnalysisLimit: value.autoAnalysisLimit }; }); }}
+            onResetReading={anchor.reset}
+            onClearList={async () => { cancelChannel(selectedDiscoveryChannel); await browse.clear(); }}
+            onDeleteAnalysis={async () => { const ids = allRepos.map(r => r.id); await deleteRepositoryAnalysisAssets(account, ids); await updateCustomData(d => { for (const [key, record] of Object.entries(d.analyses || {})) { try { const parts = JSON.parse(key); if (ids.includes(parts[0]) && record.status !== 'running') delete d.analyses![key]; } catch { /* Preserve unscoped legacy records. */ } } }); }} />
 
           {/* 滚动到底部按钮 */}
           <ScrollToBottom scrollContainerRef={scrollContainerRef} />
