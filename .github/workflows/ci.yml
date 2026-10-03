@@ -103,7 +103,10 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          # better-sqlite3 v11 aborts in Statement cleanup under Linux/Node 24.
+          # Validate the native server suite on Node 22 until a separate addon
+          # upgrade is exercised against the deployed runtime.
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: server/package-lock.json
       - name: Install server dependencies
