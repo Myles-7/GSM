@@ -16,7 +16,11 @@ P0.2.1（P0.2.0 的桌面启动维护补丁），完整上游基线和应用 pac
 P0.2.0 已快进合入 `D:/桌面/GSM`，日常只需这个目录和已有 `GSM-桌面端.lnk`。
 常用入口加载构建后的 file-origin；5174 是保留的独立开发入口，不能混用两套存储。
 P0.2.1 已同时修正遗留桌面快捷方式，关闭自动上游更新提示；维护记录见
-[桌面启动修复](upgrades/P0.2.1-desktop-startup.md)。本维护版本尚未推送远端。
+[桌面启动修复](upgrades/P0.2.1-desktop-startup.md)。本维护版本随 2026-10-03 源码集成推送个人仓库。
+当前个人交付分支为 `personal/main`，源码集成提交为
+`fda2d9aeeeb7438c83d53271c83581ed426d8dd8`，不代表已发布新桌面安装包。
+个人版支持中文和英语；分支与检查规则见[仓库治理](repository-governance.md)，
+本轮验证范围见[源码交付](upgrades/2026-10-03-source-publication.md)。
 原账号、仓库 AI/分类及 Workbench 历史已通过实际生产界面验证；常用 Store 为 v17，
 本机服务为 migration 4，身份 dry-run 无候选，未执行历史重键或远端向量部署。
 完整记录见 [本机交付](upgrades/P0.2.0-rollout.md)。恢复材料不属于运行依赖；
