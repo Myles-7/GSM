@@ -1,3 +1,8 @@
+> **个人版 — Myles-7/GSM。** 默认维护分支为 `personal/main`，原 `main` 保留为上游历史参考。
+> 本版支持中文和英语，基于 v0.8.4 选择性吸收 v0.8.5 改动，并保留个人桌面功能。
+> 当前交付见[个人版记录](docs/personal/README.md)，分支与验证规则见[仓库治理](docs/personal/repository-governance.md)。
+> 下文上游版本与下载链接对应官方应用，不能代表本个人版安装包。
+
 <p align="center">
   <img src="./assets/readme/hero.svg" width="100%" alt="GithubStarsManager — AI 整理你的 GitHub 星标，让你真正找得到。向量搜索、仓库问答、MCP、Release 追踪，全部本地优先。">
 </p>
