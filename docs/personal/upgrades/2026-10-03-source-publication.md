@@ -53,4 +53,22 @@ SQLite Statement 清理崩溃。显式补充服务端测试依赖，服务端 CI
 该运行时选择不修改生产服务。Linux/Node 24 的原生模块兼容性仍需后续单独升级验证。
 继承的桌面与 Docker 发布工作流在个人仓库停用，CI 保持启用。
 
+## 在线验证与治理执行记录
+
+源码及 CI 修复提交 `a395bd274b2193475e5e7e937c5f3a0bbf3ffe3a` 的
+[PR 检查](https://github.com/Myles-7/GSM/actions/runs/37092372403)与
+[推送检查](https://github.com/Myles-7/GSM/actions/runs/37092369057)
+均完成：Quality gates 与 Server quality gates 全部成功。
+后续补充的分析文档不修改已验证源码，仍由 PR 检查覆盖最终提交。
+
+- [PR #1](https://github.com/Myles-7/GSM/pull/1) 集成个人默认分支。
+- 默认分支要求 GitHub Actions（app id 15368）提供两项成功检查、PR 和已解决讨论；
+  管理员也受规则约束。个人默认分支与历史 main 均禁止强推和删除。
+- 密钥扫描、推送保护已启用；核查时开放 secret-scanning alerts 为 0。
+  Dependency vulnerability alerts 已启用，不自动升级依赖或宣称没有依赖漏洞。
+- Issues 与个人版贡献模板已启用，工程待办记录在 [#2](https://github.com/Myles-7/GSM/issues/2)、
+  [#3](https://github.com/Myles-7/GSM/issues/3)、[#4](https://github.com/Myles-7/GSM/issues/4)、
+  [#5](https://github.com/Myles-7/GSM/issues/5)。
+- 本轮后生成的综合架构分析一并归档；它与其他产品分析一样属于建议，未在本轮实施。
+
 后续优先核查可信 Renderer/IPC 来源、所有数据域的备份与删除覆盖，见本轮工程审计。
