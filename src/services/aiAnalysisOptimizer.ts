@@ -96,6 +96,7 @@ export class AIAnalysisOptimizer {
   get limiter(): AIRateLimiter {
     return this.sharedLimiter;
   }
+  get signal(): AbortSignal { return this.batchAbortController.signal; }
 
   /** 中止整个批次：所有在飞请求、限流等待与重试延迟立即停止。 */
   abort(): void {

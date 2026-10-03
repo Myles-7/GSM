@@ -1,4 +1,5 @@
 import { getDateFnsLocale } from '../i18n/format';
+import { useTaskTarget } from '../hooks/useTaskTarget';
 import { useT } from "../i18n/useT";
 import { Input } from './ui/input';
 import { Button } from './ui/button';
@@ -65,6 +66,12 @@ export const ReleaseTimeline: React.FC = () => {
   const [expandedReleaseNotes, setExpandedReleaseNotes] = useState<Set<number>>(new Set());
   const [fullContentReleases, setFullContentReleases] = useState<Set<number>>(new Set());
   const [isReleaseSourceSettingsOpen, setIsReleaseSourceSettingsOpen] = useState(false);
+  useTaskTarget('releases', id => {
+    const release = releases.find(item => String(item.id) === id);
+    if (!release) return;
+    setReleaseSearchQuery(release.repository.full_name); setCurrentPage(1);
+    setExpandedReleaseNotes(before => new Set([...before, release.id]));
+  });
 
   // 使用全局状态的别名，保持代码一致性
   const viewMode = releaseViewMode;

@@ -359,10 +359,11 @@ export const McpSettingsPanel: React.FC<McpSettingsPanelProps> = ({ t }) => {
           <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-2">
             {t('mcpSettingsPanel.prefer-streamable-http-json-above-if-the-client')}
           </p>
-          <div className="flex items-center justify-between mb-2 mt-4">
-            <span className="text-sm text-muted-foreground dark:text-muted-foreground">
+          <details className="mt-4 rounded-lg border border-border p-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">
               {t('mcpSettingsPanel.sse-compatible-config-json')}
-            </span>
+            </summary>
+            <div className="my-3 flex justify-end">
             <Button
               type="button"
               variant="outline"
@@ -376,6 +377,7 @@ export const McpSettingsPanel: React.FC<McpSettingsPanelProps> = ({ t }) => {
           <pre className="text-xs font-mono p-3 rounded-lg bg-background dark:bg-muted/40 overflow-x-auto text-foreground dark:text-muted-foreground border border-border/60 dark:border-border">
             {maskToken(agentSseConfigJson)}
           </pre>
+          </details>
         </div>
       </div>
 

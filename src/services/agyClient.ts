@@ -3,6 +3,7 @@ import type { AgyDesktopAPI, AgyDeviceState } from '../types/agy';
 import { useAppStore } from '../store/useAppStore';
 import { AGY_CONFIG_ID, isAgyConfig } from '../utils/aiConfig';
 import './electronProxy';
+import { taskForSignal } from './taskExecution';
 
 let bridge: AgyDesktopAPI | undefined;
 let session = '';
@@ -90,6 +91,7 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     if (event.session === ownedSession && session === ownedSession && event.requestId === requestId && !options.signal?.aborted) {
       if (event.type === 'scheduler') setScheduler(event.pool);
       if (event.type === 'queued' && Number.isInteger(event.position) && event.position! > 0) {
+        taskForSignal(options.signal)?.metadata({ phase: `AGY ${useAppStore.getState().language.startsWith('zh') ? '等待位置' : 'queue position'} ${event.position}` });
         queuePositions.set(requestId, event.position!); notifyQueue();
       } else if (event.type === 'running') { queuePositions.delete(requestId); notifyQueue(); }
     }
@@ -105,6 +107,7 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     const pending = api.start(requestId, ownedSession, {
       system: `${options.system}\nApplication output ceiling: ${maxChars} characters. Stay within it without dropping requested requirements. Return a complete result, never truncated JSON.`,
       user: options.user, model: config.model, effort: config.agyEffort,
+      profileOverride: config.agyRequestProfile,
       feature: config.agyFeature ?? options.feature ?? 'other', revision: config.agyRevision, priority: config.agyPriority ?? 'interactive',
     });
     if (options.signal?.aborted) stop();
@@ -116,6 +119,15 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     if (!result.ok) {
       if (['CANCELED', 'SESSION_CHANGED'].includes(result.code)) throw new DOMException('Canceled', 'AbortError');
       throw new Error(`AGY_${result.code}`);
+    }
+    const task = taskForSignal(options.signal);
+    if (task) {
+      const previous = import('./aiTaskJournal').then(({ aiTaskJournal }) => {
+        const usage = { ...aiTaskJournal.snapshot().find(record => record.id === task.id)?.usage };
+        for (const [key, value] of Object.entries(result.value.usage)) if (Number.isFinite(value)) usage[key] = (usage[key] ?? 0) + value;
+        task.metadata({ usage });
+      });
+      await previous;
     }
     return result.value.text;
   } finally {

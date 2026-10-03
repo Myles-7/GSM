@@ -4,7 +4,7 @@ import { AgyConfigPanel } from './AgyConfigPanel';
 import type { AgyDesktopAPI, AgyDeviceState } from '../../types/agy';
 import { useAppStore } from '../../store/useAppStore';
 
-vi.mock('../../i18n/useT', () => ({ useT: () => (key: string) => key }));
+vi.mock('../../i18n/useT', () => ({ useT: () => (key: string) => ({ 'settingsUx.globalConcurrency': '全局并发上限', 'settingsUx.concurrency': '并发上限', 'settingsUx.features.repository-summary': '仓库摘要' }[key] ?? key) }));
 vi.mock('../../store/useAppStore', async () => {
   const { create } = await import('zustand');
   return { useAppStore: create(set => ({ githubToken: null, user: null, aiConfigs: [], activeAIConfig: null,
@@ -38,29 +38,42 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined }); });
 
 describe('AGY device settings', () => {
-  it('saves independent feature limits and model inheritance without making test calls', async () => {
+  it('allows disabling an enabled provider even after its probe expires', async () => {
+    api.getState = vi.fn().mockResolvedValue({ ...detected, enabled: true, prefs: { ...initial.prefs, enabled: true } });
+    render(<AgyConfigPanel />);
+    const toggle = await screen.findByLabelText('agy.enable');
+    expect(toggle).not.toBeDisabled();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByText('agy.save'));
+    await screen.findByText('agy.saved');
+    expect(api.save).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ enabled: false }));
+    expect(api.probe).not.toHaveBeenCalled();
+  });
+  it('saves only batch limits while other features inherit global defaults, without making test calls', async () => {
     render(<AgyConfigPanel />);
     fireEvent.change(await screen.findByLabelText('全局并发上限'), { target: { value: '3' } });
     fireEvent.change(screen.getByLabelText('仓库摘要 并发上限'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('仓库摘要 模型'), { target: { value: '' } });
-    fireEvent.change(screen.getByLabelText('仓库摘要 effort'), { target: { value: 'max' } });
+    expect(document.querySelectorAll('select[id^="agy-batch-"]')).toHaveLength(5);
+    expect(screen.queryByLabelText('仓库摘要 模型')).toBeNull();
     fireEvent.click(screen.getByText('agy.save'));
     await screen.findByText('agy.saved');
     expect(api.save).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ concurrency: 3,
-      featureOverrides: { 'repository-summary': { concurrency: 2, model: '', effort: 'max' } } }));
+      featureOverrides: { 'repository-summary': { concurrency: 2 } } }));
     expect(api.probe).not.toHaveBeenCalled();
     expect(api.start).not.toHaveBeenCalled();
   });
 
-  it('tests only the selected saved feature and can reset it to inheritance', async () => {
+  it('retains historical model overrides until explicitly reset and preserves batch limits', async () => {
+    api.getState = vi.fn().mockResolvedValue({ ...detected, prefs: { ...initial.prefs,
+      featureOverrides: { 'repository-summary': { model: 'legacy-model', effort: 'max', concurrency: 2 }, workbench: { timeoutSeconds: 300 } } } });
     render(<AgyConfigPanel />);
-    await screen.findByText('agy.exe');
-    fireEvent.click(screen.getAllByText('测试已保存配置')[0]);
-    await waitFor(() => expect(api.probe).toHaveBeenCalledWith(expect.any(String), 'repository-summary'));
-    await waitFor(() => expect(screen.getByLabelText('仓库摘要 effort')).not.toBeDisabled());
-    fireEvent.change(screen.getByLabelText('仓库摘要 effort'), { target: { value: 'max' } });
-    fireEvent.click(screen.getByLabelText('仓库摘要 继承全局'));
-    expect(screen.getByLabelText('仓库摘要 effort')).toHaveValue('__inherit');
+    await screen.findByText(/legacy-model/);
+    fireEvent.click(screen.getAllByText('settingsUx.resetDefaults')[0]);
+    fireEvent.click(screen.getByText('agy.save'));
+    await screen.findByText('agy.saved');
+    expect(api.save).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      featureOverrides: { 'repository-summary': { concurrency: 2 }, workbench: { timeoutSeconds: 300 } } }));
+    expect(api.probe).not.toHaveBeenCalled();
   });
   it('allows tested disabled current configuration to be enabled after checking its toggle', async () => {
     useAppStore.setState({ activeAIConfig: 'agy-cli-local' });
@@ -127,7 +140,7 @@ describe('AGY device settings', () => {
     await screen.findByText('agy.saved');
     expect(api.save).toHaveBeenCalledWith(expect.any(String), { ...initial.prefs, timeoutSeconds: 240, mode: 'research' });
     expect(screen.queryByLabelText(/API Key|Base URL/)).toBeNull();
-    expect(screen.getByText('agy.blocked')).toBeInTheDocument();
+    expect(screen.queryByText('agy.blocked')).toBeNull();
   });
 
   it('detects, loads models, and tests before enabling', async () => {
@@ -145,7 +158,7 @@ describe('AGY device settings', () => {
     await screen.findByText('agy.saved');
     fireEvent.click(screen.getByText('agy.activate'));
     expect(useAppStore.getState().activeAIConfig).toBe('agy-cli-local');
-    expect(screen.getByText('agy.blocked')).toBeInTheDocument();
+    expect(screen.queryByText('agy.blocked')).toBeNull();
   });
 
   it('validates numbers and shows browser-only limitation', async () => {

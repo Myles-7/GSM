@@ -4,12 +4,13 @@ import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { Server, TestTube, RefreshCw, Upload, Download, CheckCircle, AlertCircle, Route } from 'lucide-react';
 import { useBackendSettingsActions } from '../../features/settings/hooks/useBackendSettingsActions';
 import { useAppStore } from '../../store/useAppStore';
 import type { RouteMode } from '../../types';
 import { HomeBackendPanel } from './HomeBackendPanel';
+import { getDesktopHomeSync, subscribeDesktopHome } from '../../home/desktop';
 
 interface BackendPanelProps {
   t: TranslateFn;
@@ -32,6 +33,7 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
   } = useBackendSettingsActions();
   const routeMode = useAppStore((state) => state.routeMode);
   const setRouteMode = useAppStore((state) => state.setRouteMode);
+  const workspace = useSyncExternalStore(subscribeDesktopHome, getDesktopHomeSync);
 
   const routeOptions: Array<{ value: RouteMode; label: string; hint: string }> = [
     {
@@ -75,7 +77,6 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
 
   return (
     <div className="space-y-6">
-      <HomeBackendPanel />
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <Server className="w-6 h-6 text-muted-foreground dark:text-muted-foreground " />
@@ -91,6 +92,8 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
           <span>{getStatusText()}</span>
         </Badge>
       </div>
+
+      <HomeBackendPanel />
 
       {health && (
         <div className="p-4 bg-background dark:bg-muted/40 rounded-lg border border-border dark:border-border">
@@ -187,7 +190,7 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
         </p>
       </div>
 
-      {backendAvailable && (
+      {backendAvailable && !workspace && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-6 bg-background dark:bg-muted/40 rounded-lg border border-border dark:border-border">
             <div className="flex items-center space-x-3 mb-4">
@@ -203,7 +206,7 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
             </div>
             <Button
               onClick={handleSyncToBackend}
-              disabled={isSyncingToBackend}
+              disabled={isSyncingToBackend || isSyncingFromBackend}
               className="h-auto w-full flex items-center justify-center space-x-2 px-4 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSyncingToBackend ? (
@@ -229,7 +232,7 @@ export const BackendPanel: React.FC<BackendPanelProps> = ({ t }) => {
             </div>
             <Button
               onClick={handleSyncFromBackend}
-              disabled={isSyncingFromBackend}
+              disabled={isSyncingFromBackend || isSyncingToBackend}
               className="h-auto w-full flex items-center justify-center space-x-2 px-4 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSyncingFromBackend ? (

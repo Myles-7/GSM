@@ -5,9 +5,14 @@ import type { RepositoryIdentityParticipantResult } from '../../../services/repo
 const DB_NAME = 'gsm-custom-discovery';
 const fallbackKey = (account: string) => `gsm-custom-discovery-fallback-v1:${encodeURIComponent(account)}`;
 type Source = 'local' | 'home-projection' | 'read';
+let changeChannel: BroadcastChannel | undefined;
 const notifyChange = (account: string, source: Source | 'identity-migration') => {
   if (source !== 'read' && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('gsm:custom-discovery-changed', { detail: { account, source } }));
+    if (typeof BroadcastChannel !== 'undefined') {
+      changeChannel ??= new BroadcastChannel('gsm-custom-discovery');
+      changeChannel.postMessage({ account });
+    }
   }
 };
 async function transactData<T>(

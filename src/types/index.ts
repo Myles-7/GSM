@@ -366,6 +366,7 @@ export interface HttpAIConfig extends AIConfigBase {
 }
 
 export interface AgyAIConfig extends AIConfigBase {
+  agyRequestProfile?: Pick<import('./agy').AgyProfile, 'model' | 'effort' | 'timeoutSeconds'>;
   agyRevision?: number;
   agyFeature?: import('./agy').AgyFeature;
   agyPriority?: 'interactive' | 'background';
@@ -599,7 +600,7 @@ export interface AppState {
   theme: 'light' | 'dark';
   /** 主题配色预设（默认 + 内置精选），见 constants/themePresets */
   themePreset: ThemePresetId;
-  currentView: HeaderMenuId;
+  currentView: HeaderMenuId | 'tasks';
   selectedCategory: string;
   language: AppLanguage;
   /** Global, display-only English to Chinese translation via translate.js. */
@@ -844,12 +845,14 @@ export interface PaginatedDiscoveryRepositories {
   hasMore: boolean;
   nextPageIndex: number;
   totalCount?: number;
+  verification?: { current: number; total: number; failed: number; partial: boolean };
 }
 
 export interface DiscoveryRepo extends Repository {
   rank: number;
   channel: DiscoveryChannelId;
   platform: DiscoveryPlatform;
+  recentRelease?: Pick<Release, 'tag_name' | 'name' | 'published_at' | 'html_url' | 'prerelease'>;
   /** 仅 weekly 频道：该仓库对应的周刊投稿 issue */
   weeklyIssue?: WeeklyIssueRef;
   /** 仅 x-tweet 频道：该仓库来源的推文 */

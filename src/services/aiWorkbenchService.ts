@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { aiTaskJournal } from './aiTaskJournal';
+import { bindTaskSignal, taskConfigSnapshot } from './taskExecution';
+import type { TaskMetadata, AITaskKind } from './aiTaskJournal';
+import type { AIConfig } from '../types';
 import { getOutputLanguageDirective } from '../i18n/aiLanguage';
 import { useAppStore } from '../store/useAppStore';
 import type { Repository } from '../types';
@@ -27,6 +31,7 @@ import { canReuseResearch, loadResearchCheckpoint, saveResearchCheckpoint, type 
 import { researchLocalProject } from './localResearch';
 import type { AgyLocalProject } from '../types/agy';
 import type { RepositoryChatTurnInput, RepositoryChatTurnResult } from './repositoryChatService';
+import { mergeWorkbenchCandidates, summarizeWorkbenchCandidates } from './workbenchOverview';
 
 type RuntimeListener = () => void;
 
@@ -82,12 +87,18 @@ export const workbenchRuntime = {
     sessionId: string,
     ownerId: string,
     action: (signal: AbortSignal, stage: (stage: string) => void) => Promise<void>,
+    options: TaskMetadata & { kind?: AITaskKind; aiConfig?: AIConfig } = {},
   ): Promise<void> {
     if (runtimeState.running) {
       throw new Error('Another AI workbench task is already running.');
     }
 
     const controller = new AbortController();
+    const config = options.aiConfig;
+    const task = aiTaskJournal.begin(ownerId, options.kind ?? 'research', [{ id: sessionId, label: options.title ?? sessionId }], config?.id, undefined,
+      { title: options.title, target: options.target ?? { view: 'ai', id: sessionId }, config: config ? taskConfigSnapshot(config, options.kind === 'chat' ? 'repository-chat' : 'workbench') : undefined });
+    bindTaskSignal(controller.signal, task);
+    task.bind({ stop: () => controller.abort() }); task.item(sessionId, 'running');
     const generation = ++runtimeGeneration;
     runtimeController = controller;
     publishRuntime({ sessionId, ownerId, stage: 'starting', running: true, startedAt: Date.now(), readFiles: 0 });
@@ -100,12 +111,15 @@ export const workbenchRuntime = {
         || !runtimeState.running
       ) return;
       publishRuntime({ ...runtimeState, stage: nextStage });
+      task.metadata({ phase: nextStage });
     };
 
     try {
       await action(controller.signal, stage);
       throwIfAborted(controller.signal);
+      if (!aiTaskJournal.snapshot().find(record => record.id === task.id)?.items.some(item => item.state === 'failed')) task.item(sessionId, 'complete');
     } catch (error) {
+      if (!controller.signal.aborted) { task.item(sessionId, 'failed', error); task.error(error); }
       if (generation === runtimeGeneration && runtimeController === controller) {
         publishRuntime({
           ...runtimeState,
@@ -118,6 +132,7 @@ export const workbenchRuntime = {
       }
       throw error;
     } finally {
+      task.finish(controller.signal.aborted ? 'canceled' : undefined);
       if (generation === runtimeGeneration && runtimeController === controller) {
         runtimeController = null;
         publishRuntime({ ...runtimeState, running: false });
@@ -206,6 +221,7 @@ export async function prepareWorkbenchRequirements(input: {
   question: string;
   previous?: WorkbenchRequirements;
   project?: WorkbenchProject;
+  messages?: RepositoryChatMessage[];
   signal?: AbortSignal;
 }): Promise<WorkbenchRequirements> {
   const question = input.question.trim();
@@ -221,6 +237,7 @@ export async function prepareWorkbenchRequirements(input: {
       'questions 只保留会实质改变搜索范围或判断标准、且当前上下文无法推断的必要澄清问题，最多 3 个；信息充分时必须返回空数组。',
       'queries 是可直接提交给 GitHub repository search 的检索词，最多 6 个，避免虚构仓库名。',
       'previous 已有结论要复用，project instructions/conclusions 是约束，不要重复追问已经回答的信息。',
+      'Use recentConversation to retain answered conditions. For broad browsing, use reasonable visible assumptions in preferred rather than asking optional platform, language or domain questions. Ask only if the missing answer materially changes the requested outcome.',
       outputLanguageDirective(language),
       'Keep JSON keys unchanged and GitHub queries optimized for retrieval.',
     ].join('\n'),
@@ -228,6 +245,7 @@ export async function prepareWorkbenchRequirements(input: {
       question,
       previous: input.previous,
       project: compactProject(input.project),
+      recentConversation: input.messages?.slice(-8).map(message => ({ role: message.role, content: message.content.slice(0, 3_000) })),
     }),
     maxTokens: 1_800,
     temperature: 0.1,
@@ -263,6 +281,7 @@ const cloneCandidate = (candidate: WorkbenchCandidate): WorkbenchCandidate => ({
   reasons: [...candidate.reasons],
   limitations: [...candidate.limitations],
   sources: [...candidate.sources],
+  overview: candidate.overview && { ...candidate.overview },
 });
 
 const cloneBatch = (batch: WorkbenchSearchBatch): WorkbenchSearchBatch => ({
@@ -431,6 +450,9 @@ export async function searchWorkbench(input: {
   requirements: WorkbenchRequirements;
   depth: WorkbenchDepth;
   page?: number;
+  previous?: WorkbenchSearchBatch;
+  overview?: boolean;
+  onStage?: (stage: string) => void;
   signal?: AbortSignal;
   onUpdate: (batch: WorkbenchSearchBatch) => Promise<void> | void;
 }): Promise<WorkbenchSearchBatch> {
@@ -450,14 +472,16 @@ export async function searchWorkbench(input: {
   }
 
   const batch: WorkbenchSearchBatch = {
-    id: makeId('workbench-search'),
-    createdAt: new Date().toISOString(),
+    id: input.previous?.id ?? makeId('workbench-search'),
+    createdAt: input.previous?.createdAt ?? new Date().toISOString(),
     requirements: input.requirements,
-    candidates: [],
+    candidates: input.previous ? input.previous.candidates.map(cloneCandidate) : [],
     queries: [],
     nextPage: page + 1,
+    overviewSummary: input.previous?.overviewSummary,
   };
-  const byFullName = new Map<string, WorkbenchCandidate>();
+  const byFullName = new Map(batch.candidates.map(candidate => [candidate.repository.full_name.toLowerCase(), candidate]));
+  const previousCandidates = [...batch.candidates];
   const queryCandidates: WorkbenchCandidate[][] = [];
   const emit = async (): Promise<void> => {
     throwIfAborted(input.signal);
@@ -496,8 +520,23 @@ export async function searchWorkbench(input: {
       candidates.push(candidate);
     }
     queryCandidates.push(candidates);
-    batch.candidates = fuseQueryCandidates(queryCandidates);
+    batch.candidates = mergeWorkbenchCandidates(previousCandidates, fuseQueryCandidates(queryCandidates));
     await emit();
+  }
+
+  if (input.overview) {
+    input.onStage?.('overview');
+    batch.candidates = await summarizeWorkbenchCandidates({
+      candidates: batch.candidates, requirements: input.requirements, ai, language, concurrency, signal: input.signal,
+      readReadme: (candidate, signal) => {
+        const [owner, name] = splitRepositoryName(candidate.repository.full_name);
+        return github.getRepositoryReadme(owner, name, signal);
+      },
+      onUpdate: async (candidates, summary) => { batch.candidates = candidates;
+        if (summary) batch.overviewSummary = summary;
+        await emit(); },
+    });
+    return cloneBatch(batch);
   }
 
   // Failed assessments are retained, but do not consume a successful-result
@@ -526,6 +565,45 @@ export async function searchWorkbench(input: {
   await Promise.all(Array.from({ length: Math.min(concurrency, limits.verifyCount) }, verifyWorker));
 
   return cloneBatch(batch);
+}
+
+export async function overviewWorkbenchBatch(input: {
+  batch: WorkbenchSearchBatch; signal?: AbortSignal; onUpdate: (batch: WorkbenchSearchBatch) => Promise<void> | void;
+}): Promise<void> {
+  const { ai, language, concurrency } = resolveConfiguredAI();
+  const state = useAppStore.getState();
+  const github = createGitHubApiService(state.githubToken ?? '');
+  await summarizeWorkbenchCandidates({ candidates: input.batch.candidates, requirements: input.batch.requirements,
+    ai, language, concurrency, signal: input.signal,
+    readReadme: (candidate, signal) => {
+      const [owner, name] = splitRepositoryName(candidate.repository.full_name);
+      return github.getRepositoryReadme(owner, name, signal);
+    },
+    onUpdate: (candidates, summary) => input.onUpdate({ ...input.batch, candidates,
+      overviewSummary: summary || input.batch.overviewSummary }),
+  });
+}
+
+export async function answerWorkbenchOverview(input: {
+  question: string; candidates: WorkbenchCandidate[]; messages: RepositoryChatMessage[];
+  signal?: AbortSignal; onChunk?: (content: string) => void;
+}): Promise<RepositoryChatTurnResult> {
+  if (!input.candidates.length) throw new Error('No projects in this result set.');
+  if (input.candidates.length > 120) throw new Error('Select up to 120 projects for this overview question.');
+  const { ai, language } = resolveConfiguredAI();
+  const content = await ai.generateChatText({
+    system: ['Answer questions about the supplied project overview. Use only supplied facts and recent conversation.',
+      'Explain, group, filter or compare at overview level. Do not invent installation commands, compatibility or recommendations. State unknowns. If deeper evidence is needed, suggest selecting those projects for research.',
+      'Only link exact supplied repository URLs. Respect exclusions, language and requested output format.', outputLanguageDirective(language)].join('\n'),
+    user: JSON.stringify({ question: input.question, recentConversation: input.messages.slice(-6).map(message => ({ role: message.role, content: message.content.slice(0, 2_000) })),
+      projects: input.candidates.map(item => ({ name: item.repository.full_name, url: repositoryGitHubUrl(item.repository.full_name),
+        summary: item.overview?.summary || item.repository.ai_summary || item.summary, category: item.overview?.category,
+        kind: item.overview?.kind, basis: item.overview?.basis ?? 'metadata', status: item.overview?.status ?? 'not-reviewed', limitations: item.limitations })),
+    }), maxTokens: 2_800, temperature: 0.1, signal: input.signal,
+  });
+  input.signal?.throwIfAborted();
+  input.onChunk?.(content);
+  return { content, evidences: [], quality: 'unreviewed' };
 }
 
 const depthToRepositoryChatDepth = (depth: WorkbenchDepth): 'quick' | 'default' | 'deep' => (

@@ -7,24 +7,31 @@ import { Button } from '../../../components/ui/button';
 import { Modal } from '../../../components/Modal';
 import { ErrorBoundary } from '../../../components/ErrorBoundary';
 import { RepositoryDetailsPanel } from '../../../components/RepositoryDetailsPanel';
-import { analysisKey, analyzedRepository, cancelAnalysis, enqueueAnalysis, useCustomAnalysis } from '../custom/analysis';
-import { reportCustomError, updateCustomData, useCustomDiscovery } from '../custom/store';
+import { analyzedRepository, cancelAnalysis, enqueueAnalysis, setAnalysisPaused, useCustomAnalysis } from '../custom/analysis';
+import { reportCustomError, useCustomDiscovery } from '../custom/store';
 import { issueLabel } from '../custom/taskStatus';
-import type { CandidateAssessment, CustomDiscoveryChannel } from '../custom/model';
+import { editionKey, type CandidateAssessment, type CustomDiscoveryChannel } from '../custom/model';
+import { approveCandidate, blockCandidate } from '../custom/candidateActions';
 import { CustomRepositoryBlock } from './CustomRepositoryBlock';
+import { useRepositoryAnalysisAssets } from '../../../services/repositoryAnalysisAssets';
 
 const RepositoryChatSheet = lazy(() => import('../../../components/RepositoryChatSheet'));
 
-export function CustomChannelResults({ channel, items }: { channel: CustomDiscoveryChannel; items: CandidateAssessment[] }) {
+export function CustomChannelResults({ channel, items, sourceEditionKey }: { channel: CustomDiscoveryChannel; items: CandidateAssessment[]; sourceEditionKey?: string }) {
   const language = useAppStore(s => s.language);
   const config = useAppStore(s => s.aiConfigs.find(c => c.id === s.activeAIConfig));
   const zh = language.startsWith('zh');
   const l = (cn: string, en: string) => zh ? cn : en;
   const data = useCustomDiscovery(s => s.data);
+  const sourcePending = new Set(data.editions.find(edition => editionKey(edition) === sourceEditionKey)?.pending.map(item => item.repo.id));
   const analysis = useCustomAnalysis();
+  useRepositoryAnalysisAssets(s => s.assets);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [activeId, setActiveId] = useState<number | null>(null);
   const [chatId, setChatId] = useState<number | null>(null);
+  const [lastBlocked, setLastBlocked] = useState<number | null>(null);
+  const paused = !!analysis.pausedChannels[channel.id];
+  const issue = analysis.issuesByChannel[channel.id];
   const [confirm, setConfirm] = useState<Repository[] | null>(null);
   const repositories = items.map(item => analyzedRepository(item.repo, data, language, config));
   const activeIndex = repositories.findIndex(repo => repo.id === activeId);
@@ -34,58 +41,19 @@ export function CustomChannelResults({ channel, items }: { channel: CustomDiscov
   const running = tasks.some(task => ['queued', 'waiting', 'running'].includes(task.status));
   const failures = tasks.filter(task => task.status === 'failed' && repositories.some(repo => repo.id === task.repo.id));
   const selectedRepos = repositories.filter(repo => selected.has(repo.id));
-  const unanalyzed = repositories.filter(repo => !data.analyses?.[analysisKey(repo, language, config)]?.details);
+  const unanalyzed = repositories.filter(repo => !repo.ai_details);
   const request = (repos: Repository[]) => {
-    if (repos.some(repo => data.analyses?.[analysisKey(repo, language, config)]?.details)) setConfirm(repos);
+    if (repos.some(repo => !!repo.ai_details)) setConfirm(repos);
     else enqueueAnalysis(channel, repos);
   };
   const handleApprove = async (assessment: CandidateAssessment) => {
-    try {
-      await updateCustomData(draft => {
-        const c = draft.channels.find(x => x.id === channel.id);
-        if (c) {
-          c.recommended[String(assessment.repo.id)] = new Date().toISOString().slice(0, 10);
-          c.blocked = c.blocked.filter(id => id !== assessment.repo.id);
-        }
-        for (const edition of draft.editions) {
-          if (edition.channelId === channel.id) {
-            const pendingIndex = edition.pending?.findIndex(p => p.repo.id === assessment.repo.id) ?? -1;
-            if (pendingIndex >= 0) {
-              const [approved] = edition.pending.splice(pendingIndex, 1);
-              if (!edition.entries.some(e => e.repo.id === approved.repo.id)) {
-                edition.entries.push({ ...approved, verdict: 'match' });
-              }
-            }
-          }
-        }
-      });
-    } catch (err) {
-      reportCustomError(err);
-    }
+    if (!sourceEditionKey) return;
+    try { await approveCandidate({ channelId: channel.id, editionKey: sourceEditionKey, repoId: assessment.repo.id }); }
+    catch (error) { reportCustomError(error); }
   };
   const handleBlock = async (assessment: CandidateAssessment) => {
-    try {
-      await updateCustomData(draft => {
-        const c = draft.channels.find(x => x.id === channel.id);
-        if (c) {
-          if (!c.blocked.includes(assessment.repo.id)) {
-            c.blocked.push(assessment.repo.id);
-          }
-        }
-        for (const edition of draft.editions) {
-          if (edition.channelId === channel.id) {
-            if (edition.pending) {
-              edition.pending = edition.pending.filter(p => p.repo.id !== assessment.repo.id);
-            }
-            if (edition.entries) {
-              edition.entries = edition.entries.filter(e => e.repo.id !== assessment.repo.id);
-            }
-          }
-        }
-      });
-    } catch (err) {
-      reportCustomError(err);
-    }
+    try { await blockCandidate({ channelId: channel.id, repoId: assessment.repo.id }); setLastBlocked(assessment.repo.id); }
+    catch (error) { reportCustomError(error); }
   };
   return <>
     <div className="flex flex-wrap items-center gap-2 border-b pb-3">
@@ -98,28 +66,30 @@ export function CustomChannelResults({ channel, items }: { channel: CustomDiscov
       <Button variant="outline" size="sm" disabled={!selectedRepos.length || running} onClick={() => request(selectedRepos)}>{l('分析所选', 'Analyze selected')} {selectedRepos.length || ''}</Button>
       {!!tasks.length && <span role="status" className="text-xs text-muted-foreground">{l('内容分析', 'Content analysis')} {tasks.filter(task => ['done', 'failed', 'cancelled'].includes(task.status)).length}/{tasks.length}</span>}
       {running && <>
-        <Button variant="ghost" size="icon" title={analysis.paused ? l('继续分析', 'Resume analysis') : l('暂停分析', 'Pause analysis')}
-          aria-label={analysis.paused ? l('继续分析', 'Resume analysis') : l('暂停分析', 'Pause analysis')}
-          onClick={() => useCustomAnalysis.setState({ paused: !analysis.paused })}>{analysis.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}</Button>
+        <Button variant="ghost" size="icon" title={paused ? l('继续分析', 'Resume analysis') : l('暂停分析', 'Pause analysis')}
+          aria-label={paused ? l('继续分析', 'Resume analysis') : l('暂停分析', 'Pause analysis')}
+          onClick={() => setAnalysisPaused(channel.id, !paused)}>{paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}</Button>
         <Button variant="ghost" size="icon" title={l('取消分析', 'Cancel analysis')} aria-label={l('取消分析', 'Cancel analysis')} onClick={() => cancelAnalysis(channel.id)}><Square className="h-4 w-4" /></Button>
       </>}
       {!running && !!failures.length && <Button variant="outline" size="sm" onClick={() => enqueueAnalysis(channel, failures.map(task => task.repo), { force: true })}><RotateCcw className="mr-1 h-4 w-4" />{l('重试失败项', 'Retry failed')} {failures.length}</Button>}
     </div>
-    {analysis.issue && <div className="flex flex-wrap items-center gap-2 text-sm text-destructive" role="alert">
-      {issueLabel(analysis.issue, zh)}
-      {analysis.issue.kind === 'auth' && <Button variant="link" onClick={() => useAppStore.getState().setCurrentView('settings')}>{l('配置 AI', 'Configure AI')}</Button>}
+    {lastBlocked !== null && <div role="status" className="flex items-center gap-2 text-sm">{l('已屏蔽此项目', 'Project blocked')}<Button variant="link" size="sm" onClick={() => void blockCandidate({ channelId: channel.id, repoId: lastBlocked, blocked: false }).then(() => setLastBlocked(null)).catch(reportCustomError)}>{l('撤销', 'Undo')}</Button></div>}
+    {issue && <div className="flex flex-wrap items-center gap-2 text-sm text-destructive" role="alert">
+      {issueLabel(issue, zh)}
+      {issue.kind === 'auth' && <Button variant="link" onClick={() => useAppStore.getState().setCurrentView('settings')}>{l('配置 AI', 'Configure AI')}</Button>}
     </div>}
     <div className="relative flex min-w-0 items-start gap-4" data-testid="custom-results-layout">
       <div className="min-w-0 flex-1 space-y-4">
-        {items.map((item, index) => <CustomRepositoryBlock key={item.repo.id} item={item} repo={repositories[index]} channel={channel}
+        {items.map((item, index) => <div key={item.repo.id} data-reading-key={`repo:${item.repo.id}`}><CustomRepositoryBlock item={item} repo={repositories[index]} channel={channel}
           active={activeId === item.repo.id} selected={selected.has(item.repo.id)}
           onSelect={() => setSelected(previous => { const next = new Set(previous); if (next.has(item.repo.id)) next.delete(item.repo.id); else next.add(item.repo.id); return next; })}
           onDetails={() => setActiveId(item.repo.id)} onAsk={() => setChatId(item.repo.id)}
           onAnalyze={() => request([repositories[index]])}
-          onApprove={() => void handleApprove(item)}
-          onBlock={() => void handleBlock(item)} />)}
+          onApprove={sourceEditionKey && sourcePending.has(item.repo.id) && !item.screening ? () => void handleApprove(item) : undefined}
+          onBlock={() => void handleBlock(item)} /></div>)}
       </div>
       <RepositoryDetailsPanel repository={active} onClose={() => setActiveId(null)} defaultDocked onAskRepository={repo => setChatId(repo.id)}
+        analysisStatus={{ running: tasks.some(task => task.repo.id === activeId && ['queued', 'waiting', 'running'].includes(task.status)), stage: tasks.find(task => task.repo.id === activeId)?.stage }}
         onPrevious={activeIndex > 0 ? () => setActiveId(repositories[activeIndex - 1].id) : undefined}
         onNext={activeIndex >= 0 && activeIndex < repositories.length - 1 ? () => setActiveId(repositories[activeIndex + 1].id) : undefined}
         analysisAction={repo => <Button variant="outline" size="sm" disabled={tasks.some(task => task.repo.id === repo.id && ['queued', 'waiting', 'running'].includes(task.status))}

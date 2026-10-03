@@ -85,8 +85,10 @@ export function RepositoryIdentityMigrationPanel() {
     }
   };
   const pending=journal && journal.phase!=='restored' && (journal.phase!=='complete' || !!journal.error);
-  return <section className="space-y-3 border-t border-border pt-4">
-    <h3 className="text-sm font-semibold">{t('identityMigration.title',{defaultValue:'Repository Identity'})}</h3>
+  return <details className="rounded-xl border border-border p-4" open={pending || undefined}>
+    <summary className="cursor-pointer text-sm font-semibold">{t('identityMigration.title',{defaultValue:'Repository Identity'})}</summary>
+    <section className="mt-4 space-y-3">
+    <p className="text-sm leading-relaxed text-muted-foreground">{t('settingsUx.identityHelp')}</p>
     <div className="flex flex-wrap items-center gap-2">
       <button disabled={busy||journalLoading||!!pending||!account} onClick={()=>void run(async()=>{
         const result=await previewRepositoryIdentityMigration();
@@ -130,5 +132,5 @@ export function RepositoryIdentityMigrationPanel() {
       {!preview.candidates.length && <p className="text-sm text-muted-foreground">{t('identityMigration.noCandidates',{defaultValue:'No legacy identity candidates.'})}</p>}
     </>}
     {error && <p role="alert" className="break-all text-sm text-destructive">{error}</p>}
-  </section>;
+  </section></details>;
 }

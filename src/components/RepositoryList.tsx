@@ -15,6 +15,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 
 import { Repository } from '../types';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { repositoryChatStorage } from '../services/repositoryChatStorage';
 import { matchesCategory } from '../utils/categoryUtils';
 import { sortRepositories } from '../utils/repoSearch';
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
@@ -143,6 +144,28 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   // 全局问答历史（S4 入口）：抽屉 + 从历史进入单仓会话的目标会话。
   const [globalHistoryOpen, setGlobalHistoryOpen] = useState(false);
   const [globalChatSessionId, setGlobalChatSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const openTarget = async () => {
+      try {
+        const target = JSON.parse(sessionStorage.getItem('gsm:pending-task-target') ?? 'null') as { view?: string; id?: string; owner?: string; kind?: string } | null;
+        if (target?.view !== 'repositories' || !target.id || target.owner !== String(useAppStore.getState().user?.id ?? '')) return;
+        sessionStorage.removeItem('gsm:pending-task-target');
+        if (target.kind === 'chat') {
+          const session = await repositoryChatStorage.getSession(target.id);
+          if (!alive || !session || session.ownerId !== target.owner) return;
+          const repository = repositories.find(item => item.id === session.repoId);
+          if (repository) { setGlobalChatSessionId(session.id); setActiveChatRepository(repository); }
+        } else {
+          const repository = repositories.find(item => String(item.id) === target.id || item.full_name === target.id);
+          if (repository) setActiveDetailRepository(repository);
+        }
+      } catch { sessionStorage.removeItem('gsm:pending-task-target'); }
+    };
+    const consume = () => { void openTarget(); };
+    consume(); window.addEventListener('gsm:task-navigate', consume);
+    return () => { alive = false; window.removeEventListener('gsm:task-navigate', consume); };
+  }, [repositories]);
 
   const allCategories = useMemo(
     () => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),

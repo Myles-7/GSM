@@ -1,13 +1,10 @@
 import { useState } from 'react';
-import { AlertCircle, ArrowRight, BookOpen, Calendar, Check, ChevronDown, ExternalLink, EyeOff, Loader2, MessageSquareText, MoreHorizontal, Sparkles, Star } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { AlertCircle, BookOpen, Check, ChevronDown, ExternalLink, EyeOff, Loader2, MessageSquareText, MoreHorizontal, Sparkles, Star } from 'lucide-react';
 import type { Repository } from '../../../types';
-import { getDateFnsLocale } from '../../../i18n/format';
 import { useAppStore } from '../../../store/useAppStore';
 import { Button } from '../../../components/ui/button';
 import { ReadmeModal } from '../../../components/ReadmeModal';
-import { RepositoryLanguageStars, RepositorySoftwareForms, repositoryListDescriptionClass, repositoryListSurfaceClass } from '../../../components/RepositoryListPresentation';
-import { getPlatformDisplayName } from '../../../components/platformMeta';
+import { RepositoryTextBlock } from '../../../components/RepositoryTextBlock';
 import { readRepositoryDetails } from '../../../utils/repositoryDetailsSchema';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu';
 import type { CandidateAssessment, CustomDiscoveryChannel } from '../custom/model';
@@ -29,7 +26,6 @@ export function CustomRepositoryBlock({
   const l = (cn: string, en: string) => zh ? cn : en;
   const [readme, setReadme] = useState(false);
   const [starring, setStarring] = useState(false);
-  const [avatarFailed, setAvatarFailed] = useState(false);
   const [error, setError] = useState('');
   const actions = useCustomChannelActions();
   const starred = useAppStore(s => s.repositories.some(r => r.id === repo.id));
@@ -57,24 +53,13 @@ export function CustomRepositoryBlock({
     catch (error) { setError(issueLabel(taskIssue(error), zh)); }
     finally { setStarring(false); }
   };
-  const interactive = (target: EventTarget | null) => target instanceof Element && !!target.closest('button,a,input,summary,details');
-  const date = Date.parse(repo.pushed_at || repo.updated_at);
-  return <article className={`${repositoryListSurfaceClass} min-w-0 rounded-md ${active ? 'outline outline-2 outline-offset-2 outline-primary' : ''} ${selected ? 'linear-card-selected' : ''}`}
-    tabIndex={0} aria-label={repo.full_name} data-testid="custom-repository-block"
-    onClick={event => { if (!interactive(event.target)) onDetails(); }}
-    onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onDetails(); } }}>
-    <div className="mb-3 flex flex-wrap items-start gap-3">
-      {!avatarFailed && repo.owner.avatar_url ? <img src={repo.owner.avatar_url} alt="" onError={() => setAvatarFailed(true)} className="h-10 w-10 shrink-0 rounded-full" />
-        : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium">{repo.owner.login.slice(0, 2).toUpperCase()}</span>}
-      <div className="min-w-0 flex-1 basis-28"><h3 className="break-all text-base font-semibold">{repo.name}</h3><p className="break-all text-sm text-muted-foreground">{repo.owner.login}</p></div>
-      <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-        {stateText && <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role={state === 'running' ? 'status' : undefined}>
-          {state === 'running' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}{stateText}
-        </span>}
+  return <RepositoryTextBlock repo={repo} active={active} selected={selected} onSelect={onSelect} onDetails={onDetails} testId="custom-repository-block"
+    status={stateText && <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground" role={state === 'running' ? 'status' : undefined}>{state === 'running' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}{stateText}</span>}
+    actions={<>
         <Button
           variant="ghost"
           size="icon"
-          disabled={starring}
+          disabled={starring || starred}
           onClick={() => void star()}
           title={starred ? l('已 Star', 'Starred') : 'Star'}
           aria-label={starred ? l('已 Star', 'Starred') : 'Star'}
@@ -90,20 +75,15 @@ export function CustomRepositoryBlock({
             <DropdownMenuItem onSelect={onAnalyze} disabled={state === 'running' || state === 'queued' || state === 'waiting'}><Sparkles className="mr-2 h-4 w-4" />{details ? l('重新分析', 'Analyze again') : l('AI 分析', 'AI analysis')}</DropdownMenuItem>
             <DropdownMenuItem disabled={starred || starring} onSelect={() => void star()}><Star className="mr-2 h-4 w-4" />{starred ? l('已 Star', 'Starred') : 'Star'}</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => patch('read')}><Check className="mr-2 h-4 w-4" />{read ? l('标为未读', 'Mark unread') : l('标为已读', 'Mark read')}</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => patch('blocked')}><EyeOff className="mr-2 h-4 w-4" />{l('不再推荐', 'Do not recommend')}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onBlock ?? (() => patch('blocked'))}><EyeOff className="mr-2 h-4 w-4" />{l('不再推荐', 'Do not recommend')}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
-    </div>
-    <p className={`${repositoryListDescriptionClass} mb-3`}>{repo.ai_summary || repo.description || l('暂无描述', 'No description')}</p>
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      <RepositorySoftwareForms forms={[...new Set(details?.software_forms || [])].slice(0, 2)} />
-      <RepositoryLanguageStars language={repo.language} stars={repo.stargazers_count} />
-      {!!repo.ai_platforms?.length && <span className="break-words text-xs text-muted-foreground">{repo.ai_platforms.map(getPlatformDisplayName).join(' · ')}</span>}
-    </div>
+    </>}>
     <div className="mt-3 space-y-1.5 text-xs text-muted-foreground">
       <div className="flex flex-wrap gap-2">
-        {item.screening ? <span>{l('规则核实中', 'Checking rules')}</span> : item.verdict === 'unknown' && <span>{l('待核实', 'Unverified')}</span>}
+        {item.screening ? <span>{l('规则核实中', 'Checking rules')}</span> : item.verdict === 'unknown' && !item.acceptance && <span>{l('待核实', 'Unverified')}</span>}
+        {item.acceptance && <span>{l('人工采纳 · 加入今天', 'Manually accepted today')}</span>}
+        {item.relation && <span>{item.relation === 'ecosystem' ? l('生态扩展', 'Ecosystem expansion') : l('直接相关', 'Direct relevance')}</span>}
         {read && <span>{l('已读', 'Read')}</span>}{starred && <span>{l('已 Star', 'Starred')}</span>}
         {!!others.length && <span className="break-words">{l('其他频道已推荐', 'Also recommended in')}: {others.join(', ')}</span>}
       </div>
@@ -116,9 +96,11 @@ export function CustomRepositoryBlock({
           </span>
         </div>
       )}
+      {(record?.updatedAt || cachedReadme?.fetchedAt) && <details><summary className="cursor-pointer">{l('缓存详情', 'Cache details')}</summary>
       {record?.updatedAt && <p>{l('分析缓存时间', 'Analysis cached at')}: <time dateTime={new Date(record.updatedAt).toISOString()}>{new Date(record.updatedAt).toLocaleString()}</time></p>}
       {cachedReadme?.fetchedAt && <p>{l('README 缓存时间', 'README cached at')}: <time dateTime={new Date(cachedReadme.fetchedAt).toISOString()}>{new Date(cachedReadme.fetchedAt).toLocaleString()}</time>
         {cachedReadme.pushedAt !== (repo.pushed_at || repo.updated_at) && <span> · {l('来源已更新，需重新读取', 'Source updated; refresh required')}</span>}</p>}
+      </details>}
       {!!item.evidence.length && (
         <details className="group rounded-md bg-muted/40 dark:bg-muted/15 border border-border/50 text-xs">
           <summary className="flex cursor-pointer items-center justify-between px-2.5 py-1.5 font-medium text-muted-foreground hover:text-foreground select-none">
@@ -138,7 +120,7 @@ export function CustomRepositoryBlock({
           </div>
         </details>
       )}
-      {item.verdict === 'unknown' && onApprove && onBlock && (
+      {item.verdict === 'unknown' && !item.acceptance && !item.screening && onApprove && onBlock && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-xs mt-2">
           <span className="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -169,11 +151,6 @@ export function CustomRepositoryBlock({
       {(task?.issue || record?.issue) && <p className="text-destructive">{issueLabel((task?.issue || record?.issue)!, zh)}</p>}
       {error && <p role="alert" className="text-destructive">{error}</p>}
     </div>
-    <div className="mt-3 flex items-center gap-2 border-t border-border/50 pt-3 text-xs text-muted-foreground">
-      {Number.isFinite(date) && <span className="flex min-w-0 flex-1 items-center gap-1.5"><Calendar className="h-4 w-4 shrink-0" /><span className="truncate">{l('最近提交', 'Last pushed')} {formatDistanceToNow(date, { addSuffix: true, locale: getDateFnsLocale(language) })}</span></span>}
-      <Button variant="ghost" size="sm" className="ml-auto h-7 gap-1 px-2.5 text-xs text-primary hover:text-primary hover:bg-primary/10" onClick={onDetails}>{l('详情', 'Details')}<ArrowRight className="h-3 w-3" /></Button>
-      <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`${l('选择', 'Select')} ${repo.full_name}`} className="h-4 w-4 shrink-0 accent-primary cursor-pointer" />
-    </div>
     {readme && <ReadmeModal isOpen onClose={() => setReadme(false)} repository={repo} />}
-  </article>;
+  </RepositoryTextBlock>;
 }

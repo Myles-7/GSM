@@ -1,4 +1,4 @@
-import { FALLBACK_LANGUAGE, isAppLanguage, type AppLanguage } from '../i18n/languages';
+import { FALLBACK_LANGUAGE, isKnownLanguage, type AppLanguage } from '../i18n/languages';
 
 const english = {
   coverage: 'Research coverage: {completed}/{total}; completed: {repositories}.',
@@ -120,5 +120,5 @@ export const workbenchText = (
   language: string,
   key: WorkbenchTextKey,
   values: Record<string, string | number> = {},
-): string => translations[isAppLanguage(language) ? language : FALLBACK_LANGUAGE][key]
+): string => translations[isKnownLanguage(language) ? language : FALLBACK_LANGUAGE][key]
   .replace(/\{(\w+)\}/g, (placeholder, name: string) => String(values[name] ?? placeholder));

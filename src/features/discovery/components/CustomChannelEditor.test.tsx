@@ -30,6 +30,23 @@ const parse = async () => {
 };
 
 describe('custom channel editor interactions', () => {
+  it('preserves semantic edits across reparsing and ignores a late preview after changing rules', async () => {
+    let resolve!: (value: { candidates: { full_name: string; id: number }[]; issues: []; complete: boolean; searched: number }) => void;
+    mocks.preview.mockImplementation(() => new Promise(r => { resolve = r; }));
+    render(<CustomChannelEditor onClose={vi.fn()} />); fill(); await parse();
+    fireEvent.change(screen.getByRole('textbox', { name: '新条件或关键词' }), { target: { value: '必须离线' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加条件' }));
+    expect(screen.getByText('必须离线')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '预览候选' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '排序偏好' }), { target: { value: 'stars' } });
+    await act(async () => resolve({ candidates: [{ full_name: 'late/repo', id: 999 }], issues: [], complete: true, searched: 1 }));
+    expect(screen.queryByText('late/repo')).not.toBeInTheDocument();
+    await parse(); expect(screen.getByText('必须离线')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '保存频道' }));
+    await waitFor(() => expect(data.channels).toHaveLength(1));
+    expect(data.channels[0].plan.required).toEqual(makePlan().required);
+    expect(data.channels[0].ruleOverrides?.required?.slice(-1)[0]?.text).toBe('必须离线');
+  });
   it('parses without preview, and saves while preview is stalled', async () => {
     const close = vi.fn();
     let previewSignal: AbortSignal | undefined;
@@ -53,22 +70,14 @@ describe('custom channel editor interactions', () => {
   it('preserves manual unlimited across reparsing, and invalidates a changed description', async () => {
     render(<CustomChannelEditor onClose={vi.fn()} />);
     fill();
-    // Switch to rules tab and explicitly pick "不限 Stars"
-    fireEvent.click(screen.getByRole('tab', { name: /规则与筛选/ }));
-    const noLimitBtn = screen.getByRole('button', { name: '不限 Stars' });
-    fireEvent.click(noLimitBtn);
-
-    // Switch back to requirements tab and parse
-    fireEvent.click(screen.getByRole('tab', { name: /需求与 AI 解析/ }));
+    fireEvent.change(screen.getByRole('combobox', { name: '最低 Stars' }), { target: { value: 'any' } });
     await parse();
 
     fireEvent.change(screen.getByRole('textbox', { name: '你想关注什么' }), { target: { value: 'another request' } });
     expect(screen.getByRole('button', { name: '保存频道' })).toBeDisabled();
     await parse();
 
-    // Verify minStars remains unlimited
-    fireEvent.click(screen.getByRole('tab', { name: /规则与筛选/ }));
-    expect(screen.getByRole('button', { name: '不限 Stars' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('combobox', { name: '最低 Stars' })).toHaveValue('any');
 
     fireEvent.click(screen.getByRole('button', { name: '保存频道' }));
     await waitFor(() => expect(data.channels).toHaveLength(1));
@@ -104,10 +113,7 @@ describe('custom channel editor interactions', () => {
     data.channels.push(channel);
     render(<CustomChannelEditor channel={channel} onClose={vi.fn()} />);
 
-    // Switch to rules tab and pick Stars sort
-    fireEvent.click(screen.getByRole('tab', { name: /规则与筛选/ }));
-    const starsSortBtn = screen.getByRole('button', { name: /Stars 最多/ });
-    fireEvent.click(starsSortBtn);
+    fireEvent.change(screen.getByRole('combobox', { name: '排序偏好' }), { target: { value: 'stars' } });
 
     fireEvent.click(screen.getByRole('button', { name: '保存频道' }));
     await waitFor(() => expect(mocks.select).toHaveBeenCalled());
@@ -135,31 +141,19 @@ describe('custom channel editor interactions', () => {
     window.removeEventListener('gsm:navigate-to-settings-tab', eventSpy);
   });
 
-  it('switches between tabs cleanly', async () => {
+  it('shows a single page with common controls and collapsed advanced/update settings', () => {
     render(<CustomChannelEditor onClose={vi.fn()} />);
-    const rulesTab = screen.getByRole('tab', { name: /规则与筛选/ });
-    const automationTab = screen.getByRole('tab', { name: /调度与自动化/ });
-    const reqTab = screen.getByRole('tab', { name: /需求与 AI 解析/ });
-
-    fireEvent.click(rulesTab);
-    expect(rulesTab).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(automationTab);
-    expect(automationTab).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(reqTab);
-    expect(reqTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: '你想关注什么' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '编程语言' })).toBeInTheDocument();
+    expect(screen.getByText('进阶选项').parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('更新设置').parentElement).not.toHaveAttribute('open');
   });
 
-  it('allows picking an emoji to prepend to the channel name', async () => {
+  it('keeps names literal without forcing decorative prefixes', () => {
     render(<CustomChannelEditor onClose={vi.fn()} />);
-    const emojiBtn = screen.getByRole('button', { name: '选择 Emoji' });
-    fireEvent.click(emojiBtn);
-
-    const robotEmoji = screen.getByText('🤖');
-    fireEvent.click(robotEmoji);
-
-    expect(screen.getByRole('textbox', { name: '频道名称' })).toHaveValue('🤖');
+    fill();
+    expect(screen.getByRole('textbox', { name: '频道名称' })).toHaveValue('codex');
   });
 
   it('renders interactive semantic tags after parse and supports deleting and adding tags', async () => {
@@ -167,16 +161,16 @@ describe('custom channel editor interactions', () => {
     fill();
     await parse();
 
-    expect(screen.getByText('交互式语义规则标签')).toBeInTheDocument();
+    expect(screen.getByText('规则摘要')).toBeInTheDocument();
 
     const deleteConditionBtns = screen.getAllByRole('button', { name: /删除必要条件/ });
     expect(deleteConditionBtns.length).toBeGreaterThan(0);
     fireEvent.click(deleteConditionBtns[0]);
 
     // Add a new semantic tag
-    const tagInput = screen.getByPlaceholderText('输入规则或关键词，回车快速追加...');
+    const tagInput = screen.getByRole('textbox', { name: '新条件或关键词' });
     fireEvent.change(tagInput, { target: { value: 'Rust 编写' } });
-    fireEvent.click(screen.getByRole('button', { name: '添加标签' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加条件' }));
 
     const matchingTags = await screen.findAllByText('Rust 编写');
     expect(matchingTags.length).toBeGreaterThan(0);
@@ -203,15 +197,8 @@ describe('custom channel editor interactions', () => {
     fill();
     await parse();
 
-    fireEvent.click(screen.getByRole('tab', { name: /规则与筛选/ }));
-
-    // Pick Python language chip
-    const pythonBtn = screen.getByRole('button', { name: 'Python' });
-    fireEvent.click(pythonBtn);
-
-    // Toggle exclusion
-    const forkCheckbox = screen.getByLabelText('排除 Fork 仓库');
-    fireEvent.click(forkCheckbox); // Toggle off
+    fireEvent.change(screen.getByRole('combobox', { name: '编程语言' }), { target: { value: 'Python' } });
+    fireEvent.change(screen.getByLabelText('排除 Fork 仓库'), { target: { value: 'false' } });
 
     fireEvent.click(screen.getByRole('button', { name: '保存配置' }));
     await waitFor(() => expect(data.channels).toHaveLength(1));

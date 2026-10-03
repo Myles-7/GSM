@@ -44,19 +44,6 @@ export async function desktopSeed(): Promise<Seed[]> {
   const chat = await repositoryChatStorage.exportWorkbench(String(state.user.id)) as Record<string, Array<Record<string, unknown>>>;
   return [...desktopStoreRecords(state), ...await exportCustomDiscovery(String(state.user.id)), ...(['sessions','messages','evidence','projects','proposals'] as const).flatMap(collection => (chat[collection] ?? []).map(data => ({ collection, id: String(data.id), data })))];
 }
-export async function previewDesktopBootstrap() {
-  const state = useAppStore.getState();
-  if (!state.user || !state.repositories.length) throw new Error('请先在电脑登录并同步仓库，不能从空手机初始化');
-  const records = await desktopSeed();
-  const input = { githubUserId: state.user.id, source: 'desktop', records };
-  const preview = await desktopApi().request<{ previewToken: string; counts: Record<string, number>; legacyCounts?: Record<string, number> }>('/sync/v2/bootstrap', input);
-  return { input, preview };
-}
-export async function confirmDesktopBootstrap(preview: Awaited<ReturnType<typeof previewDesktopBootstrap>>) {
-  await desktopApi().request('/sync/v2/bootstrap', { ...preview.input, confirm: true, previewToken: preview.preview.previewToken });
-  await activateDesktopHome();
-}
-
 async function projectNow(sync: HomeSync) {
   let observed: Promise<void>; let records: HomeRecord[];
   do { observed = captureTail; await observed; records = await sync.db.allRecords(); } while (observed !== captureTail);

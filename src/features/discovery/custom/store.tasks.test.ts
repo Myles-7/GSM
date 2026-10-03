@@ -5,7 +5,7 @@ import { aiTaskJournal } from '../../../services/aiTaskJournal';
 
 const mocks = vi.hoisted(() => ({ run: vi.fn(), cancel: vi.fn() }));
 vi.mock('./runner', () => ({ runChannels: mocks.run, cancelCustomRun: mocks.cancel }));
-vi.mock('../../../store/useAppStore', () => ({ useAppStore: { getState: () => ({ language: 'en' }) } }));
+vi.mock('../../../store/useAppStore', () => ({ useAppStore: { getState: () => ({ language: 'en', aiConfigs: [] }) } }));
 import { startCustomRun, useCustomDiscovery } from './store';
 
 beforeEach(() => {
@@ -21,7 +21,7 @@ describe('discovery task projection', () => {
     mocks.run.mockRejectedValueOnce(new Error('offline'));
     await startCustomRun([makeChannel().id]);
     const task = aiTaskJournal.snapshot().slice(-1)[0];
-    expect(task).toMatchObject({ kind: 'discovery', state: 'complete', items: [{ state: 'failed' }] });
+    expect(task).toMatchObject({ kind: 'discovery', state: 'failed', items: [{ state: 'failed' }] });
     expect(aiTaskJournal.live(task.id)).toBe(false);
     expect(useCustomDiscovery.getState().busy).toBe(false);
   });
@@ -32,7 +32,7 @@ describe('discovery task projection', () => {
     aiTaskJournal.control(task.id, 'stop');
     await pending;
     expect(mocks.run).not.toHaveBeenCalled();
-    expect(aiTaskJournal.snapshot().slice(-1)[0]).toMatchObject({ state: 'interrupted', items: [{ state: 'pending' }] });
+    expect(aiTaskJournal.snapshot().slice(-1)[0]).toMatchObject({ state: 'canceled', items: [{ state: 'canceled' }] });
     expect(aiTaskJournal.live(task.id)).toBe(false);
   });
 });

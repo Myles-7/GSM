@@ -161,7 +161,8 @@ describe('App backend initialization', () => {
   it('keeps the production account-change subscription and removes it on unmount', async () => {
     const { unmount } = render(<App />);
     await act(async () => { await Promise.resolve(); });
-    expect(mocks.storeListeners.size).toBe(1);
+    // Account isolation and repository-asset migration each own a subscription.
+    expect(mocks.storeListeners.size).toBe(2);
     await act(async () => {
       pluginPageSession.open({ pluginId: 'com.example.page', pluginName: 'Fixture', pageId: 'one', pageTitle: 'Fixture' });
     });

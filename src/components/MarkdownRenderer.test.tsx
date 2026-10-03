@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import mermaid from 'mermaid';
 
 vi.mock('../store/useAppStore', () => ({
   useAppStore: vi.fn((selector) => {
@@ -26,6 +27,34 @@ vi.mock('mermaid', () => ({
 describe('MarkdownRenderer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('incremental output', () => {
+    it('keeps an open fence plain, then highlights all newly completed code', () => {
+      const { container, rerender } = render(<MarkdownRenderer isGenerating content={'```js\nconst x ='} />);
+      expect(container.querySelector('.hljs')).toBeNull();
+      rerender(<MarkdownRenderer isGenerating content={'```js\nconst x = 42;\n```'} />);
+      expect(container.querySelector('.hljs')).toHaveTextContent('const x = 42;');
+      expect(container.querySelector('.hljs-number')).toHaveTextContent('42');
+      rerender(<MarkdownRenderer content={'```js\nconst x = 43;\n```'} />);
+      expect(container.querySelector('.hljs-number')).toHaveTextContent('43');
+    });
+    it('renders unknown languages as escaped, copyable text', () => {
+      const { container } = render(<MarkdownRenderer content={'```unknown-lang\n<script>unsafe()</script>\n```'} />);
+      expect(container.querySelector('code')).toHaveTextContent('<script>unsafe()</script>');
+      expect(container.querySelector('script')).toBeNull();
+      expect(screen.getByRole('button', { name: '复制代码' })).toBeEnabled();
+    });
+    it('defers Mermaid until generation ends and falls back to source on invalid syntax', async () => {
+      const { container, rerender } = render(<MarkdownRenderer isGenerating content={'```mermaid\ngraph TD\nA--'} />);
+      expect(mermaid.render).not.toHaveBeenCalled();
+      expect(container.querySelector('code')).toHaveTextContent('graph TD');
+      vi.mocked(mermaid.render).mockRejectedValueOnce(new Error('internal parser dump'));
+      rerender(<MarkdownRenderer content={'```mermaid\ngraph TD\nA--\n```'} />);
+      await waitFor(() => expect(mermaid.render).toHaveBeenCalledOnce());
+      await waitFor(() => expect(container.querySelector('pre')).toHaveTextContent('graph TD'));
+      expect(screen.queryByText('internal parser dump')).not.toBeInTheDocument();
+    });
   });
 
   describe('Basic Rendering', () => {

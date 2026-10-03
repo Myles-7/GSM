@@ -218,6 +218,8 @@ describe('RepositoryList repository workflow contracts', () => {
       category_locked: true,
     });
     mocks.details.mockResolvedValueOnce({
+        version: 1, generated_at: new Date().toISOString(), repository_pushed_at: null, model: 'test-model', sources: [],
+        features: [], scenarios: [], architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
         problem: 'AI summary',
         tags: ['ai-tag'],
         platforms: ['web'],
@@ -302,7 +304,9 @@ describe('RepositoryList repository workflow contracts', () => {
 
   it('retains completed AI results after the user stops a running batch', async () => {
     const repository = createRepository(1, { custom_description: 'User description' });
-    mocks.details.mockResolvedValueOnce({ problem: 'Completed before stop', tags: ['done'], platforms: ['cli'] });
+    mocks.details.mockResolvedValueOnce({ version: 1, generated_at: new Date().toISOString(), repository_pushed_at: null, model: 'test-model', sources: [],
+      features: [], scenarios: [], architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
+      problem: 'Completed before stop', tags: ['done'], platforms: ['cli'] });
     mocks.details.mockImplementationOnce(({ signal }: { signal: AbortSignal }) => new Promise((_, reject) => {
       signal.addEventListener('abort', () => { mocks.abort(); reject(new Error('aborted')); }, { once: true });
     }));

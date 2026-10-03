@@ -4,7 +4,7 @@ import { Button } from '../../../components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../components/ui/popover';
 import { Modal } from '../../../components/Modal';
 import { useAppStore } from '../../../store/useAppStore';
-import type { ChannelDailyEdition, CustomDiscoveryChannel } from '../custom/model';
+import { visibleEditionItems, type ChannelDailyEdition, type CustomDiscoveryChannel } from '../custom/model';
 import { deleteCustomEdition, clearCustomEditions, reportCustomError } from '../custom/store';
 
 export function getEditionKey(e: ChannelDailyEdition): string {
@@ -103,6 +103,7 @@ interface CustomChannelEditionPickerProps {
   editions: ChannelDailyEdition[];
   selectedEditionKey?: string;
   onSelectEdition: (key: string) => void;
+  displayedEdition?: ChannelDailyEdition;
 }
 
 export function CustomChannelEditionPicker({
@@ -110,6 +111,7 @@ export function CustomChannelEditionPicker({
   editions,
   selectedEditionKey,
   onSelectEdition,
+  displayedEdition,
 }: CustomChannelEditionPickerProps) {
   const zh = useAppStore(s => s.language.startsWith('zh'));
   const l = (cnText: string, enText: string) => zh ? cnText : enText;
@@ -121,7 +123,8 @@ export function CustomChannelEditionPicker({
   const [busy, setBusy] = useState(false);
 
   const groups = groupEditionsByDate(editions, zh);
-  const activeEdition = editions.find(e => selectedEditionKey ? matchEdition(e, selectedEditionKey) : false) || editions[0];
+  const activeEdition = displayedEdition || editions.find(e => selectedEditionKey ? matchEdition(e, selectedEditionKey) : false) || editions[0];
+  const activeItems = activeEdition ? visibleEditionItems(activeEdition, channel) : { entries: [], pending: [] };
   const activeNaturalDate = activeEdition ? formatNaturalDate(activeEdition.date, zh) : '';
   const activeGroup = groups.find(g => g.date === activeEdition?.date);
   const isEarlierRun = Boolean(activeGroup && activeEdition && activeGroup.latest !== activeEdition);
@@ -174,6 +177,7 @@ export function CustomChannelEditionPicker({
   };
 
   const renderEditionCard = (edition: ChannelDailyEdition, isLatest: boolean) => {
+    const visible = visibleEditionItems(edition, channel);
     const isSelected = activeEdition && matchEdition(edition, getEditionKey(activeEdition));
     const timeLabel = formatTimeLabel(edition.generatedAt, isLatest, zh);
     const key = getEditionKey(edition);
@@ -213,13 +217,13 @@ export function CustomChannelEditionPicker({
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
               <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                {edition.entries.length} {l('推荐', 'recs')}
+                {visible.entries.length} {l('推荐', 'recs')}
               </span>
-              {edition.pending.length > 0 && (
+              {visible.pending.length > 0 && (
                 <>
                   <span>·</span>
                   <span className="text-amber-600 dark:text-amber-400 font-medium">
-                    {edition.pending.length} {l('待核实', 'unverified')}
+                    {visible.pending.length} {l('待核实', 'unverified')}
                   </span>
                 </>
               )}
@@ -257,10 +261,10 @@ export function CustomChannelEditionPicker({
             <Calendar className="h-3.5 w-3.5 shrink-0 text-primary" />
             <span className="font-medium text-foreground">{activeNaturalDate ? `${activeNaturalDate}${activeTimeSuffix}` : activeEdition?.date}</span>
             <span className="text-muted-foreground/50">·</span>
-            <span className="text-muted-foreground">{activeEdition?.entries.length ?? 0} {l('推荐', 'recs')}</span>
-            {(activeEdition?.pending.length ?? 0) > 0 && (
+            <span className="text-muted-foreground">{activeItems.entries.length} {l('推荐', 'recs')}</span>
+            {activeItems.pending.length > 0 && (
               <span className="rounded-full bg-amber-500/15 px-1.5 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                {activeEdition?.pending.length} {l('待核实', 'unverified')}
+                {activeItems.pending.length} {l('待核实', 'unverified')}
               </span>
             )}
             <ChevronDown className="ml-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />

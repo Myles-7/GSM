@@ -95,6 +95,8 @@ export function useAgySettings() {
       const saved = await bridge.save(id, { ...draft, enabled: false });
       if (!saved.ok) return saved;
       if (current.current !== id || canceled.current === id) return { ok: false as const, code: 'CANCELED' };
+      // Publish the temporary disabled state immediately while the probe runs.
+      if (alive.current) { setState(saved.value); applyAgyDeviceState(saved.value); }
       const tested = await bridge.probe(id);
       if (!tested.ok || tested.value.lastProbe?.code !== 'SUCCESS' || !draft.enabled) return tested;
       if (current.current !== id || canceled.current === id) return { ok: false as const, code: 'CANCELED' };
@@ -108,5 +110,8 @@ export function useAgySettings() {
       if (state?.enabled) useAppStore.getState().setActiveAIConfig(AGY_CONFIG_ID);
     },
     active: useAppStore(store => store.activeAIConfig) === AGY_CONFIG_ID,
+    probeMatches: !!(state?.executable && state.lastProbe?.code === 'SUCCESS' &&
+      state.lastProbe.fingerprint === state.executable.fingerprint &&
+      (!state.lastProbe.identity || state.lastProbe.identity === `${state.executable.fingerprint}:${state.prefs.model}:${state.prefs.effort}:text-v1`)),
   };
 }

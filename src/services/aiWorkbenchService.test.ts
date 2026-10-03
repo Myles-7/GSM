@@ -60,6 +60,7 @@ vi.mock('./repositoryChatRunner', () => ({
 import {
   WorkbenchStarSyncError,
   answerWorkbench,
+  answerWorkbenchOverview,
   prepareWorkbenchRequirements,
   searchWorkbench,
   starWorkbenchRepository,
@@ -321,6 +322,35 @@ describe('prepareWorkbenchRequirements', () => {
 
     mocks.generateChatText.mockResolvedValue('```json\n{}\n```');
     await expect(prepareWorkbenchRequirements({ question: 'another query' })).rejects.toThrow(/invalid JSON/i);
+  });
+
+  it('summarizes every result in overview mode and keeps earlier page introductions', async () => {
+    mocks.searchRepositories.mockResolvedValue({ repos: [makeRepository(1), makeRepository(2)] });
+    mocks.getRepositoryReadme.mockResolvedValue('A scientific Markdown editor for local research notes.');
+    mocks.generateChatText.mockImplementation(async (options: { user: string }) => {
+      const { projects } = JSON.parse(options.user);
+      return JSON.stringify({ summary: 'Research note tools', items: projects.map((item: { name: string }) => ({
+        name: item.name, summary: 'A local editor', category: 'Notes', categoryDescription: 'Reading notes', kind: 'tool', insufficient: false,
+      })) });
+    });
+    const first = await searchWorkbench({ requirements, depth: 'quick', overview: true, onUpdate: vi.fn() });
+    expect(first.candidates.every(item => item.overview?.status === 'ready')).toBe(true);
+    mocks.searchRepositories.mockResolvedValue({ repos: [makeRepository(2), makeRepository(3)] });
+    const second = await searchWorkbench({ requirements, depth: 'quick', overview: true, previous: first, page: 2, onUpdate: vi.fn() });
+    expect(second.id).toBe(first.id);
+    expect(second.candidates.map(item => item.repository.id)).toEqual([1, 2, 3]);
+    expect(JSON.parse(mocks.generateChatText.mock.calls[mocks.generateChatText.mock.calls.length - 1][0].user).projects).toHaveLength(1);
+    expect(mocks.runRepositoryChatTurn).not.toHaveBeenCalled();
+  });
+
+  it('answers overview questions from supplied facts without requiring a GitHub token', async () => {
+    mocks.storeState.githubToken = '';
+    mocks.generateChatText.mockResolvedValue('The supplied project is a note editor. Cloud sync is unknown.');
+    const result = await answerWorkbenchOverview({ question: 'What is this?', candidates: [{ repository: makeRepository(1), summary: 'Note editor',
+      reasons: [], limitations: [], sources: [], status: 'candidate' }], messages: [] });
+    expect(result.quality).toBe('unreviewed');
+    expect(mocks.getRepositoryReadme).not.toHaveBeenCalled();
+    expect(mocks.runRepositoryChatTurn).not.toHaveBeenCalled();
   });
 });
 

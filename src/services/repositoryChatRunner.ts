@@ -10,6 +10,7 @@ import { runToolLoopRepositoryChatTurn } from './agentToolLoop';
 import { isAgyConfig } from '../utils/aiConfig';
 import { withDeadline } from '../utils/requestDeadline';
 import { bindFileCacheIdentity } from './pinnedFileCache';
+import { runTrackedTask } from './taskExecution';
 
 /**
  * 仓库问答的执行入口：按设置与 AI 配置能力在两个执行循环间分派。
@@ -45,11 +46,13 @@ export const runRepositoryChatTurn = async (input: RepositoryChatTurnInput): Pro
   const startedAt = Date.now();
   const deadlineAt = Math.min(input.deadlineAt ?? Infinity, startedAt + resolveTurnLimits(input).budget.maxDurationMs);
   const duration = Math.max(0, deadlineAt - startedAt);
-  return withDeadline(signal => dispatchTurn({
+  return runTrackedTask({ owner: input.session.ownerId ?? '', kind: 'chat', label: input.repository.full_name,
+    signal: input.signal, config: input.aiConfig, metadata: { title: input.repository.full_name,
+      target: { view: 'repositories', id: input.session.id } } }, (taskSignal, task) => withDeadline(signal => dispatchTurn({
     ...input, signal, deadlineAt,
     retrievalDeadlineAt: Math.min(input.retrievalDeadlineAt ?? Infinity, input.evidenceOnly ? deadlineAt : startedAt + duration * 0.6),
     onAnswerChunk: input.onAnswerChunk ? text => { if (!signal.aborted) input.onAnswerChunk?.(text); } : undefined,
     onAnswerEvent: input.onAnswerEvent ? event => { if (!signal.aborted) input.onAnswerEvent?.(event); } : undefined,
-    onToolEvent: input.onToolEvent ? event => { if (!signal.aborted) input.onToolEvent?.(event); } : undefined,
-  }), duration, input.signal);
+    onToolEvent: event => { if (!signal.aborted) { task.metadata({ phase: event.stage }); input.onToolEvent?.(event); } },
+  }), duration, taskSignal));
 };

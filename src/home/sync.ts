@@ -1,6 +1,7 @@
 import { HomeApi, HomeApiError } from './api';
 import { HomeDatabase } from './database';
 import type { Capabilities, HomeRecord, SyncView } from './types';
+import { aiTaskJournal } from '../services/aiTaskJournal';
 
 interface Page { records: HomeRecord[]; cursor: number; hasMore: boolean; snapshotId?: string; nextOffset?: number }
 export class HomeSync {
@@ -87,6 +88,9 @@ export class HomeSync {
   private async perform() {
     if (this.stopped || (typeof navigator !== 'undefined' && navigator.onLine === false)) { this.publish({ status: 'offline' }); return; }
     this.publish({ status: 'syncing', error: undefined });
+    const task = aiTaskJournal.begin(String(this.identity.githubUserId), 'sync', [{ id: 'sync', label: 'Home sync' }], undefined, undefined,
+      { trigger: 'automatic', target: { view: 'settings', tab: 'backend' } });
+    task.item('sync', 'running');
     try {
       const initialized = await this.db.metadata('initialized');
       if (this.stopped) return;
@@ -125,11 +129,15 @@ export class HomeSync {
       const lastSync = new Date().toISOString(); await this.db.setMetadata('lastSync', lastSync);
       this.failures = 0; this.nextAutomaticSync = 0;
       this.publish({ status: conflicts ? 'conflict' : remaining.length ? 'pending' : 'synced', pending: remaining.length, conflicts, lastSync });
+      task.item('sync', conflicts ? 'failed' : 'complete', conflicts ? `${conflicts} sync conflicts require review` : undefined);
     } catch (error) {
+      task.item('sync', 'failed', error);
       const unauthorized = error instanceof HomeApiError && [401, 403].includes(error.status);
       this.failures += 1;
       this.nextAutomaticSync = unauthorized ? Infinity : Date.now() + Math.min(300_000, 15_000 * 2 ** Math.min(this.failures - 1, 5));
       this.publish({ status: unauthorized ? 'auth-required' : error instanceof TypeError ? 'offline' : 'error', error: error instanceof Error ? error.message : '同步失败' });
+    } finally {
+      task.finish(this.stopped ? 'interrupted' : undefined);
     }
   }
 }

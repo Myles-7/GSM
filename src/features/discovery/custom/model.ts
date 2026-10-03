@@ -5,7 +5,7 @@ import type { RepositoryIdentityMapping } from '../../../utils/repositoryIdentit
 import {
   remapParticipantRepositoryIds, remapParticipantRepositoryList, validateParticipantMappings,
   type RepositoryIdentityParticipantResult,
-} from '../../../services/repositoryIdentityParticipants';
+} from '../../../utils/repositoryIdentityRemap';
 
 const text = z.string().trim().min(1).max(240);
 const term = z.string().trim().min(1).max(80).regex(/^[\p{L}\p{N} .+#/-]+$/u);
@@ -26,6 +26,7 @@ export const planSchema = z.object({
   branches: z.array(z.object({
     terms: z.array(term).min(1).max(3),
     readme: z.boolean(),
+    role: z.enum(['core', 'synonym', 'ecosystem']).optional(),
   }).strict()).min(1).max(6),
   filters: z.object({
     language: z.string().max(40).regex(/^[\p{L}\p{N} +#.-]*$/u).nullable(),
@@ -55,6 +56,9 @@ export const overrideSchema = z.object({
   excludeStarred: z.boolean().optional(),
   excludeRecommended: z.boolean().optional(),
   branches: planSchema.shape.branches.optional(),
+  required: planSchema.shape.required.optional(),
+  excluded: planSchema.shape.excluded.optional(),
+  preferred: planSchema.shape.preferred.optional(),
 }).strict();
 export type RuleOverrides = z.infer<typeof overrideSchema>;
 export interface EffectiveRules {
@@ -76,7 +80,8 @@ export function effectiveRules(plan: CompiledSubscriptionPlan, overrides: RuleOv
     throw new Error('INVALID_STAR_RANGE');
   }
   return {
-    plan: { ...plan, filters, branches: o.branches ?? plan.branches },
+    plan: { ...plan, filters, branches: o.branches ?? plan.branches,
+      required: o.required ?? plan.required, excluded: o.excluded ?? plan.excluded, preferred: o.preferred ?? plan.preferred },
     sort: o.sort ?? plan.retrieval?.sort?.value ?? 'relevance',
     scope: o.scope ?? plan.retrieval?.scope?.value,
     excludeArchived: o.excludeArchived ?? plan.retrieval?.excludeArchived?.value ?? true,
@@ -99,12 +104,14 @@ export interface CustomDiscoveryChannel {
   paused: boolean;
   ai: boolean;
   autoAnalyze?: boolean;
+  autoAnalysisLimit?: number;
   limit: number;
   hour: number;
   cursors: number[];
   blocked: number[];
   read: number[];
   recommended: Record<string, string>;
+  manualAccepted?: Record<string, string>;
   lastCompletedDate?: string;
   lastRefresh?: string;
   retryAt?: number;
@@ -118,6 +125,8 @@ export interface CandidateAssessment {
   relevance: number;
   preference: number;
   screening?: boolean;
+  relation?: 'direct' | 'ecosystem';
+  acceptance?: { sourceEditionKey: string; sourceRevision: number; acceptedAt: string };
 }
 export interface ChannelDailyEdition {
   channelId: CustomChannelId;
@@ -142,6 +151,8 @@ export interface TaskProgress {
 export interface TaskIssue {
   kind: 'cancelled' | 'timeout' | 'rate-limit' | 'auth' | 'network' | 'invalid' | 'storage' | 'unknown';
   retryAt?: number;
+  source?: 'github' | 'ai' | 'storage';
+  code?: string;
 }
 export interface CandidatePreview {
   candidates: Repository[];
@@ -155,6 +166,7 @@ export interface CustomDiscoveryData {
   cache: Record<string, { text: string; fetchedAt: number; pushedAt: string }>;
   lease?: { owner: string; expires: number };
   analyses?: Record<string, DiscoveryAnalysisRecord>;
+  builtinPreferences?: Record<string, { autoAnalyze?: boolean; autoAnalysisLimit?: number; prereleases?: boolean }>;
 }
 export interface DiscoveryAnalysisRecord {
   status: 'running' | 'done' | 'failed' | 'cancelled';
@@ -167,6 +179,8 @@ export interface DiscoveryAnalysisRecord {
   updatedAt: number;
 }
 export const emptyData = (): CustomDiscoveryData => ({ channels: [], editions: [], cache: {} });
+export const editionKey = (edition: ChannelDailyEdition) => `${edition.date}:${edition.revision}:${edition.generatedAt || ''}`;
+export const rulesFingerprint = (rules: EffectiveRules) => JSON.stringify(rules);
 
 function remapAssessments(items: CandidateAssessment[], mappings: ReadonlyArray<RepositoryIdentityMapping>): CandidateAssessment[] {
   const repositories = remapParticipantRepositoryList(items.map(item => item.repo), mappings);
@@ -213,9 +227,10 @@ export function remapCustomDiscoveryRepositoryIdentityData(
     const read = remapParticipantRepositoryIds(channel.read, mappings);
     const blocked = remapParticipantRepositoryIds(channel.blocked, mappings);
     const recommended = rekeyIdentityCache(channel.recommended, mappings);
-    if (read === channel.read && blocked === channel.blocked && recommended === channel.recommended) return channel;
+    const manualAccepted = channel.manualAccepted ? rekeyIdentityCache(channel.manualAccepted, mappings) : undefined;
+    if (read === channel.read && blocked === channel.blocked && recommended === channel.recommended && manualAccepted === channel.manualAccepted) return channel;
     changed++;
-    return { ...channel, read, blocked, recommended };
+    return { ...channel, read, blocked, recommended, ...(manualAccepted ? { manualAccepted } : {}) };
   });
   const editions = data.editions.map(edition => {
     const entries = remapAssessments(edition.entries, mappings);
@@ -250,6 +265,21 @@ export function remapCustomDiscoveryCandidates<T extends { items: CandidateAsses
 }
 export const localDay = (date = new Date()): string =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+export function visibleEditionItems(
+  edition: Pick<ChannelDailyEdition, 'date' | 'entries' | 'pending'>,
+  channel: Pick<CustomDiscoveryChannel, 'blocked' | 'manualAccepted'>,
+  now = new Date(),
+): Pick<ChannelDailyEdition, 'entries' | 'pending'> {
+  const blocked = new Set(channel.blocked);
+  const today = localDay(now);
+  return {
+    entries: edition.entries.filter(item => !blocked.has(item.repo.id)),
+    pending: edition.pending.filter(item => !blocked.has(item.repo.id)
+      && (edition.date !== today || channel.manualAccepted?.[String(item.repo.id)] !== today)),
+  };
+}
+
 export const isDue = (channel: CustomDiscoveryChannel, now = new Date()): boolean =>
   !channel.paused && (channel.retryAt ?? 0) <= now.getTime() && now.getHours() >= channel.hour && channel.lastCompletedDate !== localDay(now);
 

@@ -1,4 +1,7 @@
 # Logs
+/output/
+/.research/
+/scratch-*.png
 logs
 *.log
 npm-debug.log*

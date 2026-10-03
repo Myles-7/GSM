@@ -67,7 +67,7 @@ describe('organization conversation and task lifecycle', () => {
     await act(async () => { await hook.result.current.send('Find developer tools'); });
     expect(hook.result.current.error).toBe('');
     await waitFor(() => expect(hook.result.current.active?.workbench?.requirements).toEqual(requirements));
-    expect(JSON.parse(mocks.generate.mock.calls[0][0].user)).toEqual({ question: 'Find developer tools' });
+    expect(JSON.parse(mocks.generate.mock.calls[0][0].user)).toEqual({ question: 'Find developer tools', recentConversation: [] });
     expect(await storage.listProposals('77', id)).toEqual([]);
     expect((await storage.listMessages(id)).map(message => message.status)).toEqual(['complete', 'complete']);
     expect((await storage.listWorkbenchSessions('77')).map(session => session.id)).toEqual([id]);

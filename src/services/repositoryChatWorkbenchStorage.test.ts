@@ -155,6 +155,25 @@ describe('repositoryChatStorage workbench fallback', () => {
     await expect(repositoryChatStorage.claimSession('active-b', 'owner-a')).resolves.toBeNull();
   });
 
+  it('round-trips conversation-only overview data and rejects invalid overview types', async () => {
+    const session = createSession('overview-storage', 'overview-owner');
+    const requirements = { purpose: 'Notes', required: [], preferred: [], excluded: [], questions: [], queries: ['notes'] };
+    session.workbench!.inputIntent = 'results';
+    session.workbench!.searchBatches = [{ id: 'overview-batch', createdAt: session.createdAt, requirements,
+      queries: ['notes'], nextPage: 2, overviewSummary: 'A note editor.', candidates: [{ repository: createRepository(),
+        summary: 'Editor', reasons: [], limitations: [], sources: [], status: 'candidate', overview: {
+          summary: 'A local note editor.', category: 'Notes', categoryDescription: 'Reading notes',
+          kind: 'tool', status: 'ready', basis: 'metadata',
+        } }] }];
+    await repositoryChatStorage.saveSession(session);
+    const backup = await repositoryChatStorage.exportWorkbench('overview-owner');
+    await repositoryChatStorage.importWorkbench('overview-owner', backup);
+    expect((await repositoryChatStorage.getSession(session.id))?.workbench?.searchBatches[0].candidates[0].overview?.category).toBe('Notes');
+    const invalid = JSON.parse(JSON.stringify(backup));
+    invalid.sessions[0].workbench.searchBatches[0].candidates[0].overview.kind = 'unsupported-kind';
+    await expect(repositoryChatStorage.importWorkbench('overview-owner', invalid)).rejects.toThrow(/overview.kind/);
+  });
+
   it('prevents owner-changing overwrites for sessions, projects, and proposal logs', async () => {
     await repositoryChatStorage.saveSession(createSession('session', 'owner-a'));
     await repositoryChatStorage.saveProject(createProject('project', 'owner-a'));

@@ -9,7 +9,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import AssetLeadingIcon from './AssetLeadingIcon';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
-import { computeRpcDownloadKey, useReleaseArtifactActions } from '../hooks/useReleaseArtifactActions';
+import { computeRpcDownloadKey, currentReleaseSummary, useReleaseArtifactActions } from '../hooks/useReleaseArtifactActions';
 import {
   effectiveReleaseTime,
   shouldShowAssetsUpdatedIndicator,
@@ -108,7 +108,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
   // AI 总结状态内聚在 hook（展开态留在卡片内，不持久化）；
   // 卡片卸载时的请求取消由 hook 的 unmount 副作用承担（卡片卸载即 hook 卸载）。
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
-  const summary = useMemo(() => summaries[release.id] ?? { status: 'idle' as const }, [summaries, release.id]);
+  const summary = useMemo(() => currentReleaseSummary(release, summaries) ?? { status: 'idle' as const }, [summaries, release]);
 
   // 完成或失败后自动展开（原 runSummaryAnalysis 成功/失败分支的 setIsSummaryExpanded(true)）
   useEffect(() => {

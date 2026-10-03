@@ -6,11 +6,20 @@ import { sendToRpcDownload } from '../services/rpcDownloadService';
 import { AIService } from '../services/aiService';
 import { useAppStore } from '../store/useAppStore';
 import { useDialog } from '../hooks/useDialog';
+import { aiTaskJournal } from '../services/aiTaskJournal';
+import { bindTaskSignal, taskConfigSnapshot } from '../services/taskExecution';
+import { loadReleaseSummaryCache, saveReleaseSummaryCache, useReleaseSummaryCache } from '../services/releaseSummaryCache';
 
 export type ReleaseArtifactSummaryState = {
   status: 'idle' | 'loading' | 'done' | 'error';
   content?: string;
   error?: string;
+  source?: string;
+};
+export const releaseSummarySource = (release: Release) => JSON.stringify([release.tag_name, release.body ?? '']);
+export const currentReleaseSummary = (release: Release, summaries: Record<number, ReleaseArtifactSummaryState>) => {
+  const result = summaries[release.id];
+  return result?.source && result.source !== releaseSummarySource(release) ? { status: 'idle' as const } : result;
 };
 
 export type RpcDownloadState = 'idle' | 'sending' | 'sent';
@@ -51,6 +60,11 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
   const t = useT('app');
 
   const [summaries, setSummaries] = useState<Record<number, ReleaseArtifactSummaryState>>({});
+  const ownerId = useAppStore(state => String(state.user?.id ?? ''));
+  const cachedSummaries = useReleaseSummaryCache(ownerId);
+  useEffect(() => { void loadReleaseSummaryCache(ownerId); }, [ownerId]);
+  const visibleSummaries = useMemo(() => ({ ...Object.fromEntries(Object.entries(cachedSummaries ?? {}).map(([id, item]) =>
+    [id, { status: 'done' as const, content: item.content, source: item.source }])), ...summaries }), [cachedSummaries, summaries]);
   // 渲染态用 useState Record 取代原 ReleaseCard 的 refs + forceUpdate（渲染等价）；
   // 同步镜像 ref 保留原 ref 的同步短路语义：同一事件循环内的快速连点不会被
   // setState 的异步批处理放过，避免重复发送。
@@ -68,7 +82,12 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
     summaryAbortRefs.current = {};
   }, []);
 
-  useEffect(() => cancelSummaryRequests, [cancelSummaryRequests]);
+  useEffect(() => {
+    cancelSummaryRequests();
+    setSummaries({});
+  }, [ownerId, cancelSummaryRequests]);
+
+  useEffect(() => () => { if (!aiTaskJournal.hasHost()) cancelSummaryRequests(); }, [cancelSummaryRequests]);
 
   const reset = useCallback(() => {
     // 先取消进行中的总结请求再清空：否则刷新（sheet 的 loadReleases）后，
@@ -108,10 +127,12 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
   }, [applyRpcDownloadState, backendApiSecret, t, toast]);
 
   const generateSummary = useCallback(async (release: Release) => {
-    const existing = summaries[release.id];
+    const existing = currentReleaseSummary(release, summaries);
     // 前置守卫：loading 中或已有结论时不重跑。ReleaseCard 按钮在 loading 期间本就
     // disabled（原实现的"取消上一请求"由此不可达，此处守卫化并兼容 sheet 委托）。
     if (existing?.status === 'loading' || (existing?.status === 'done' && existing.content)) return;
+    const source = releaseSummarySource(release);
+    if (cachedSummaries?.[release.id]?.source === source) return;
 
     const activeConfig = aiConfigs.find((config) => config.id === activeAIConfig);
     if (!activeConfig) {
@@ -133,7 +154,12 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
     summaryAbortRefs.current[release.id] = controller;
 
     const config = activeConfig;
+    const owner = String(useAppStore.getState().user?.id ?? '');
+    const task = aiTaskJournal.begin(owner, 'release', [{ id: String(release.id), label: `${release.repository.full_name} ${release.tag_name}` }], config.id, undefined,
+      { title: `${release.repository.full_name} ${release.tag_name}`, config: taskConfigSnapshot(config, 'release-summary'), target: { view: 'releases', id: String(release.id) } });
+    bindTaskSignal(controller.signal, task); task.bind({ stop: () => controller.abort() }); task.item(String(release.id), 'running');
     setSummaries((previous) => ({ ...previous, [release.id]: { status: 'loading' } }));
+    let persistenceFailed = false;
     try {
       const aiService = new AIService(config, language);
       const content = await aiService.analyzeReleaseSummary(
@@ -147,32 +173,43 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
       );
       // 对齐原 sheet 的 post-await 守卫：服务不响应 signal 而迟到 resolve 时
       // （如 reset()/unmount 之后），丢弃过期结果，不得回写刚清空的状态。
-      if (controller.signal.aborted) return;
-      setSummaries((previous) => ({ ...previous, [release.id]: { status: 'done', content } }));
+      if (controller.signal.aborted || String(useAppStore.getState().user?.id ?? '') !== owner) return;
+      try { await saveReleaseSummaryCache(owner, release.id, content, source); }
+      catch (error) { persistenceFailed = true; task.error(error); }
+      setSummaries((previous) => ({ ...previous, [release.id]: { status: 'done', content, source } }));
+      task.item(String(release.id), 'complete');
     } catch (error) {
       // 主动取消（卸载/重置）时静默处理，不更新状态、不弹错误
       if ((error instanceof Error && error.name === 'AbortError') || controller.signal.aborted) {
+        controller.abort();
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      task.item(String(release.id), 'failed', error);
       setSummaries((previous) => ({ ...previous, [release.id]: { status: 'error', error: message } }));
       toast(
         t('useReleaseArtifactActions.summary-failed-message', { message: message }),
         'error'
       );
     } finally {
+      if (controller.signal.aborted && String(useAppStore.getState().user?.id ?? '') === owner) {
+        setSummaries(previous => {
+          const next = { ...previous }; delete next[release.id]; return next;
+        });
+      }
+      task.finish(controller.signal.aborted ? 'canceled' : persistenceFailed ? 'partial' : undefined);
       if (summaryAbortRefs.current[release.id] === controller) {
         delete summaryAbortRefs.current[release.id];
       }
     }
-  }, [activeAIConfig, aiConfigs, language, summaries, toast, t]);
+  }, [activeAIConfig, aiConfigs, language, summaries, cachedSummaries, toast, t]);
 
   return useMemo(() => ({
-    summaries,
+    summaries: visibleSummaries,
     rpcDownloadStates,
     sendRpcDownload,
     generateSummary,
     cancelSummaryRequests,
     reset,
-  }), [summaries, rpcDownloadStates, sendRpcDownload, generateSummary, cancelSummaryRequests, reset]);
+  }), [visibleSummaries, rpcDownloadStates, sendRpcDownload, generateSummary, cancelSummaryRequests, reset]);
 };

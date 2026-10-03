@@ -4,19 +4,21 @@ import { Textarea } from '../ui/textarea';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
-import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { Bot, Plus, Edit3, Trash2, Save, X, TestTube, RefreshCw, MessageSquare, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { Bot, Plus, Save, X, TestTube, RefreshCw, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { AIConfig, AIApiType, AIReasoningEffort, MiMoPlan } from '../../types';
 import { useAppStore } from '../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
-import { useAIConfigActions } from '../../features/settings/hooks/useAIConfigActions';
+import { aiConnectionFingerprint, useAIConfigActions } from '../../features/settings/hooks/useAIConfigActions';
 import { buildFinalApiUrl } from '../../utils/apiUrlBuilder';
 import { SliderInput } from '../ui/SliderInput';
 import { useDialog } from '../../hooks/useDialog';
 import { isToolCallCapableApiType } from '../../constants/aiCapabilities';
-import { AgyConfigPanel } from './AgyConfigPanel';
+import { AgyConfigPanelView } from './AgyConfigPanel';
+import { AIServiceSelector } from './AIServiceSelector';
+import { useAgySettings } from '../../features/settings/hooks/useAgySettings';
+import { useT } from '../../i18n/useT';
 import { isHttpAIConfig } from '../../utils/aiConfig';
 
 interface AIConfigPanelProps {
@@ -76,15 +78,15 @@ function getEndpointPlaceholder(apiType: AIApiType, mimoPlan: MiMoPlan): string 
 function getEndpointHelpText(apiType: AIApiType, t: TranslateFn): string {
   switch (apiType) {
     case 'openai-compatible':
-      return t('aIConfigPanel.enter-the-full-api-endpoint-url-including-the-co');
+      return t('app:aIConfigPanel.enter-the-full-api-endpoint-url-including-the-co');
     case 'gemini':
-      return t('aIConfigPanel.only-include-the-version-prefix-v1beta-the-path');
+      return t('app:aIConfigPanel.only-include-the-version-prefix-v1beta-the-path');
     case 'deepseek':
-      return t('aIConfigPanel.only-include-the-domain-e-g-https-api-deepseek-c');
+      return t('app:aIConfigPanel.only-include-the-domain-e-g-https-api-deepseek-c');
     case 'mimo':
-      return t('aIConfigPanel.only-include-up-to-v1-e-g-https-api-xiaomimimo-c');
+      return t('app:aIConfigPanel.only-include-up-to-v1-e-g-https-api-xiaomimimo-c');
     default:
-      return t('aIConfigPanel.only-include-the-version-prefix-e-g-v1-or-v1beta');
+      return t('app:aIConfigPanel.only-include-the-version-prefix-e-g-v1-or-v1beta');
   }
 }
 
@@ -114,7 +116,11 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
   })));
 
   const { toast, confirm } = useDialog();
-  const { testingId, testingForm, testConfig, testDraft } = useAIConfigActions();
+  const actions = useAIConfigActions();
+  const { testingForm, testDraft, results } = actions;
+  const agy = useAgySettings();
+  const ux = useT('settings');
+  const [showAgy, setShowAgy] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -206,8 +212,8 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
   };
 
   const handleSave = () => {
-    if (!form.name || !form.baseUrl || !form.apiKey || !form.model) {
-      toast(t('aIConfigPanel.please-fill-in-all-required-fields'), 'error');
+    if (![form.name, form.baseUrl, form.apiKey, form.model].every(value => value.trim())) {
+      toast(t('app:aIConfigPanel.please-fill-in-all-required-fields'), 'error');
       return;
     }
 
@@ -215,11 +221,14 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
       const existingConfig = aiConfigs.find(c => c.id === editingId);
       if (existingConfig) {
         const updates: Partial<AIConfig> = {
-          name: form.name,
+          name: form.name.trim(),
           apiType: form.apiType,
-          baseUrl: form.baseUrl.replace(/\/$/, ''),
-          apiKey: form.apiKey,
-          model: form.model,
+          baseUrl: form.baseUrl.trim().replace(/\/$/, ''),
+          apiKey: form.apiKey.trim(),
+          apiKeyStatus: 'ok',
+          credentialSource: 'device',
+          backendAvailable: undefined,
+          model: form.model.trim(),
           customPrompt: form.customPrompt || undefined,
           useCustomPrompt: form.useCustomPrompt,
           concurrency: form.concurrency,
@@ -232,12 +241,15 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
       }
     } else {
       const config: AIConfig = {
-        id: Date.now().toString(),
-        name: form.name,
+        id: crypto.randomUUID(),
+        name: form.name.trim(),
         apiType: form.apiType,
-        baseUrl: form.baseUrl.replace(/\/$/, ''),
-        apiKey: form.apiKey,
-        model: form.model,
+        baseUrl: form.baseUrl.trim().replace(/\/$/, ''),
+        apiKey: form.apiKey.trim(),
+        apiKeyStatus: 'ok',
+        credentialSource: 'device',
+        backendAvailable: undefined,
+        model: form.model.trim(),
         isActive: false,
         customPrompt: form.customPrompt || undefined,
         useCustomPrompt: form.useCustomPrompt,
@@ -280,26 +292,31 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
     setShowCustomPrompt(config.useCustomPrompt || false);
   };
 
-  const handleTest = (config: AIConfig) => testConfig(config);
 
+  const draftConfig: AIConfig = {
+    id: '' as string,
+    name: form.name || 'Test',
+    apiType: form.apiType,
+    baseUrl: form.baseUrl.trim().replace(/\/$/, ''),
+    apiKey: form.apiKey.trim(),
+    apiKeyStatus: 'ok',
+    credentialSource: 'device',
+    backendAvailable: undefined,
+    model: form.model.trim(),
+    isActive: false,
+    customPrompt: form.customPrompt || undefined,
+    useCustomPrompt: form.useCustomPrompt,
+    concurrency: form.concurrency,
+    reasoningEffort: form.reasoningEffort || undefined,
+    mimoPlan: form.apiType === 'mimo' ? form.mimoPlan : undefined,
+    supportsToolCalls: form.supportsToolCalls && isToolCallCapable(form.apiType) ? true : undefined,
+  };
   const handleTestForm = async () => {
-    if (!form.baseUrl || !form.apiKey || !form.model) {
-      toast(t('aIConfigPanel.please-fill-in-api-endpoint-api-key-and-model-na'), 'error');
+    if (![form.baseUrl, form.apiKey, form.model].every(value => value.trim())) {
+      toast(t('app:aIConfigPanel.please-fill-in-api-endpoint-api-key-and-model-na'), 'error');
       return;
     }
-    await testDraft({
-      id: '' as string,
-      name: form.name || 'Test',
-      apiType: form.apiType,
-      baseUrl: form.baseUrl.replace(/\/$/, ''),
-      apiKey: form.apiKey,
-      model: form.model,
-      isActive: false,
-      customPrompt: form.customPrompt || undefined,
-      useCustomPrompt: form.useCustomPrompt,
-      concurrency: form.concurrency,
-      reasoningEffort: form.reasoningEffort || undefined,
-    });
+    await testDraft(draftConfig);
   };
 
   const defaultPrompt = useMemo(() => {
@@ -396,7 +413,7 @@ Repository information:
       setShowCustomPrompt(true);
       setShowDefaultPrompt(false);
       if (form.customPrompt.trim() === '') {
-        showNotification('info', t('aIConfigPanel.default-prompt-auto-filled-you-can-modify-it'));
+        showNotification('info', t('app:aIConfigPanel.default-prompt-auto-filled-you-can-modify-it'));
       }
     } else {
       setShowCustomPrompt(false);
@@ -405,7 +422,7 @@ Repository information:
 
   const handleToggleDefaultPrompt = useCallback(() => {
     if (showCustomPrompt) {
-      showNotification('info', t('aIConfigPanel.please-close-the-custom-prompt-editor-first'));
+      showNotification('info', t('app:aIConfigPanel.please-close-the-custom-prompt-editor-first'));
       return;
     }
     setShowDefaultPrompt(prev => !prev);
@@ -413,52 +430,61 @@ Repository information:
 
   const handleRestoreDefaultPrompt = useCallback(async () => {
     if (isCustomPromptSameAsDefault) {
-      showNotification('info', t('aIConfigPanel.current-prompt-is-already-the-default'));
+      showNotification('info', t('app:aIConfigPanel.current-prompt-is-already-the-default'));
       return;
     }
 
     if (isCustomPromptModified) {
       const confirmed = await confirm(
-        t('aIConfigPanel.restore-default-prompt'),
-        t('aIConfigPanel.this-will-overwrite-your-current-changes'),
+        t('app:aIConfigPanel.restore-default-prompt'),
+        t('app:aIConfigPanel.this-will-overwrite-your-current-changes'),
         { type: 'warning' }
       );
       if (!confirmed) return;
     }
 
     setForm(prev => ({ ...prev, customPrompt: defaultPrompt }));
-    showNotification('success', t('aIConfigPanel.default-prompt-restored'));
+    showNotification('success', t('app:aIConfigPanel.default-prompt-restored'));
   }, [defaultPrompt, isCustomPromptModified, isCustomPromptSameAsDefault, showNotification, t, confirm]);
 
   return (
     <div className="space-y-6">
-      <AgyConfigPanel />
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
           <Bot className="w-6 h-6 text-muted-foreground dark:text-muted-foreground " />
           <h3 className="text-lg font-semibold text-foreground dark:text-foreground">
-            {t('aIConfigPanel.ai-service-configuration')}
+            {ux('settingsUx.aiTitle')}
           </h3>
         </div>
         <Button
-          onClick={() => setShowForm(true)}
+          onClick={() => { setShowForm(true); setShowAgy(false); }}
           className="flex items-center space-x-2 px-4 py-2 bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
         >
           <Plus className="w-4 h-4" />
-          <span>{t('aIConfigPanel.add-ai-config')}</span>
+          <span>{ux('settingsUx.addApi')}</span>
         </Button>
       </div>
+
+      <AIServiceSelector configs={aiConfigs} active={activeAIConfig} select={setActiveAIConfig} agy={agy} actions={actions}
+        configureAgy={() => setShowAgy(previous => !previous)} edit={handleEdit} remove={async config => {
+          if (await confirm(t('app:aIConfigPanel.delete-ai-configuration'), t('app:aIConfigPanel.this-action-cannot-be-undone'), { type: 'danger', confirmText: t('app:aIConfigPanel.delete') })) {
+            if (repositoryChatSettings.chatConfigId === config.id) setRepositoryChatSettings({ chatConfigId: null });
+            if (editingId === config.id) resetForm();
+            deleteAIConfig(config.id);
+          }
+        }} />
+      {showAgy && <AgyConfigPanelView agy={agy} />}
 
       {showForm && (
         <div className="p-4 bg-background dark:bg-muted/40 rounded-lg border border-border dark:border-border">
           <h4 className="font-medium text-foreground dark:text-foreground mb-4">
-            {editingId ? t('aIConfigPanel.edit-ai-configuration') : t('aIConfigPanel.add-ai-configuration')}
+            {editingId ? t('app:aIConfigPanel.edit-ai-configuration') : t('app:aIConfigPanel.add-ai-configuration')}
           </h4>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label htmlFor="ai-config-name" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.configuration-name')} *
+                {t('app:aIConfigPanel.configuration-name')} *
               </label>
               <Input
                 id="ai-config-name"
@@ -466,13 +492,13 @@ Repository information:
                 value={form.name}
                 onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
                 className="w-full px-3 py-2 border border-border dark:border-border rounded-lg bg-card dark:bg-card text-foreground dark:text-foreground focus:ring-2 focus:ring-ring focus:border-transparent focus:outline-none"
-                placeholder={t('aIConfigPanel.e-g-openai-gpt-4')}
+                placeholder={t('app:aIConfigPanel.e-g-openai-gpt-4')}
               />
             </div>
 
             <div>
               <label id="ai-api-type-label" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.api-format')} *
+                {t('app:aIConfigPanel.api-format')} *
               </label>
               <Select value={form.apiType} onValueChange={(value) => setForm(prev => ({ ...prev, apiType: value as AIApiType }))}>
                 <SelectTrigger aria-labelledby="ai-api-type-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
@@ -483,23 +509,23 @@ Repository information:
             {form.apiType === 'mimo' && (
               <div>
                 <label id="ai-mimo-plan-label" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                  {t('aIConfigPanel.mimo-channel')} *
+                  {t('app:aIConfigPanel.mimo-channel')} *
                 </label>
                 <Select value={form.mimoPlan} onValueChange={(value) => setForm(prev => ({ ...prev, mimoPlan: value as MiMoPlan }))}>
                   <SelectTrigger aria-labelledby="ai-mimo-plan-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="api">{t('aIConfigPanel.api-pay-as-you-go')}</SelectItem><SelectItem value="token-plan">{t('aIConfigPanel.token-plan-subscription')}</SelectItem></SelectContent>
+                  <SelectContent><SelectItem value="api">{t('app:aIConfigPanel.api-pay-as-you-go')}</SelectItem><SelectItem value="token-plan">{t('app:aIConfigPanel.token-plan-subscription')}</SelectItem></SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-1">
                   {form.mimoPlan === 'api'
-                    ? t('aIConfigPanel.api-key-starts-with-sk-endpoint-api-xiaomimimo-c')
-                    : t('aIConfigPanel.api-key-starts-with-tp-endpoint-token-plan-cn-xi')}
+                    ? t('app:aIConfigPanel.api-key-starts-with-sk-endpoint-api-xiaomimimo-c')
+                    : t('app:aIConfigPanel.api-key-starts-with-tp-endpoint-token-plan-cn-xi')}
                 </p>
               </div>
             )}
             
             <div>
               <label htmlFor="ai-base-url" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.api-endpoint')} *
+                {t('app:aIConfigPanel.api-endpoint')} *
               </label>
               <Input
                 id="ai-base-url"
@@ -514,7 +540,7 @@ Repository information:
               </p>
               {form.baseUrl && (
                 <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-1">
-                  {t('aIConfigPanel.final-request-url')}
+                  {t('app:aIConfigPanel.final-request-url')}
                   <span className="font-mono break-all">
                     {buildFinalApiUrl(form.baseUrl, form.apiType)}
                   </span>
@@ -524,7 +550,7 @@ Repository information:
             
             <div>
               <label htmlFor="ai-api-key" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.api-key')} *
+                {t('app:aIConfigPanel.api-key')} *
               </label>
               <Input
                 id="ai-api-key"
@@ -532,13 +558,13 @@ Repository information:
                 value={form.apiKey}
                 onChange={(e) => setForm(prev => ({ ...prev, apiKey: e.target.value }))}
                 className="w-full px-3 py-2 border border-border dark:border-border rounded-lg bg-card dark:bg-card text-foreground dark:text-foreground focus:ring-2 focus:ring-ring focus:border-transparent focus:outline-none"
-                placeholder={t('aIConfigPanel.enter-api-key')}
+                placeholder={t('app:aIConfigPanel.enter-api-key')}
               />
             </div>
             
             <div>
               <label htmlFor="ai-model-name" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.model-name')} *
+                {t('app:aIConfigPanel.model-name')} *
               </label>
               <Input
                 id="ai-model-name"
@@ -550,33 +576,20 @@ Repository information:
               />
             </div>
             
-            <div>
-              <label id="ai-concurrency-label" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.concurrency')}
-              </label>
-              <SliderInput
-                value={form.concurrency}
-                label={t('aIConfigPanel.concurrency')}
-                onChange={(v) => setForm(prev => ({ ...prev, concurrency: v }))}
-                min={1}
-                max={10}
-                showMarks={false}
-              />
-              <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-1">
-                {t('aIConfigPanel.number-of-repositories-to-analyze-simultaneously')}
-              </p>
-            </div>
-
+          </div>
+          <details className="mb-4 rounded-lg border border-border p-3" open={form.useCustomPrompt || undefined}>
+            <summary className="cursor-pointer text-sm font-medium">{ux('settingsUx.apiAdvanced')}</summary>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
               <label id="ai-reasoning-effort-label" className="block text-sm font-medium text-foreground dark:text-muted-foreground mb-1">
-                {t('aIConfigPanel.reasoning-effort')}
+                {t('app:aIConfigPanel.reasoning-effort')}
               </label>
               <Select value={form.reasoningEffort || 'default'} onValueChange={(value) => setForm(prev => ({ ...prev, reasoningEffort: value === 'default' ? '' : value as AIReasoningEffort }))}>
                 <SelectTrigger aria-labelledby="ai-reasoning-effort-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="default">{t('aIConfigPanel.default-do-not-send')}</SelectItem><SelectItem value="none">{t('aIConfigPanel.none-no-reasoning')}</SelectItem><SelectItem value="low">{t('aIConfigPanel.low-quick-response')}</SelectItem><SelectItem value="medium">{t('aIConfigPanel.medium-balanced')}</SelectItem><SelectItem value="high">{t('aIConfigPanel.high-deep-reasoning')}</SelectItem><SelectItem value="xhigh">{t('aIConfigPanel.xhigh-deepest-reasoning')}</SelectItem></SelectContent>
+                <SelectContent><SelectItem value="default">{t('app:aIConfigPanel.default-do-not-send')}</SelectItem><SelectItem value="none">{t('app:aIConfigPanel.none-no-reasoning')}</SelectItem><SelectItem value="low">{t('app:aIConfigPanel.low-quick-response')}</SelectItem><SelectItem value="medium">{t('app:aIConfigPanel.medium-balanced')}</SelectItem><SelectItem value="high">{t('app:aIConfigPanel.high-deep-reasoning')}</SelectItem><SelectItem value="xhigh">{t('app:aIConfigPanel.xhigh-deepest-reasoning')}</SelectItem></SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-1">
-                {t('aIConfigPanel.only-applies-to-openai-compatible-apis-leave-emp')}
+                {t('app:aIConfigPanel.only-applies-to-openai-compatible-apis-leave-emp')}
               </p>
             </div>
 
@@ -585,9 +598,9 @@ Repository information:
                 <label className="flex items-start gap-2 text-sm text-foreground">
                   <Checkbox checked={form.supportsToolCalls} onCheckedChange={(checked) => setForm(prev => ({ ...prev, supportsToolCalls: checked === true }))} />
                   <span>
-                    {t('aIConfigPanel.supports-tool-calling-function-calling')}
+                    {t('app:aIConfigPanel.supports-tool-calling-function-calling')}
                     <span className="mt-1 block text-xs text-muted-foreground">
-                      {t('aIConfigPanel.lets-repository-chat-use-the-experimental-tool-l')}
+                      {t('app:aIConfigPanel.lets-repository-chat-use-the-experimental-tool-l')}
                     </span>
                   </span>
                 </label>
@@ -626,7 +639,7 @@ Repository information:
                     className="cursor-pointer text-left text-sm font-medium text-foreground dark:text-muted-foreground"
                     onClick={() => handleUseCustomPromptChange(!form.useCustomPrompt)}
                   >
-                    {t('aIConfigPanel.use-custom-prompt')}
+                    {t('app:aIConfigPanel.use-custom-prompt')}
                   </span>
                 </div>
                 <Button
@@ -641,7 +654,7 @@ Repository information:
                   }`}
                 >
                   {showDefaultPrompt ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  <span>{showDefaultPrompt ? t('aIConfigPanel.hide-default-prompt') : t('aIConfigPanel.view-default-prompt')}</span>
+                  <span>{showDefaultPrompt ? t('app:aIConfigPanel.hide-default-prompt') : t('app:aIConfigPanel.view-default-prompt')}</span>
                 </Button>
               </div>
               {form.useCustomPrompt && (
@@ -651,7 +664,7 @@ Repository information:
                   onClick={handleRestoreDefaultPrompt}
                   className="text-sm text-muted-foreground hover:text-muted-foreground dark:text-muted-foreground dark:hover:text-muted-foreground"
                 >
-                  {t('aIConfigPanel.restore-default-prompt-2')}
+                  {t('app:aIConfigPanel.restore-default-prompt-2')}
                 </Button>
               )}
             </div>
@@ -659,7 +672,7 @@ Repository information:
             {showDefaultPrompt && !showCustomPrompt && (
               <div className="mb-3">
                 <label className="block text-xs font-medium text-muted-foreground dark:text-muted-foreground mb-1">
-                  {t('aIConfigPanel.default-prompt-read-only')}
+                  {t('app:aIConfigPanel.default-prompt-read-only')}
                 </label>
                 <pre className="w-full px-3 py-2 border border-border dark:border-border rounded-lg bg-background dark:bg-card text-foreground dark:text-muted-foreground font-mono text-xs whitespace-pre-wrap overflow-auto max-h-64">
                   {defaultPrompt}
@@ -671,20 +684,20 @@ Repository information:
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label htmlFor="ai-custom-prompt" className="block text-xs font-medium text-muted-foreground dark:text-muted-foreground">
-                    {t('aIConfigPanel.custom-prompt')}
+                    {t('app:aIConfigPanel.custom-prompt')}
                     {isCustomPromptModified && (
                       <span className="ml-2 text-muted-foreground dark:text-muted-foreground ">
-                        ({t('aIConfigPanel.modified')})
+                        ({t('app:aIConfigPanel.modified')})
                       </span>
                     )}
                     {isCustomPromptSameAsDefault && (
                       <span className="ml-2 text-muted-foreground dark:text-muted-foreground">
-                        ({t('aIConfigPanel.default')})
+                        ({t('app:aIConfigPanel.default')})
                       </span>
                     )}
                   </label>
                   <span className="text-xs text-muted-foreground dark:text-muted-foreground/70">
-                    {form.customPrompt.length} {t('aIConfigPanel.characters')}
+                    {form.customPrompt.length} {t('app:aIConfigPanel.characters')}
                   </span>
                 </div>
                 <Textarea
@@ -693,23 +706,26 @@ Repository information:
                   onChange={(e) => setForm(prev => ({ ...prev, customPrompt: e.target.value }))}
                   rows={10}
                   className="w-full px-3 py-2 border border-border dark:border-border rounded-lg bg-card dark:bg-card text-foreground dark:text-foreground font-mono text-sm focus:ring-2 focus:ring-ring focus:border-transparent"
-                  placeholder={t('aIConfigPanel.enter-custom-prompt-here')}
+                  placeholder={t('app:aIConfigPanel.enter-custom-prompt-here')}
                 />
               </div>
             )}
           </div>
 
-          <div className="flex space-x-3">
+          </details>
+          {results.__draft__?.fingerprint === aiConnectionFingerprint(draftConfig) && <p role={results.__draft__.success ? 'status' : 'alert'} className="mb-3 break-words text-sm text-muted-foreground">{results.__draft__.message}</p>}
+          <div className="flex flex-wrap gap-3">
             <Button
               onClick={handleSave}
               className="flex items-center space-x-2 px-4 py-2 bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
             >
               <Save className="w-4 h-4" />
-              <span>{t('aIConfigPanel.save')}</span>
+              <span>{t('app:aIConfigPanel.save')}</span>
             </Button>
             <Button
               onClick={handleTestForm}
-              disabled={testingForm}
+              variant="outline"
+              disabled={testingForm || !!actions.testingId}
               className="flex items-center space-x-2 px-4 py-2 bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {testingForm ? (
@@ -717,180 +733,93 @@ Repository information:
               ) : (
                 <TestTube className="w-4 h-4" />
               )}
-              <span>{t('aIConfigPanel.test-connection')}</span>
+              <span>{t('app:aIConfigPanel.test-connection')}</span>
             </Button>
             <Button
               onClick={resetForm}
               className="flex items-center space-x-2 px-4 py-2 bg-muted hover:bg-accent dark:bg-muted/40 dark:hover:bg-accent text-foreground dark:text-foreground rounded-lg border border-border dark:border-border transition-colors"
             >
               <X className="w-4 h-4" />
-              <span>{t('aIConfigPanel.cancel')}</span>
+              <span>{t('app:aIConfigPanel.cancel')}</span>
             </Button>
           </div>
         </div>
       )}
 
-      <h4 id="active-ai-config-heading" className="mb-3 text-sm font-medium text-foreground">
-        {t('aIConfigPanel.active-ai-configuration')}
-      </h4>
-      <RadioGroup aria-labelledby="active-ai-config-heading" value={activeAIConfig || ''} onValueChange={setActiveAIConfig} className="space-y-3">
-        {aiConfigs.filter(isHttpAIConfig).map(config => (
-          <div
-            key={config.id}
-            className={`p-4 rounded-lg border transition-colors ${
-              config.id === activeAIConfig
-                ? 'border-border bg-accent/50 dark:border-border/[0.12] dark:bg-accent/60'
-                : 'border-border dark:border-border hover:border-border dark:hover:border-border-strong'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <RadioGroupItem
-                  value={config.id}
-                  id={`active-ai-${config.id}`}
-                  aria-label={config.name || t('aIConfigPanel.ai-configuration')}
-                />
-                <div>
-                  <h4 className="font-medium text-foreground dark:text-foreground flex items-center">
-                    {config.name}
-                    {config.useCustomPrompt && (
-                      <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground dark:bg-muted/40 dark:text-muted-foreground">
-                        <MessageSquare className="w-3 h-3 mr-1" />
-                        {t('aIConfigPanel.custom-prompt')}
-                      </span>
-                    )}
-                  </h4>
-                  <p className="text-sm text-muted-foreground dark:text-muted-foreground">
-                    {(config.apiType || 'openai').toUpperCase()} • {config.baseUrl} • {config.model} • {t('aIConfigPanel.concurrency')}: {config.concurrency || 1}
-                    {config.reasoningEffort ? ` • reasoning: ${config.reasoningEffort}` : ''}
-                  </p>
-                  {(config.apiKeyStatus === 'decrypt_failed' || config.apiKeyStatus === 'empty') && (
-                    <p className="mt-1 text-sm text-muted-foreground dark:text-muted-foreground ">
-                      {t('aIConfigPanel.the-stored-api-key-could-not-be-decrypted-or-is')}
-                    </p>
-                  )}
-                </div>
-              </div>
-              
-              <div className="flex items-center space-x-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleTest(config)}
-                  disabled={testingId === config.id}
-                  className="h-9 w-9 rounded-lg bg-muted p-0 text-foreground dark:bg-accent dark:text-foreground hover:bg-accent dark:hover:bg-card/[0.12] border border-transparent dark:border-border transition-colors disabled:opacity-50"
-                  title={t('aIConfigPanel.test-connection')}
-                >
-                  {testingId === config.id ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <TestTube className="w-4 h-4" />
-                  )}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => handleEdit(config)}
-                  className="h-9 w-9 rounded-lg bg-muted p-0 text-foreground dark:bg-accent dark:text-foreground hover:bg-accent dark:hover:bg-card/[0.12] border border-transparent dark:border-border transition-colors"
-                  title={t('aIConfigPanel.edit')}
-                >
-                  <Edit3 className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={async () => {
-                    const confirmed = await confirm(
-                      t('aIConfigPanel.delete-ai-configuration'),
-                      t('aIConfigPanel.this-action-cannot-be-undone'),
-                      { type: 'danger', confirmText: t('aIConfigPanel.delete') }
-                    );
-                    if (confirmed) {
-                      if (config.id) {
-                        if (repositoryChatSettings.chatConfigId === config.id) setRepositoryChatSettings({ chatConfigId: null });
-                        deleteAIConfig(config.id);
-                      } else {
-                        toast(t('aIConfigPanel.delete-failed-invalid-config-id'), 'error');
-                      }
-                    }
-                  }}
-                  className="h-9 w-9 rounded-lg bg-muted p-0 text-foreground dark:bg-accent dark:text-foreground hover:bg-accent dark:hover:bg-card/[0.12] border border-transparent dark:border-border transition-colors"
-                  title={t('aIConfigPanel.delete')}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </RadioGroup>
-        {aiConfigs.length === 0 && (
-          <div className="text-center py-8 text-muted-foreground dark:text-muted-foreground">
-            <Bot className="w-12 h-12 mx-auto mb-3 opacity-50" />
-            <p>{t('aIConfigPanel.no-ai-services-configured-yet')}</p>
-            <p className="text-sm">{t('aIConfigPanel.click-the-button-above-to-add-ai-configuration')}</p>
-          </div>
-        )}
+      {(() => {
+        const current = aiConfigs.filter(isHttpAIConfig).find(config => config.id === activeAIConfig);
+        return current && <section className="space-y-3 rounded-xl border border-border p-4 sm:p-5">
+          <h4 className="text-sm font-semibold">{ux('settingsUx.batch')}</h4>
+          <p className="text-xs leading-relaxed text-muted-foreground">{ux('settingsUx.apiBatchHelp')}</p>
+          <SliderInput value={current.concurrency || 1} label={ux('settingsUx.concurrency')} min={1} max={10} showMarks={false} onChange={value => {
+            updateAIConfig(current.id, { concurrency: value });
+            if (editingId === current.id) setForm(previous => ({ ...previous, concurrency: value }));
+          }} />
+        </section>;
+      })()}
 
-      <section className="mt-6 rounded-lg border border-border bg-background p-4 dark:border-border dark:bg-muted/40" aria-labelledby="repository-chat-settings-heading">
+      <details className="rounded-xl border border-border p-4 sm:p-5">
+        <summary className="cursor-pointer text-sm font-semibold">{t('app:aIConfigPanel.repository-chat')} · {ux(repositoryChatSettings.enabled ? 'settingsUx.enabled' : 'settingsUx.disabled')}</summary>
+        <section className="mt-4" aria-labelledby="repository-chat-settings-heading">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h4 id="repository-chat-settings-heading" className="text-sm font-medium text-foreground">{t('aIConfigPanel.repository-chat')}</h4>
-            <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.reads-pinned-source-on-demand-and-keeps-local-co')}</p>
+            <h4 id="repository-chat-settings-heading" className="text-sm font-medium text-foreground">{t('app:aIConfigPanel.repository-chat')}</h4>
+            <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.reads-pinned-source-on-demand-and-keeps-local-co')}</p>
           </div>
           <label className="flex items-center gap-2 text-sm text-foreground">
             <Checkbox checked={repositoryChatSettings.enabled} onCheckedChange={(checked) => setRepositoryChatSettings({ enabled: checked === true })} />
-            {t('aIConfigPanel.enable-repository-chat')}
+            {t('app:aIConfigPanel.enable-repository-chat')}
           </label>
         </div>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <fieldset disabled={!repositoryChatSettings.enabled} className="mt-4 space-y-4 disabled:opacity-60">
+        <div className="grid gap-4 md:grid-cols-2">
           <div>
-            <label id="repository-chat-model-label" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.chat-model')}</label>
+            <label id="repository-chat-model-label" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.chat-model')}</label>
             <Select value={repositoryChatSettings.chatConfigId ?? '__active__'} onValueChange={(value) => setRepositoryChatSettings({ chatConfigId: value === '__active__' ? null : value })}>
               <SelectTrigger aria-labelledby="repository-chat-model-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="__active__">{t('aIConfigPanel.use-active-ai-configuration')}</SelectItem>
-                {aiConfigs.map((config) => <SelectItem key={config.id} value={config.id}>{config.name} · {config.model}</SelectItem>)}
+                <SelectItem value="__active__">{t('app:aIConfigPanel.use-active-ai-configuration')}</SelectItem>
+                {aiConfigs.filter(config => config.provider !== 'agy-cli' || config.deviceBound && config.isActive).map((config) => <SelectItem key={config.id} value={config.id}>{config.name} · {config.model}</SelectItem>)}
               </SelectContent>
             </Select>
-            <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.only-the-configuration-id-is-saved-no-api-key-ba')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.only-the-configuration-id-is-saved-no-api-key-ba')}</p>
           </div>
           <div>
-            <label htmlFor="repository-chat-retention-days" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.retain-local-conversations-days')}</label>
+            <label htmlFor="repository-chat-retention-days" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.retain-local-conversations-days')}</label>
             <Input id="repository-chat-retention-days" type="number" min={1} max={365} value={repositoryChatSettings.retainSessionDays} onChange={(event) => {
               const parsed = Number(event.target.value);
               setRepositoryChatSettings({ retainSessionDays: Number.isFinite(parsed) ? Math.min(365, Math.max(1, parsed)) : 90 });
             }} />
-            <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.deleting-an-individual-conversation-always-takes')}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.deleting-an-individual-conversation-always-takes')}</p>
           </div>
         </div>
         <details className="mt-4 rounded-md border border-border px-3 py-2">
-          <summary className="cursor-pointer text-sm font-medium text-foreground">{t('aIConfigPanel.advanced-settings')}<span className="ml-2 text-xs font-normal text-muted-foreground">{t('aIConfigPanel.used-by-the-chat-window-when-task-depth-is-defau')}</span></summary>
+          <summary className="cursor-pointer text-sm font-medium text-foreground">{t('app:aIConfigPanel.advanced-settings')}<span className="ml-2 text-xs font-normal text-muted-foreground">{t('app:aIConfigPanel.used-by-the-chat-window-when-task-depth-is-defau')}</span></summary>
           <div className="mt-3 grid gap-4 md:grid-cols-2">
-            <label className="flex items-start gap-2 text-sm text-foreground"><Checkbox checked={repositoryChatSettings.enableWebTools} onCheckedChange={(checked) => setRepositoryChatSettings({ enableWebTools: checked === true })} /><span>{t('aIConfigPanel.external-web-search-and-fetch')}<span className="mt-1 block text-xs text-muted-foreground">{t('aIConfigPanel.disabled-by-default-the-current-version-does-not')}</span></span></label>
-            <label className="flex items-start gap-2 text-sm text-foreground"><Checkbox checked={repositoryChatSettings.enableAgentToolLoop} onCheckedChange={(checked) => setRepositoryChatSettings({ enableAgentToolLoop: checked === true })} /><span>{t('aIConfigPanel.tool-loop-mode-experimental')}<span className="mt-1 block text-xs text-muted-foreground">{t('aIConfigPanel.evidence-gathering-is-driven-by-native-function')}</span></span></label>
+            <label className="flex items-start gap-2 text-sm text-foreground"><Checkbox checked={repositoryChatSettings.enableWebTools} onCheckedChange={(checked) => setRepositoryChatSettings({ enableWebTools: checked === true })} /><span>{t('app:aIConfigPanel.external-web-search-and-fetch')}<span className="mt-1 block text-xs text-muted-foreground">{t('app:aIConfigPanel.disabled-by-default-the-current-version-does-not')}</span></span></label>
+            <label className="flex items-start gap-2 text-sm text-foreground"><Checkbox checked={repositoryChatSettings.enableAgentToolLoop} onCheckedChange={(checked) => setRepositoryChatSettings({ enableAgentToolLoop: checked === true })} /><span>{t('app:aIConfigPanel.tool-loop-mode-experimental')}<span className="mt-1 block text-xs text-muted-foreground">{t('app:aIConfigPanel.evidence-gathering-is-driven-by-native-function')}</span></span></label>
             <div>
-              <label id="repository-chat-streaming-label" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.streaming-answers')}</label>
+              <label id="repository-chat-streaming-label" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.streaming-answers')}</label>
               <Select value={repositoryChatSettings.streamingMode} onValueChange={(value) => setRepositoryChatSettings({ streamingMode: value === 'off' ? 'off' : 'auto' })}>
                 <SelectTrigger aria-labelledby="repository-chat-streaming-label" className="h-10 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">{t('aIConfigPanel.auto-falls-back-to-full-response-when-unsupporte')}</SelectItem>
-                  <SelectItem value="off">{t('aIConfigPanel.off')}</SelectItem>
+                  <SelectItem value="auto">{t('app:aIConfigPanel.auto-falls-back-to-full-response-when-unsupporte')}</SelectItem>
+                  <SelectItem value="off">{t('app:aIConfigPanel.off')}</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.applies-to-the-final-answer-only-retrieval-still')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.applies-to-the-final-answer-only-retrieval-still')}</p>
             </div>
             <div>
-              <label htmlFor="repository-chat-tool-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-tool-calls-per-turn')}</label>
+              <label htmlFor="repository-chat-tool-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-tool-calls-per-turn')}</label>
               <Input id="repository-chat-tool-limit" type="number" min={1} max={48} value={repositoryChatSettings.agentBudget.maxToolCalls} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxToolCalls = Number.isFinite(parsed) ? Math.min(48, Math.max(1, Math.trunc(parsed))) : 20;
                 setRepositoryChatSettings({ maxToolsPerTurn: maxToolCalls, agentBudget: { ...repositoryChatSettings.agentBudget, maxToolCalls } });
               }} />
-              <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.limits-all-read-only-tool-calls-to-prevent-unbou')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.limits-all-read-only-tool-calls-to-prevent-unbou')}</p>
             </div>
             <div>
-              <label htmlFor="repository-chat-turn-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-evidence-rounds')}</label>
+              <label htmlFor="repository-chat-turn-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-evidence-rounds')}</label>
               <Input id="repository-chat-turn-limit" type="number" min={1} max={8} value={repositoryChatSettings.agentBudget.maxTurns} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxTurns = Number.isFinite(parsed) ? Math.min(8, Math.max(1, Math.trunc(parsed))) : 4;
@@ -898,16 +827,16 @@ Repository information:
               }} />
             </div>
             <div>
-              <label htmlFor="repository-chat-no-progress-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-consecutive-no-progress-rounds')}</label>
+              <label htmlFor="repository-chat-no-progress-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-consecutive-no-progress-rounds')}</label>
               <Input id="repository-chat-no-progress-limit" type="number" min={1} max={4} value={repositoryChatSettings.agentBudget.maxNoProgressRounds} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxNoProgressRounds = Number.isFinite(parsed) ? Math.min(4, Math.max(1, Math.trunc(parsed))) : 2;
                 setRepositoryChatSettings({ agentBudget: { ...repositoryChatSettings.agentBudget, maxNoProgressRounds } });
               }} />
-              <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.stops-repeated-retrieval-after-consecutive-round')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.stops-repeated-retrieval-after-consecutive-round')}</p>
             </div>
             <div>
-              <label htmlFor="repository-chat-read-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-files-read')}</label>
+              <label htmlFor="repository-chat-read-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-files-read')}</label>
               <Input id="repository-chat-read-limit" type="number" min={1} max={16} value={repositoryChatSettings.agentBudget.maxReadFiles} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxReadFiles = Number.isFinite(parsed) ? Math.min(16, Math.max(1, Math.trunc(parsed))) : 6;
@@ -915,16 +844,16 @@ Repository information:
               }} />
             </div>
             <div>
-              <label htmlFor="repository-chat-code-read-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-code-files-read')}</label>
+              <label htmlFor="repository-chat-code-read-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-code-files-read')}</label>
               <Input id="repository-chat-code-read-limit" type="number" min={0} max={12} value={repositoryChatSettings.agentBudget.maxCodeReads} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxCodeReads = Number.isFinite(parsed) ? Math.min(repositoryChatSettings.agentBudget.maxReadFiles, Math.min(12, Math.max(0, Math.trunc(parsed)))) : 3;
                 setRepositoryChatSettings({ agentBudget: { ...repositoryChatSettings.agentBudget, maxCodeReads } });
               }} />
-              <p className="mt-1 text-xs text-muted-foreground">{t('aIConfigPanel.code-is-read-only-when-documentation-evidence-is')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('app:aIConfigPanel.code-is-read-only-when-documentation-evidence-is')}</p>
             </div>
             <div>
-              <label htmlFor="repository-chat-duration-limit" className="mb-1 block text-sm font-medium text-foreground">{t('aIConfigPanel.maximum-execution-time-seconds')}</label>
+              <label htmlFor="repository-chat-duration-limit" className="mb-1 block text-sm font-medium text-foreground">{t('app:aIConfigPanel.maximum-execution-time-seconds')}</label>
               <Input id="repository-chat-duration-limit" type="number" min={15} max={300} value={Math.round(repositoryChatSettings.agentBudget.maxDurationMs / 1000)} onChange={(event) => {
                 const parsed = Number(event.target.value);
                 const maxDurationMs = (Number.isFinite(parsed) ? Math.min(300, Math.max(15, Math.trunc(parsed))) : 90) * 1000;
@@ -933,7 +862,9 @@ Repository information:
             </div>
           </div>
         </details>
+        </fieldset>
       </section>
+      </details>
 
     </div>
   );

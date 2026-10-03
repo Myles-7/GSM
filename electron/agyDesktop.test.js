@@ -79,6 +79,27 @@ test('a failing feature probe does not disable the global configuration', async 
   await service.shutdown();
 });
 
+test('retry profile overrides apply to one request without changing scheduler preferences', async t => {
+  const seen = [];
+  const { service } = await setup(t, { runtime: async options => {
+    seen.push({ model: options.model, effort: options.effort, timeoutMs: options.timeoutMs });
+    return { text: '{"answer":"连接成功","missing":[]}', usage: {} };
+  } });
+  await service.detect(1, 'detect'); await service.probe(1, 'probe');
+  await service.save(1, 'save', { ...DEFAULT_PREFS, enabled: true });
+  const prefs = (await service.getState()).prefs;
+  const result = await service.generate(1, 'retry', { system: 'test', user: 'test', model: prefs.model, effort: prefs.effort, feature: 'repository-summary',
+    profileOverride: { model: 'old-model', effort: 'max', timeoutSeconds: 55 } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(seen.at(-1), { model: 'old-model', effort: 'max', timeoutMs: 55000 });
+  assert.deepEqual((await service.getState()).prefs, prefs);
+  for (const override of [{ model: 'bad\nmodel', effort: 'max', timeoutSeconds: 55 }, { model: 'ok', effort: 'auto', timeoutSeconds: 55 }, { model: 'ok', effort: 'max', timeoutSeconds: 19 }]) {
+    const invalid = await service.generate(1, `invalid-${seen.length}`, { system: 'test', user: 'test', profileOverride: override });
+    assert.equal(invalid.ok, false);
+  }
+  await service.shutdown();
+});
+
 test('parses tab-separated models without forwarding diagnostics', () => {
   assert.deepEqual(parseModels('Fetching models...\nmodel-one\tModel One\nmodel-one\tModel One\n'), [{ id: 'model-one', label: 'Model One' }]);
   assert.throws(() => parseModels('login required PRIVATE_SENTINEL'), /INVALID_MODELS/);

@@ -13,7 +13,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import AssetLeadingIcon from './AssetLeadingIcon';
 import { useAppStore } from '../store/useAppStore';
 import { useRepositoryReleaseSheet } from '../features/repositories/hooks/useRepositoryReleaseSheet';
-import { computeRpcDownloadKey } from '../hooks/useReleaseArtifactActions';
+import { computeRpcDownloadKey, currentReleaseSummary } from '../hooks/useReleaseArtifactActions';
 import { type ReleaseDownloadLink } from '../utils/releaseDownloadLinks';
 import { buildReleaseFilterLinks } from '../utils/releaseFilterLinks';
 import { evaluateReleaseFilters } from '../utils/assetFilters';
@@ -402,7 +402,7 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
                         onAssetPageChange={(page) => setAssetPages((previous) => ({ ...previous, [release.id]: page }))}
                         downloadStates={downloadStates}
                         onDownload={(link) => void downloadAsset(link)}
-                        summary={summaries[release.id]}
+                        summary={currentReleaseSummary(release, summaries)}
                         onGenerateSummary={() => void generateSummary(release)}
                         language={language}
                         repository={repository}

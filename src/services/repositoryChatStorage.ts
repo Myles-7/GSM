@@ -319,10 +319,10 @@ const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'r
 const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
 const OPERATION_KEYS = ['id', 'repository', 'kind', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
 const EDITABLE_KEYS = ['custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
-const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject'] as const;
+const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject', 'inputIntent'] as const;
 const REQUIREMENTS_KEYS = ['purpose', 'required', 'preferred', 'excluded', 'questions', 'queries'] as const;
-const SEARCH_BATCH_KEYS = ['id', 'createdAt', 'requirements', 'candidates', 'queries', 'nextPage'] as const;
-const CANDIDATE_KEYS = ['repository', 'summary', 'reasons', 'limitations', 'sources', 'status'] as const;
+const SEARCH_BATCH_KEYS = ['id', 'createdAt', 'requirements', 'candidates', 'queries', 'nextPage', 'overviewSummary'] as const;
+const CANDIDATE_KEYS = ['repository', 'summary', 'reasons', 'limitations', 'sources', 'status', 'overview'] as const;
 const REPOSITORY_KEYS = [
   'id', 'name', 'full_name', 'description', 'html_url', 'stargazers_count', 'forks_count', 'forks',
   'language', 'created_at', 'updated_at', 'pushed_at', 'starred_at', 'owner', 'topics', 'archived',
@@ -487,6 +487,7 @@ const validateWorkbenchData = (value: unknown, label: string): WorkbenchSessionD
     if (project.identity !== undefined) asString(project.identity, `${label}.localProject.identity`, 128);
   }
   asEnum(record.depth, `${label}.depth`, ['quick', 'standard', 'deep'] as const);
+  asOptionalEnum(record.inputIntent, `${label}.inputIntent`, ['search', 'results', 'research'] as const);
   asArray(record.selectedRepositories, `${label}.selectedRepositories`, MAX_REPOSITORIES_PER_COLLECTION)
     .forEach((repository, index) => validateRepository(repository, `${label}.selectedRepositories[${index}]`));
   if (record.requirements !== undefined) validateRequirements(record.requirements, `${label}.requirements`);
@@ -495,6 +496,7 @@ const validateWorkbenchData = (value: unknown, label: string): WorkbenchSessionD
     const batchRecord = assertRecord(batch, batchLabel, SEARCH_BATCH_KEYS);
     asIdentifier(batchRecord.id, `${batchLabel}.id`);
     asIsoString(batchRecord.createdAt, `${batchLabel}.createdAt`);
+    asOptionalString(batchRecord.overviewSummary, `${batchLabel}.overviewSummary`, MAX_TEXT);
     validateRequirements(batchRecord.requirements, `${batchLabel}.requirements`);
     asArray(batchRecord.candidates, `${batchLabel}.candidates`, MAX_CANDIDATES_PER_BATCH).forEach((candidate, candidateIndex) => {
       const candidateLabel = `${batchLabel}.candidates[${candidateIndex}]`;
@@ -505,6 +507,17 @@ const validateWorkbenchData = (value: unknown, label: string): WorkbenchSessionD
       asStringArray(candidateRecord.limitations, `${candidateLabel}.limitations`, 5_000);
       asStringArray(candidateRecord.sources, `${candidateLabel}.sources`, 5_000);
       asEnum(candidateRecord.status, `${candidateLabel}.status`, ['candidate', 'verifying', 'verified', 'insufficient'] as const);
+      if (candidateRecord.overview !== undefined) {
+        const overview = assertRecord(candidateRecord.overview, `${candidateLabel}.overview`,
+          ['summary', 'category', 'categoryDescription', 'kind', 'status', 'basis', 'error']);
+        asString(overview.summary, `${candidateLabel}.overview.summary`, MAX_TEXT);
+        asString(overview.category, `${candidateLabel}.overview.category`, 60);
+        asString(overview.categoryDescription, `${candidateLabel}.overview.categoryDescription`, 180);
+        asEnum(overview.kind, `${candidateLabel}.overview.kind`, ['tool', 'library', 'resource', 'other'] as const);
+        asEnum(overview.status, `${candidateLabel}.overview.status`, ['ready', 'insufficient', 'failed'] as const);
+        asEnum(overview.basis, `${candidateLabel}.overview.basis`, ['metadata', 'existing', 'readme'] as const);
+        asOptionalString(overview.error, `${candidateLabel}.overview.error`, MAX_TEXT);
+      }
     });
     asStringArray(batchRecord.queries, `${batchLabel}.queries`, 5_000);
     asNumber(batchRecord.nextPage, `${batchLabel}.nextPage`);

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Bookmark, Loader2, Plus, RefreshCw, Pencil, Pause, Play, MoreHorizontal, Trash2, Eye, EyeOff, X, Clock, Zap } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Bookmark, Loader2, Plus, RefreshCw, Pencil, Pause, Play, MoreHorizontal, Trash2, Eye, EyeOff, X, Clock, Zap, Settings2, ArrowUp } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { Modal } from '../../../components/Modal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu';
@@ -9,7 +9,16 @@ import { cancelCustomRun } from '../custom/runner';
 import { reportCustomError, selectCustomChannel, startCustomRun, updateCustomData, useCustomDiscovery } from '../custom/store';
 import { CustomChannelResults } from './CustomChannelResults';
 import { issueLabel, progressLabel } from '../custom/taskStatus';
-import { CustomChannelEditionPicker, matchEdition } from './CustomChannelEditionPicker';
+import { CustomChannelEditionPicker } from './CustomChannelEditionPicker';
+import { useChannelEditionReading } from '../hooks/useChannelEditionReading';
+import { editionKey, visibleEditionItems } from '../custom/model';
+import { blockCandidate } from '../custom/candidateActions';
+import { RepositoryTextSkeletons } from '../../../components/RepositoryTextBlock';
+import { DiscoveryReadingSettings } from './DiscoveryReadingSettings';
+import { useAutomaticDiscoveryLoading, useChannelReadingPreferences, useReadingAnchor } from '../hooks/useDiscoveryReading';
+import { workspaceSessionKey } from '../workspace/model';
+import { clearDiscoveryChannelWorkspace, clearDiscoveryList, loadBrowseSession, saveBrowsePage } from '../workspace/storage';
+import { deleteRepositoryAnalysisAssets } from '../../../services/repositoryAnalysisAssets';
 export { CustomChannelEditor } from './CustomChannelEditor';
 
 const useLabels = () => {
@@ -86,39 +95,108 @@ export function CustomChannelNavigation({ mobile = false, onCreate }: { mobile?:
 
 export function CustomChannelView({ channel, onEdit }: { channel: CustomDiscoveryChannel; onEdit: () => void }) {
   const l = useLabels();
-  const { data, busy, progress, error, candidates } = useCustomDiscovery();
+  const { data, busy, progress, tasks, candidates } = useCustomDiscovery();
+  const error = tasks[channel.id]?.issue ? issueLabel(tasks[channel.id].issue!, l('zh', 'en') === 'zh') : null;
   const editions = data.editions
     .filter(e => e.channelId === channel.id)
     .sort((a, b) => b.date.localeCompare(a.date) || (b.generatedAt || '').localeCompare(a.generatedAt || '') || b.revision - a.revision);
-  const [selectedEdition, setSelectedEdition] = useState('');
+  const reading = useChannelEditionReading(editions);
+  const account = useAppStore(s => s.user ? String(s.user.id) : '');
+  const root = useRef<HTMLDivElement>(null);
+  const settings = useChannelReadingPreferences(account, channel.id, { autoAnalyze: channel.autoAnalyze !== false, autoAnalysisLimit: channel.autoAnalysisLimit ?? 10 });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [readingReady, setReadingReady] = useState(false);
+  const [storageIssue, setStorageIssue] = useState(false);
+  const [followingRun, setFollowingRun] = useState(false);
   const [showPending, setShowPending] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const edition = editions.find(e => matchEdition(e, selectedEdition)) || editions[0];
+  const [showBlocked, setShowBlocked] = useState(false);
+  const edition = reading.edition;
+  const selectedEdition = edition ? editionKey(edition) : '';
   const live = candidates[channel.id];
-  const isLiveSelected = !selectedEdition
-    || (edition && edition.date === live?.date && edition.revision === live?.revision)
-    || selectedEdition === `${live?.date}:${live?.revision}`;
+  const isLiveSelected = !edition || followingRun;
   const liveItems = live?.revision === channel.revision && isLiveSelected ? live.items : [];
   const pending = [...(edition?.pending || []).filter(a => !liveItems.some(item => item.repo.id === a.repo.id)), ...liveItems.map(a => ({ ...a, verdict: 'unknown' as const }))];
-  const items = (showPending ? pending : edition?.entries || []).filter(a => !channel.blocked.includes(a.repo.id));
+  const { pending: visiblePending, entries: visibleEntries } = visibleEditionItems({
+    date: liveItems.length && live ? live.date : edition?.date || '',
+    pending, entries: edition?.entries || [],
+  }, channel);
+  const items = showPending ? visiblePending : visibleEntries;
+  const sessionKey = workspaceSessionKey(channel.id, `${edition?.date || ''}:${edition?.revision || channel.revision}:${showPending ? 'pending' : 'recommended'}`);
+  const metaKey = workspaceSessionKey(channel.id, 'last-view');
+  const [visibleCount, setVisibleCount] = useState<number>(settings.preferences.batchSize);
+  const [depthKey, setDepthKey] = useState('');
+  const resumeReading = settings.preferences.resumeReading;
+  const showEdition = reading.show;
+  const anchor = useReadingAnchor(account, sessionKey, root, resumeReading, readingReady && settings.ready && depthKey === sessionKey);
+  useEffect(() => {
+    if (!account || !settings.ready) return;
+    let alive = true;
+    setReadingReady(false);
+    void loadBrowseSession(account, metaKey).then(saved => {
+      if (!alive) return;
+      const view = saved?.items[0];
+      if (resumeReading && view?.edition) showEdition(view.edition as unknown as typeof edition);
+      if (resumeReading && view?.pending !== undefined) setShowPending(view.pending === true);
+      setReadingReady(true);
+    }).catch(() => { if (alive) { setStorageIssue(true); setReadingReady(true); } });
+    return () => { alive = false; };
+    // Restore once per channel; analysis updates never reselect an edition.
+  }, [account, metaKey, settings.ready, resumeReading, showEdition]);
+  useEffect(() => {
+    if (!readingReady || !account) return;
+    let alive = true;
+    void loadBrowseSession(account, sessionKey).then(saved => {
+      if (!alive) return;
+      const count = saved?.items[0]?.visibleCount;
+      setVisibleCount(typeof count === 'number' && Number.isFinite(count) ? Math.max(1, count) : settings.preferences.batchSize);
+      setDepthKey(sessionKey);
+    }).catch(() => { if (alive) { setStorageIssue(true); setVisibleCount(settings.preferences.batchSize); setDepthKey(sessionKey); } });
+    return () => { alive = false; };
+  }, [account, sessionKey, readingReady, settings.preferences.batchSize]);
+  useEffect(() => {
+    if (!readingReady || depthKey !== sessionKey || !account) return;
+    void saveBrowsePage(account, { key: sessionKey, channelId: channel.id, signature: sessionKey,
+      items: [{ visibleCount }], itemKeys: ['depth'], nextPage: 1, hasMore: false, totalCount: 1, mode: 'replace' }).catch(() => setStorageIssue(true));
+  }, [account, sessionKey, depthKey, channel.id, visibleCount, readingReady]);
+  useEffect(() => {
+    if (!readingReady || !edition || !account) return;
+    void saveBrowsePage(account, { key: metaKey, channelId: channel.id, signature: 'last-view', items: [{ edition, pending: showPending, visibleCount }], itemKeys: ['view'],
+      nextPage: 1, hasMore: false, totalCount: 1, mode: 'replace' }).catch(() => setStorageIssue(true));
+  }, [account, metaKey, channel.id, edition, showPending, visibleCount, readingReady]);
+  const changeTab = (value: boolean) => { anchor.persist(); setShowPending(value); };
+  useAutomaticDiscoveryLoading(root, settings.preferences.loading === 'auto', false, visibleCount < items.length, false,
+    () => setVisibleCount(count => count + settings.preferences.batchSize), sessionKey);
   const hasLive = liveItems.length > 0;
-  const hasEntries = !!edition?.entries.length;
+  const hasEntries = !!visibleEntries.length;
   useEffect(() => { if (hasLive && !hasEntries) setShowPending(true); }, [hasLive, hasEntries]);
   const changePaused = () => {
-    cancelCustomRun();
+    cancelCustomRun({ channelId: channel.id });
     void updateCustomData(d => { const c = d.channels.find(x => x.id === channel.id); if (c) c.paused = !c.paused; }).catch(reportCustomError);
   };
-  return <div className="min-w-0 flex-1 space-y-4">
+  const refresh = async () => {
+    setFollowingRun(true);
+    try {
+      await startCustomRun([channel.id]);
+      const latest = useCustomDiscovery.getState().data.editions.filter(e => e.channelId === channel.id)
+        .sort((a, b) => b.date.localeCompare(a.date) || (b.generatedAt || '').localeCompare(a.generatedAt || '') || b.revision - a.revision)[0];
+      if (latest) reading.show(latest);
+    } finally { setFollowingRun(false); }
+  };
+  return <div ref={root} className="min-w-0 flex-1 space-y-4">
     <header className="ui-toolbar space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="min-w-0 break-words text-lg font-semibold">{channel.name}</h2>
         <div className="flex items-center gap-1">
-          <Button size="icon" variant="ghost" disabled={busy || channel.paused} title={l('刷新', 'Refresh')} aria-label={l('刷新', 'Refresh')} onClick={() => void startCustomRun([channel.id])}><RefreshCw className={`h-4 w-4 ${progress[channel.id] ? 'animate-spin' : ''}`} /></Button>
-          {busy && <Button size="icon" variant="ghost" title={l('取消运行', 'Cancel run')} aria-label={l('取消运行', 'Cancel run')} onClick={cancelCustomRun}><X className="h-4 w-4" /></Button>}
+          <Button size="icon" variant="ghost" title={l('回到顶部', 'Back to top')} aria-label={l('回到顶部', 'Back to top')} onClick={() => window.scrollTo({ top: 0, behavior: 'auto' })}><ArrowUp className="h-4 w-4" /></Button>
+          <Button size="icon" variant="ghost" title={l('频道设置', 'Channel settings')} aria-label={l('频道设置', 'Channel settings')} onClick={() => setSettingsOpen(true)}><Settings2 className="h-4 w-4" /></Button>
+          {reading.hasUpdate && <Button size="sm" variant="outline" className="h-8 gap-1 px-2 text-xs" title={l('已保存新一期，点击查看；当前列表保持不变。', 'A newer edition is saved. View it without changing the current list automatically.')} onClick={reading.showLatest}><RefreshCw className="h-3.5 w-3.5" />{l('有更新', 'Update available')}</Button>}
+          <Button size="icon" variant="ghost" disabled={busy || channel.paused} title={l('刷新', 'Refresh')} aria-label={l('刷新', 'Refresh')} onClick={() => void refresh()}><RefreshCw className={`h-4 w-4 ${progress[channel.id] ? 'animate-spin' : ''}`} /></Button>
+          {tasks[channel.id]?.status === 'loading' && <Button size="icon" variant="ghost" title={l('取消运行', 'Cancel run')} aria-label={l('取消运行', 'Cancel run')} onClick={() => cancelCustomRun({ channelId: channel.id })}><X className="h-4 w-4" /></Button>}
           <Button size="icon" variant="ghost" title={l('编辑', 'Edit')} aria-label={l('编辑', 'Edit')} onClick={onEdit}><Pencil className="h-4 w-4" /></Button>
           <Button size="icon" variant="ghost" title={channel.paused ? l('恢复', 'Resume') : l('暂停', 'Pause')} aria-label={channel.paused ? l('恢复', 'Resume') : l('暂停', 'Pause')} onClick={changePaused}>{channel.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title={l('更多', 'More')} aria-label={l('更多', 'More')}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-            <DropdownMenuContent><DropdownMenuItem onSelect={() => setConfirmDelete(true)}><Trash2 className="mr-2 h-4 w-4" />{l('删除频道', 'Delete channel')}</DropdownMenuItem></DropdownMenuContent>
+            <DropdownMenuContent><DropdownMenuItem onSelect={() => setShowBlocked(true)}><EyeOff className="mr-2 h-4 w-4" />{l('屏蔽记录', 'Blocked projects')} ({channel.blocked.length})</DropdownMenuItem><DropdownMenuItem onSelect={() => setConfirmDelete(true)}><Trash2 className="mr-2 h-4 w-4" />{l('删除频道', 'Delete channel')}</DropdownMenuItem></DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
@@ -131,11 +209,11 @@ export function CustomChannelView({ channel, onEdit }: { channel: CustomDiscover
             aria-selected={!showPending}
             variant={!showPending ? 'default' : 'ghost'}
             className={`h-7 px-3 text-xs font-medium rounded-md transition-all ${!showPending ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setShowPending(false)}
+            onClick={() => changeTab(false)}
           >
             {l('推荐', 'Recommended')}
             <span className={`ml-1.5 rounded-full px-1.5 py-0.2 text-[10px] ${!showPending ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-muted-foreground/20 text-muted-foreground'}`}>
-              {edition?.entries.length ?? 0}
+              {visibleEntries.length}
             </span>
           </Button>
           <Button
@@ -144,12 +222,12 @@ export function CustomChannelView({ channel, onEdit }: { channel: CustomDiscover
             aria-selected={showPending}
             variant={showPending ? 'default' : 'ghost'}
             className={`h-7 px-3 text-xs font-medium rounded-md transition-all ${showPending ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setShowPending(true)}
+            onClick={() => changeTab(true)}
           >
             {l('待核实', 'Unverified')}
-            {pending.length > 0 && (
+            {visiblePending.length > 0 && (
               <span className={`ml-1.5 rounded-full px-1.5 py-0.2 text-[10px] ${showPending ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-amber-500/20 text-amber-500 font-semibold'}`}>
-                {pending.length}
+                {visiblePending.length}
               </span>
             )}
           </Button>
@@ -164,7 +242,8 @@ export function CustomChannelView({ channel, onEdit }: { channel: CustomDiscover
               channel={channel}
               editions={editions}
               selectedEditionKey={selectedEdition}
-              onSelectEdition={setSelectedEdition}
+              displayedEdition={edition}
+              onSelectEdition={key => { anchor.persist(); reading.select(key); }}
             />
           )}
         </div>
@@ -197,14 +276,27 @@ export function CustomChannelView({ channel, onEdit }: { channel: CustomDiscover
         : edition ? showPending ? l('暂无待核实项目', 'No unverified projects') : l('暂无符合条件的项目', 'No matching projects')
           : l('尚未生成推荐', 'No recommendations yet')
     }</p>}
-    <CustomChannelResults key={`${channel.id}:${selectedEdition}:${showPending}`} items={items} channel={channel} />
+    {!items.length && tasks[channel.id]?.status === 'loading' && <RepositoryTextSkeletons />}
+    {(storageIssue || settings.issue || anchor.issue) && <p role="alert" className="text-sm text-destructive">{l('未保存：本地存储不可用', 'Not saved: local storage unavailable')}</p>}
+    <CustomChannelResults key={`${channel.id}:${selectedEdition}:${showPending}`} items={items.slice(0, visibleCount)} channel={channel} sourceEditionKey={edition && editions.some(e => editionKey(e) === selectedEdition) ? selectedEdition : undefined} />
+    {visibleCount < items.length && <div className="flex justify-center"><Button variant="outline" onClick={() => setVisibleCount(count => count + settings.preferences.batchSize)}>{l('加载更多', 'Load more')}</Button></div>}
+    <DiscoveryReadingSettings channelName={channel.name} open={settingsOpen} onClose={() => setSettingsOpen(false)} preferences={settings.preferences}
+      onSave={async value => { await settings.save(value); await updateCustomData(d => { const c = d.channels.find(c => c.id === channel.id); if (c) { c.autoAnalyze = value.autoAnalyze; c.autoAnalysisLimit = value.autoAnalysisLimit; } }); }}
+      onResetReading={anchor.reset}
+      onClearList={async () => { await clearDiscoveryList(account, metaKey); await clearDiscoveryList(account, sessionKey); setVisibleCount(settings.preferences.batchSize); }}
+      onDeleteAnalysis={async () => { const ids = [...new Set(data.editions.filter(e => e.channelId === channel.id).flatMap(e => [...e.entries, ...e.pending].map(a => a.repo.id)))];
+        await deleteRepositoryAnalysisAssets(account, ids);
+        await updateCustomData(d => { for (const [key, record] of Object.entries(d.analyses || {})) { try { if (ids.includes(JSON.parse(key)[0]) && record.status !== 'running') delete d.analyses![key]; } catch { /* Unscoped legacy keys are not removable by channel. */ } } }); }} />
+    {showBlocked && <Modal isOpen onClose={() => setShowBlocked(false)} title={l('屏蔽记录', 'Blocked projects')}>
+      <div className="space-y-2">{channel.blocked.map(id => <div key={id} className="flex min-w-0 items-center justify-between gap-2 text-sm"><span className="break-all">{data.editions.flatMap(e => [...e.entries, ...e.pending]).find(a => a.repo.id === id)?.repo.full_name || `#${id}`}</span><Button variant="outline" size="sm" onClick={() => void blockCandidate({ channelId: channel.id, repoId: id, blocked: false }).catch(reportCustomError)}>{l('恢复', 'Restore')}</Button></div>)}</div>
+    </Modal>}
     {confirmDelete && <Modal isOpen onClose={() => setConfirmDelete(false)} title={l('删除此频道及其本地历史？', 'Delete this channel and its local history?')}>
       <div className="mt-4 flex justify-end gap-2"><Button variant="outline" onClick={() => setConfirmDelete(false)}>{l('取消', 'Cancel')}</Button><Button variant="destructive" onClick={() => {
-        cancelCustomRun();
-        void updateCustomData(d => {
+        cancelCustomRun({ channelId: channel.id });
+        void clearDiscoveryChannelWorkspace(account, channel.id).then(() => updateCustomData(d => {
           d.channels = d.channels.filter(c => c.id !== channel.id);
           d.editions = d.editions.filter(e => e.channelId !== channel.id);
-        }).catch(reportCustomError);
+        })).catch(reportCustomError);
       }}>{l('删除', 'Delete')}</Button></div>
     </Modal>}
   </div>;

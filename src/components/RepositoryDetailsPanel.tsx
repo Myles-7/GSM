@@ -11,6 +11,9 @@ import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { ErrorBoundary } from './ErrorBoundary';
+import { safeWriteText } from '../utils/clipboardUtils';
+import { RepositoryAnalysisFreshness } from './RepositoryAnalysisFreshness';
+import { applyRepositoryAnalysisAsset, useRepositoryAnalysisAssets } from '../services/repositoryAnalysisAssets';
 
 const LazyReadmeModal = lazy(() => import('./ReadmeModal').then((module) => ({ default: module.ReadmeModal })));
 
@@ -23,11 +26,15 @@ export interface RepositoryDetailsPanelProps {
   onNext?: () => void;
   analysisAction?: (repository: Repository) => ReactNode;
   defaultDocked?: boolean;
+  analysisStatus?: { running: boolean; stage?: string };
 }
 
-export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, onPinnedChange, onPrevious, onNext, analysisAction, defaultDocked = false }: RepositoryDetailsPanelProps) {
+export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, onPinnedChange, onPrevious, onNext, analysisAction, analysisStatus, defaultDocked = false }: RepositoryDetailsPanelProps) {
   const t = useT('repositories');
   const language = useAppStore((state) => state.language);
+  const account = useAppStore((state) => state.user?.id);
+  useRepositoryAnalysisAssets((state) => state.assets);
+  if (repository && account !== undefined) repository = applyRepositoryAnalysisAsset(String(account), repository, language);
   const releases = useAppStore((state) => state.releases);
   const [pinned, setPinned] = useState(defaultDocked);
   const [canPin, setCanPin] = useState(false);
@@ -90,6 +97,14 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     opener.current?.focus({ preventScroll: true });
   };
   const details = readRepositoryDetails(repository?.ai_details);
+  const summary = repository?.custom_description ?? repository?.ai_summary ?? repository?.description ?? '';
+  const analyzing = analysisStatus?.running ?? (job.running && job.currentRepository === repository?.full_name);
+  const stage = analysisStatus?.stage ?? job.stage;
+  const copyText = async (text: string) => {
+    const result = await safeWriteText(text);
+    setCopyFailed(!result.success);
+    if (result.success) { setCopiedCommand(text); setTimeout(() => setCopiedCommand(null), 2000); }
+  };
   const overviewText = (repository?.custom_description ?? repository?.ai_summary ?? repository?.description ?? '').trim().toLowerCase();
   const isProblemRedundant = Boolean(
     details?.problem &&
@@ -104,6 +119,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   const body = repository && <>
     <header className="flex flex-wrap items-center gap-1 border-b p-4">
       <h2 className="min-w-0 flex-1 break-all text-base font-semibold">{repository.full_name}</h2>
+      <RepositoryAnalysisFreshness repository={repository} />
       {onPrevious && iconButton(t('details.previous'), onPrevious, <ArrowLeft className="h-4 w-4" />)}
       {onNext && iconButton(t('details.next'), onNext, <ArrowRight className="h-4 w-4" />)}
       {iconButton(t(pinned ? 'details.unpin' : 'details.pin'), () => setPinned(!pinned), pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />, !pinned && !canPin)}
@@ -115,8 +131,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
       <TabsTrigger value="usage">{t('details.usageTab')}</TabsTrigger>
       <TabsTrigger value="maintenance">{t('details.maintenanceTab')}</TabsTrigger>
     </TabsList>
-    <div ref={scroller} className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4" onScroll={(event) => scrollPositions.current.set(repository.id, event.currentTarget.scrollTop)}>
-      <p className="whitespace-pre-wrap break-words text-sm">{repository.custom_description ?? repository.ai_summary ?? repository.description ?? t('details.unknown')}</p>
+    <div data-testid="repository-details-toolbar" className="shrink-0 space-y-2 border-b px-4 py-3">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         {onAskRepository && <Button variant="outline" size="sm" onClick={() => onAskRepository(repository)}><MessageSquareText className="mr-2 h-4 w-4" />{t('repositoryCard.ask-this-repository')}</Button>}
         <Button ref={readmeTrigger} variant="outline" size="sm" onClick={() => setReadmeOpen(true)}><BookOpen className="mr-2 h-4 w-4" />{t('details.readme')}</Button>
@@ -126,14 +141,27 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
             <span>GitHub</span>
           </a>
         </Button>
+        <Button variant="outline" size="sm" asChild><a href={`${repository.html_url}/releases`} target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-1.5 h-3.5 w-3.5" />Releases</a></Button>
       </div>
       {analysisAction ? analysisAction(repository) : <RepositoryDetailAnalysisAction repositories={[repository]} job={job} />}
+    </div>
+    <div ref={scroller} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4" onScroll={(event) => scrollPositions.current.set(repository.id, event.currentTarget.scrollTop)}>
       <TabsContent value={detailTab} className="space-y-5">
+      {detailTab === 'overview' && summary && <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">{language.startsWith('zh') ? '快速总结' : 'Quick summary'}</h3>
+          {iconButton(language.startsWith('zh') ? '复制总结' : 'Copy summary', () => void copyText(summary), copiedCommand === summary ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />)}</div>
+        <p className="whitespace-pre-wrap break-words text-sm">{summary}</p>
+      </section>}
+      {copyFailed && <p role="alert" className="text-sm text-destructive">{t('details.copyFailed')}</p>}
+      {analyzing && !details && <div role="status" aria-busy="true" className="space-y-3">
+        <p className="text-xs text-muted-foreground">{stage === 'readme' ? 'README' : stage === 'validation' ? (language.startsWith('zh') ? '校验分析结果' : 'Validating analysis') : (language.startsWith('zh') ? 'AI 分析中' : 'AI analyzing')}</p>
+        {[0, 1, 2].map(i => <div key={i} className="space-y-2"><div className="h-4 w-1/3 animate-pulse rounded bg-muted" /><div className="h-3 w-full animate-pulse rounded bg-muted" /><div className="h-3 w-4/5 animate-pulse rounded bg-muted" /></div>)}
+      </div>}
       {!details && <p className="text-sm text-muted-foreground">{t('details.notAnalyzed')}</p>}
       {details && <>
         {detailTab === 'overview' && <>
-        <section><h3 className="mb-2 text-sm font-semibold">{t('details.softwareForms')}</h3><p className="text-sm">{details.software_forms?.length ? details.software_forms.map((form) => t(`details.forms.${form}`)).join(', ') : t('details.unknown')}</p></section>
-        <section><h3 className="mb-2 text-sm font-semibold">{t('details.deploymentModes')}</h3><p className="text-sm">{details.deployment_modes?.length ? details.deployment_modes.map((mode) => t(`details.modes.${mode}`)).join(', ') : t('details.unknown')}</p></section>
+        {!!details.software_forms?.length && <section><h3 className="mb-2 text-sm font-semibold">{t('details.softwareForms')}</h3><p className="text-sm">{details.software_forms.map((form) => t(`details.forms.${form}`)).join(', ')}</p></section>}
+        {!!details.deployment_modes?.length && <section><h3 className="mb-2 text-sm font-semibold">{t('details.deploymentModes')}</h3><p className="text-sm">{details.deployment_modes.map((mode) => t(`details.modes.${mode}`)).join(', ')}</p></section>}
         </>}
         {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).filter(key => {
           if (detailTab === 'overview') {
@@ -142,36 +170,27 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
           }
           if (detailTab === 'usage') return ['architecture', 'deployment', 'cost'].includes(key);
           return key === 'maintenance';
-        }).map((key) => <section key={key}>
-          <h3 className="mb-2 text-sm font-semibold">{t(`details.${key}`)}</h3>
+        }).filter(key => Array.isArray(details[key]) ? details[key].length > 0 : Boolean(details[key]?.trim())).map((key) => <details key={key} open={detailTab === 'overview'} className="border-t pt-3">
+          <summary className="mb-2 cursor-pointer text-sm font-semibold">{t(`details.${key}`)}</summary>
           {Array.isArray(details[key])
             ? <ul className="list-inside list-disc space-y-1 break-words text-sm">{(details[key] as string[]).length ? (details[key] as string[]).map((line, index) => <li key={index}>{line}</li>) : <li>{t('details.unknown')}</li>}</ul>
             : <p className="whitespace-pre-wrap break-words text-sm">{details[key] || t('details.unknown')}</p>}
-        </section>)}
-        {detailTab === 'usage' && <section><h3 className="mb-2 text-sm font-semibold">{t('details.quickstart')}</h3>
-          {details.quickstart.length === 0 && <p className="text-sm">{t('details.unknown')}</p>}
+        </details>)}
+        {detailTab === 'usage' && details.quickstart.length > 0 && <section><h3 className="mb-2 text-sm font-semibold">{t('details.quickstart')}</h3>
           {details.quickstart.map((step, index) => <div key={index} className="mb-3 text-sm">
             <p>{step.description}</p>
             {step.command && <div className="mt-1 flex items-start gap-2 bg-muted p-2">
               <code className="min-w-0 flex-1 whitespace-pre-wrap break-all">{step.command}</code>
               {iconButton(
                 t('details.copy'),
-                () => {
-                  if (!navigator.clipboard) { setCopyFailed(true); return; }
-                  void navigator.clipboard.writeText(step.command!).then(() => {
-                    setCopyFailed(false);
-                    setCopiedCommand(step.command!);
-                    setTimeout(() => setCopiedCommand(null), 2000);
-                  }).catch(() => setCopyFailed(true));
-                },
+                () => void copyText(step.command!),
                 copiedCommand === step.command ? <Check className="h-4 w-4 text-emerald-500 animate-in zoom-in-50" /> : <Copy className="h-4 w-4" />
               )}
             </div>}
           </div>)}
-          {copyFailed && <p role="alert">{t('details.copyFailed')}</p>}
         </section>}
         <details className="border-t pt-3"><summary className="cursor-pointer text-xs text-muted-foreground">{t('details.sources')}</summary>
-          <p className="my-2 break-words text-xs text-muted-foreground">{details.model} · <time>{new Date(details.generated_at).toLocaleString(language)}</time>{details.repository_pushed_at !== (repository.pushed_at || null) && <span> · {t('details.stale')}</span>}</p>
+          <p className="my-2 break-words text-xs text-muted-foreground">{details.model} · <time>{new Date(details.generated_at).toLocaleString(language)}</time></p>
           {details.sources.map((source) => <a key={source.url} className="block break-all text-sm underline" href={source.url} target="_blank" rel="noopener noreferrer">{source.label}</a>)}
         </details>
       </>}
@@ -183,9 +202,9 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   return <>
     <span ref={anchor} className="hidden" />
     {repository && (pinned
-      ? <aside aria-label={t('details.title')} className="sticky top-16 flex h-[calc(100vh-4rem)] w-[440px] xl:w-[480px] shrink-0 flex-col border-l border-border/60 bg-card/95 backdrop-blur-sm transition-all duration-200" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
+      ? <aside data-independent-reading aria-label={t('details.title')} className="sticky top-16 flex h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] w-[440px] xl:w-[480px] shrink-0 flex-col border-l border-border/60 bg-card/95 backdrop-blur-sm transition-all duration-200" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
       : <Dialog open onOpenChange={(open) => !open && close()}>
-        <DialogContent showClose={false} aria-describedby={undefined} className="left-auto right-0 top-0 flex h-dvh max-h-dvh w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-[480px]" onCloseAutoFocus={(event) => { event.preventDefault(); if (!pinnedRef.current) opener.current?.focus({ preventScroll: true }); }}>
+        <DialogContent showClose={false} aria-describedby={undefined} className="left-0 right-auto top-0 flex h-dvh max-h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 sm:left-auto sm:right-0 sm:w-full sm:max-w-[480px]" onCloseAutoFocus={(event) => { event.preventDefault(); if (!pinnedRef.current) opener.current?.focus({ preventScroll: true }); }}>
           <DialogTitle className="sr-only">{t('details.title')}</DialogTitle>{body}
         </DialogContent>
       </Dialog>)}

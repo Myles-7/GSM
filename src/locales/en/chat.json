@@ -1,4 +1,20 @@
 {
+  "overview": {
+    "view": "Project overview", "chat": "Conversation", "dock": "Dock conversation", "resize": "Resize projects and conversation", "resetLayout": "Reset layout",
+    "title": "Explore this project set", "sessionOnly": "This conversation only", "allRounds": "All conversation results", "allCategories": "All purposes",
+    "allTypes": "All types", "tool": "Tool", "library": "Library", "resource": "Resource collection", "other": "Other",
+    "pending": "Pending", "ready": "Overview ready", "insufficient": "Limited material", "failed": "Overview failed",
+    "count": "{{count}} projects", "progress": "{{ready}} / {{total}} summarized", "search": "Search project names or purposes",
+    "sort": "Sort", "original": "Original order", "stars": "Stars", "name": "Project name",
+    "select": "Select {{name}}", "selectVisible": "Select filtered projects", "clear": "Clear selection", "selected": "{{count}} selected",
+    "add": "Add to context", "research": "Research selected", "ask": "Ask about results", "newSearch": "Find new projects", "copy": "Copy list", "export": "Export list",
+    "details": "Project details", "reasons": "Relevance to your request", "limitations": "Limitations and unknowns", "sources": "Sources",
+    "metadata": "Based on project description", "readme": "Based on README", "existing": "Existing summary reused",
+    "empty": "No project results yet", "emptyHint": "Find projects to see a grouped overview here.", "noMatches": "No projects match these filters",
+    "retry": "Summarize pending projects", "retryFailed": "Retry failed only", "newResults": "New results", "draftRestored": "Input restored",
+    "askPlaceholder": "Explain, filter or compare these projects…", "researchQuestion": "Research the selected projects: explain their purposes, differences and known limitations, and compare them using evidence.",
+    "stage": "Grouping projects and writing short introductions", "brief": "Quick overview", "selectedScope": "In conversation context", "clearFilters": "Clear filters"
+  },
   "research": {
     "freshness-current": "Source version unchanged",
     "freshness-changed": "Source changed; research again",

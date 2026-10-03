@@ -143,7 +143,7 @@ const ExecutionTimeline: React.FC<{ events: RepositoryChatToolEvent[]; language:
 };
 
 /** 助手消息正文：行内引用渲染为 CitationBadge；按内容 + 证据 + 语言做 memo，避免流式期间全量重渲。 */
-const AssistantMessageBody = React.memo<{ content: string; evidenceIds: string[]; evidenceById: Record<string, ToolEvidence>; language: AppLanguage }>(({ content, evidenceIds, evidenceById, language }) => {
+const AssistantMessageBody = React.memo<{ content: string; evidenceIds: string[]; evidenceById: Record<string, ToolEvidence>; language: AppLanguage; generating: boolean }>(({ content, evidenceIds, evidenceById, language, generating }) => {
   const renderInlineCode = useCallback((text: string) => {
     const evidences = evidenceIds
       .map((id) => evidenceById[id])
@@ -153,7 +153,7 @@ const AssistantMessageBody = React.memo<{ content: string; evidenceIds: string[]
     if (!resolved) return null;
     return <CitationBadge target={resolved} language={language} />;
   }, [evidenceIds, evidenceById, language]);
-  return <MarkdownRenderer content={content} shouldRender breaks fontSize="small" className="repository-chat-markdown" renderInlineCode={renderInlineCode} />;
+  return <MarkdownRenderer content={content} shouldRender breaks isGenerating={generating} fontSize="small" className="repository-chat-markdown" renderInlineCode={renderInlineCode} />;
 });
 
 const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
@@ -175,6 +175,10 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const { toast } = useDialog();
   const messageRegionRef = useRef<HTMLDivElement>(null);
+  const [messageContent, setMessageContent] = useState<HTMLDivElement | null>(null);
+  const messageContentRef = useCallback((node: HTMLDivElement | null) => setMessageContent(node), []);
+  const followRef = useRef(true);
+  followRef.current = isPinnedToBottom;
   const t = useT('chat');
   const {
     sessions,
@@ -226,6 +230,16 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   }, [isOpen, repository]);
 
   // 吸底滚动：流式输出期间自动跟随；用户向上滚动后暂停，可点按钮回到底部。
+  useEffect(() => { followRef.current = true; setIsPinnedToBottom(true); }, [activeSession?.id, repository.id]);
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined' || !messageContent) return;
+    const observer = new ResizeObserver(() => {
+      const element = messageRegionRef.current;
+      if (element && followRef.current) element.scrollTo({ top: element.scrollHeight });
+    });
+    observer.observe(messageContent);
+    return () => observer.disconnect();
+  }, [messageContent, activeSession?.id, isLoading, showHistory, messages.length]);
   useEffect(() => {
     const element = messageRegionRef.current;
     if (!element || !isPinnedToBottom) return;
@@ -236,6 +250,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
     const element = messageRegionRef.current;
     if (!element) return;
     const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    followRef.current = nearBottom;
     setIsPinnedToBottom(nearBottom);
   }, []);
 
@@ -444,7 +459,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div ref={messageContentRef} className="space-y-3">
                     {chatError && (
                       <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-muted/20 px-3 py-2 text-sm text-destructive">
                         <span>{chatError}</span>
@@ -471,6 +486,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                               evidenceIds={message.evidenceIds}
                               evidenceById={evidenceById}
                               language={language}
+                              generating={message.status === 'streaming'}
                             />
                           ) : (
                             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t('repositoryChatSheet.generating')} />

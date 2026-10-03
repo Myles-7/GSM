@@ -8,6 +8,15 @@ import type {
 } from './types';
 import { aiTaskJournal } from '../services/aiTaskJournal';
 import { useAppStore } from '../store/useAppStore';
+import { bindTaskSignal, taskConfigSnapshot } from '../services/taskExecution';
+
+function operationError(result: { success: boolean }): string | undefined {
+  if (result.success) return undefined;
+  const error = 'error' in result ? result.error : undefined;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message;
+  return 'Plugin returned failure without error details / 插件未提供失败详情';
+}
 
 const closedPage = () => ({
   success: false as const, error: { code: 'PLUGIN_PAGE_CLOSED', message: 'Plugin page session expired' },
@@ -31,6 +40,9 @@ async function trackPageAI<T extends { success: boolean }>(
   const itemId = `${session.pageId}:${session.requestId}`;
   const journal = owner === undefined ? null : aiTaskJournal.begin(String(owner), 'plugins',
     [{ id: itemId, label: `${pluginName}: ${session.pageId}` }], state.activeAIConfig ?? undefined);
+  const config = state.aiConfigs.find(item => item.id === state.activeAIConfig);
+  journal?.metadata({ title: pluginName, target: { view: 'settings', tab: 'plugins' }, ...(config ? { config: taskConfigSnapshot(config, 'plugin') } : {}) });
+  if (journal) bindTaskSignal(controller.signal, journal);
   journal?.bind({ stop: abort });
   journal?.item(itemId, 'running');
   const off = useAppStore.subscribe((next, previous) => {
@@ -41,22 +53,23 @@ async function trackPageAI<T extends { success: boolean }>(
     const canceled = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
     const result = await Promise.race([run(controller.signal), canceled]);
     if (controller.signal.aborted || !isCurrent()) throw new DOMException('Plugin page closed', 'AbortError');
-    journal?.item(itemId, result.success ? 'complete' : 'failed');
+    journal?.item(itemId, result.success ? 'complete' : 'failed', operationError(result));
     return result;
   } catch (error) {
-    journal?.item(itemId, 'failed');
+    journal?.item(itemId, 'failed', error);
     throw error;
   } finally {
     rejectAbort = undefined;
     off();
     signal.removeEventListener('abort', abort);
-    journal?.finish();
+    journal?.finish(controller.signal.aborted ? 'canceled' : undefined);
   }
 }
 
 async function track<T extends { success: boolean }>(plugin: string, action: string, run: () => Promise<T>): Promise<T> {
   const owner = useAppStore.getState().user?.id;
   const journal = owner === undefined ? null : aiTaskJournal.begin(String(owner), 'plugins', [{ id: action, label: `${plugin}: ${action}` }]);
+  journal?.metadata({ title: plugin, target: { view: 'settings', tab: 'plugins' } });
   journal?.bind({}); // Existing plugin API has no cancellation or safe replay contract.
   journal?.item(action, 'running');
   let invalidated = false;
@@ -66,10 +79,10 @@ async function track<T extends { success: boolean }>(plugin: string, action: str
   try {
     const result = await run();
     if (invalidated) throw new DOMException('Account changed', 'AbortError');
-    journal?.item(action, result.success ? 'complete' : 'failed');
+    journal?.item(action, result.success ? 'complete' : 'failed', operationError(result));
     return result;
-  } catch (error) { journal?.item(action, 'failed'); throw error; }
-  finally { off(); journal?.finish(); }
+  } catch (error) { journal?.item(action, 'failed', error); throw error; }
+  finally { off(); journal?.finish(invalidated ? 'canceled' : undefined); }
 }
 
 const unavailableError = () => ({

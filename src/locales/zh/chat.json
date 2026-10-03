@@ -1,4 +1,20 @@
 {
+  "overview": {
+    "view": "项目总览", "chat": "对话", "dock": "并排对话", "resize": "调整项目与对话分栏", "resetLayout": "恢复默认布局",
+    "title": "看懂这一批项目", "sessionOnly": "仅本次会话", "allRounds": "会话全部结果", "allCategories": "全部用途",
+    "allTypes": "全部类型", "tool": "可用工具", "library": "开发库", "resource": "资源清单", "other": "其他",
+    "pending": "待整理", "ready": "已速览", "insufficient": "资料不足", "failed": "整理失败",
+    "count": "{{count}} 个项目", "progress": "已整理 {{ready}} / {{total}} 项", "search": "搜索项目名称或用途",
+    "sort": "排序", "original": "原始顺序", "stars": "收藏数", "name": "项目名称",
+    "select": "选择 {{name}}", "selectVisible": "选择当前筛选结果", "clear": "清除选择", "selected": "已选择 {{count}} 项",
+    "add": "加入上下文", "research": "深入研究", "ask": "问这批结果", "newSearch": "搜新项目", "copy": "复制清单", "export": "导出清单",
+    "details": "查看项目详情", "reasons": "与需求的关系", "limitations": "限制与未知", "sources": "参考来源",
+    "metadata": "依据项目描述", "readme": "依据 README", "existing": "复用已有介绍",
+    "empty": "尚未有项目结果", "emptyHint": "提交查找需求后，项目会在这里按用途整理。", "noMatches": "没有符合筛选条件的项目",
+    "retry": "整理待处理项目", "retryFailed": "仅重试失败项", "newResults": "有新结果", "draftRestored": "输入已恢复",
+    "askPlaceholder": "解释、筛选或比较这批项目…", "researchQuestion": "针对所选项目，解释主要用途、差异与已知限制，并给出有依据的比较。",
+    "stage": "正在分类并生成简要介绍", "brief": "分类速览", "selectedScope": "已加入上下文", "clearFilters": "清除筛选"
+  },
   "research": {
     "freshness-current": "来源版本未变",
     "freshness-changed": "来源已变化，请重新研究",

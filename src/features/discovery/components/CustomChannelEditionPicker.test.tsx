@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeChannel } from '../custom/fixtures.test-support';
-import type { ChannelDailyEdition } from '../custom/model';
+import { localDay, visibleEditionItems, type ChannelDailyEdition } from '../custom/model';
+import type { Repository } from '../../../types';
 import { CustomChannelEditionPicker, formatNaturalDate, formatTimeLabel, groupEditionsByDate } from './CustomChannelEditionPicker';
 
 const mocks = vi.hoisted(() => ({
@@ -16,17 +17,17 @@ vi.mock('../custom/store', () => ({
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: (selector: any) => selector({ language: 'zh-CN' }),
+  useAppStore: (selector: (state: { language: string }) => unknown) => selector({ language: 'zh-CN' }),
 }));
 
-function makeEdition(channelId: any, date: string, revision = 1, generatedAt = `${date}T15:40:00.000Z`, entriesCount = 2, pendingCount = 1): ChannelDailyEdition {
+function makeEdition(channelId: ChannelDailyEdition['channelId'], date: string, revision = 1, generatedAt = `${date}T15:40:00.000Z`, entriesCount = 2, pendingCount = 1): ChannelDailyEdition {
   return {
     channelId,
     date,
     revision,
     instruction: 'test',
     entries: Array.from({ length: entriesCount }, (_, i) => ({
-      repo: { id: i + 1, name: `repo-${i}`, full_name: `owner/repo-${i}`, stargazers_count: 100 } as any,
+      repo: { id: i + 1, name: `repo-${i}`, full_name: `owner/repo-${i}`, stargazers_count: 100 } as Repository,
       verdict: 'match',
       reason: 'ok',
       evidence: [],
@@ -35,7 +36,7 @@ function makeEdition(channelId: any, date: string, revision = 1, generatedAt = `
       preference: 1,
     })),
     pending: Array.from({ length: pendingCount }, (_, i) => ({
-      repo: { id: i + 100, name: `pending-${i}`, full_name: `owner/pending-${i}`, stargazers_count: 50 } as any,
+      repo: { id: i + 100, name: `pending-${i}`, full_name: `owner/pending-${i}`, stargazers_count: 50 } as Repository,
       verdict: 'unknown',
       reason: 'needs check',
       evidence: [],
@@ -111,6 +112,35 @@ describe('CustomChannelEditionPicker', () => {
 
     fireEvent.click(trigger);
     expect(await screen.findByText('历史期次管理')).toBeInTheDocument();
+  });
+
+  it('counts visible recommendations and pending without changing original records', () => {
+    const channel = makeChannel();
+    const today = localDay();
+    const edition = makeEdition(channel.id, today, 1, `${today}T09:00:00`, 2, 2);
+    channel.blocked = [1];
+    channel.manualAccepted = { '100': today };
+    const original = structuredClone(edition);
+    render(<CustomChannelEditionPicker channel={channel} editions={[edition]} onSelectEdition={vi.fn()} />);
+    const trigger = screen.getByRole('button', { name: '日期与规则版本' });
+    expect(trigger).toHaveTextContent('1 推荐');
+    expect(trigger).toHaveTextContent('1 待核实');
+    expect(edition).toEqual(original);
+    expect(visibleEditionItems({ ...edition, date: '2026-01-01' }, channel).pending).toHaveLength(2);
+  });
+
+  it('removes accepted-today pending count from the trigger and popover', async () => {
+    const channel = makeChannel();
+    const today = localDay();
+    channel.manualAccepted = { '100': today };
+    const edition = makeEdition(channel.id, today, 1, `${today}T09:00:00`);
+    render(<CustomChannelEditionPicker channel={channel} editions={[edition]} onSelectEdition={vi.fn()} />);
+    const trigger = screen.getByRole('button', { name: '日期与规则版本' });
+    expect(trigger).not.toHaveTextContent('待核实');
+    fireEvent.click(trigger);
+    await screen.findByText('历史期次管理');
+    expect(screen.queryByText(/待核实/)).not.toBeInTheDocument();
+    expect(edition.pending).toHaveLength(1);
   });
 
   it('expands earlier editions of a date and selects an earlier edition', async () => {

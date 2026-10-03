@@ -2,7 +2,8 @@ import { useAppStore } from '../../../store/useAppStore';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { AIService } from '../../../services/aiService';
 import { selectAnalysisContext } from '../../../services/analysisContext';
-import type { Repository } from '../../../types';
+import type { AIConfig, Repository } from '../../../types';
+import { bindTaskSignal, inheritTaskSignal, type TaskHandle } from '../../../services/taskExecution';
 import { withDeadline, waitForRequest } from '../../../utils/requestDeadline';
 import { taskIssue } from './taskStatus';
 import {
@@ -21,9 +22,9 @@ export function currentAccount(): string | null {
   const state = useAppStore.getState();
   return state.githubToken && state.user ? String(state.user.id) : null;
 }
-export function activeAI(priority: 'interactive' | 'background' = 'interactive'): AIService {
+export function activeAI(priority: 'interactive' | 'background' = 'interactive', selected?: AIConfig): AIService {
   const state = useAppStore.getState();
-  const config = state.aiConfigs.find(c => c.id === state.activeAIConfig);
+  const config = selected ?? state.aiConfigs.find(c => c.id === state.activeAIConfig);
   if (!isAIConfigAvailable(config)) {
     throw new Error('Please configure an AI service / 请先配置可用的 AI 服务');
   }
@@ -36,6 +37,7 @@ export const evidenceText = (repo: Repository, readme: string) => [
 ].join('\n');
 
 interface Session {
+  config?: AIConfig;
   account: string;
   token: string;
   signal: AbortSignal;
@@ -44,7 +46,7 @@ interface Session {
   trending: Promise<Repository[]>;
   progress: (id: string, message: TaskProgress | null) => void;
 }
-interface Collection { edition: ChannelDailyEdition; cursors: number[] }
+interface Collection { edition: ChannelDailyEdition; cursors: number[]; rejected?: number[] }
 
 async function collect(channel: CustomDiscoveryChannel, session: Session): Promise<Collection> {
   const { account, token, signal, budget, cache } = session;
@@ -54,6 +56,8 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   };
   const api = createGitHubApiService(token);
   const candidates = new Map<number, Repository>();
+  const relations = new Map<number, 'direct' | 'ecosystem'>();
+  const rejected = new Set<number>();
   const issues: TaskIssue[] = [];
   const rules = effectiveRules(channel.plan, channel.ruleOverrides);
   const cursors = [...channel.cursors];
@@ -64,6 +68,7 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   const fallback = (repo: Repository): CandidateAssessment => ({
     repo, verdict: rules.plan.required.length || rules.plan.excluded.length ? 'unknown' : 'match',
     reason: '', evidence: [], method: 'rules', relevance: lexicalScore(repo, rules.plan), preference: 0,
+    relation: relations.get(repo.id) ?? 'direct',
   });
   const starred = new Set(useAppStore.getState().repositories.map(r => r.id));
   const add = (repo: Repository) => {
@@ -86,10 +91,14 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
         const result = await api.searchDiscoveryCandidates(buildQuery(channel.plan, branch, recent, new Date(), channel.ruleOverrides), page, recent, signal, rules.sort);
         check();
         pages.push(result.items);
+        for (const repo of result.items) {
+          const relation = rules.plan.branches[branch].role === 'ecosystem' ? 'ecosystem' : 'direct';
+          if (!relations.has(repo.id) || relation === 'direct') relations.set(repo.id, relation);
+        }
         if (result.incomplete) { complete = false; }
         if (!recent && !result.incomplete) cursors[branch] = result.hasMore ? page + 1 : 1;
       } catch (error) {
-        issues.push(taskIssue(error));
+        issues.push({ ...taskIssue(error), source: 'github' });
         complete = false;
         // Stop on upstream errors instead of repeatedly hitting a possibly exhausted search quota.
         break;
@@ -118,8 +127,8 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   if (channel.autoAnalyze !== false) enqueueAnalysis(channel, pool, { auto: true });
   if (channel.ai && pool.length) {
     try {
-      const ai = activeAI('background');
-      const config = useAppStore.getState().aiConfigs.find(c => c.id === useAppStore.getState().activeAIConfig);
+      const ai = activeAI('background', session.config);
+      const config = session.config;
       let nextOffset = 0, readCount = 0, screenedCount = 0;
       const screenWorker = async () => {
       while (nextOffset < pool.length) {
@@ -139,7 +148,7 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
             stored = { text: evidence.content.slice(0, 36000), fetchedAt: Date.now(), pushedAt: repo.pushed_at };
             cache[String(repo.id)] = stored;
           } catch (error) {
-            issues.push(taskIssue(error));
+            issues.push({ ...taskIssue(error), source: 'github' });
             check();
           }
         }
@@ -153,12 +162,14 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
             signal, config?.requestsPerMinute, 1, config?.provider === 'agy-cli',
           );
           check();
-          const judged = assessResults(JSON.parse(response.replace(/^```(?:json)?\s*|\s*```$/g, '').trim()), batch, rules.plan);
+          const judged = assessResults(JSON.parse(response.replace(/^```(?:json)?\s*|\s*```$/g, '').trim()), batch, rules.plan)
+            .map(a => ({ ...a, relation: relations.get(a.repo.id) ?? 'direct' as const }));
+          batch.filter(c => !judged.some(a => a.repo.id === c.repo.id)).forEach(c => rejected.add(c.repo.id));
           assessments = [...assessments.filter(a => !batch.some(c => c.repo.id === a.repo.id)), ...judged];
           cancelAnalysis(channel.id, new Set(batch.filter(c => !judged.some(a => a.repo.id === c.repo.id)).map(c => c.repo.id)));
           notifyCandidates();
         } catch (error) {
-          issues.push(taskIssue(error));
+          issues.push({ ...taskIssue(error), source: 'ai' });
           check();
         }
         screenedCount += batch.length;
@@ -167,7 +178,7 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
       };
       await Promise.all(Array.from({ length: config ? agyFeatureConcurrency(config, 'discovery') : 1 }, screenWorker));
     } catch (error) {
-      issues.push(taskIssue(error));
+      issues.push({ ...taskIssue(error), source: 'ai' });
     }
   }
   } catch (error) {
@@ -181,6 +192,7 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   const ranked = rankAssessments(assessments.map(a => ({ ...a, screening: undefined })), rules.sort);
   return {
     cursors,
+    rejected: [...rejected],
     edition: {
       channelId: channel.id, date: localDay(), revision: channel.revision, instruction: channel.instruction,
       entries: ranked.filter(a => a.verdict === 'match').slice(0, channel.limit),
@@ -198,7 +210,8 @@ export function publish(data: CustomDiscoveryData, channel: CustomDiscoveryChann
   const edition = result.edition;
   const previous = data.editions.find(e => e.channelId === channel.id && e.date === edition.date && e.revision === channel.revision);
   const existing = previous?.entries || [];
-  const publishedToday = Object.values(current.recommended).filter(date => date === edition.date).length;
+  const publishedToday = Object.entries(current.recommended)
+    .filter(([id, date]) => date === edition.date && current.manualAccepted?.[id] !== edition.date).length;
   const rules = effectiveRules(current.plan, current.ruleOverrides);
   const added = edition.entries.filter(a => {
     const previousDate = current.recommended[String(a.repo.id)];
@@ -207,9 +220,9 @@ export function publish(data: CustomDiscoveryData, channel: CustomDiscoveryChann
     .slice(0, Math.max(0, current.limit - publishedToday));
   for (const a of added) current.recommended[String(a.repo.id)] = edition.date;
   edition.entries = [...existing, ...added];
-  edition.pending = edition.pending.filter(a => {
+  edition.pending = [...new Map([...(previous?.pending || []), ...edition.pending].map(a => [a.repo.id, a])).values()].filter(a => {
     const previousDate = current.recommended[String(a.repo.id)];
-    return !current.blocked.includes(a.repo.id)
+    return !result.rejected?.includes(a.repo.id) && !current.blocked.includes(a.repo.id)
       && (!previousDate || (!rules.excludeRecommended && previousDate !== edition.date));
   });
   current.cursors = result.cursors;
@@ -223,16 +236,37 @@ export function publish(data: CustomDiscoveryData, channel: CustomDiscoveryChann
 }
 
 let activeController: AbortController | null = null;
-export const cancelCustomRun = () => { activeController?.abort(); cancelAnalysis(); };
+let activeRun: { id: string; cancelled: Set<string>; revisions: Map<string, number>; channelId?: string; channelController?: AbortController } | null = null;
+export const cancelCustomRun = (scope: { channelId?: string; runId?: string } = {}) => {
+  if (scope.runId && activeRun?.id !== scope.runId) return;
+  if (scope.channelId) {
+    activeRun?.cancelled.add(scope.channelId);
+    if (activeRun?.channelId === scope.channelId) activeRun.channelController?.abort();
+    cancelAnalysis(scope.channelId);
+  } else { activeController?.abort(); cancelAnalysis(); }
+};
 
-export async function runChannels(ids: string[], progress: Session['progress'], onUpdated: () => Promise<void>): Promise<void> {
+export function invalidateCustomRun(): void {
+  if (!activeRun) return;
+  const channels = useCustomDiscovery.getState().data.channels;
+  for (const [id, revision] of activeRun.revisions) {
+    const current = channels.find(channel => channel.id === id);
+    if (!current || current.paused || current.revision !== revision) cancelCustomRun({ channelId: id });
+  }
+}
+
+export async function runChannels(ids: string[], progress: Session['progress'], onUpdated: () => Promise<void>, options: { config?: AIConfig; task?: TaskHandle } = {}): Promise<void> {
   if (activeController) throw new Error('A discovery task is already running / 已有发现任务正在运行');
   const account = currentAccount();
   const token = useAppStore.getState().githubToken;
   if (!account || !token) throw new Error('Please sign in / 请先登录');
   const controller = new AbortController();
+  if (options.task) bindTaskSignal(controller.signal, options.task);
+  const state = useAppStore.getState();
+  const config = options.config ?? state.aiConfigs.find(item => item.id === state.activeAIConfig);
   activeController = controller;
   const owner = crypto.randomUUID();
+  activeRun = { id: owner, cancelled: new Set(), revisions: new Map() };
   let leased = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const timeout = setTimeout(() => controller.abort(new DOMException('Task deadline exceeded', 'TimeoutError')), 15 * 60 * 1000);
@@ -248,16 +282,27 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
     const trending = loadedTrending.length
       ? Promise.resolve(loadedTrending)
       : withDeadline(s => createGitHubApiService(token).getTrendingRepositories('All', 1, 20, 'daily', s).then(result => result.repos), 15000, controller.signal).catch(() => []);
-    const session: Session = { account, token, signal: controller.signal, budget: { remaining: 60 }, cache: data.cache, trending, progress };
+    const session: Session = { account, token, config, signal: controller.signal, budget: { remaining: 60 }, cache: data.cache, trending, progress };
     const channels = data.channels.filter(c => ids.includes(c.id) && !c.paused)
       .sort((a, b) => (a.lastRefresh || '').localeCompare(b.lastRefresh || ''));
+    if (activeRun) activeRun.revisions = new Map(channels.map(channel => [channel.id, channel.revision]));
+    invalidateCustomRun();
     for (let index = 0; index < channels.length; index++) {
       const channel = channels[index];
+      if (activeRun?.cancelled.has(channel.id)) { progress(channel.id, null); continue; }
+      controller.signal.throwIfAborted();
+      const channelController = new AbortController();
+      inheritTaskSignal(controller.signal, channelController.signal);
+      const abortChannel = () => channelController.abort(controller.signal.reason);
+      controller.signal.addEventListener('abort', abortChannel, { once: true });
+      if (activeRun) { activeRun.channelId = channel.id; activeRun.channelController = channelController; }
       if (session.budget.remaining <= 0) break;
       const share = Math.min(12, Math.max(1, Math.floor(session.budget.remaining / (channels.length - index))));
       const localBudget = { remaining: share };
-      const result = await collect(channel, { ...session, budget: localBudget });
+      const result = await collect(channel, { ...session, signal: channelController.signal, budget: localBudget });
+      controller.signal.removeEventListener('abort', abortChannel);
       session.budget.remaining -= share - localBudget.remaining;
+      if (activeRun?.cancelled.has(channel.id)) { progress(channel.id, null); continue; }
       if (currentAccount() !== account || useAppStore.getState().githubToken !== token) return;
       progress(channel.id, { phase: 'publish', current: 0, total: 1 });
       await transact(account, fresh => {
@@ -279,6 +324,7 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
     clearTimeout(timeout);
     if (heartbeat) clearInterval(heartbeat);
     activeController = null;
+    activeRun = null;
     if (currentAccount() === account && useAppStore.getState().githubToken === token) {
       useCustomDiscovery.setState(state => ({
         candidates: Object.fromEntries(Object.entries(state.candidates).filter(([id]) => !ids.includes(id))),

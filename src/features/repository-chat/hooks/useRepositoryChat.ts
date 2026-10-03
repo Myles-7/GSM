@@ -16,6 +16,7 @@ import type {
   ToolEvidence,
 } from '../../../types/repositoryChat';
 import { runRepositoryChatTurn } from '../../../services/repositoryChatRunner';
+import { inheritTaskSignal, taskForSignal } from '../../../services/taskExecution';
 import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
 import { DEFAULT_CHAT_TITLES } from './useRepositoryChatSessions';
 import { workbenchRuntime } from '../../../services/aiWorkbenchService';
@@ -194,6 +195,7 @@ export const useRepositoryChat = ({
     await workbenchRuntime.run(session.id, ownerId, async (signal, stage) => {
     stage('verification');
     const controller = new AbortController();
+    inheritTaskSignal(signal, controller.signal);
     const abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
     abortControllerRef.current = controller;
@@ -337,13 +339,13 @@ export const useRepositoryChat = ({
       } catch {
         // The original error is already represented in the transcript and banner.
       }
-      if (!aborted) setError(repositoryChatErrorMessage(unknownError, language));
+      if (!aborted) { setError(repositoryChatErrorMessage(unknownError, language)); taskForSignal(signal)?.error(unknownError); taskForSignal(signal)?.item(session.id, 'failed', unknownError); }
     } finally {
       signal.removeEventListener('abort', abort);
       abortControllerRef.current = null;
       setIsSending(false);
     }
-    });
+    }, { kind: 'chat', title: repository.full_name, aiConfig, target: { view: 'repositories', id: session.id } });
     } catch (runtimeError) {
       setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
     }

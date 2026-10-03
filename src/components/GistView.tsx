@@ -14,6 +14,7 @@ import { GistEditorModal } from './GistEditorModal';
 import { useGistActions, type GistCreateInput, type GistUpdateInput } from '../features/gists/hooks/useGistActions';
 import { useAppStore } from '../store/useAppStore';
 import type { Gist, GistCategoryId } from '../types';
+import { useTaskTarget } from '../hooks/useTaskTarget';
 import { filterAndSortGists, getGistCategoryItems } from '../utils/gistUtils';
 
 const categoryIcons = {
@@ -92,6 +93,10 @@ export const GistView: React.FC = () => {
     if (requestSeq !== detailRequestSeqRef.current || !detail) return;
     setDetailGist(detail);
   };
+  useTaskTarget('gists', id => {
+    const gist = [...gists, ...starredGists].find(item => item.id === id);
+    if (gist) { setDetailGist(gist); setIsDetailOpen(true); }
+  });
 
   const handleSubmitGist = async (input: GistCreateInput | GistUpdateInput) => {
     await submitGist(input, editingGist);

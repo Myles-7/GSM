@@ -1,5 +1,5 @@
-import { searchCustomDiscovery, discoveryCompilePrompt, type DiscoverySearch } from './customDiscovery.js';
-import { assessResults, effectiveRules, rankAssessments, parsePlan } from '../core/customDiscovery.js';
+import { searchCustomDiscovery, discoveryCompilePrompt, mergeChannelEdition, type DiscoverySearch } from './customDiscovery.js';
+import { assessResults, effectiveRules, rankAssessments, parsePlan, type ChannelDailyEdition, type CandidateAssessment } from '../core/customDiscovery.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import type Database from 'better-sqlite3';
@@ -245,9 +245,14 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
         const rules=channel?effectiveRules(channel.plan,channel.ruleOverrides):null;
         const candidates=evidence.map(source=>({repo:{...source.metadata,...discovery?.repositories.find(r=>r.full_name===source.repository),full_name:source.repository} as never,text:[source.readme,...source.files.map(f=>f.content)].join('\n')}));
         const assessments=rules?assessResults(selected.map(item=>({id:Number(evidence.find(e=>e.repository===item.repository)?.metadata.id),reason:item.reason,relevance:item.relevance??1,findings:item.findings??[]})),candidates,rules.plan):selected.map(item=>({repo:candidates.find(c=>(c.repo as {full_name:string}).full_name===item.repository)!.repo,reason:item.reason,verdict:'match',evidence:[],method:'ai',relevance:1,preference:0}));
-        const ranked=rules?rankAssessments(assessments as never,rules.sort):assessments;const entries=ranked.filter(item=>item.verdict==='match').slice(0,channel?.limit??10);const pending=ranked.filter(item=>item.verdict==='unknown');value.repositories=entries.map(item=>({repository:(item.repo as {full_name:string}).full_name,reason:item.reason}));
-        Object.assign(operations[0].data!,{date,revision:channel?.revision??1,instruction:channel?.instruction??task.input.prompt,entries:JSON.parse(JSON.stringify(entries)),pending:JSON.parse(JSON.stringify(pending)),errors:[],complete:true,searched:discovery?.searched??1,filtered:discovery?.filtered??0,generatedAt:now(),...(rules?{ruleSnapshot:JSON.parse(JSON.stringify(rules))}:{})});
-        if(channel&&discovery){const current=getRecord(db,'discovery_subscriptions',channel.id);if(current?.version!==discovery.channelVersion)throw new Error('DISCOVERY_CHANNEL_CHANGED');operations.push({opId:`task:${task.id}:channel`,collection:'discovery_subscriptions',id:channel.id,baseVersion:discovery.channelVersion,kind:'put',source:'ai',data:{...channel,cursors:discovery.cursors,lastCompletedDate:date,lastRefresh:now(),recommended:{...channel.recommended,...Object.fromEntries(entries.map(item=>[String((item.repo as {id:number}).id),date]))}}});}
+        const ranked=(rules?rankAssessments(assessments as never,rules.sort):assessments).map(item=>({...item,relation:discovery?.relations?.[String((item.repo as {id:number}).id)]??'direct'})) as CandidateAssessment[];
+        const edition:ChannelDailyEdition={channelId:task.input.channelId!,date,revision:channel?.revision??1,instruction:channel?.instruction??task.input.prompt??'',entries:ranked.filter(item=>item.verdict==='match').slice(0,channel?.limit??10),pending:ranked.filter(item=>item.verdict==='unknown'),errors:[],complete:true,searched:discovery?.searched??1,filtered:discovery?.filtered??0,generatedAt:now(),...(rules?{ruleSnapshot:rules}:{})};
+        const previous=getRecord(db,'discovery_editions',editionId);
+        const rejected=candidates.filter(candidate=>!ranked.some(item=>item.repo.id===(candidate.repo as {id:number}).id)).map(candidate=>(candidate.repo as {id:number}).id);
+        const merged=channel?mergeChannelEdition(channel,edition,previous&&!previous.deleted?previous.data as unknown as ChannelDailyEdition:undefined,rejected):{edition,recommended:{}};
+        value.repositories=merged.edition.entries.map(item=>({repository:item.repo.full_name,reason:item.reason}));
+        Object.assign(operations[0].data!,JSON.parse(JSON.stringify(merged.edition)));
+        if(channel&&discovery){const current=getRecord(db,'discovery_subscriptions',channel.id);if(current?.version!==discovery.channelVersion)throw new Error('DISCOVERY_CHANNEL_CHANGED');operations.push({opId:`task:${task.id}:channel`,collection:'discovery_subscriptions',id:channel.id,baseVersion:discovery.channelVersion,kind:'put',source:'ai',data:{...channel,cursors:discovery.cursors,lastCompletedDate:date,lastRefresh:now(),recommended:merged.recommended}});}
       }
       operations.push(...evidenceRecords.map(e=>({opId:`task:${e.id}:evidence`,collection:'evidence' as const,id:e.id,baseVersion:0,kind:'put' as const,source:'ai' as const,data:e})));
       if(!task.input.userMessageId)operations.push({opId:`task:${task.id}:user`,collection:'messages',id:`${task.id}:user`,baseVersion:0,kind:'put',source:'user',data:{id:`${task.id}:user`,sessionId,role:'user',content:task.input.prompt || task.kind,status:'complete',evidenceIds:[],createdAt:task.createdAt}});

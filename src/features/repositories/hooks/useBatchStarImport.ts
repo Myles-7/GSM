@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
 import { forceSyncToBackend } from '../../../services/autoSync';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { GitHubTokenPermissionError, type GitHubRepoDetailRead } from '../../../services/githubApi';
 import { makeT } from '../../../i18n/useT';
 import { createGitHubApiService } from '../../../services/githubApiFactory';
@@ -228,10 +229,14 @@ export function useBatchStarImport() {
     setSyncError('');
     const api = createGitHubApiService(githubToken);
     let starredCount = 0;
+    const task = aiTaskJournal.begin(String(accountId ?? ''), 'import', selected.map(({ row }) => ({ id: row.detail!.full_name, label: row.detail!.full_name })), undefined, undefined,
+      { title: 'GitHub Stars', target: { view: 'repositories' } });
+    task.bind({ stop: () => controller.abort() });
     try {
       for (const { row, index } of selected) {
         if (!isCurrent(controller)) return;
         const detail = row.detail!;
+        task.item(detail.full_name, 'running');
         try {
           if (!hasValidId(detail.id)) {
             setInvalidIds(current => [...current, { fullName: detail.full_name, id: detail.id }]);
@@ -243,10 +248,12 @@ export function useBatchStarImport() {
           if (!isCurrent(controller)) return;
           addRepository({ ...detail, starred_at: new Date().toISOString() } as Repository);
           starredCount += 1;
+          task.item(detail.full_name, 'complete');
           setRows(current => current.map((item, itemIndex) =>
             itemIndex === index ? { ...item, status: 'starred', selected: false } : item
           ));
         } catch (error) {
+          if (isCurrent(controller)) task.item(detail.full_name, 'failed', error);
           if (!isCurrent(controller)) return;
           setRows(current => current.map((item, itemIndex) => itemIndex === index
             ? { ...item, status: 'failed', selected: false, error: errorMessage(error) }
@@ -262,6 +269,7 @@ export function useBatchStarImport() {
         }
       }
     } finally {
+      task.finish(controller.signal.aborted ? 'canceled' : undefined);
       if (requestRef.current === controller) {
         busyRef.current = false;
         setIsStarring(false);

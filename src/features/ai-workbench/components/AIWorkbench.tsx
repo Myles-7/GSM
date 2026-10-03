@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Archive, Bot, Check, ChevronDown, ClipboardList, Copy, Download, ExternalLink, FolderGit2, FolderOpen, FolderPlus,
-  Github, History, Loader2, MoreHorizontal, PanelLeft, PanelRight, Pencil, Pin, Plus, RefreshCw,
-  RotateCcw, Send, ShieldCheck, SlidersHorizontal, Square, Star, Trash2, Upload, X,
+  Github, History, LayoutGrid, Loader2, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Pin, Plus, RefreshCw,
+  RotateCcw, Send, ShieldCheck, SlidersHorizontal, Square, Trash2, Upload, X,
 } from 'lucide-react';
 import { useAIWorkbench } from '../hooks/useAIWorkbench';
 import { useAIOrganization } from '../../../hooks/useAIOrganization';
@@ -33,6 +33,10 @@ import { AnswerReviewStatus } from '../../../components/AnswerReviewStatus';
 import { ResearchStatus, ResearchTimer } from './ResearchStatus';
 import { safeWriteText } from '../../../utils/clipboardUtils';
 import { useAppStore } from '../../../store/useAppStore';
+import { WorkbenchResults } from './WorkbenchResults';
+import { mergeWorkbenchCandidates } from '../../../services/workbenchOverview';
+import type { WorkbenchInputIntent } from '../../../types/aiWorkbench';
+import './workbench-layout.css';
 
 const download = (filename: string, content: string, type: string) => {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -351,6 +355,8 @@ function RetentionChip({
 
 export function AIWorkbench() {
   const w = useAIWorkbench();
+  const liveWorkbench = useRef(w);
+  liveWorkbench.current = w;
   const organization = useAIOrganization({ filteredRepositories: w.repositories, selectedRepositoryIds: [], categoryId: 'all', sessionId: w.activeId ?? undefined });
   const [organizationOpen, setOrganizationOpen] = useState(false);
   const organizationT = useT('repositories');
@@ -359,12 +365,19 @@ export function AIWorkbench() {
   const isZh = language === 'zh' || language === 'zh-TW';
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
-  const [leftOpen, setLeftOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [leftOpen, setLeftOpen] = useState(() => { try { return localStorage.getItem('gsm:workbench-history') !== 'false'; } catch { return true; } });
+  const [view, setView] = useState<'chat' | 'overview'>('chat');
+  const [docked, setDocked] = useState(() => { try { return localStorage.getItem('gsm:workbench-dock') !== 'false'; } catch { return true; } });
+  const [resultRatio, setResultRatio] = useState(() => {
+    try { const value = Number(localStorage.getItem('gsm:workbench-ratio')); return value >= 35 && value <= 70 ? value : 60; } catch { return 60; }
+  });
+  const [inputIntent, setInputIntent] = useState<WorkbenchInputIntent>('search');
+  const splitRef = useRef<HTMLDivElement>(null);
+  const seenResults = useRef(new Set<string>());
+  const draftKey = `gsm:workbench-draft:${w.ownerId}:${w.activeId ?? 'new'}`;
+  const [loadedDraftKey, setLoadedDraftKey] = useState<string | null>(null);
   const [mobileLeft, setMobileLeft] = useState(false);
-  const [mobileRight, setMobileRight] = useState(false);
   const [tab, setTab] = useState<'results' | 'selected'>('results');
-  const [starFilter, setStarFilter] = useState('all');
   const [batchId, setBatchId] = useState('');
   const [manage, setManage] = useState(false);
   const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
@@ -373,7 +386,6 @@ export function AIWorkbench() {
   const [editor, setEditor] = useState<{ kind: 'project' | 'newProject' | 'session'; title: string; project?: WorkbenchProject; session?: RepositoryChatSession } | null>(null);
   const [projectInstructions, setProjectInstructions] = useState('');
   const [projectConclusions, setProjectConclusions] = useState('');
-  const [pendingStars, setPendingStars] = useState<Set<number>>(new Set());
   const importRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -405,8 +417,6 @@ export function AIWorkbench() {
   }, []);
 
   const batch = w.data.searchBatches.find((b) => b.id === batchId) ?? w.data.searchBatches[w.data.searchBatches.length - 1];
-  const starred = new Set(w.repositories.map((r) => r.id));
-  const hasRight = Boolean(w.data.selectedRepositories.length || batch?.candidates.length);
   const busy = w.task.running;
   const activeBusy = busy && w.task.sessionId === w.activeId;
   const readonly = Boolean(w.active?.deletedAt || w.active?.archived);
@@ -419,7 +429,8 @@ export function AIWorkbench() {
         : t(`workbench.scope-${w.data.scope}`);
   const currentModelLabel = w.aiConfigs.find((c) => c.id === w.modelId)?.name ?? t('workbench.model');
   const currentDepthLabel = t(`workbench.${w.data.depth}`);
-  const candidates: WorkbenchCandidate[] = tab === 'results' ? batch?.candidates ?? []
+  const candidates: WorkbenchCandidate[] = tab === 'results' ? batchId === 'all'
+    ? mergeWorkbenchCandidates(...w.data.searchBatches.map(item => item.candidates)) : batch?.candidates ?? []
     : w.data.selectedRepositories.map((repository) =>
       [...w.data.searchBatches].reverse().flatMap((b) => b.candidates).find((c) => c.repository.id === repository.id)
       ?? ({ repository, summary: repository.description ?? '', reasons: [], limitations: [], sources: [], status: 'candidate' }));
@@ -428,6 +439,32 @@ export function AIWorkbench() {
   const hasPendingRequirements = Boolean(w.data.requirements && !readonly);
   const hasProposals = w.proposals.length > 0;
   const hasPendingProposals = hasPendingRequirements || hasProposals;
+
+  useEffect(() => {
+    try { setDraft(localStorage.getItem(draftKey) ?? ''); } catch { setDraft(''); }
+    setLoadedDraftKey(draftKey);
+    setBatchId('');
+  }, [draftKey]);
+  useEffect(() => {
+    if (w.active?.id === w.activeId) setInputIntent(w.data.inputIntent ?? (w.data.searchBatches.length ? 'results' : 'search'));
+  }, [w.activeId, w.active?.id]);
+  useEffect(() => {
+    if (loadedDraftKey !== draftKey) return;
+    try { if (draft) localStorage.setItem(draftKey, draft); else localStorage.removeItem(draftKey); } catch { /* Storage can be unavailable. */ }
+  }, [draft, draftKey, loadedDraftKey]);
+  useEffect(() => {
+    try { localStorage.setItem('gsm:workbench-ratio', String(resultRatio)); localStorage.setItem('gsm:workbench-dock', String(docked)); localStorage.setItem('gsm:workbench-history', String(leftOpen)); } catch { /* Keep the current layout in memory. */ }
+  }, [resultRatio, docked, leftOpen]);
+  useEffect(() => {
+    if (!w.activeId || w.active?.id !== w.activeId || !hasNewCandidates || seenResults.current.has(w.activeId)) return;
+    seenResults.current.add(w.activeId);
+    if (w.data.scope === 'github') setInputIntent('results');
+    if (document.activeElement !== textareaRef.current && !window.getSelection()?.toString()) setView('overview');
+  }, [w.activeId, w.active?.id, hasNewCandidates]);
+  const resizeResults = (clientX: number) => {
+    const rect = splitRef.current?.getBoundingClientRect();
+    if (rect) setResultRatio(Math.max(35, Math.min(70, (clientX - rect.left) / rect.width * 100)));
+  };
 
   const checkScrollState = () => {
     const el = scrollContainerRef.current;
@@ -561,95 +598,13 @@ export function AIWorkbench() {
     </div>
   );
 
-  const results = (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
-      <div className="flex border-b border-border" role="tablist">
-        {(['results', 'selected'] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} className={`flex-1 border-b-2 py-2 text-xs ${tab === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`} onClick={() => setTab(item)}>{t(`workbench.${item}`)}</button>)}
-      </div>
-      {tab === 'results' && w.data.searchBatches.length > 0 && <select value={batch?.id ?? ''} className={selectClass} aria-label={t('workbench.searchRound')} onChange={(e) => setBatchId(e.target.value)}>
-        {w.data.searchBatches.map((b, i) => <option key={b.id} value={b.id}>{i + 1}. {b.requirements.purpose.slice(0, 40)}</option>)}
-      </select>}
-      <select className={selectClass} value={starFilter} aria-label={t('workbench.filter')} onChange={(e) => setStarFilter(e.target.value)}>
-        {['all', 'starred', 'unstarred'].map((f) => <option key={f} value={f}>{t(`workbench.${f}`)}</option>)}
-      </select>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
-        {candidates.filter((c) => starFilter === 'all' || (starFilter === 'starred') === starred.has(c.repository.id)).map((candidate) => {
-          const r = candidate.repository;
-          return (
-            <article key={r.id} className="space-y-2 rounded-md border border-border bg-card p-3 text-xs">
-              <div className="flex items-start gap-2">
-                <img className="h-7 w-7 shrink-0 rounded" src={r.owner.avatar_url} alt="" />
-                <a href={`https://github.com/${r.full_name}`} target="_blank" rel="noreferrer" className="min-w-0 break-words text-sm font-semibold hover:underline">{r.full_name}</a>
-              </div>
-              <p className="break-words leading-relaxed">{candidate.summary || t('workbench.unknown')}</p>
-              {candidate.reasons.length > 0 && <p className="break-words text-emerald-700 dark:text-emerald-400">{candidate.reasons.join(' / ')}</p>}
-              {candidate.limitations.length > 0 && <p className="break-words text-muted-foreground">{candidate.limitations.join(' / ')}</p>}
-              <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
-                <span className="flex items-center gap-1"><Star className="h-3 w-3" />{r.stargazers_count.toLocaleString()}</span>
-                <span>{resolveRepoLanguage(r, t)}</span>
-                <span>{r.license || t('workbench.unknown')}</span>
-                <span>{r.pushed_at?.slice(0, 10) || t('workbench.unknown')}</span>
-              </div>
-              <details>
-                <summary className="cursor-pointer text-muted-foreground">{t(`workbench.${candidate.status}`)}</summary>
-                <ul className="mt-2 space-y-2">
-                  {candidate.sources.map((url) => <li key={url}><a className="break-all text-primary underline" href={sourceHref(url)} target="_blank" rel="noreferrer">{url}</a></li>)}
-                </ul>
-              </details>
-              <div className="flex flex-wrap items-center gap-1">
-                <Button size="icon" variant="ghost" className="h-7 w-7" disabled={starred.has(r.id) || pendingStars.has(r.id)} title={t('workbench.star')} aria-label={t('workbench.star')} onClick={() => {
-                  setPendingStars((previous) => new Set(previous).add(r.id));
-                  void w.guard(async () => { try { await w.star(r); } finally { setPendingStars((previous) => { const next = new Set(previous); next.delete(r.id); return next; }); } });
-                }}><Star className={`h-4 w-4 ${starred.has(r.id) ? 'fill-current text-amber-500' : ''}`} /></Button>
-                {w.data.selectedRepositories.some((x) => x.id === r.id) ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-2 text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition-all duration-200"
-                    disabled={readonly}
-                    onClick={() => void w.guard(async () => {
-                      const sid = w.activeId ?? (await w.createSession()).id;
-                      await w.patchData(sid, {
-                        selectedRepositories: w.data.selectedRepositories.filter((x) => x.id !== r.id),
-                      });
-                    })}
-                    title={t('workbench.addedToContextTooltip')}
-                    aria-label={t('workbench.addedToContext')}
-                  >
-                    <Check className="h-3 w-3 mr-1 text-emerald-500 animate-in zoom-in-75 duration-200" />
-                    <span>{t('workbench.added')}</span>
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 px-2 text-xs transition-all duration-200 hover:bg-primary/10"
-                    disabled={readonly}
-                    onClick={() => void w.guard(() => w.addRepository(r))}
-                  >
-                    <Plus className="h-3 w-3 mr-0.5" />
-                    {t('workbench.context')}
-                  </Button>
-                )}
-                <Button size="icon" variant="ghost" className="h-7 w-7" disabled={!w.project || readonly} title={t('workbench.addToProject')} aria-label={t('workbench.addToProject')} onClick={() => void w.guard(() => w.addRepository(r, true))}><FolderPlus className="h-4 w-4" /></Button>
-                <a className="inline-flex h-7 items-center gap-1 px-2 hover:underline" href={`https://github.com/${r.full_name}#readme`} target="_blank" rel="noreferrer">README<ExternalLink className="h-3 w-3" /></a>
-                {tab === 'selected' && <Button size="icon" variant="ghost" className="h-7 w-7" aria-label={t('workbench.removeContext')} disabled={readonly} onClick={() => void w.guard(async () => {
-                  const sid = w.activeId ?? (await w.createSession()).id;
-                  await w.patchData(sid, { selectedRepositories: w.data.selectedRepositories.filter((x) => x.id !== r.id) });
-                })}><X className="h-3 w-3" /></Button>}
-              </div>
-            </article>
-          );
-        })}
-        {tab === 'selected' && <details className="text-xs">
-          <summary className="cursor-pointer py-2">{t('workbench.addSelected')}</summary>
-          {w.repositories.map((r) => <button key={r.id} className="block w-full truncate py-2 text-left hover:underline" onClick={() => void w.guard(() => w.addRepository(r))}>{r.full_name}</button>)}
-        </details>}
-        {tab === 'results' && batch && <Button size="sm" variant="outline" disabled={busy || readonly} onClick={() => void w.guard(() => w.search(batch.requirements, batch.nextPage))}>{t('workbench.moreResults')}</Button>}
-      </div>
-    </div>
-  );
-
+  const results = <WorkbenchResults workbench={w} candidates={candidates} tab={tab} onTabChange={setTab}
+    batch={batch} batchId={batchId} onBatchChange={setBatchId} resolveLanguage={repository => resolveRepoLanguage(repository, t)}
+    onAsk={() => { setInputIntent('results'); setView('chat'); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+    onResearch={repositories => {
+      setView('chat'); setInputIntent('research');
+      void w.guard(() => w.send(t('overview.researchQuestion'), false, false, { intent: 'research', repositories }));
+    }} />;
   return (
     <div className={`flex flex-col overflow-hidden bg-background text-foreground transition-all duration-150 ${isKeyboardOpen ? 'h-[100dvh] min-h-0' : 'h-[calc(100dvh-4.5rem)] min-h-[420px]'}`}>
       <header className={`flex shrink-0 items-center gap-2 border-b border-border transition-all ${isKeyboardOpen ? 'h-9 px-2' : 'h-11 px-3'}`}>
@@ -666,12 +621,18 @@ export function AIWorkbench() {
         </Button>
         <Bot className="h-4 w-4 shrink-0 text-primary" />
         <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{w.active?.title ?? t('workbench.title')}</h1>
+        <div className="flex shrink-0 items-center border-b border-border" role="tablist" aria-label={t('workbench.title')}>
+          {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
+            className={`flex h-8 items-center gap-1.5 border-b-2 px-2 text-xs ${view === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
+            onClick={() => setView(item)}>{item === 'chat' ? <MessageSquare className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}</span>{item === 'overview' && hasNewCandidates && <span className="text-[10px] text-muted-foreground">{candidates.length}</span>}</button>)}
+        </div>
+        {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.dock')} aria-label={t('overview.dock')} aria-pressed={docked} onClick={() => setDocked(!docked)}><PanelRight className="h-4 w-4" /></Button>}
+        {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(60); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
         {w.project && !isKeyboardOpen && <button className="hidden max-w-40 truncate text-xs text-muted-foreground sm:block" onClick={() => editProject(w.project!)}>{w.project.name}</button>}
         <Button size="icon" variant="ghost" className="h-8 w-8" title={t('workbench.exportMarkdown')} aria-label={t('workbench.exportMarkdown')} disabled={!w.messages.length}
           onClick={() => download('conversation.md', conversationMarkdown(w.messages, w.evidence), 'text/markdown')}><Download className="h-4 w-4" /></Button>
-        <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('workbench.repositories')} aria-label={t('workbench.repositories')} onClick={() => { setRightOpen(!rightOpen); if (!hasRight) setTab('selected'); }}><PanelRight className="h-4 w-4" /></Button>
-        <Button size="icon" variant="ghost" className="relative h-8 w-8 xl:hidden" aria-label={t('workbench.repositories')} onClick={() => { setMobileRight(true); if (!hasRight) setTab('selected'); }}>
-          <PanelRight className="h-4 w-4" />
+        <Button size="icon" variant="ghost" className="relative h-8 w-8" title={t('workbench.repositories')} aria-label={t('workbench.repositories')} onClick={() => { setView('overview'); setTab('selected'); }}>
+          <FolderGit2 className="h-4 w-4" />
           {(hasNewCandidates || hasPendingProposals) && (
             <span
               data-testid="badge-mobile-right"
@@ -682,11 +643,20 @@ export function AIWorkbench() {
         </Button>
       </header>
       <div className="flex min-h-0 flex-1">
-        {leftOpen && <aside className="hidden w-60 shrink-0 border-r border-border lg:block">{history}</aside>}
-        <main className="flex min-w-0 flex-1 flex-col">
+        {leftOpen && <aside className="hidden w-[220px] shrink-0 border-r border-border lg:block">{history}</aside>}
+        <div ref={splitRef} className="workbench-split min-h-0 min-w-0 flex-1" data-view={view} data-docked={view === 'overview' && docked} style={{ '--result-ratio': `${resultRatio}%` } as React.CSSProperties}>
+          <div className="workbench-results-pane min-h-0 min-w-0">{results}</div>
+          <div className="workbench-separator" role="separator" aria-label={t('overview.resize')} aria-orientation="vertical" aria-valuemin={35} aria-valuemax={70} aria-valuenow={Math.round(resultRatio)} tabIndex={0}
+            onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); resizeResults(event.clientX); }}
+            onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeResults(event.clientX); }}
+            onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+            onKeyDown={event => {
+              if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); setResultRatio(current => event.key === 'Home' ? 35 : event.key === 'End' ? 70 : Math.max(35, Math.min(70, current + (event.key === 'ArrowRight' ? 2 : -2)))); }
+            }}><span /></div>
+        <main className="workbench-chat-pane min-h-0 min-w-0 flex-col">
           {(w.error || (w.task.error && w.task.sessionId === w.activeId)) && <p role="alert" className="border-b border-destructive/30 px-4 py-2 text-sm text-destructive">{w.error || w.task.error}</p>}
           {busy && <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs" role="status">
-            <Loader2 className="h-3 w-3 animate-spin" /><span className="min-w-0 flex-1 truncate">{t(`workbench.stage-${w.task.stage}`, { defaultValue: w.task.stage })}</span>
+            <Loader2 className="h-3 w-3 animate-spin" /><span className="min-w-0 flex-1 truncate">{w.task.stage === 'overview' ? t('overview.stage') : t(`workbench.stage-${w.task.stage}`, { defaultValue: w.task.stage })}</span>
             <ResearchTimer task={w.task} />
             {!activeBusy && <Button size="sm" variant="ghost" onClick={() => w.select(w.task.sessionId)}>{t('workbench.returnTask')}</Button>}
             <Button size="icon" variant="ghost" className="h-6 w-6" aria-label={t('workbench.stop')} onClick={w.stop}><Square className="h-3 w-3" /></Button>
@@ -694,7 +664,7 @@ export function AIWorkbench() {
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" onScroll={checkScrollState}>
               <div className="mx-auto max-w-3xl space-y-5">
-              {!w.messages.length && (
+              {!w.messages.length && !hasNewCandidates && (
                 <InspirationGrid
                   onSelectPrompt={(prompt, scope) => {
                     setDraft(prompt);
@@ -738,7 +708,7 @@ export function AIWorkbench() {
                 ) : (
                   <article
                     key={message.id}
-                    className="w-full max-w-3xl mx-auto text-sm [overflow-wrap:anywhere] rounded-xl border border-border/50 bg-card/60 dark:bg-card/40 p-4 sm:p-5 shadow-xs space-y-3"
+                    className="w-full max-w-3xl mx-auto text-sm [overflow-wrap:anywhere] border-b border-border/60 pb-5 space-y-3"
                   >
                     <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground border-b border-border/40 pb-2">
                       <div className="flex items-center gap-2">
@@ -879,7 +849,7 @@ export function AIWorkbench() {
               <div ref={proposalsStartRef} className="h-0 w-0" />
               {w.data.requirements && !readonly && <RequirementsEditor key={w.activeId} value={w.data.requirements} disabled={busy}
                 depth={w.data.depth} searchedValue={w.data.searchBatches[w.data.searchBatches.length - 1]?.requirements}
-                onSearch={async (r) => { setTab('results'); setRightOpen(true); await w.search(r); }} />}
+                onSearch={async (r) => { setTab('results'); await w.search(r); }} />}
               {w.proposals.map((p) => p.organization ? <section key={p.id} className="border-y border-border py-3">
                 <p className="text-sm font-medium">{organizationT('aiOrganization.title')} · {organizationT('aiOrganization.revision', { count: p.organization.revision })}</p>
                 <p className="my-2 text-xs text-muted-foreground">{organizationT('aiOrganization.rangeCount', { count: p.organization.entries.length })}</p>
@@ -911,11 +881,23 @@ export function AIWorkbench() {
           <form className={`shrink-0 border-t border-border sm:px-5 transition-all duration-150 ${isKeyboardOpen ? 'p-1.5 bg-background' : 'p-3'}`} onSubmit={(e) => {
             e.preventDefault();
             if (!draft.trim() || busy || readonly) return;
-            const question = draft; setDraft(''); setFollow(true);
+            const question = draft; setFollow(true);
             requestAnimationFrame(() => {
               messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
             });
-            void w.guard(() => w.send(question, manage));
+            void w.guard(async () => {
+              try {
+                await w.send(question, manage, false, { intent: w.data.scope === 'github' ? inputIntent : 'research', candidates });
+              } catch (error) {
+                const latest = liveWorkbench.current;
+                if (String(useAppStore.getState().user?.id ?? '') === w.ownerId && latest.ownerId === w.ownerId
+                  && (latest.activeId === w.activeId || latest.activeId === latest.task.sessionId)) setDraft(current => current || question);
+                throw error;
+              }
+              const latest = liveWorkbench.current;
+              if (String(useAppStore.getState().user?.id ?? '') === w.ownerId && latest.ownerId === w.ownerId
+                && latest.activeId === (w.activeId ?? latest.task.sessionId)) setDraft(current => current === question ? '' : current);
+            });
           }}>
             {w.data.selectedRepositories.length > 0 && (
               <div className={`flex items-center gap-1.5 text-xs ${isKeyboardOpen ? 'mb-1 max-h-8 overflow-x-auto flex-nowrap py-0.5' : 'mb-2 max-h-24 overflow-y-auto flex-wrap'}`}>
@@ -971,8 +953,14 @@ export function AIWorkbench() {
               onChange={(e) => setDraft(e.target.value)}
               className={`resize-y transition-all ${isKeyboardOpen ? 'min-h-[42px] max-h-24 py-1.5 text-xs' : 'min-h-20 max-h-40'}`}
               aria-label={t('repositoryChatSheet.question')}
-              placeholder={t(w.data.scope === 'github' ? 'workbench.emptyQuestion' : 'research.question')}
+              placeholder={t(w.data.scope === 'github' ? inputIntent === 'results' ? 'overview.askPlaceholder' : 'workbench.emptyQuestion' : 'research.question')}
             />
+            {w.data.scope === 'github' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={t('overview.brief')}>
+              {(['search', 'results'] as const).map(intent => <button type="button" key={intent} aria-pressed={inputIntent === intent} disabled={busy || readonly || (intent === 'results' && !hasNewCandidates)}
+                className={`border-b-2 px-1 py-1 ${inputIntent === intent ? 'border-primary font-medium' : 'border-transparent text-muted-foreground'}`}
+                onClick={() => { setInputIntent(intent); if (w.activeId) void w.guard(() => w.patchData(w.activeId!, { inputIntent: intent })); }}>{t(intent === 'search' ? 'overview.newSearch' : 'overview.ask')}</button>)}
+              {inputIntent === 'search' && <span className="text-muted-foreground">{t('overview.brief')}</span>}
+            </div>}
             {(w.data.scope === 'local' || w.data.scope === 'mixed') && !isKeyboardOpen && <div className="mt-2 space-y-2 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="break-all">{w.data.localProject?.name ?? t('localResearch.local')}</span>
@@ -1080,10 +1068,9 @@ export function AIWorkbench() {
             </div>
           </form>
         </main>
-        {rightOpen && (hasRight || tab === 'selected') && <aside className="hidden w-[320px] shrink-0 border-l border-border xl:block">{results}</aside>}
+        </div>
       </div>
       <Sheet open={mobileLeft} onOpenChange={setMobileLeft}><SheetContent side="left" className="w-80 max-w-[90vw] p-0"><SheetHeader className="px-4 pt-4"><SheetTitle>{t('workbench.history')}</SheetTitle></SheetHeader>{history}</SheetContent></Sheet>
-      <Sheet open={mobileRight} onOpenChange={setMobileRight}><SheetContent side="right" className="w-96 max-w-[95vw] p-0"><SheetHeader className="px-4 pt-4"><SheetTitle>{t('workbench.repositories')}</SheetTitle></SheetHeader>{results}</SheetContent></Sheet>
 
       {/* Mobile Toolbar Settings Sheet */}
       <Sheet open={mobileToolbarOpen} onOpenChange={setMobileToolbarOpen}>

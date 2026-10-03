@@ -11,9 +11,8 @@ import { HomeSync } from '../home/sync';
 import type { HomeRecord } from '../home/types';
 import { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } from './repositoryIdentityGate';
 import { inspectRepositoryIdentities, remapRepositoryList, validateRepositoryIdentityMappings, type RepositoryIdentityMapping } from '../utils/repositoryIdentity';
-import { backupParticipantIdentities, restoreParticipantIdentities, migrateWorkbenchRepositoryIdentities, migrateCustomDiscoveryRepositoryIdentities, migrateVectorRepositoryIdentities, remapWorkbench, type RepositoryIdentityParticipantBackup } from './repositoryIdentityParticipants';
+import { backupParticipantIdentities, restoreParticipantIdentities, migrateWorkbenchRepositoryIdentities, migrateCustomDiscoveryRepositoryIdentities, migrateVectorRepositoryIdentities, participantIdentityRecoverySnapshots, participantIdentityRecoveryView, type RepositoryIdentityParticipantBackup } from './repositoryIdentityParticipants';
 import { VectorSearchService, type VectorRepositoryIdentityBackup } from './vectorSearchService';
-import { remapCustomDiscoveryRepositoryIdentityData } from '../features/discovery/custom/model';
 
 type Snapshot = ReturnType<NonNullable<typeof appPersistenceOptions.partialize>>;
 interface IdentityJournal {
@@ -41,6 +40,17 @@ function canonical(value: unknown): unknown {
 async function fingerprint(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(canonical(value)));
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+async function participantFingerprint(account: string, original: RepositoryIdentityParticipantBackup): Promise<string> {
+  return fingerprint(participantIdentityRecoveryView(await backupParticipantIdentities(account), original));
+}
+async function participantRecoveryFingerprints(
+  original: RepositoryIdentityParticipantBackup,
+  mappings: readonly RepositoryIdentityMapping[],
+  existing: readonly string[] = [],
+): Promise<string[]> {
+  const predicted = participantIdentityRecoverySnapshots(original, mappings);
+  return [...new Set([...existing, ...await Promise.all(predicted.map(fingerprint))])];
 }
 function numericIds(value: unknown): number[] {
   return value instanceof Set || Array.isArray(value)
@@ -171,11 +181,7 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
     assertIdle(); await waitForInFlightSync(); await assertHomeReady(sync); assertAccount(account); assertIdle();
     const before = snapshot();
     const participants = await backupParticipantIdentities(account);
-    const plannedParticipants = json(participants);
-    remapWorkbench(plannedParticipants.workbench, account, mappings);
-    const workbenchOnly = json(plannedParticipants);
-    if (plannedParticipants.customDiscovery) remapCustomDiscoveryRepositoryIdentityData(plannedParticipants.customDiscovery, mappings);
-    const customOnly = { ...plannedParticipants, workbench: participants.workbench };
+    const recoveryParticipants = await participantRecoveryFingerprints(participants, mappings);
     const plannedStore = remapIdentityStoreSnapshot(useAppStore.getState(), mappings);
     const service=vectorService();
     const vectors=service ? await service.backupRepositoryIdentities(mappings) : undefined;
@@ -186,7 +192,7 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
       backup:{store:before,participants,...(sync ? {home:await sync.db.allRecords()} : {}),...(vectors?{vectors}:{})},
       recoveryFingerprints: {
         store: [await fingerprint(identityStoreRecoveryView(before)), await fingerprint(identityStoreRecoveryView(plannedStore))],
-        participants: await Promise.all([participants, workbenchOnly, plannedParticipants, customOnly].map(fingerprint)),
+        participants: recoveryParticipants,
       } };
     // Persist the recovery input before freezing. No business write has occurred yet.
     await saveJournal(journal);
@@ -208,9 +214,17 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
     current.steps.push(name); current.phase='applying'; delete current.error; await saveJournal(current);
   };
   try {
-    if (current.phase === 'prepared' && current.recoveryFingerprints
-      && !current.recoveryFingerprints.participants.includes(await fingerprint(await backupParticipantIdentities(account)))) {
-      throw new Error('IDENTITY_PREVIEW_CHANGED');
+    if (current.recoveryFingerprints) {
+      const allowedParticipants = await participantRecoveryFingerprints(current.backup.participants, current.mappings, current.recoveryFingerprints.participants);
+      const participants = await participantFingerprint(account, current.backup.participants);
+      if (current.phase === 'prepared' && participants !== await fingerprint(current.backup.participants)) {
+        throw new Error('IDENTITY_PREVIEW_CHANGED');
+      }
+      if (current.phase !== 'prepared' && (!allowedParticipants.includes(participants)
+        || !current.recoveryFingerprints.store.includes(await fingerprint(identityStoreRecoveryView(snapshot()))))) {
+        throw new Error('IDENTITY_RECOVERY_LOCAL_CHANGED');
+      }
+      current.recoveryFingerprints.participants = allowedParticipants;
     }
     if (current.workspace) {
       if (!sync || sync.identity.workspaceId !== current.workspace) throw new Error('IDENTITY_RECONNECT_ORIGINAL_HOME');
@@ -246,10 +260,10 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
       }
       setIdentityMigrationStoreState(patch); await flushAppStorePersistence();
     });
-    // Capture participant combinations as well: an interruption can leave only Workbench migrated.
+    // Keep comparisons scoped to the stores captured by the original journal.
     current.recoveryFingerprints ??= { store: [], participants: [] };
     current.recoveryFingerprints.store.push(await fingerprint(identityStoreRecoveryView(snapshot())));
-    current.recoveryFingerprints.participants.push(await fingerprint(await backupParticipantIdentities(account)));
+    current.recoveryFingerprints.participants.push(await participantFingerprint(account, current.backup.participants));
     current.phase='complete'; delete current.error; await saveJournal(current);
     releaseRepositoryIdentityWrites(account);
     if (sync) await activateDesktopHome();
@@ -280,10 +294,13 @@ async function restoreRepositoryIdentityMigrationNow(): Promise<void> {
   await pauseDesktopHomeForIdentity();
   try {
     const fingerprints = journal.recoveryFingerprints;
+    const allowedParticipants = fingerprints
+      ? await participantRecoveryFingerprints(journal.backup.participants, journal.mappings, fingerprints.participants) : [];
     if (!fingerprints || !fingerprints.store.includes(await fingerprint(identityStoreRecoveryView(snapshot())))
-      || !fingerprints.participants.includes(await fingerprint(await backupParticipantIdentities(account)))) {
+      || !allowedParticipants.includes(await participantFingerprint(account, journal.backup.participants))) {
       throw new Error('IDENTITY_RECOVERY_LOCAL_CHANGED');
     }
+    fingerprints.participants = allowedParticipants;
     const vectors = journal.backup.vectors ? vectorService() : null;
     if (journal.backup.vectors) {
       if (!vectors) throw new Error('IDENTITY_VECTOR_SCOPE_CHANGED');

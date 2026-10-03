@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, Repository } from '../types';
 import type { RepositoryChatSession, RepositoryChatToolEvent } from '../types/repositoryChat';
+vi.mock('./indexedDbStorage', () => ({ indexedDBStorage: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } }));
 
 const mocks = vi.hoisted(() => ({
   generateChatText: vi.fn(),

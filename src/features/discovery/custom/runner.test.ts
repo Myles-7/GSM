@@ -66,4 +66,13 @@ describe('atomic publication transitions', () => {
     expect(data.editions[0].instruction).not.toBe('changed');
     expect(channel.recommended['9']).toBe('2025-01-01');
   });
+  it('merges unresolved pending across refresh, removing only positively rejected items', () => {
+    const { data, channel, result } = setup();
+    result.edition.entries = [];
+    result.edition.pending = [{ ...makeAssessment(4), verdict: 'unknown' }, { ...makeAssessment(5), verdict: 'unknown' }];
+    publish(data, channel, result, 'window-a', now);
+    const next = { ...makeEdition(), entries: [], pending: [{ ...makeAssessment(6), verdict: 'unknown' as const }] };
+    publish(data, channel, { edition: next, cursors: [], rejected: [5] }, 'window-a', now);
+    expect(data.editions[0].pending.map(a => a.repo.id)).toEqual([4, 6]);
+  });
 });

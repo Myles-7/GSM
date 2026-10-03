@@ -20,9 +20,9 @@ export const IncludeKeysToggle: FC<IncludeKeysToggleProps> = ({ t }) => {
   return (
     <div className="rounded-md border border-border bg-card p-4">
       <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center space-x-3">
-          <Key className="h-4 w-4 text-muted-foreground" />
-          <div>
+        <div className="flex min-w-0 items-center gap-3">
+          <Key className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 break-words">
             <h4 className="text-sm font-medium text-foreground">{label}</h4>
             <p className="text-sm text-muted-foreground">{t('includeKeysToggle.includes-keys-for-ai-configs-webdav-proxy-remote')}</p>
           </div>

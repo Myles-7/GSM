@@ -12,6 +12,8 @@ import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { useAppStore } from '../../../store/useAppStore';
 import { normalizeLicense } from '../../../utils/licenseFilter';
 import { countLocalVectorPending } from '../../../utils/localVectorPending';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
+import { bindTaskSignal } from '../../../services/taskExecution';
 
 export interface EmbeddingDraft {
   apiType: EmbeddingApiType;
@@ -115,6 +117,9 @@ export const useVectorSearchActions = (): VectorSearchActions => {
     const initial = useAppStore.getState();
     if (abortController.current || initial.vectorIndexingState?.isIndexing) return;
     const controller = new AbortController();
+    const task = aiTaskJournal.begin(String(initial.user?.id ?? ''), 'index', [{ id: 'index', label: draft.model }], undefined, undefined,
+      { config: { model: draft.model }, target: { view: 'settings', tab: 'vectorSearch' } });
+    task.bind({ stop: () => controller.abort() }); bindTaskSignal(controller.signal, task); task.item('index', 'running');
     abortController.current = controller;
     state.setVectorIndexingState({ isIndexing: true, phase: null, phaseDone: 0, phaseTotal: 0, result: null });
     const repositories = initial.repositories;
@@ -153,7 +158,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
       const now = new Date().toISOString();
       const licenseById = new Map(repositories.map((repository) => [repository.id, repository.license ?? null]));
       const result = await indexAllRepos(repositories, embeddingClient, vectorService, {
-        onProgress: (progress) => state.setVectorIndexingState({ phase: progress.phase, phaseDone: progress.done, phaseTotal: progress.total }),
+        onProgress: (progress) => { state.setVectorIndexingState({ phase: progress.phase, phaseDone: progress.done, phaseTotal: progress.total }); task.progress(progress.done, progress.total, progress.phase); },
         signal: controller.signal,
         readmeFetcher,
         indexMode: draft.indexMode,
@@ -163,6 +168,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
       });
       check();
       if (result.errors > 0) {
+        task.item('index', 'failed', result.error || 'Indexing failed. Previous generation retained.');
         state.setVectorIndexingState({
           isIndexing: false, phase: null,
           result: { ...result, error: `${result.error || 'Indexing failed.'} Previous generation retained; no generation switch.` },
@@ -178,6 +184,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
       check();
       // Publish only after every staged write is query-visible. Never clear old
       // stamps or delete old vectors, even when a stage fails or is cancelled.
+      task.state('committing');
       state.setVectorSearchConfig({ activeIndex: generation, embeddingFormatVersion: EMBEDDING_FORMAT_VERSION });
       state.updateRepositoriesMetadata(result.indexedRepoIds.map((id) => ({
         id, patch: {
@@ -198,12 +205,14 @@ export const useVectorSearchActions = (): VectorSearchActions => {
         dimensions: draft.dimensions,
         lastSyncAt: new Date().toISOString(),
       });
+      task.item('index', 'complete');
     } catch (reason) {
       const isCancelled = controller.signal.aborted
         || (reason instanceof Error && (reason.name === 'AbortError' || reason.message === 'Aborted'));
       if (isCancelled) {
         state.setVectorIndexingState({ isIndexing: false, phase: null, result: null });
       } else {
+        task.item('index', 'failed', reason);
         state.setVectorIndexingState({
           isIndexing: false,
           phase: null,
@@ -211,6 +220,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
         });
       }
     } finally {
+      task.finish(controller.signal.aborted ? 'canceled' : undefined);
       abortController.current = null;
     }
   }, [state]);
