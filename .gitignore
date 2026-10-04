@@ -48,6 +48,9 @@ server/data/*.db-shm
 .playwright-cli/
 playwright-report/
 test-results/
+__pycache__/
+*.pyc
+*.pyo
 server/dist/
 
  # Orchestrator internal files

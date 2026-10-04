@@ -4,6 +4,7 @@ services:
     ports:
       - "8080:3000"
     environment:
+      HOST: 0.0.0.0
       API_SECRET: ${API_SECRET:?Set API_SECRET in .env before starting the full-stack deployment}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:

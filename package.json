@@ -15,19 +15,21 @@
     "check:i18n": "node scripts/check-i18n.cjs",
     "check:plugin-registry": "node scripts/check-plugin-registry.cjs",
     "check:pr-release-files": "node scripts/check-pr-release-files.cjs",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run && npm run test:electron:mcp && npm run test:electron:agy && npm run test:electron:plugins && npm run test:electron:webdav && npm run test:update-version && npm run test:ci-gates && npm run test:desktop-launcher && npm run test:electron:html-reading",
     "test:desktop-launcher": "node --test scripts/desktop-dev-address.test.mjs scripts/start-home-desktop.test.cjs",
-    "test:electron:mcp": "node --test electron/mcpLocalServer.test.js electron/repoHealth.test.js electron/desktopPrefs.test.js electron/xAuthStorage.test.js",
+    "test:electron:mcp": "node --test electron/mcpLocalServer.test.js electron/repoHealth.test.js electron/desktopPrefs.test.js electron/desktopWindow.test.js electron/trustedRenderer.test.js electron/xAuthStorage.test.js",
     "test:electron:agy": "node --test electron/agyProtocol.test.js electron/agyRuntime.test.js electron/agyDesktop.test.js electron/agyIpc.test.js electron/agyQueue.test.js electron/agyLocalProjects.test.js",
     "probe:agy": "node scripts/probe-agy.cjs",
     "test:electron:plugins": "node --test electron/plugins/*.test.js",
     "test:electron:webdav": "node --test electron/webdavIpc.test.js",
     "test:update-version": "node --test scripts/update-version.test.cjs",
-    "test:ci-gates": "node --test scripts/check-pr-release-files.test.cjs scripts/check-i18n.test.cjs scripts/check-plugin-registry.test.cjs",
+    "test:ci-gates": "node --test scripts/check-pr-release-files.test.cjs scripts/check-i18n.test.cjs scripts/check-plugin-registry.test.cjs scripts/diagnose-render-performance.test.cjs scripts/clean-workspace.test.cjs",
+    "audit:ui": "node scripts/audit-ui.mjs",
+    "clean:workspace": "node scripts/clean-workspace.cjs",
     "test:coverage": "vitest run --coverage",
     "build:desktop": "node scripts/build-desktop.js",
     "electron": "electron electron/main.js",
@@ -43,8 +45,9 @@
     "build:server": "cd server && npm run build",
     "build:all": "npm run build && npm run build:server",
     "check:ai-core": "node scripts/check-ai-core.cjs",
-    "test:html-reading": "vitest run src/lib/html-reading src/services/htmlReading.test.ts src/features/settings/hooks/useHtmlReading.test.ts src/components/settings/HtmlReadingPanel.test.tsx && node --test electron/htmlReading.test.js",
-    "test:electron:html-reading": "node --test electron/htmlReading.test.js"
+    "check:html-reading": "node scripts/check-html-reading-boundaries.cjs",
+    "test:html-reading": "node scripts/check-html-reading-boundaries.cjs && vitest run src/lib/html-reading src/services/htmlReading.test.ts src/services/htmlReadingPreparation.test.ts src/features/settings/hooks/useHtmlReading.test.ts src/components/settings/HtmlReadingPanel.test.tsx src/components/settings/HtmlReadingImport.test.tsx src/components/settings/HtmlReadingMail.test.tsx src/components/settings/htmlReadingBrowserPreview.test.ts src/features/lifecycle/hooks/useHtmlReadingLifecycle.test.tsx && npm run test:electron:html-reading",
+    "test:electron:html-reading": "node --test electron/htmlReading.test.js electron/htmlReadingLoop.test.js electron/htmlReadingPreview.test.js"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.37",
@@ -146,6 +149,9 @@
     "xml2js": "^0.6.2"
   },
   "overrides": {
-    "decode-uri-component": "^0.5.0"
+    "decode-uri-component": "^0.5.0",
+    "dompurify": "^3.4.16",
+    "brace-expansion@^1.1.0": "^1.1.21",
+    "brace-expansion@^5.0.0": "^5.0.12"
   }
 }
