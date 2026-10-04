@@ -111,6 +111,9 @@ function createMockController(overrides?: Partial<ReturnType<typeof useAIOrganiz
   };
 
   const defaultController: ReturnType<typeof useAIOrganization> = {
+    purpose: 'repositories', setPurpose: vi.fn(), mode: 'reorganize', setMode: vi.fn(),
+    rangeSummary: { total: 2, assigned: 0, locked: 0, fullLibrary: true },
+    bulkEdit: vi.fn(), addStructure: vi.fn(), editStructure: vi.fn(), applyStructure: vi.fn(), restoreStructure: vi.fn(), acceptOriginalGroup: vi.fn(), migrateSelected: vi.fn(),
     scope: 'all',
     setScope: vi.fn(),
     scopeOptions: [{ value: 'all', label: 'All', count: 2 }],
@@ -166,13 +169,11 @@ describe('AIOrganizationPanel Phase 3 features', () => {
     // Check prompt preset chips are rendered
     const domainChip = screen.getByText('🏷️ 领域与形态');
     const techChip = screen.getByText('💻 技术栈与编程语言');
-    const preserveChip = screen.getByText('🎯 保持一级分类');
-    const tagsChip = screen.getByText('🧹 提取关键词生成规范标签');
 
     expect(domainChip).toBeInTheDocument();
     expect(techChip).toBeInTheDocument();
-    expect(preserveChip).toBeInTheDocument();
-    expect(tagsChip).toBeInTheDocument();
+    expect(screen.queryByText('🎯 保持一级分类')).not.toBeInTheDocument();
+    expect(screen.queryByText('🧹 提取关键词生成规范标签')).not.toBeInTheDocument();
 
     // Click domain chip
     await user.click(domainChip);
@@ -186,17 +187,6 @@ describe('AIOrganizationPanel Phase 3 features', () => {
       expect.stringContaining('请以主要编程语言与底层技术栈'),
     );
 
-    // Click preserve categories chip
-    await user.click(preserveChip);
-    expect(controller.setInstruction).toHaveBeenCalledWith(
-      expect.stringContaining('请严格保留现有的所有一级分类体系'),
-    );
-
-    // Click tags chip
-    await user.click(tagsChip);
-    expect(controller.setInstruction).toHaveBeenCalledWith(
-      expect.stringContaining('请深入提取每个仓库的核心功能特性与关键词'),
-    );
   });
 
   it('renders dual-track progress bar: overall progress and current batch card', () => {

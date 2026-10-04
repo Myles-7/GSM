@@ -23,6 +23,18 @@ function defaultReply({ user }: { user: string }) {
 const run = (proposal = fixture(), overrides = {}) => generateOrganizationDraft({ proposal, repositories, configId: 'model', instruction: 'Organize', signal: new AbortController().signal, onUpdate: vi.fn(), ...overrides });
 beforeEach(() => { mocks.state.user.id = 7; mocks.generate.mockReset().mockImplementation(defaultReply); mocks.readme.mockReset().mockResolvedValue({ content: 'README evidence' }); });
 describe('AI organization generation', () => {
+  it('enforces supplement mode even when model instructions try to move assigned main categories', async () => {
+    const p = fixture(); const draft = p.organization!;
+    draft.version = 2; draft.mode = 'supplement'; draft.structureReady = true;
+    draft.categories = [{ id: 'original', name: 'Original', icon: 'folder', parentId: null, isNew: false }, { id: 'other', name: 'Other', icon: 'folder', parentId: null, isNew: false }];
+    draft.entries.forEach(e => { e.before.categoryId = 'original'; e.categoryId = 'original'; });
+    mocks.generate.mockImplementation(({ user }: { user: string }) => JSON.stringify({ assignments: JSON.parse(user).repositories.map((r: { id: number }) => ({ repositoryId: r.id, categoryId: 'other', subcategoryId: null, disposition: 'move', reason: 'Move anyway' })) }));
+    const result = await run(p, { retryOnly: true });
+    expect(result.organization?.batches.every(batch => batch.status === 'failed')).toBe(true);
+    expect(result.organization?.entries.every(e => e.categoryId === 'original' && !e.selected)).toBe(true);
+    draft.mode = 'reorganize';
+    expect((await run(p, { retryOnly: true })).organization?.entries.every(e => e.categoryId === 'other' && e.selected)).toBe(true);
+  });
   it('generates stable category identities then complete batches of at most 20', async () => {
     const result = await run();
     expect(mocks.generate).toHaveBeenCalledTimes(3);

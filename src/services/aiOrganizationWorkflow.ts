@@ -1,17 +1,24 @@
 import type { Repository } from '../types';
 import type { WorkbenchProposal } from '../types/aiWorkbench';
+import type { OrganizationMode } from '../types/aiOrganization';
 import { membershipOf } from '../store/helpers/aiOrganizationTransaction';
 import { useAppStore } from '../store/useAppStore';
 import { repositoryChatStorage as storage } from './repositoryChatStorage';
 import { workbenchRuntime } from './aiWorkbenchService';
 import { organizationCategorySnapshot, requireOrganizationProposal, saveOrganizationProposal } from './aiOrganizationExecution';
 import { generateOrganizationDraft } from './aiOrganizationService';
+import { organizationInstruction } from './aiOrganizationInstructions';
 
 export async function runOrganizationGeneration(input: {
   sessionId: string; repositories: Repository[]; scopeName: string; configId: string; instruction: string;
   previous?: WorkbenchProposal; retryOnly?: boolean; enrichRepositoryIds?: number[];
   replaceManual?: boolean; maxNewSubcategories?: number; batchIndex?: number;
+  mode?: OrganizationMode; rangeSource?: string;
 }): Promise<void> {
+  if (input.previous?.organization?.purpose === 'structure') {
+    const { runStructureGeneration } = await import('./aiCategoryStructure');
+    return runStructureGeneration(input);
+  }
   const ownerId = String(useAppStore.getState().user?.id ?? '');
   if (!ownerId) throw new Error('Connect a GitHub account first');
   await workbenchRuntime.run(input.sessionId, ownerId, async (signal, stage) => {
@@ -31,9 +38,9 @@ export async function runOrganizationGeneration(input: {
     let proposal: WorkbenchProposal = continuing ? structuredClone(previous!) : {
       id: crypto.randomUUID(), ownerId, sessionId: input.sessionId, createdAt: date, updatedAt: date, operations: [],
       organization: {
-        version: 1, revision: (previousDraft?.revision ?? 0) + 1,
+        version: 2, purpose: 'repositories', mode: input.mode ?? previousDraft?.mode ?? (previousDraft?.version === 1 ? 'reorganize' : 'supplement'), rangeSource: input.rangeSource ?? input.scopeName, revision: (previousDraft?.revision ?? 0) + 1,
         scope: { name: input.scopeName, repositoryIds: input.repositories.map(r => r.id) },
-        instruction: input.instruction, configId: input.configId, maxNewSubcategories: input.maxNewSubcategories ?? 6,
+        instruction: organizationInstruction(previousDraft?.instruction, input.instruction, input.retryOnly), configId: input.configId, maxNewSubcategories: input.maxNewSubcategories ?? 6,
         structureReady: false, categories: [...categories, ...inherited],
         entries: input.repositories.map(repository => {
           const before = membershipOf(repository);
@@ -42,7 +49,7 @@ export async function runOrganizationGeneration(input: {
           return { repositoryId: repository.id, before, categoryId: preserveManual ? old.categoryId : before.categoryId,
             subcategoryId: preserveManual ? old.subcategoryId : before.subcategoryId,
             reason: preserveManual ? old.reason : '', disposition: preserveManual ? old.disposition : 'insufficient' as const,
-            selected: preserveManual ? old.selected : false, overrideLocked: false, manual: Boolean(preserveManual), status: 'pending' as const };
+            selected: preserveManual ? old.selected : false, overrideLocked: false, manual: Boolean(preserveManual), ...(old?.preserveMain ? { preserveMain: true } : {}), status: 'pending' as const };
         }),
         batches: Array.from({ length: Math.ceil(input.repositories.length / 20) }, (_, index) => ({ repositoryIds: input.repositories.slice(index * 20, index * 20 + 20).map(r => r.id), status: 'pending' as const })),
         status: 'generating', createdCategoryIds: [],
@@ -72,7 +79,7 @@ export async function runOrganizationGeneration(input: {
     await saveOrganizationProposal(proposal);
     try {
       stage('organization');
-      await generateOrganizationDraft({ ...input, proposal, signal, onUpdate: async next => {
+      await generateOrganizationDraft({ ...input, instruction: proposal.organization!.instruction, proposal, signal, onUpdate: async next => {
         signal.throwIfAborted();
         await saveOrganizationProposal(next);
         proposal = next;

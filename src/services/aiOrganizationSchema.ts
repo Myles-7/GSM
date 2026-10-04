@@ -1,14 +1,17 @@
 import { z } from 'zod';
+import { structureOperationsSchema } from './aiOrganizationStructureSchema';
 const id = z.string().trim().min(1).max(160);
 const membership = z.object({ categoryId: id.nullable(), subcategoryId: id.nullable(), locked: z.boolean() }).strict();
 export const organizationDraftSchema = z.object({
-  version: z.literal(1), revision: z.number().int().positive(),
+  version: z.union([z.literal(1), z.literal(2)]), revision: z.number().int().positive(),
+  purpose: z.enum(['repositories', 'structure']).optional(), mode: z.enum(['supplement', 'reorganize']).optional(),
+  rangeSource: z.string().max(200).optional(), structureOperations: structureOperationsSchema.optional(),
   scope: z.object({ name: z.string().max(200), repositoryIds: z.array(z.number().int().positive()).max(10000) }).strict(),
   instruction: z.string().max(10000), configId: id, maxNewSubcategories: z.number().int().min(1).max(20), structureReady: z.boolean(),
   categories: z.array(z.object({ id, name: z.string().trim().min(1).max(120), icon: z.string().max(100), parentId: id.nullable(), isNew: z.boolean() }).strict()).max(2000),
   entries: z.array(z.object({ repositoryId: z.number().int().positive(), before: membership,
     categoryId: id.nullable(), subcategoryId: id.nullable(), reason: z.string().max(2000),
-    disposition: z.enum(['move', 'unchanged', 'insufficient']), selected: z.boolean(), overrideLocked: z.boolean(), manual: z.boolean(),
+    disposition: z.enum(['move', 'unchanged', 'insufficient']), selected: z.boolean(), overrideLocked: z.boolean(), manual: z.boolean(), preserveMain: z.boolean().optional(),
     status: z.enum(['pending', 'success', 'conflict', 'restored']), error: z.string().max(2000).optional(),
   }).strict()).max(10000),
   batches: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()).max(20), status: z.enum(['pending', 'complete', 'failed']), error: z.string().max(2000).optional() }).strict()).max(10000),
@@ -34,4 +37,20 @@ export const organizationDraftSchema = z.object({
   const batchIds = draft.batches.flatMap(b => b.repositoryIds);
   if (new Set(batchIds).size !== batchIds.length || batchIds.length !== ids.size || batchIds.some(i => !ids.has(i))) fail('Incomplete batch coverage');
   if (draft.createdCategoryIds.some(i => !categories.get(i)?.isNew)) fail('Invalid created category journal');
+  if (draft.version === 1 && (draft.mode || draft.purpose || draft.structureOperations)) fail('New organization behavior requires version 2');
+  const occupied = new Set<string>();
+  const operationIds = new Set<string>();
+  for (const op of draft.structureOperations ?? []) {
+    if (operationIds.has(op.id)) fail('Duplicate structure operation');
+    operationIds.add(op.id);
+    if (!categories.has(op.targetId) || categories.get(op.targetId)?.parentId) fail('Invalid structure target');
+    if (op.kind !== 'merge' && op.sourceIds.length) fail('Unexpected structure sources');
+    if (op.kind === 'merge' && (!op.sourceIds.length || op.sourceIds.includes(op.targetId))) fail('Invalid merge sources');
+    for (const categoryId of [...op.sourceIds, op.targetId]) {
+      if (occupied.has(categoryId) || !categories.has(categoryId) || categories.get(categoryId)?.parentId) fail('Dependent or invalid structure operations');
+      occupied.add(categoryId);
+    }
+    if (new Set(op.members.map(m => m.repositoryId)).size !== op.members.length) fail('Duplicate structure member');
+    if (op.kind === 'merge' && op.members.some(m => !ids.has(m.repositoryId))) fail('Missing merge assignment');
+  }
 });

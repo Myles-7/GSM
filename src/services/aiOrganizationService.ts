@@ -95,7 +95,7 @@ export async function generateOrganizationDraft(input: {
   if (!input.retryOnly || !draft.structureReady) {
     const content = await ai.generateChatText({ system, user: JSON.stringify({
       task: 'Suggest only necessary NEW main categories and subcategories, reuse existing names/IDs whenever possible. Do not rename, merge or delete existing categories. Return {"categories":[{"ref":"temporary_unique_ref","name":"name","parentRef":null or existing main ID or new main ref}]}. Return an empty array if existing categories suffice.',
-      instruction: input.instruction, maxNewSubcategoriesPerMain: draft.maxNewSubcategories,
+      instruction: input.instruction, mode: draft.mode ?? 'legacy', maxNewSubcategoriesPerMain: draft.maxNewSubcategories,
       categories: draft.categories, ...buildOrganizationOverview(input.repositories),
     }), signal: input.signal, temperature: 0.1, maxTokens: 6000 });
     check();
@@ -124,8 +124,12 @@ export async function generateOrganizationDraft(input: {
       }
       const content = await ai.generateChatText({ system, user: JSON.stringify({
         task: 'Assign EACH input repository exactly once. Return {"assignments":[{"repositoryId":123,"categoryId":"allowed main ID or new main ref or null","subcategoryId":"allowed child ID or new child ref or null","disposition":"move|unchanged|insufficient","reason":"brief evidence-based reason"}]}. Only when the provided categories cannot cover this batch, optionally include "newCategories":[{"ref":"temporary_unique_ref","name":"name","parentRef":null or existing main ID or new main ref}]. Omit newCategories or use [] when unnecessary. Reuse existing categories and IDs, including suggestions from earlier batches; never rename, merge or delete them. Refs must be unique, different from existing IDs and not all or pending. Only main categories and their direct children are allowed. Respect maxNewSubcategoriesPerMain across ALL batches, counting categories marked isNew; at most 100 suggestions per response and 2000 total categories. For unchanged or insufficient retain its original category/subcategory. Use insufficient when purpose is unclear; do not invent categories without evidence. Each repository has at most one main and its child.',
-        instruction: input.instruction, maxNewSubcategoriesPerMain: draft.maxNewSubcategories,
+        instruction: input.instruction, mode: draft.mode ?? 'legacy',
+        constraints: draft.mode === 'supplement' ? 'For repositories with an existing main category, retain that main ID. Only fill missing subcategories; never move an already assigned main category.' : 'Reassess assignments, reuse existing categories first; propose only necessary new categories.',
+        maxNewSubcategoriesPerMain: draft.maxNewSubcategories,
         categories: draft.categories, repositories: repositories.map(metadata), evidence,
+        fixedMainTargets: draft.purpose === 'structure' ? draft.structureOperations?.filter(op => op.kind === 'merge').map(op => ({ repositoryIds: op.members.map(m => m.repositoryId), targetId: op.targetId })) : undefined,
+        preserveMainRepositoryIds: draft.entries.filter(e => e.preserveMain).map(e => e.repositoryId),
       }), temperature: 0.1, maxTokens: 6000, signal: input.signal });
       check();
       const parsed = assignmentSchema.parse(parseOrganizationJSON(content));
@@ -133,6 +137,7 @@ export async function generateOrganizationDraft(input: {
       if (ids.size !== parsed.assignments.length || ids.size !== batch.repositoryIds.length || batch.repositoryIds.some(id => !ids.has(id))) throw new Error('AI did not return each repository exactly once');
       const next = structuredClone(draft);
       const { categories, refs } = resolveCategories(next, parsed.newCategories ?? []);
+      if (draft.purpose === 'structure' && categories.some(c => c.isNew && !c.parentId && !draft.categories.some(old => old.id === c.id))) throw new Error('Merge redesign may only add subcategories');
       next.categories = categories;
       for (const suggestion of parsed.assignments) {
         const entry = next.entries.find(e => e.repositoryId === suggestion.repositoryId)!;
@@ -145,6 +150,9 @@ export async function generateOrganizationDraft(input: {
         if (entry.manual && !input.replaceManual) continue;
         Object.assign(entry, suggestion, { categoryId, subcategoryId, status: 'pending', manual: false });
         if (suggestion.disposition !== 'move') { entry.categoryId = entry.before.categoryId; entry.subcategoryId = entry.before.subcategoryId; }
+        if ((draft.mode === 'supplement' || entry.preserveMain) && entry.before.categoryId && entry.categoryId !== entry.before.categoryId) throw new Error('Supplement mode cannot change an existing main category');
+        const merge = draft.structureOperations?.find(op => op.kind === 'merge' && op.members.some(m => m.repositoryId === entry.repositoryId));
+        if (merge && entry.disposition !== 'insufficient' && entry.categoryId !== merge.targetId) throw new Error('Merge assignment must use its confirmed main target');
         if (entry.disposition === 'move' && entry.categoryId === entry.before.categoryId && entry.subcategoryId === entry.before.subcategoryId) entry.disposition = 'unchanged';
         entry.selected = entry.disposition === 'move' && !(entry.before.locked && entry.categoryId !== entry.before.categoryId);
         entry.overrideLocked = false;
@@ -163,7 +171,8 @@ export async function generateOrganizationDraft(input: {
     await update();
   }
   const allComplete = draft.batches.every(b => b.status === 'complete');
-  const allApplied = draft.entries.every(e => e.status === 'success' || e.disposition !== 'move');
+  const allApplied = draft.purpose === 'structure' ? !!draft.structureOperations?.length && draft.structureOperations.every(op => op.status === 'success')
+    : draft.entries.some(e => e.status === 'success') && draft.entries.every(e => e.status === 'success' || e.disposition === 'unchanged');
   if (allApplied && allComplete) {
     draft.status = 'applied';
   } else if (!allComplete || draft.batches.some(b => b.status === 'failed')) {

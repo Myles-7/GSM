@@ -74,7 +74,7 @@ export function categoryIdsForName(name: string | undefined, categories: Categor
 /** Suggestions are evidence only; calculating them never changes membership. */
 export function repositoryCategorySuggestions(repository: Repository, categories: Category[]): string[] {
   const evidence = { ...repository, category_id: undefined, category_locked: false, custom_category: undefined };
-  return categories.filter(category => matchesCategory(evidence, category, 'effective')).map(category => category.id);
+  return categories.filter(category => !category.mergedInto && matchesCategory(evidence, category, 'effective')).map(category => category.id);
 }
 
 export function normalizeRepositoryMembership(

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import type { Repository } from '../types';
-import type { OrganizationEntry } from '../types/aiOrganization';
+import type { OrganizationEntry, OrganizationMode } from '../types/aiOrganization';
 import type { WorkbenchProposal } from '../types/aiWorkbench';
 import { repositoryChatStorage as storage } from '../services/repositoryChatStorage';
 import { workbenchRuntime } from '../services/aiWorkbenchService';
@@ -10,6 +10,7 @@ import { runOrganizationGeneration } from '../services/aiOrganizationWorkflow';
 import { applyOrganizationProposal, editOrganizationProposal, reconcileOrganizationProposal, restoreOrganizationProposal, retryOrganizationSync } from '../services/aiOrganizationExecution';
 import { organizationScopeRepositories, type OrganizationScope } from '../utils/organizationScope';
 import { useT } from '../i18n/useT';
+import { acceptOriginalStructureGroup, applyCategoryStructure, editCategoryStructure, migrateStructureSelection, proposeCategoryStructure, restoreCategoryStructure, runStructureGeneration, type StructureSuggestion } from '../services/aiCategoryStructure';
 
 export function useAIOrganization(input: { filteredRepositories: Repository[]; selectedRepositoryIds: number[]; categoryId: string; sessionId?: string }) {
   const t = useT('repositories');
@@ -17,6 +18,8 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
   const ownerId = String(user?.id ?? '');
   const task = useSyncExternalStore(workbenchRuntime.subscribe, workbenchRuntime.getSnapshot);
   const [scope, setScope] = useState<OrganizationScope>('default');
+  const [mode, setMode] = useState<OrganizationMode>('supplement');
+  const [purpose, setPurpose] = useState<'repositories' | 'structure'>('repositories');
   const [configId, setConfigId] = useState(activeAIConfig ?? '');
   const [instruction, setInstruction] = useState('');
   const [maxNewSubcategories, setMaxNewSubcategories] = useState(6);
@@ -52,8 +55,9 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
   }, [refresh]);
   const proposal = versions.find(p => p.id === versionId) ?? versions[0] ?? null;
   const readonly = Boolean(proposal && (proposal.id !== versions[0]?.id || proposal.organization?.status === 'imported'));
-  const scoped = organizationScopeRepositories({ repositories: input.filteredRepositories, selectedIds: input.selectedRepositoryIds, categoryId: input.categoryId, scope });
-  const scopeOptions = (['default', 'selected', 'current', 'pending', 'all'] as OrganizationScope[]).map(value => ({ value, label: t(`aiOrganization.scope.${value}`), count: organizationScopeRepositories({ repositories: input.filteredRepositories, selectedIds: input.selectedRepositoryIds, categoryId: input.categoryId, scope: value }).length }));
+  const scopeInput = { repositories: input.filteredRepositories, allRepositories: repositories, selectedIds: input.selectedRepositoryIds, categoryId: input.categoryId, mode };
+  const scoped = organizationScopeRepositories({ ...scopeInput, scope });
+  const scopeOptions = (['default', 'selected', 'filtered', 'current', 'pending', 'all'] as OrganizationScope[]).map(value => ({ value, label: t(`aiOrganization.scope.${value}`), count: organizationScopeRepositories({ ...scopeInput, scope: value }).length }));
   const guard = async (action: () => Promise<unknown>) => {
     setError(''); setSaving(true);
     const current = () => mounted.current && contextRef.current.ownerId === ownerId && contextRef.current.sessionId === sessionId;
@@ -66,8 +70,7 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
     }
     finally { if (mounted.current) setSaving(false); }
   };
-  const generate = (retryOnly = false, enrichRepositoryIds?: number[], batchIndex?: number) => guard(async () => {
-    if (task.running || readonly) throw new Error(t('aiOrganization.busy'));
+  const ensureSession = async () => {
     let id = sessionId;
     if (!id) {
       if (!ownerId) throw new Error(t('aiOrganization.accountRequired'));
@@ -78,16 +81,32 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
       setSessionId(id);
       sessionStorage.setItem(`gsm:organization-session:${ownerId}`, id);
     }
+    return id;
+  };
+  const generate = (retryOnly = false, enrichRepositoryIds?: number[], batchIndex?: number) => guard(async () => {
+    if (task.running || readonly) throw new Error(t('aiOrganization.busy'));
+    const id = await ensureSession();
     selectVersion('');
     const selected = proposal ? repositories.filter(r => proposal.organization!.scope.repositoryIds.includes(r.id)) : scoped;
-    await runOrganizationGeneration({ sessionId: id, repositories: selected, scopeName: proposal?.organization?.scope.name ?? scope,
+    const request = { sessionId: id, repositories: selected, scopeName: proposal?.organization?.scope.name ?? scope,
       configId, instruction: instruction.trim() || proposal?.organization?.instruction || t('aiOrganization.defaultInstruction'),
-      previous: proposal ?? undefined, retryOnly, enrichRepositoryIds, replaceManual, maxNewSubcategories, batchIndex });
+      previous: proposal ?? undefined, retryOnly, enrichRepositoryIds, replaceManual, maxNewSubcategories, batchIndex, mode, rangeSource: scope };
+    if ((proposal?.organization?.purpose ?? purpose) === 'structure') await runStructureGeneration(request);
+    else await runOrganizationGeneration(request);
     if (mounted.current && contextRef.current.sessionId === id && String(useAppStore.getState().user?.id ?? '') === ownerId) {
       setInstruction('');
       const records = (await storage.listProposals(ownerId, id)).filter(p => p.organization).sort((a, b) => b.organization!.revision - a.organization!.revision);
       if (contextRef.current.sessionId === id && contextRef.current.ownerId === ownerId) setVersions(records);
     }
+  });
+  const newDraft = () => { sessionStorage.removeItem(`gsm:organization-session:${ownerId}`); setSessionId(''); setVersions([]); selectVersion(''); setInstruction(''); setError(''); };
+  const structureAction = (kind: 'apply' | 'restore', operationId: string) => guard(async () => {
+    if (!proposal || readonly || task.running) return;
+    await workbenchRuntime.run(proposal.sessionId, ownerId, async (signal, stage) => {
+      stage(kind === 'apply' ? 'execution' : 'restore');
+      if (kind === 'apply') await applyCategoryStructure(proposal.id, proposal.updatedAt, operationId, signal);
+      else await restoreCategoryStructure(proposal.id, proposal.updatedAt, operationId, signal);
+    });
   });
   const execute = (operation: 'apply' | 'restore' | 'sync', targetRepositoryIds?: number[]) => guard(async () => {
     if (!proposal || readonly) return;
@@ -104,6 +123,10 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
   });
   return {
     scope, setScope, scopeOptions, repositories, configId, setConfigId, aiConfigs, instruction, setInstruction,
+    purpose: proposal?.organization?.purpose ?? purpose,
+    setPurpose: (value: 'repositories' | 'structure') => { if (task.running || saving) return; if (proposal) newDraft(); setPurpose(value); },
+    mode: proposal?.organization?.mode ?? mode, setMode,
+    rangeSummary: { total: scoped.length, assigned: scoped.filter(r => r.category_id != null).length, locked: scoped.filter(r => r.category_locked).length, fullLibrary: scope === 'all' },
     maxNewSubcategories, setMaxNewSubcategories, replaceManual, setReplaceManual, proposal, versions, selectVersion,
     saving, busy: task.running || saving, task, error, readonly, count: scoped.length, scopedRepositories: scoped,
     generate: () => generate(), retry: () => generate(true), enrich: (ids: number[]) => generate(true, ids),
@@ -117,9 +140,33 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
     renameCategory: (categoryId: string, name: string) => guard(async () => {
       if (proposal && !readonly && !task.running) await editOrganizationProposal(proposal.id, proposal.updatedAt, { categoryId, name });
     }),
+    bulkEdit: (repositoryIds: number[], categoryId: string | null, subcategoryId: string | null, action?: 'keep' | 'subdivide' | 'reconsider') => guard(async () => {
+      if (proposal && !readonly && !task.running) await editOrganizationProposal(proposal.id, proposal.updatedAt, { bulk: { repositoryIds, categoryId, subcategoryId, action } });
+    }),
+    addStructure: (suggestion: StructureSuggestion) => guard(async () => {
+      if (task.running || readonly) return;
+      const id = await ensureSession();
+      const next = await proposeCategoryStructure({ sessionId: id, suggestions: [suggestion], configId: configId || 'manual', instruction,
+        previous: proposal ?? undefined, preservePrevious: true, maxNewSubcategories });
+      if (mounted.current && String(useAppStore.getState().user?.id ?? '') === ownerId
+        && (contextRef.current.sessionId === id || contextRef.current.sessionId === sessionId)) { selectVersion(''); setVersions(previous => [next, ...previous]); }
+    }),
+    editStructure: (operationId: string, patch: Parameters<typeof editCategoryStructure>[3]) => guard(async () => {
+      if (proposal && !readonly && !task.running) await editCategoryStructure(proposal.id, proposal.updatedAt, operationId, patch);
+    }),
+    applyStructure: (id: string) => structureAction('apply', id), restoreStructure: (id: string) => structureAction('restore', id),
+    migrateSelected: () => guard(async () => {
+      if (!proposal || readonly || task.running) return;
+      await workbenchRuntime.run(proposal.sessionId, ownerId, async (signal, stage) => {
+        stage('execution'); await migrateStructureSelection(proposal.id, proposal.updatedAt, signal);
+      });
+    }),
+    acceptOriginalGroup: (repositoryId: number) => guard(async () => {
+      if (proposal && !readonly && !task.running) await acceptOriginalStructureGroup(proposal.id, proposal.updatedAt, repositoryId);
+    }),
     apply: (targetRepositoryIds?: number[]) => execute('apply', targetRepositoryIds),
     restore: () => execute('restore'), retrySync: () => execute('sync'), stop: workbenchRuntime.stop,
-    newDraft: () => { sessionStorage.removeItem(`gsm:organization-session:${ownerId}`); setSessionId(''); setVersions([]); selectVersion(''); setInstruction(''); setError(''); },
+    newDraft,
     continueInWorkbench: () => {
       if (!sessionId) return;
       sessionStorage.setItem('gsm:ai-workbench-session', sessionId);

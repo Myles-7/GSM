@@ -450,6 +450,7 @@ export interface Category {
   keywords: string[];
   isCustom?: boolean;
   isHidden?: boolean;
+  mergedInto?: string;
 }
 
 export interface AssetFilter {

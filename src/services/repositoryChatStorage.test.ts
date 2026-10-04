@@ -406,6 +406,23 @@ describe('repositoryChatStorage local fallback', () => {
     expect(await repositoryChatStorage.listProposals(ownerId)).toHaveLength(2);
   });
 
+  it('round-trips versioned structure operations as unselected inert history', async () => {
+    const ownerId = 'structure-owner';
+    const session = { ...createSession('structure-session', 0, '2026-10-04T00:00:00.000Z'), ownerId, kind: 'workbench' as const };
+    const proposal = createProposal('structure-proposal', ownerId, session.id);
+    proposal.operations = [];
+    proposal.organization = { version: 2, purpose: 'structure', mode: 'reorganize', revision: 1, scope: { name: 'structure', repositoryIds: [] },
+      instruction: 'Create category', configId: 'manual', maxNewSubcategories: 6, structureReady: true, entries: [], batches: [], status: 'ready', createdCategoryIds: [],
+      categories: [{ id: 'new-main', name: 'New', icon: 'folder', parentId: null, isNew: true }],
+      structureOperations: [{ id: 'create-op', kind: 'create', sourceIds: [], targetId: 'new-main', name: 'New', icon: 'folder', keywords: [], reason: '', selected: true, status: 'pending', members: [],
+        before: { customCategories: [], defaultCategoryOverrides: { devtools: { mergedInto: 'target' } }, hiddenDefaultCategoryIds: ['devtools'], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], categoryListIdMap: {} } }],
+    };
+    await repositoryChatStorage.saveSession(session); await repositoryChatStorage.saveProposal(proposal);
+    await repositoryChatStorage.importWorkbench(ownerId, await repositoryChatStorage.exportWorkbench(ownerId));
+    const imported = (await repositoryChatStorage.listProposals(ownerId)).find(p => p.id !== proposal.id)!;
+    expect(imported.organization).toMatchObject({ status: 'imported', structureOperations: [{ selected: false, before: { defaultCategoryOverrides: { devtools: { mergedInto: 'target' } } } }] });
+  });
+
   it('rejects malformed and foreign backups before writing any records', async () => {
     const ownerId = 'owner-a';
     await repositoryChatStorage.saveSession({

@@ -416,7 +416,8 @@
       "selected": "Selected repositories",
       "current": "Current category",
       "pending": "Pending classification",
-      "all": "All filtered repositories"
+      "all": "Entire library (outside filters)",
+      "filtered": "Current filtered results"
     },
     "scopeLabel": "Organization scope",
     "version": "Draft version",
@@ -442,7 +443,8 @@
       "unchanged": "Unchanged",
       "success": "Applied",
       "conflict": "Conflict",
-      "restored": "Restored"
+      "restored": "Restored",
+      "pending": "Pending"
     },
     "clearFilter": "Clear category filter",
     "empty": "No repositories",
@@ -472,6 +474,69 @@
     "accountRequired": "Connect a GitHub account first.",
     "preview": "Review organization draft",
     "showAllCategories": "Show all categories",
-    "onlyInvolved": "Show involved categories"
+    "onlyInvolved": "Show involved categories",
+    "purposeLabel": "Organization task",
+    "purpose": {
+      "repositories": "Repository assignments",
+      "structure": "Category structure"
+    },
+    "modeLabel": "Organization mode",
+    "mode": {
+      "supplement": "Fill missing organization",
+      "reorganize": "Reorganize assignments"
+    },
+    "flow": "In {{incoming}} / Out {{outgoing}}",
+    "flatView": "Flat view",
+    "groupedView": "Grouped view",
+    "bulkScope": "Bulk scope",
+    "bulkSelected": "Selected suggestions",
+    "bulkVisible": "Visible suggestions",
+    "mainTarget": "Main category",
+    "subTarget": "Subcategory",
+    "bulkMove": "Set targets ({{count}})",
+    "quick": {
+      "keep": "Keep original",
+      "subdivide": "Only subdivide",
+      "reconsider": "Reconsider"
+    },
+    "subDestination": "Subcategory for {{name}}",
+    "rangeSummary": "Already categorized: {{assigned}} · Locked: {{locked}}",
+    "crossFilters": "Includes repositories outside current filters",
+    "structure": {
+      "action": "Structure action",
+      "edit": "Edit structure",
+      "draft": "Structure preview",
+      "create": "Create",
+      "rename": "Rename",
+      "merge": "Merge",
+      "target": "Target main category",
+      "newTarget": "Create a new target",
+      "choose": "Choose category",
+      "name": "Category name",
+      "operationName": "Suggested category name",
+      "icon": "Category icon",
+      "sources": "Source categories",
+      "add": "Add to draft",
+      "fullScope": "Merges include every repository in the source and target categories, regardless of current filters.",
+      "empty": "Create a main category directly, or describe the desired structure below to get AI suggestions.",
+      "impact": "{{count}} repositories · {{locked}} locked · {{unresolved}} unresolved",
+      "keywords": "Target keywords (comma separated)",
+      "subcategory": "Redesigned subcategory for {{name}}",
+      "unresolved": "Needs a destination",
+      "acceptOriginal": "Accept original grouping mapping",
+      "reviewSummary": "Reviewed impact: {{count}} repositories. This operation will apply together.",
+      "removed": "Remove empty custom categories: {{names}}",
+      "hidden": "Hide empty built-in categories: {{names}}",
+      "review": "Check impact",
+      "confirm": {
+        "create": "Confirm category creation",
+        "rename": "Confirm category rename",
+        "merge": "Confirm complete merge"
+      },
+      "restore": "Restore this structure operation",
+      "generate": "AI structure suggestions / redesign",
+      "partial": "Migrate selected assignments only",
+      "partialNotice": "Only confirmed repository assignments move. Source categories and their subcategories remain."
+    }
   }
 }

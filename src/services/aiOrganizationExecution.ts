@@ -10,8 +10,9 @@ import { forceSyncToBackend } from './autoSync';
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export function organizationCategorySnapshot(): OrganizationCategory[] {
   const state = useAppStore.getState();
-  return [...organizationCategories(state).filter(c => c.id !== 'all' && c.id !== 'pending').map(c => ({ id: c.id, name: c.name, icon: c.icon, parentId: null, isNew: false })),
-    ...state.subcategories.map(c => ({ ...c, isNew: false }))];
+  const main = organizationCategories(state).filter(c => c.id !== 'all' && c.id !== 'pending' && !c.mergedInto);
+  return [...main.map(c => ({ id: c.id, name: c.name, icon: c.icon, parentId: null, isNew: false })),
+    ...state.subcategories.filter(c => main.some(m => m.id === c.parentId)).map(c => ({ ...c, isNew: false }))];
 }
 export async function requireOrganizationProposal(id: string, expectedUpdatedAt?: string): Promise<WorkbenchProposal> {
   const value = await storage.getProposal(id);
@@ -37,6 +38,7 @@ export async function editOrganizationProposal(id: string, expectedUpdatedAt: st
   repositoryId?: number; patch?: Partial<Pick<OrganizationEntry, 'categoryId' | 'subcategoryId' | 'selected' | 'overrideLocked'>>;
   selection?: { repositoryIds: number[]; selected: boolean };
   categoryId?: string; name?: string;
+  bulk?: { repositoryIds: number[]; categoryId?: string | null; subcategoryId?: string | null; action?: 'keep' | 'subdivide' | 'reconsider' };
 }): Promise<WorkbenchProposal> {
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   const draft = proposal.organization!;
@@ -51,16 +53,26 @@ export async function editOrganizationProposal(id: string, expectedUpdatedAt: st
     const category = draft.categories.find(c => c.id === edit.categoryId);
     if (!category?.isNew || !edit.name.trim()) throw new Error('Only new categories may be renamed');
     category.name = edit.name.trim();
+    if (draft.categories.some(c => c.id !== category.id && c.parentId === category.parentId && c.name.toLocaleLowerCase() === category.name.toLocaleLowerCase())) throw new Error('Duplicate category name');
   }
-  const entry = draft.entries.find(e => e.repositoryId === edit.repositoryId);
-  if (entry && edit.patch) {
-    Object.assign(entry, edit.patch);
-    if ('categoryId' in edit.patch || 'subcategoryId' in edit.patch) {
+  const entries = edit.bulk ? draft.entries.filter(e => edit.bulk!.repositoryIds.includes(e.repositoryId)) : draft.entries.filter(e => e.repositoryId === edit.repositoryId);
+  for (const entry of entries) {
+    if (entry.status !== 'pending') continue;
+    const patch = edit.bulk ? edit.bulk.action === 'keep' ? { categoryId: entry.before.categoryId, subcategoryId: entry.before.subcategoryId }
+      : edit.bulk.action === 'subdivide' ? { categoryId: entry.before.categoryId, subcategoryId: entry.before.subcategoryId }
+      : edit.bulk.action === 'reconsider' ? { selected: false } : { categoryId: edit.bulk.categoryId ?? null, subcategoryId: edit.bulk.subcategoryId ?? null } : edit.patch;
+    if (!patch) continue;
+    Object.assign(entry, patch);
+    if ((draft.mode === 'supplement' || entry.preserveMain) && entry.before.categoryId && entry.categoryId !== entry.before.categoryId) throw new Error('Supplement mode cannot change an existing main category');
+    if ('categoryId' in patch || 'subcategoryId' in patch) {
       entry.disposition = entry.categoryId === entry.before.categoryId && entry.subcategoryId === entry.before.subcategoryId ? 'unchanged' : 'move';
       entry.manual = true;
       entry.status = 'pending';
       delete entry.error;
+      entry.selected = entry.disposition === 'move';
     }
+    if (edit.bulk?.action === 'reconsider') { entry.manual = false; entry.preserveMain = false; entry.disposition = 'insufficient'; entry.selected = false; entry.reason = ''; }
+    if (edit.bulk?.action === 'subdivide') { entry.manual = false; entry.preserveMain = true; entry.disposition = 'insufficient'; entry.selected = false; entry.reason = ''; }
     if (entry.before.locked && entry.categoryId !== entry.before.categoryId && !entry.overrideLocked) entry.selected = false;
     if (entry.disposition !== 'move') entry.selected = false;
   }
@@ -109,6 +121,7 @@ export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: 
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   signal?.throwIfAborted();
   const draft = proposal.organization!;
+  if (draft.purpose === 'structure') throw new Error('Use the separate category structure confirmation');
   if (!['ready', 'interrupted', 'generating'].includes(draft.status)) throw new Error('Generate a new draft before applying');
   const currentCategories = organizationCategorySnapshot();
   const currentById = new Map(currentCategories.map(c => [c.id, c]));
@@ -120,6 +133,7 @@ export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: 
     const targets = draft.categories.filter(c => c.id === entry.categoryId || c.id === entry.subcategoryId);
     let error: string | undefined;
     if (!repository || !sameMembership(membershipOf(repository), entry.before)) error = 'Repository membership or lock changed';
+    else if ((draft.mode === 'supplement' || entry.preserveMain) && entry.before.categoryId && entry.categoryId !== entry.before.categoryId) error = 'Supplement mode cannot change an existing main category';
     else if (entry.before.locked && entry.categoryId !== entry.before.categoryId && !entry.overrideLocked) error = 'Locked category requires explicit confirmation';
     else if (targets.some(c => {
       const isAlreadyCreated = draft.createdCategoryIds.includes(c.id);
@@ -217,6 +231,10 @@ export async function restoreOrganizationProposal(id: string, expectedUpdatedAt:
 export async function reconcileOrganizationProposal(proposal: WorkbenchProposal): Promise<WorkbenchProposal> {
   const draft = proposal.organization;
   if (!draft || !['generating', 'applying', 'restoring'].includes(draft.status)) return proposal;
+  if (draft.purpose === 'structure') {
+    const { reconcileCategoryStructure } = await import('./aiCategoryStructure');
+    return reconcileCategoryStructure(proposal);
+  }
   if (draft.status === 'generating') draft.status = 'interrupted';
   else {
     const restoring = draft.status === 'restoring';

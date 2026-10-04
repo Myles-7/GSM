@@ -1,9 +1,16 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { assertWorkspace, bootstrapWorkspace, getRecord, getWorkspace, initializeSyncV2, pruneSyncHistory, pullChanges, pushOperations, snapshotPage, type Operation } from '../../src/services/syncV2.js';
+import { assertWorkspace, bootstrapWorkspace, getRecord, getWorkspace, initializeSyncV2, pruneSyncHistory, pullChanges, pushOperations, snapshotPage, validateOperation, type Operation } from '../../src/services/syncV2.js';
 import { initializeSchema } from '../../src/db/schema.js';
 
 describe('account-bound sync v2', () => {
+  it('preserves valid category retirement mappings and rejects malformed or cyclic ones', () => {
+    const operation = (overrides: Record<string, unknown>): Operation => ({ opId: 'structure', collection: 'organization', id: 'default', kind: 'put', baseVersion: 0, data: { defaultCategoryOverrides: overrides } });
+    expect(() => validateOperation(operation({ devtools: { mergedInto: 'target' } }))).not.toThrow();
+    expect(() => validateOperation(operation({ devtools: { mergedInto: 'devtools' } }))).toThrow('INVALID_ORGANIZATION');
+    expect(() => validateOperation(operation({ a: { mergedInto: 'b' }, b: { mergedInto: 'a' } }))).toThrow('INVALID_ORGANIZATION');
+    expect(() => validateOperation(operation({ a: { mergedInto: 5 } }))).toThrow('INVALID_ORGANIZATION');
+  });
   let db: Database.Database;
   beforeEach(() => { db = new Database(':memory:'); initializeSyncV2(db); });
   afterEach(() => db.close());

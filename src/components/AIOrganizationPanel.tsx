@@ -7,6 +7,7 @@ import { Badge } from './ui/badge';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n/useT';
 import type { useAIOrganization } from '../hooks/useAIOrganization';
+import { CategoryStructurePanel } from './CategoryStructurePanel';
 
 type Controller = ReturnType<typeof useAIOrganization>;
 const selectClass = 'h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs';
@@ -26,20 +27,6 @@ const PROMPT_PRESETS = [
     promptZh: '请以主要编程语言与底层技术栈（如：TypeScript/React、Python/AI、Go/云原生、Rust/系统工具）为核心维度组织并分类仓库。',
     promptEn: 'Organize and classify repositories primarily by core programming language and technology stack (e.g., TypeScript/React, Python/AI, Go/Cloud Native, Rust/Systems).',
   },
-  {
-    id: 'preserve',
-    labelZh: '🎯 保持一级分类',
-    labelEn: '🎯 Preserve Top-Level',
-    promptZh: '请严格保留现有的所有一级分类体系，仅针对未分类或“待整理”的仓库进行智能细分归纳，不要新增或变更已有的一级分类。',
-    promptEn: 'Strictly preserve all existing top-level categories. Only analyze and assign unclassified or pending repositories into appropriate groups without altering existing top categories.',
-  },
-  {
-    id: 'tags',
-    labelZh: '🧹 提取关键词生成规范标签',
-    labelEn: '🧹 Extract Canonical Tags',
-    promptZh: '请深入提取每个仓库的核心功能特性与关键词，归纳生成规范、统一的二级分类及分类标签，合并重复及语义相近的主题。',
-    promptEn: 'Extract core features and keywords from each repository to generate canonical, structured subcategories and tags, consolidating duplicate or synonymous topics.',
-  },
 ];
 
 export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { open: boolean; onOpenChange: (open: boolean) => void; controller: Controller }) {
@@ -52,7 +39,12 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
   const [enrichIds, setEnrichIds] = useState<Set<number>>(new Set());
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [grouped, setGrouped] = useState(true);
+  const [bulkTarget, setBulkTarget] = useState('');
+  const [bulkGroup, setBulkGroup] = useState('');
+  const [bulkScope, setBulkScope] = useState('selected');
   const draft = c.proposal?.organization;
+  const structure = c.purpose === 'structure';
   const editable = !!draft && ['ready', 'interrupted'].includes(draft.status) && !c.readonly && !c.busy;
   const entries = draft?.entries ?? [];
   const categories = draft?.categories ?? [];
@@ -65,6 +57,8 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
   const selected = entries.filter(e => e.selected && e.disposition === 'move' && e.status === 'pending');
   const visible = entries.filter(e => (filter === 'all' || e.disposition === filter || e.status === filter)
     && (!categoryFilter || e.categoryId === categoryFilter || e.subcategoryId === categoryFilter));
+  if (grouped) visible.sort((a, b) => targetLabel(a.categoryId, a.subcategoryId).localeCompare(targetLabel(b.categoryId, b.subcategoryId)));
+  const bulkIds = visible.filter(e => e.status === 'pending' && (bulkScope === 'visible' || e.selected)).map(e => e.repositoryId);
   const selectable = visible.filter(entry => entry.disposition === 'move' && entry.status === 'pending'
     && (!entry.before.locked || entry.categoryId === entry.before.categoryId || entry.overrideLocked));
 
@@ -94,6 +88,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
         </button>
         {category.isNew && editable && <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label={t('aiOrganization.rename', { name: category.name })} title={t('aiOrganization.rename', { name: category.name })} onClick={() => setRenaming(renaming === category.id ? null : category.id)}><Pencil className="h-3 w-3" /></Button>}
       </div>
+      {!parentId && <p className="px-2 text-[10px] text-muted-foreground">{t('aiOrganization.flow', { incoming: entries.filter(e => e.categoryId === category.id && e.before.categoryId !== category.id).length, outgoing: entries.filter(e => e.before.categoryId === category.id && e.categoryId !== category.id).length })}</p>}
       {category.isNew && editable && renaming === category.id && <input key={`${category.id}:${category.name}`} autoFocus aria-label={t('aiOrganization.rename', { name: category.name })}
         defaultValue={category.name} maxLength={120} className="mb-1 ml-2 w-[calc(100%-1rem)] min-w-0 rounded border border-input bg-background px-2 py-1 text-xs"
         onBlur={e => { setRenaming(null); if (e.target.value.trim() && e.target.value.trim() !== category.name) void c.renameCategory(category.id, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') setRenaming(null); }} />}
@@ -106,15 +101,21 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
         <DialogTitle className="flex items-center gap-2 text-base"><FolderTree className="h-4 w-4" />{t('aiOrganization.title')}</DialogTitle>
         <DialogDescription className="sr-only">{t('aiOrganization.description')}</DialogDescription>
       </DialogHeader>
+      <div className="flex shrink-0 gap-1 border-b px-4 py-2" role="group" aria-label={t('aiOrganization.purposeLabel')}>
+        {(['repositories', 'structure'] as const).map(value => <Button key={value} size="sm" variant={(c.purpose ?? 'repositories') === value ? 'secondary' : 'ghost'} aria-pressed={(c.purpose ?? 'repositories') === value} disabled={c.busy} onClick={() => c.setPurpose(value)}>{t(`aiOrganization.purpose.${value}`)}</Button>)}
+      </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        {!draft ? <select aria-label={t('aiOrganization.scopeLabel')} className={selectClass} value={c.scope} onChange={e => c.setScope(e.target.value as Controller['scope'])} disabled={c.busy}>
+        {!structure && <select aria-label={t('aiOrganization.modeLabel')} className={selectClass} value={c.mode ?? 'supplement'} onChange={e => c.setMode(e.target.value as Controller['mode'])} disabled={c.busy || !!draft}>
+          {['supplement', 'reorganize'].map(value => <option key={value} value={value}>{t(`aiOrganization.mode.${value}`)}</option>)}
+        </select>}
+        {!draft && !structure ? <select aria-label={t('aiOrganization.scopeLabel')} className={selectClass} value={c.scope} onChange={e => c.setScope(e.target.value as Controller['scope'])} disabled={c.busy}>
           {c.scopeOptions.map(o => <option key={o.value} value={o.value}>{o.label} ({o.count})</option>)}
-        </select> : <>
+        </select> : draft ? <>
           <select aria-label={t('aiOrganization.version')} className={selectClass} value={c.proposal!.id} onChange={e => c.selectVersion(e.target.value)} disabled={c.busy}>
             {c.versions.map(v => <option key={v.id} value={v.id}>{t('aiOrganization.revision', { count: v.organization!.revision })}</option>)}
           </select>
           <span className="text-xs text-muted-foreground">{completedCount} / {entries.length}</span>
-        </>}
+        </> : null}
         <select aria-label={t('aiOrganization.model')} className={`${selectClass} max-w-[220px]`} value={c.configId} onChange={e => c.setConfigId(e.target.value)} disabled={c.busy || c.readonly}>
           <option value="" disabled>{t('aiOrganization.model')}</option>
           {c.aiConfigs.map(config => <option key={config.id} value={config.id}>{config.name} · {config.model}</option>)}
@@ -126,7 +127,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
         {draft && <Button variant="ghost" size="icon" className="ml-auto h-8 w-8" title={t('aiOrganization.newTask')} aria-label={t('aiOrganization.newTask')} disabled={c.busy} onClick={c.newDraft}><Plus className="h-4 w-4" /></Button>}
       </div>
       {/* Dual-Track Progress Visualization */}
-      {draft && (
+      {draft && !structure && (
         <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-2.5 space-y-2">
           {/* Track 1: Overall Progress Bar */}
           <div className="space-y-1">
@@ -203,7 +204,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
       )}
       {c.error && <p role="alert" className="shrink-0 break-words border-b px-4 py-2 text-xs text-destructive">{c.error}</p>}
       {c.readonly && <p className="shrink-0 px-4 py-2 text-xs text-muted-foreground">{t('aiOrganization.readonly')}</p>}
-      {draft ? <>
+      {structure ? <CategoryStructurePanel controller={c} /> : draft ? <>
         <div className="flex shrink-0 gap-1 border-b p-2 md:hidden" role="group" aria-label={t('aiOrganization.view')}>
           {['categories', 'repositories'].map(tab => <Button key={tab} size="sm" variant={mobileTab === tab ? 'secondary' : 'ghost'} aria-pressed={mobileTab === tab} onClick={() => setMobileTab(tab)}>{t(`aiOrganization.${tab}`)}</Button>)}
         </div>
@@ -223,10 +224,22 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
                 {t('organization.selectAll')}
               </label>
               {categoryFilter && <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setCategoryFilter(null)}>{t('aiOrganization.clearFilter')}</Button>}
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setGrouped(!grouped)}>{t(grouped ? 'aiOrganization.flatView' : 'aiOrganization.groupedView')}</Button>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1 border-b px-3 py-2">
+              <select aria-label={t('aiOrganization.bulkScope')} className={selectClass} value={bulkScope} onChange={e => setBulkScope(e.target.value)}><option value="selected">{t('aiOrganization.bulkSelected')}</option><option value="visible">{t('aiOrganization.bulkVisible')}</option></select>
+              <select aria-label={t('aiOrganization.mainTarget')} className={`${selectClass} max-w-[170px]`} value={bulkTarget} onChange={e => { setBulkTarget(e.target.value); setBulkGroup(''); }} disabled={!editable}>
+                <option value="">{t('aiOrganization.pending')}</option>{categories.filter(cat => !cat.parentId).map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+              </select>
+              <select aria-label={t('aiOrganization.subTarget')} className={`${selectClass} max-w-[150px]`} value={bulkGroup} onChange={e => setBulkGroup(e.target.value)} disabled={!editable || !bulkTarget}>
+                <option value="">{t('organization.ungrouped')}</option>{categories.filter(cat => cat.parentId === bulkTarget).map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+              </select>
+              <Button size="sm" variant="outline" className="h-7 text-xs" disabled={!editable || !bulkIds.length} onClick={() => void c.bulkEdit(bulkIds, bulkTarget || null, bulkGroup || null)}>{t('aiOrganization.bulkMove', { count: bulkIds.length })}</Button>
+              {(['keep', 'subdivide', 'reconsider'] as const).map(action => <Button key={action} size="sm" variant="ghost" className="h-7 text-xs" disabled={!editable || !bulkIds.length} onClick={() => void c.bulkEdit(bulkIds, null, null, action)}>{t(`aiOrganization.quick.${action}`)}</Button>)}
             </div>
             <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
               {!visible.length && <p className="p-6 text-center text-sm text-muted-foreground">{t('aiOrganization.empty')}</p>}
-              {visible.map(entry => {
+              {visible.map((entry, index) => {
                 const isReady = completedRepoIds.has(entry.repositoryId);
                 const isSuccess = entry.status === 'success';
                 return (
@@ -235,6 +248,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
                     className={`space-y-2 px-4 py-3 transition-colors ${isReady && !isSuccess ? 'bg-primary/[0.02] border-l-2 border-l-primary/60' : ''}`}
                     data-organization-repository={entry.repositoryId}
                   >
+                    {grouped && (index === 0 || visible[index - 1].categoryId !== entry.categoryId || visible[index - 1].subcategoryId !== entry.subcategoryId) && <h3 className="border-b pb-2 text-xs font-semibold">{targetLabel(entry.categoryId, entry.subcategoryId)}</h3>}
                     <div className="flex items-start gap-2">
                       <input type="checkbox" className="mt-1 shrink-0" checked={entry.selected} disabled={!editable || entry.disposition !== 'move' || entry.status !== 'pending' || (entry.before.locked && entry.categoryId !== entry.before.categoryId && !entry.overrideLocked)}
                         aria-label={t('aiOrganization.selectRepository', { name: repoMap.get(entry.repositoryId)?.full_name ?? entry.repositoryId })}
@@ -254,12 +268,14 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
                     </div>
                     <div className="grid min-w-0 gap-1 pl-5 text-xs sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center">
                       <span className="break-words text-muted-foreground">{targetLabel(entry.before.categoryId, entry.before.subcategoryId)}</span><span aria-hidden="true">→</span>
-                      <select className={`${selectClass} w-full`} aria-label={t('aiOrganization.destination', { name: repoMap.get(entry.repositoryId)?.name ?? entry.repositoryId })}
-                        disabled={!editable || entry.status !== 'pending'} value={entry.subcategoryId || entry.categoryId || ''}
-                        onChange={e => { const target = categories.find(g => g.id === e.target.value); void c.editEntry(entry.repositoryId, { categoryId: target?.parentId ?? target?.id ?? null, subcategoryId: target?.parentId ? target.id : null }); }}>
+                      <div className="grid min-w-0 gap-1 sm:grid-cols-2"><select className={`${selectClass} w-full`} aria-label={t('aiOrganization.destination', { name: repoMap.get(entry.repositoryId)?.name ?? entry.repositoryId })}
+                        disabled={!editable || entry.status !== 'pending' || (draft.mode === 'supplement' && !!entry.before.categoryId)} value={entry.categoryId || ''}
+                        onChange={e => void c.editEntry(entry.repositoryId, { categoryId: e.target.value || null, subcategoryId: null })}>
                         <option value="">{t('aiOrganization.pending')}</option>
-                        {categories.map(category => <option key={category.id} value={category.id}>{targetLabel(category.parentId ?? category.id, category.parentId ? category.id : null)}</option>)}
-                      </select>
+                        {categories.filter(category => !category.parentId).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                      </select><select className={`${selectClass} w-full`} aria-label={t('aiOrganization.subDestination', { name: repoMap.get(entry.repositoryId)?.name ?? entry.repositoryId })} value={entry.subcategoryId || ''} disabled={!editable || entry.status !== 'pending' || !entry.categoryId} onChange={e => void c.editEntry(entry.repositoryId, { subcategoryId: e.target.value || null })}>
+                        <option value="">{t('organization.ungrouped')}</option>{categories.filter(category => category.parentId === entry.categoryId).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                      </select></div>
                     </div>
                     {entry.reason && <p className="break-words pl-5 text-xs leading-5 text-muted-foreground">{entry.reason}</p>}
                     {entry.before.locked && entry.categoryId !== entry.before.categoryId && <label className="flex items-start gap-2 pl-5 text-xs text-destructive"><input type="checkbox" checked={entry.overrideLocked} disabled={!editable} onChange={e => void c.editEntry(entry.repositoryId, { overrideLocked: e.target.checked })} />{t('aiOrganization.overrideLock')}</label>}
@@ -273,6 +289,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
         </div>
       </> : <div className="min-h-0 flex-1 overflow-y-auto px-5 py-8">
         <p className="text-sm font-medium">{t('aiOrganization.rangeCount', { count: c.count })}</p>
+        {c.rangeSummary && <p className="mt-2 text-xs text-muted-foreground">{t('aiOrganization.rangeSummary', { assigned: c.rangeSummary.assigned, locked: c.rangeSummary.locked })}{c.rangeSummary.fullLibrary && ` · ${t('aiOrganization.crossFilters')}`}</p>}
         <div className="mt-4 divide-y divide-border">{c.scopedRepositories.slice(0, 30).map(r => <div key={r.id} className="py-2 text-xs"><p className="break-all font-medium">{r.full_name}</p><p className="mt-1 line-clamp-2 text-muted-foreground">{r.custom_description || r.ai_summary || r.description}</p></div>)}</div>
         <p className="mt-3 text-xs text-muted-foreground">{t('aiOrganization.confirmBeforeApply')}</p>
       </div>}
@@ -282,7 +299,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
         {c.busy && <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />{t('aiOrganization.working')} {draft ? `${completedCount} / ${entries.length}` : ''}</p>}
         
         {/* Prompt Presets Chips */}
-        <div className="flex flex-wrap items-center gap-1.5 pb-1">
+        {!structure && <div className="flex flex-wrap items-center gap-1.5 pb-1">
           <span className="text-[11px] font-medium text-muted-foreground mr-1">
             {isZh ? '快捷预设:' : 'Presets:'} {/* i18n-allow-literal */}
           </span>
@@ -297,22 +314,22 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
               {isZh ? preset.labelZh : preset.labelEn} {/* i18n-allow-literal */}
             </button>
           ))}
-        </div>
+        </div>}
 
         <Textarea aria-label={t('aiOrganization.instruction')} value={c.instruction} onChange={e => c.setInstruction(e.target.value)} disabled={c.busy || c.readonly} maxLength={10000} className="min-h-[60px] resize-none text-sm" placeholder={t('aiOrganization.placeholder')} />
         {draft && <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={c.replaceManual} disabled={c.busy || c.readonly} onChange={e => c.setReplaceManual(e.target.checked)} />{t('aiOrganization.replaceManual')}</label>}
         <div className="flex flex-wrap items-center gap-2">
           {c.busy ? <Button size="sm" variant="outline" onClick={c.stop}><Square className="mr-1 h-3 w-3" />{t('aiOrganization.stop')}</Button>
-            : <Button size="sm" variant={draft ? 'outline' : 'default'} disabled={!c.configId || c.readonly || (!draft && !c.count)} onClick={() => void c.generate()}><Send className="mr-1 h-3 w-3" />{t(draft ? 'aiOrganization.refine' : 'aiOrganization.generate')}</Button>}
+            : <Button size="sm" variant={draft ? 'outline' : 'default'} disabled={!c.configId || c.readonly || (!draft && !c.count && !structure)} onClick={() => void c.generate()}><Send className="mr-1 h-3 w-3" />{t(structure ? 'aiOrganization.structure.generate' : draft ? 'aiOrganization.refine' : 'aiOrganization.generate')}</Button>}
           {draft && <>
             {(draft.batches.some(b => b.status !== 'complete') || draft.status === 'interrupted') && <Button size="sm" variant="outline" disabled={c.busy || c.readonly} onClick={() => void c.retry()}><RefreshCw className="mr-1 h-3 w-3" />{t('aiOrganization.retry')}</Button>}
             {enrichIds.size > 0 && <Button size="sm" variant="outline" disabled={!editable} onClick={() => void c.enrich([...enrichIds])}>{t('aiOrganization.enrich', { count: enrichIds.size })}</Button>}
             {c.proposal?.syncError && <Button size="sm" variant="outline" disabled={c.busy || c.readonly} onClick={() => void c.retrySync()}>{t('aiOrganization.retrySync')}</Button>}
             <Button size="icon" variant="ghost" className="h-8 w-8" title={t('aiOrganization.continue')} aria-label={t('aiOrganization.continue')} onClick={() => { c.continueInWorkbench(); onOpenChange(false); }}><MessageSquare className="h-4 w-4" /></Button>
-            {draft.status === 'applied' && entries.some(e => e.status === 'success') && <Button size="sm" variant="outline" disabled={c.busy || c.readonly} onClick={() => void c.restore()}><RotateCcw className="mr-1 h-3 w-3" />{t('aiOrganization.restore')}</Button>}
+            {!structure && draft.status === 'applied' && entries.some(e => e.status === 'success') && <Button size="sm" variant="outline" disabled={c.busy || c.readonly} onClick={() => void c.restore()}><RotateCcw className="mr-1 h-3 w-3" />{t('aiOrganization.restore')}</Button>}
 
             {/* Staged Apply Button: stream ready batches during background execution */}
-            {isGenerating && readyToApply.length > 0 && (
+            {!structure && isGenerating && readyToApply.length > 0 && (
               <Button
                 size="sm"
                 className="ml-auto bg-primary text-primary-foreground shadow-xs animate-in fade-in"
@@ -325,7 +342,7 @@ export function AIOrganizationPanel({ open, onOpenChange, controller: c }: { ope
             )}
 
             {/* Standard Apply: when generation completes */}
-            {!isGenerating && selected.length > 0 && (
+            {!structure && !isGenerating && selected.length > 0 && (
               <Button
                 size="sm"
                 className="ml-auto"

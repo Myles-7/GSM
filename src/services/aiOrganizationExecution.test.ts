@@ -33,6 +33,13 @@ beforeEach(() => {
   } as AppStoreState;
 });
 describe('organization apply and restore safety', () => {
+  it('clears only-subdivide constraints when explicitly requesting reconsideration', async () => {
+    const subdivide = await editOrganizationProposal('proposal', date, { bulk: { repositoryIds: [1], action: 'subdivide' } });
+    expect(subdivide.organization?.entries[0].preserveMain).toBe(true);
+    const reconsider = await editOrganizationProposal('proposal', subdivide.updatedAt, { bulk: { repositoryIds: [1], action: 'reconsider' } });
+    expect(reconsider.organization?.entries[0]).toMatchObject({ preserveMain: false, manual: false, disposition: 'insufficient', selected: false });
+    expect(mocks.writes).toBe(0);
+  });
   it('creates only referenced categories and applies in one write, preserving personal metadata', async () => {
     const result = await applyOrganizationProposal('proposal', date);
     expect(mocks.writes).toBe(1);

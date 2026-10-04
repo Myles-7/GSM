@@ -867,7 +867,8 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
   const projects = backup.projects.map((project) => ({ ...project, id: projectIds.get(project.id) ?? project.id }));
   const proposals = backup.proposals.map((proposal) => ({
     ...proposal,
-    ...(proposal.organization ? { organization: { ...proposal.organization, status: 'imported' as const, entries: proposal.organization.entries.map(entry => ({ ...entry, selected: false })) } } : {}),
+    ...(proposal.organization ? { organization: { ...proposal.organization, status: 'imported' as const, entries: proposal.organization.entries.map(entry => ({ ...entry, selected: false })),
+      ...(proposal.organization.structureOperations ? { structureOperations: proposal.organization.structureOperations.map(op => ({ ...op, selected: false })) } : {}) } } : {}),
     id: proposalIds.get(proposal.id) ?? proposal.id,
     sessionId: sessionIds.get(proposal.sessionId) ?? proposal.sessionId,
     operations: proposal.operations.map((operation) => ({

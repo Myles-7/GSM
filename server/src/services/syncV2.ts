@@ -65,6 +65,17 @@ function validateOrganization(data: Record<string, unknown>) {
     if (order !== undefined && (!Array.isArray(order) || new Set(order).size !== order.length || order.some(id => key === 'repositoryOrder' ? !Number.isSafeInteger(id) || id <= 0 : !identifier(id)))) throw new SyncError('INVALID_ORGANIZATION');
   }
   for (const key of ['defaultCategoryOverrides', 'categoryListIdMap', 'releaseSourceSettings']) if (data[key] !== undefined && (!data[key] || typeof data[key] !== 'object' || Array.isArray(data[key]))) throw new SyncError('INVALID_ORGANIZATION');
+  const overrides = (data.defaultCategoryOverrides ?? {}) as Record<string, { mergedInto?: unknown }>;
+  for (const [source, value] of Object.entries(overrides)) {
+    if (value?.mergedInto === undefined) continue;
+    if (!identifier(value.mergedInto) || source === value.mergedInto || ['all', 'pending'].includes(value.mergedInto as string)) throw new SyncError('INVALID_ORGANIZATION');
+    const seen = new Set([source]);
+    let next: unknown = value.mergedInto;
+    while (typeof next === 'string') {
+      if (seen.has(next)) throw new SyncError('INVALID_ORGANIZATION');
+      seen.add(next); next = overrides[next]?.mergedInto;
+    }
+  }
 }
 export function validateOperation(op: Operation) {
   if (!op || !identifier(op.opId) || !identifier(op.id) || !COLLECTIONS.includes(op.collection) || !Number.isSafeInteger(op.baseVersion) || op.baseVersion < 0 || !['put', 'delete'].includes(op.kind) || (op.source && !['user', 'ai'].includes(op.source))) throw new SyncError('INVALID_OPERATION');

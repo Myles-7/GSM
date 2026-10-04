@@ -48,7 +48,7 @@ export const getAllCategories = (
         ...cat,
         name: baseName,
         keywords: baseKeywords,
-        ...(override ? { name: override.name ?? baseName, icon: override.icon ?? cat.icon, keywords: override.keywords ?? baseKeywords } : {})
+        ...(override ? { name: override.name ?? baseName, icon: override.icon ?? cat.icon, keywords: override.keywords ?? baseKeywords, ...(override.mergedInto ? { mergedInto: override.mergedInto } : {}) } : {})
       };
     });
 

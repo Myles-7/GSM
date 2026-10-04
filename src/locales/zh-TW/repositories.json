@@ -416,7 +416,8 @@
       "selected": "已选仓库",
       "current": "当前主分类",
       "pending": "待分类仓库",
-      "all": "全部筛选结果"
+      "all": "全部仓库（跨越筛选）",
+      "filtered": "当前筛选结果"
     },
     "scopeLabel": "整理范围",
     "version": "草案版本",
@@ -442,7 +443,8 @@
       "unchanged": "保持不变",
       "success": "已应用",
       "conflict": "存在冲突",
-      "restored": "已恢复"
+      "restored": "已恢复",
+      "pending": "待应用"
     },
     "clearFilter": "清除分类筛选",
     "empty": "没有仓库",
@@ -472,6 +474,69 @@
     "accountRequired": "请先连接 GitHub 账号。",
     "preview": "查看整理草案",
     "showAllCategories": "显示全部分类",
-    "onlyInvolved": "仅显示本次涉及的分类"
+    "onlyInvolved": "仅显示本次涉及的分类",
+    "purposeLabel": "整理任务",
+    "purpose": {
+      "repositories": "仓库归属",
+      "structure": "分类结构"
+    },
+    "modeLabel": "整理模式",
+    "mode": {
+      "supplement": "补齐整理",
+      "reorganize": "重新整理"
+    },
+    "flow": "移入 {{incoming}} / 移出 {{outgoing}}",
+    "flatView": "平铺预览",
+    "groupedView": "分组预览",
+    "bulkScope": "批量范围",
+    "bulkSelected": "已勾选建议",
+    "bulkVisible": "当前可见建议",
+    "mainTarget": "一级目标",
+    "subTarget": "二级目标",
+    "bulkMove": "设置目标（{{count}} 项）",
+    "quick": {
+      "keep": "保持原位置",
+      "subdivide": "只补二级",
+      "reconsider": "重新安排"
+    },
+    "subDestination": "{{name}} 的二级目标",
+    "rangeSummary": "已归类 {{assigned}} · 锁定 {{locked}}",
+    "crossFilters": "包含当前筛选之外的仓库",
+    "structure": {
+      "action": "结构操作",
+      "edit": "编辑结构",
+      "draft": "结构预览",
+      "create": "新建",
+      "rename": "改名",
+      "merge": "合并",
+      "target": "目标一级类别",
+      "newTarget": "新建合并目标",
+      "choose": "选择类别",
+      "name": "类别名称",
+      "operationName": "建议类别名称",
+      "icon": "类别图标",
+      "sources": "合并来源",
+      "add": "加入草案",
+      "fullScope": "合并包含来源与目标类别的全部仓库，不受当前页面筛选限制。",
+      "empty": "直接新建一级类别，或在下方描述要求，让 AI 提出结构建议。",
+      "impact": "涉及 {{count}} 个仓库 · 锁定 {{locked}} 项 · 未解决 {{unresolved}} 项",
+      "keywords": "目标关键词（逗号分隔）",
+      "subcategory": "{{name}} 重设计的二级类别",
+      "unresolved": "需要确认目标",
+      "acceptOriginal": "接受原分组迁入映射",
+      "reviewSummary": "影响已检查：{{count}} 个仓库。此操作将整体应用。",
+      "removed": "移除已空自建类别：{{names}}",
+      "hidden": "隐藏已空内置类别：{{names}}",
+      "review": "检查影响",
+      "confirm": {
+        "create": "确认创建一级类别",
+        "rename": "确认类别改名",
+        "merge": "确认完整合并"
+      },
+      "restore": "恢复本次结构操作",
+      "generate": "AI 结构建议 / 重设计",
+      "partial": "仅迁移选中的归属",
+      "partialNotice": "仅移动已确认的仓库归属，来源类别及子分类仍保留。"
+    }
   }
 }

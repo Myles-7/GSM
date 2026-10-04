@@ -10,6 +10,14 @@ const repositories = [
 ] as Repository[];
 const input = { repositories, selectedIds: [], categoryId: 'all', scope: 'default' as const };
 describe('organization scope', () => {
+  it('supports an explicit full library outside filters, while filtered scope remains bounded', () => {
+    expect(select({ ...input, repositories: [repositories[1]], allRepositories: repositories, scope: 'all', mode: 'reorganize' }).map(r => r.id)).toEqual([1, 2, 3, 4]);
+    expect(select({ ...input, repositories: [repositories[1]], allRepositories: repositories, scope: 'filtered', mode: 'reorganize' }).map(r => r.id)).toEqual([2]);
+  });
+  it('supplement excludes already subdivided repositories, reorganization includes them', () => {
+    expect(select({ ...input, scope: 'all', mode: 'supplement' }).map(r => r.id)).toEqual([1, 2, 4]);
+    expect(select({ ...input, mode: 'reorganize' }).map(r => r.id)).toEqual([1, 2, 3, 4]);
+  });
   it('defaults to pending globally, ungrouped in a category, and explicit selection first', () => {
     expect(select(input).map(r => r.id)).toEqual([1]);
     expect(select({ ...input, categoryId: 'tools' }).map(r => r.id)).toEqual([2]);
