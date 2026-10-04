@@ -71,8 +71,38 @@ test('diagnostic RepositoryList wrapper supports early references in development
   try { isolated._compile(code, file); assert.equal(global.gsmDiagnosticEarlyReference, isolated.exports.RepositoryList); }
   finally { if (saved === undefined) delete global.gsmDiagnosticEarlyReference; else global.gsmDiagnosticEarlyReference = saved; }
 });
-test('existing automation runtime is available without changing project dependencies', () => {
-  assert.ok(getPlaywright()._electron.launch);
+test('runtime discovery handles configured, bundled, missing and broken installations', t => {
+  const saved = process.env.GSM_PLAYWRIGHT_PATH;
+  const configured = 'gsm-test-playwright';
+  const bundled = path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+  const runtime = { _electron: { launch() {} } };
+  const calls = [];
+  const broken = Object.assign(new Error('Broken installation'), { code: 'ERR_DLOPEN_FAILED' });
+  let mode = 'configured';
+  // Exercise resolution without assuming a developer's optional installation exists in CI.
+  t.mock.method(Module, '_load', name => {
+    calls.push(name);
+    if (mode === 'configured' && name === configured || mode === 'bundled' && name === bundled) return runtime;
+    if (mode === 'broken') throw broken;
+    throw Object.assign(new Error('Fixture module not found'), { code: 'MODULE_NOT_FOUND' });
+  });
+  process.env.GSM_PLAYWRIGHT_PATH = configured;
+  try {
+    assert.equal(getPlaywright(), runtime);
+    assert.deepEqual(calls, [configured]);
+    mode = 'bundled'; calls.length = 0;
+    assert.equal(getPlaywright(), runtime);
+    assert.deepEqual(calls, [configured, 'playwright', bundled]);
+    mode = 'missing'; calls.length = 0;
+    assert.throws(getPlaywright, /Set GSM_PLAYWRIGHT_PATH.*no dependency is installed automatically/);
+    assert.deepEqual(calls, [configured, 'playwright', bundled]);
+    mode = 'broken'; calls.length = 0;
+    assert.throws(getPlaywright, error => error === broken);
+    assert.deepEqual(calls, [configured]);
+  } finally {
+    if (saved === undefined) delete process.env.GSM_PLAYWRIGHT_PATH;
+    else process.env.GSM_PLAYWRIGHT_PATH = saved;
+  }
 });
 
 test('source-map attribution preserves CPU self time without summing ancestors', async () => {
