@@ -2,15 +2,15 @@
   "recordedOn": "2026-10-04",
   "timeZone": "Asia/Shanghai",
   "kind": "source-validation",
-  "sourceCommit": "485ad725ef516d487615c26beb3a94caa2f3ae06",
+  "sourceCommit": "641b31b278282470941539c193e63ba5b027aaee",
   "baseCommit": "253b910852691f3cf0cc357246c6a31bfe1e77f6",
-  "sourceTree": "e946c671a2496305804936fed3b95b7657a4a7fc",
+  "sourceTree": "cc07a6f82e44827a6f751351446d4a9238edf2f6",
   "packageVersion": "0.8.4",
   "personalReleaseUnchanged": "P0.2.1",
   "rawSourceManifest": {
     "path": "output/source-publication-20261004/fixed-source-inputs.json",
     "nonMarkdownNonDeletedFiles": 1333,
-    "sha256": "65ed6d8c415c12a2752c27df24be9a21b0083f17eb1662d4119c21f47e4a72ab",
+    "sha256": "f0c8efa8883441ee679f3b00b6ff528c1c1626177a00a845357882212eca5529",
     "encoding": "SHA256 of JSON.stringify of sorted raw-byte manifest entries; docs and markdown excluded"
   },
   "environment": {
@@ -385,5 +385,30 @@
     "replaceDailyBuild": false,
     "deploy": false,
     "newTagOrRelease": false
+  },
+  "productSourceCommit": "485ad725ef516d487615c26beb3a94caa2f3ae06",
+  "ciPortabilityCorrection": {
+    "sourceCommit": "641b31b278282470941539c193e63ba5b027aaee",
+    "initialPrHead": "52cc8f438514538eadc127287d8cee4aed3620c3",
+    "failedRunIds": [
+      37182666231,
+      37182717029
+    ],
+    "changedFile": "scripts/diagnose-render-performance.test.cjs",
+    "productionSourceUnchanged": true,
+    "scope": "Test configured/bundled runtime discovery, missing-installation diagnostic and broken-runtime propagation using a scoped module loader; no dependency installation, skips or relaxed gates",
+    "revalidated": {
+      "node24CiGateTests": {
+        "passed": 44,
+        "failed": 0,
+        "log": "output/source-publication-20261004/ci-gates-portability.log",
+        "capturedAt": "2026-10-04T06:30:05.815Z"
+      },
+      "strictLint": {
+        "errors": 0,
+        "warnings": 0
+      }
+    },
+    "fullLatestCiRequired": true
   }
 }
