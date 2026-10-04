@@ -8,6 +8,7 @@ import { HomeApi } from './api';
 import { HomeSync } from './sync';
 import type { Capabilities, Collection, HomeRecord } from './types';
 import type { AppState, Release, Repository } from '../types';
+import { hasPendingLocalBackupRestore } from '../services/localBackupRecoveryGate';
 
 type Seed = { collection: Collection; id: string; data: Record<string, unknown> };
 let active: HomeSync | null = null;
@@ -73,6 +74,7 @@ function project(sync: HomeSync) {
 
 /** Bootstrap detection never falls back to legacy writes if the server announced a v2 workspace. */
 export async function activateDesktopHome(caps?: Capabilities): Promise<boolean> {
+  if (await hasPendingLocalBackupRestore()) throw new Error('BACKUP_RECOVERY_REQUIRED');
   if (!backend.isAvailable || !useAppStore.getState().backendApiSecret) return false;
   const api = desktopApi(); const capabilities = caps ?? await api.capabilities();
   if (!capabilities.workspace) return false;

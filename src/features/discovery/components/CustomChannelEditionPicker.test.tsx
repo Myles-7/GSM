@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeChannel } from '../custom/fixtures.test-support';
 import { localDay, visibleEditionItems, type ChannelDailyEdition } from '../custom/model';
 import type { Repository } from '../../../types';
-import { CustomChannelEditionPicker, formatNaturalDate, formatTimeLabel, groupEditionsByDate } from './CustomChannelEditionPicker';
+import { CustomChannelEditionPicker } from './CustomChannelEditionPicker';
+import { formatNaturalDate, formatTimeLabel, groupEditionsByDate } from '../custom/editionPresentation';
 
 const mocks = vi.hoisted(() => ({
   deleteEdition: vi.fn(),

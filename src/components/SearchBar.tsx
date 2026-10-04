@@ -80,6 +80,7 @@ export const SearchBar: React.FC = () => {
   const {
     searchFilters,
     repositories,
+    repositoryOrder,
     releaseSubscriptions,
     activeAIConfig,
     language,
@@ -93,6 +94,7 @@ export const SearchBar: React.FC = () => {
   } = useAppStore(useShallow((state) => ({
     searchFilters: state.searchFilters,
     repositories: state.repositories,
+    repositoryOrder: state.repositoryOrder,
     releaseSubscriptions: state.releaseSubscriptions,
     activeAIConfig: state.activeAIConfig,
     language: state.language,
@@ -112,12 +114,15 @@ export const SearchBar: React.FC = () => {
     isSearching,
     searchPhase,
     searchReport,
-    vectorScoreMapRef,
-    skipNextTextSearchRef,
+    submittedRevision,
+    relevanceSearch,
+    applySubmittedSearch,
+    clearSubmittedSearch,
+    setExplicitSearchSort,
     aiSearch,
     syncStars,
   } = useSearchActions();
-  
+
   const [showFilters, setShowFilters] = useState(false);
   const [searchQuery, setSearchQuery] = useState(searchFilters.query);
   const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
@@ -160,12 +165,12 @@ export const SearchBar: React.FC = () => {
   const openGlobalChatHistory = () => {
     window.dispatchEvent(new CustomEvent('gsm:open-global-chat-history'));
   };
-  
-  const allCategories = useMemo(() => 
+
+  const allCategories = useMemo(() =>
     getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),
     [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]
   );
-  
+
   const statusStats = useMemo(() => {
     const stats = {
       analyzed: 0,      // 已AI分析（成功）
@@ -178,7 +183,7 @@ export const SearchBar: React.FC = () => {
       locked: 0,        // 分类已锁定
       notLocked: 0,     // 分类未锁定
     };
-    
+
     repositories.forEach(repo => {
       // AI分析状态统计
       if (repo.analyzed_at && repo.analysis_failed) {
@@ -188,14 +193,14 @@ export const SearchBar: React.FC = () => {
       } else {
         stats.notAnalyzed++;
       }
-      
+
       // 订阅状态统计
       if (releaseSubscriptions.has(repo.id)) {
         stats.subscribed++;
       } else {
         stats.notSubscribed++;
       }
-      
+
       // 自定义状态统计
       if (isRepoCustomized(repo, allCategories)) {
         stats.edited++;
@@ -211,7 +216,7 @@ export const SearchBar: React.FC = () => {
         stats.notLocked++;
       }
     });
-    
+
     return stats;
   }, [repositories, releaseSubscriptions, allCategories]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
@@ -224,7 +229,8 @@ export const SearchBar: React.FC = () => {
   const filterChipActiveClass = 'is-active font-medium';
   const filterChipInactiveClass = '';
   const filterTagBaseClass = 'linear-filter-chip px-3 py-1.5 text-sm';
-  const platformCounts = useMemo(() => {
+
+  const platformCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const repo of repositories) {
       const list = getCanonicalPlatforms(repo.ai_platforms);
@@ -280,32 +286,14 @@ export const SearchBar: React.FC = () => {
 
   useEffect(() => {
     const performSearch = async () => {
-      // Skip if vector search just set results
-      if (skipNextTextSearchRef.current) {
-        skipNextTextSearchRef.current = false;
+      const submitted = applySubmittedSearch(searchFilters.query, applyFilters);
+      if (submitted !== null) {
+        setSearchResults(submitted);
         return;
       }
-      // Check if vector search is still enabled
-      const vsEnabled = useAppStore.getState().vectorSearchConfig.enabled;
-      if (!vsEnabled) {
-        vectorScoreMapRef.current = null;
-      }
       if (!searchFilters.query) {
-        vectorScoreMapRef.current = null;
         performBasicFilter();
-      } else if (vectorScoreMapRef.current && vectorScoreMapRef.current.query === searchFilters.query && vsEnabled) {
-        // Vector results exist for this exact query and vector search is enabled — re-apply filters and re-sort by score
-        const { scores } = vectorScoreMapRef.current;
-        const reFiltered = applyFilters(repositories.filter(r => scores.has(String(r.id))));
-        const reSorted = reFiltered.sort(
-          (a, b) => (scores.get(String(b.id)) ?? 0) - (scores.get(String(a.id)) ?? 0)
-        );
-        setSearchResults(reSorted);
       } else {
-        // Query changed or vector search disabled — clear stale ref and do text search
-        vectorScoreMapRef.current = null;
-      }
-      if (!vectorScoreMapRef.current) {
         const textResults = performBasicTextSearch(repositories, searchFilters.query);
         const finalFiltered = applyFilters(textResults);
         setSearchResults(finalFiltered);
@@ -316,7 +304,7 @@ export const SearchBar: React.FC = () => {
     // Search helpers are intentionally kept as local closures; the explicit deps below
     // cover the state they read without causing a search loop on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchFilters.languages, searchFilters.tags, searchFilters.platforms, searchFilters.licenses, searchFilters.isAnalyzed, searchFilters.isSubscribed, searchFilters.isEdited, searchFilters.isCategoryLocked, searchFilters.analysisFailed, searchFilters.minStars, searchFilters.maxStars, searchFilters.sortBy, searchFilters.sortOrder, searchFilters.query, searchFilters.healthArchived, searchFilters.healthRecentActivity, searchFilters.healthHasLicense, repositories, releaseSubscriptions, allCategories]);
+  }, [submittedRevision, searchFilters.languages, searchFilters.tags, searchFilters.platforms, searchFilters.licenses, searchFilters.isAnalyzed, searchFilters.isSubscribed, searchFilters.isEdited, searchFilters.isCategoryLocked, searchFilters.analysisFailed, searchFilters.minStars, searchFilters.maxStars, searchFilters.sortBy, searchFilters.sortOrder, searchFilters.query, searchFilters.healthArchived, searchFilters.healthRecentActivity, searchFilters.healthHasLicense, repositories, repositoryOrder, releaseSubscriptions, allCategories]);
 
   // Real-time search effect for repository name matching
   useEffect(() => {
@@ -353,7 +341,7 @@ export const SearchBar: React.FC = () => {
 
   const performRealTimeSearch = (query: string) => {
     const startTime = performance.now();
-    
+
     if (!query.trim()) {
       performBasicFilter();
       return;
@@ -372,7 +360,7 @@ export const SearchBar: React.FC = () => {
     // Apply other filters
     const finalFiltered = applyFilters(filtered);
     setSearchResults(finalFiltered);
-    
+
     const endTime = performance.now();
     console.log(`Real-time search completed in ${(endTime - startTime).toFixed(2)}ms`);
   };
@@ -389,6 +377,7 @@ export const SearchBar: React.FC = () => {
     const filtered = applyRepoFilters(repos, searchFilters, {
       releaseSubscriptions,
       allCategories,
+      repositoryOrder,
     });
 
     // 如果分类锁定筛选导致结果为0，自动清除该筛选条件（UI 侧副作用保留在此）
@@ -396,7 +385,7 @@ export const SearchBar: React.FC = () => {
       const withoutLock = applyRepoFilters(
         repos,
         { ...searchFilters, isCategoryLocked: undefined },
-        { releaseSubscriptions, allCategories }
+        { releaseSubscriptions, allCategories, repositoryOrder }
       );
       if (withoutLock.length > 0) {
         console.log('分类锁定筛选导致结果为空，自动清除该筛选条件');
@@ -404,7 +393,8 @@ export const SearchBar: React.FC = () => {
         return sortRepositories(
           withoutLock,
           searchFilters.sortBy,
-          searchFilters.sortOrder
+          searchFilters.sortOrder,
+          repositoryOrder
         );
       }
     }
@@ -433,6 +423,7 @@ export const SearchBar: React.FC = () => {
   };
 
   const handleClearSearch = () => {
+    clearSubmittedSearch();
     setSearchQuery('');
     setIsRealTimeSearch(false);
     setSearchFilters({ query: '' });
@@ -440,6 +431,7 @@ export const SearchBar: React.FC = () => {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
+    clearSubmittedSearch();
     setSearchQuery(value);
 
     if (!value.trim() && searchFilters.query) {
@@ -457,10 +449,10 @@ export const SearchBar: React.FC = () => {
     } else if (value && value.length >= 2) {
       // Show suggestions when user types 2+ characters
       const filteredSuggestions = searchSuggestions.filter(suggestion =>
-        suggestion.toLowerCase().includes(value.toLowerCase()) && 
+        suggestion.toLowerCase().includes(value.toLowerCase()) &&
         suggestion.toLowerCase() !== value.toLowerCase()
       ).slice(0, 5);
-      
+
       if (filteredSuggestions.length > 0) {
         setShowSuggestions(true);
         setShowSearchHistory(false);
@@ -494,6 +486,7 @@ export const SearchBar: React.FC = () => {
   };
 
   const handleHistoryItemClick = (historyQuery: string) => {
+    clearSubmittedSearch();
     setSearchQuery(historyQuery);
     setIsRealTimeSearch(false);
     setSearchFilters({ query: historyQuery });
@@ -505,6 +498,7 @@ export const SearchBar: React.FC = () => {
   };
 
   const handleSuggestionClick = (suggestion: string) => {
+    clearSubmittedSearch();
     setSearchQuery(suggestion);
     setIsRealTimeSearch(true);
     setShowSuggestions(false);
@@ -870,15 +864,16 @@ export const SearchBar: React.FC = () => {
 
         {/* Sort Controls + Sync Button */}
         <div className="relative z-30 flex shrink-0 items-center gap-1">
+          {relevanceSearch && <span className="text-xs text-muted-foreground">{language.startsWith('zh') ? '相关性排序' : 'Relevance order'}</span>}
           <SortByDropdown
             value={searchFilters.sortBy}
-            onChange={(value) => setSearchFilters({ sortBy: value })}
+            onChange={(value) => { setExplicitSearchSort(); setSearchFilters({ sortBy: value }); }}
           />
           <Button
             disabled={searchFilters.sortBy === 'custom'}
-            onClick={() => setSearchFilters({
+            onClick={() => { setExplicitSearchSort(); setSearchFilters({
               sortOrder: searchFilters.sortOrder === 'desc' ? 'asc' : 'desc'
-            })}
+            }); }}
             variant="ghost"
             aria-label={searchFilters.sortOrder === 'desc' ? t('searchBar.sort-descending') : t('searchBar.sort-ascending')}
             className="ui-button px-3 py-2 text-sm"
@@ -973,8 +968,8 @@ export const SearchBar: React.FC = () => {
               {/* 已AI分析 - 仅在存在已分析仓库或当前已选择时显示，且与"分析失败"互斥 */}
               {(statusStats.analyzed > 0 || searchFilters.isAnalyzed === true) && searchFilters.analysisFailed !== true && (
                 <Button
-                  onClick={() => setSearchFilters({ 
-                    isAnalyzed: searchFilters.isAnalyzed === true ? undefined : true 
+                  onClick={() => setSearchFilters({
+                    isAnalyzed: searchFilters.isAnalyzed === true ? undefined : true
                   })}
                   aria-pressed={searchFilters.isAnalyzed === true}
                   title={t('searchBar.show-repositories-with-ai-analysis-completed')}
@@ -993,8 +988,8 @@ export const SearchBar: React.FC = () => {
               {/* 未AI分析 - 仅在存在未分析仓库时显示 */}
               {statusStats.notAnalyzed > 0 && (
                 <Button
-                  onClick={() => setSearchFilters({ 
-                    isAnalyzed: searchFilters.isAnalyzed === false ? undefined : false 
+                  onClick={() => setSearchFilters({
+                    isAnalyzed: searchFilters.isAnalyzed === false ? undefined : false
                   })}
                   aria-pressed={searchFilters.isAnalyzed === false}
                   title={t('searchBar.show-repositories-without-ai-analysis')}
@@ -1013,8 +1008,8 @@ export const SearchBar: React.FC = () => {
               {/* 分析失败 - 仅在存在失败仓库或当前已选择时显示，且与"已AI分析"互斥 */}
               {(statusStats.failed > 0 || searchFilters.analysisFailed === true) && searchFilters.isAnalyzed !== true && (
                 <Button
-                  onClick={() => setSearchFilters({ 
-                    analysisFailed: searchFilters.analysisFailed === true ? undefined : true 
+                  onClick={() => setSearchFilters({
+                    analysisFailed: searchFilters.analysisFailed === true ? undefined : true
                   })}
                   aria-pressed={searchFilters.analysisFailed === true}
                   title={t('searchBar.show-repositories-with-failed-ai-analysis')}
@@ -1033,8 +1028,8 @@ export const SearchBar: React.FC = () => {
               {/* 已订阅Release - 仅在存在已订阅仓库或当前已选择时显示 */}
               {(statusStats.subscribed > 0 || searchFilters.isSubscribed === true) && (
                 <Button
-                  onClick={() => setSearchFilters({ 
-                    isSubscribed: searchFilters.isSubscribed === true ? undefined : true 
+                  onClick={() => setSearchFilters({
+                    isSubscribed: searchFilters.isSubscribed === true ? undefined : true
                   })}
                   aria-pressed={searchFilters.isSubscribed === true}
                   title={t('searchBar.show-repositories-subscribed-to-release-notifica')}
@@ -1053,8 +1048,8 @@ export const SearchBar: React.FC = () => {
               {/* 未订阅Release - 仅在存在未订阅仓库时显示 */}
               {statusStats.notSubscribed > 0 && (
                 <Button
-                  onClick={() => setSearchFilters({ 
-                    isSubscribed: searchFilters.isSubscribed === false ? undefined : false 
+                  onClick={() => setSearchFilters({
+                    isSubscribed: searchFilters.isSubscribed === false ? undefined : false
                   })}
                   aria-pressed={searchFilters.isSubscribed === false}
                   title={t('searchBar.show-repositories-not-subscribed-to-releases')}

@@ -12,7 +12,7 @@ import { createPreferenceSlice } from './slices/preferenceSlice';
 import { createRepositorySlice } from './slices/repositorySlice';
 import { createTimelineSlice } from './slices/timelineSlice';
 import type { AppStoreState } from './types';
-import { assertRepositoryIdentityWritable } from '../services/repositoryIdentityGate';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../services/repositoryIdentityGate';
 
 export { getAllCategories, sortCategoriesByOrder } from './helpers/categoryHelpers';
 export { normalizePersistedState } from './normalizers/persistedState';
@@ -54,3 +54,9 @@ useAppStore.setState = (...args) => {
 };
 /** Restricted synchronous checkpoint path; never an async global writer bypass. */
 export const setIdentityMigrationStoreState = (patch: Partial<AppStoreState>) => identityInternalSetState(patch);
+/** Backup checkpoints cannot bypass another maintenance operation or switch accounts. */
+export function setLocalBackupRestoreStoreState(account: string, journalId: string, patch: Partial<AppStoreState>): void {
+  assertRepositoryMaintenanceOwner(account, journalId);
+  if ((useAppStore.getState().user?.id?.toString() ?? 'global') !== account || !journalId.startsWith('local-backup:')) throw new Error('BACKUP_ACCOUNT_CHANGED');
+  identityInternalSetState(patch);
+}

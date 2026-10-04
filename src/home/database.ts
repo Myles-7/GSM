@@ -1,7 +1,7 @@
 import type { Collection, HomeOperation, HomeRecord, PendingOperation } from './types';
 import { z } from 'zod';
 import { PendingTaskRequestError } from './taskSubmission';
-import { assertRepositoryIdentityWritable } from '../services/repositoryIdentityGate';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../services/repositoryIdentityGate';
 
 const collectionSchema = z.enum(['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions']);
 const recordSchema = z.object({ collection: collectionSchema, id: z.string().min(1), data: z.record(z.string(), z.unknown()).nullable(), version: z.number().int().nonnegative(), deleted: z.boolean().optional(), seq: z.number().int().nonnegative().optional() });
@@ -13,6 +13,7 @@ const experienceSchema = z.object({preferences:preferencesSchema.optional(),them
 const backupSchema = z.object({ format: z.literal('gsm-mobile-backup'), version: z.literal(1), workspaceId: z.string().min(1), githubUserId: z.number().int().positive(), createdAt: z.string(), records: z.array(recordSchema), pending: z.array(operationSchema), localExperience:experienceSchema.optional() });
 export type BackupExperience = z.infer<typeof experienceSchema>;
 type BackupIdentity = { workspaceId: string; githubUserId: number };
+export interface LocalRestoreOperation { operation: PendingOperation; before: HomeRecord | null }
 // Credentials and device configuration are never exported, including legacy credential fields.
 const secretField = /api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|github[_-]?token|authorization|password|secret|token|credential|cookie|^ct0$/i;
 const backupJson = (value: unknown) => JSON.stringify(value, (name, item) => secretField.test(name) ? undefined : item);
@@ -58,6 +59,11 @@ export class HomeDatabase {
   async allRecords(): Promise<HomeRecord[]> {
     const db = await this.open();
     return result(db.transaction('records').objectStore('records').getAll());
+  }
+  /** Includes tombstones: callers need their version for conflict-safe edits. */
+  async getRecord(collection: Collection, id: string): Promise<HomeRecord | undefined> {
+    const db = await this.open();
+    return result(db.transaction('records').objectStore('records').get(key(collection, id)));
   }
   async pending(): Promise<PendingOperation[]> {
     const db = await this.open(); return result(db.transaction('outbox').objectStore('outbox').getAll());
@@ -193,6 +199,52 @@ export class HomeDatabase {
     tx.objectStore('outbox').put(operation, recordKey);
     tx.objectStore('records').put({ collection, id, data, version: operation.baseVersion, deleted: data === null }, recordKey);
     await done;
+  }
+  /** Only a backup-owned gate can stage/undo these records. No canonical shadow is replaced. */
+  async stageLocalRestore(account: string, journalId: string, operations: LocalRestoreOperation[], undo = false): Promise<void> {
+    const owner = () => assertRepositoryMaintenanceOwner(account, journalId);
+    owner();
+    if (!journalId.startsWith('local-backup:')) throw new Error('BACKUP_JOURNAL_INVALID');
+    const markerKey = `local-restore:${journalId}`;
+    const db = await this.open(); owner();
+    const tx = db.transaction(['records', 'shadow', 'outbox', 'meta'], 'readwrite'); const done = complete(tx);
+    try {
+      const meta = tx.objectStore('meta'), records = tx.objectStore('records'), outbox = tx.objectStore('outbox');
+      const [inFlight, task, marker, pending] = await Promise.all([
+        result(meta.get('inFlight')), result(meta.get('unconfirmedTask')), result(meta.get(markerKey)), result(outbox.getAll()) as Promise<PendingOperation[]>,
+      ]);
+      owner();
+      if (inFlight || task) throw new Error('BACKUP_UNCONFIRMED_OPERATIONS');
+      const serialized = JSON.stringify(operations);
+      if (marker !== undefined && marker !== serialized) throw new Error('BACKUP_HOME_CHECKPOINT_MISMATCH');
+      if (undo && marker === undefined) { await done; return; }
+      if (new Set(operations.map(item => item.operation.key)).size !== operations.length) throw new Error('BACKUP_DUPLICATE_OPERATION');
+      const ownIds = new Set(operations.map(item => item.operation.opId));
+      if (pending.some(item => !ownIds.has(item.opId)) || (!marker && pending.length)) throw new Error('BACKUP_PENDING_OPERATIONS');
+      for (const { operation: op, before } of operations) {
+        if (!['repositories', 'organization'].includes(op.collection) || (op.collection === 'organization' && op.id !== 'default') || op.key !== key(op.collection, op.id)) throw new Error('BACKUP_HOME_SCOPE_INVALID');
+        const [current, queued, shadow] = await Promise.all([
+          result(records.get(op.key)) as Promise<HomeRecord | undefined>, result(outbox.get(op.key)) as Promise<PendingOperation | undefined>,
+          result(tx.objectStore('shadow').get(op.key)) as Promise<HomeRecord | undefined>,
+        ]);
+        owner();
+        const target: HomeRecord = { collection: op.collection, id: op.id, data: op.data ?? null, version: op.baseVersion, deleted: op.kind === 'delete' };
+        if (op.baseVersion !== (shadow?.version ?? 0)) throw new Error('BACKUP_HOME_VERSION_DRIFT');
+        if (marker !== undefined) {
+          if (JSON.stringify(queued) !== JSON.stringify(op) || JSON.stringify(current) !== JSON.stringify(target)) throw new Error('BACKUP_HOME_DISPATCHED_OR_CHANGED');
+        } else if (JSON.stringify(current ?? null) !== JSON.stringify(before)) throw new Error('BACKUP_HOME_RECORD_DRIFT');
+        if (undo) { if (before) records.put(before, op.key); else records.delete(op.key); outbox.delete(op.key); }
+        else if (marker === undefined) { outbox.put(op, op.key); records.put(target, op.key); }
+      }
+      if (undo) meta.delete(markerKey); else meta.put(serialized, markerKey);
+      await done;
+    } catch (error) { void done.catch(() => {}); try { tx.abort(); } catch { /* already complete */ } throw error; }
+  }
+  async finishLocalRestore(account: string, journalId: string): Promise<void> {
+    assertRepositoryMaintenanceOwner(account, journalId);
+    const db = await this.open(); assertRepositoryMaintenanceOwner(account, journalId);
+    const tx = db.transaction('meta', 'readwrite'); const done = complete(tx);
+    tx.objectStore('meta').delete(`local-restore:${journalId}`); await done;
   }
   async applyRemote(rows: HomeRecord[], cursor: number, reset = false): Promise<void> {
     const db = await this.open(); const tx = db.transaction(['records', 'shadow', 'outbox', 'meta'], 'readwrite'); const done = complete(tx);

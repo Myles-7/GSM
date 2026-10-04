@@ -7,6 +7,7 @@ import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
 import { RepositoryHealthPanel } from './RepositoryHealthPanel';
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
+import { isRepeatedRepositoryProblem, repositoryDetailFields } from '../lib/repositoryReadingPresentation';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
@@ -105,14 +106,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     setCopyFailed(!result.success);
     if (result.success) { setCopiedCommand(text); setTimeout(() => setCopiedCommand(null), 2000); }
   };
-  const overviewText = (repository?.custom_description ?? repository?.ai_summary ?? repository?.description ?? '').trim().toLowerCase();
-  const isProblemRedundant = Boolean(
-    details?.problem &&
-    overviewText &&
-    (details.problem.trim().toLowerCase() === overviewText ||
-      overviewText.includes(details.problem.trim().toLowerCase()) ||
-      details.problem.trim().toLowerCase().includes(overviewText))
-  );
+  const isProblemRedundant = isRepeatedRepositoryProblem(details?.problem, summary);
 
   const iconButton = (label: string, handler: () => void, icon: React.ReactNode, disabled = false) =>
     <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" title={label} aria-label={label} onClick={handler} disabled={disabled}>{icon}</Button>;
@@ -166,9 +160,9 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
         {(['problem', 'features', 'scenarios', 'architecture', 'deployment', 'cost', 'maintenance'] as const).filter(key => {
           if (detailTab === 'overview') {
             if (key === 'problem' && isProblemRedundant) return false;
-            return ['problem', 'features', 'scenarios'].includes(key);
+            return (repositoryDetailFields.overview as readonly string[]).includes(key);
           }
-          if (detailTab === 'usage') return ['architecture', 'deployment', 'cost'].includes(key);
+          if (detailTab === 'usage') return (repositoryDetailFields.usage as readonly string[]).includes(key);
           return key === 'maintenance';
         }).filter(key => Array.isArray(details[key]) ? details[key].length > 0 : Boolean(details[key]?.trim())).map((key) => <details key={key} open={detailTab === 'overview'} className="border-t pt-3">
           <summary className="mb-2 cursor-pointer text-sm font-semibold">{t(`details.${key}`)}</summary>

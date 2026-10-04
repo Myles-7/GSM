@@ -24,3 +24,10 @@ export function releaseRepositoryIdentityWrites(accountId: string): void {
   if (typeof localStorage !== 'undefined') localStorage.removeItem(prefix + accountId);
   held.delete(accountId);
 }
+
+/** A scoped maintenance writer must own the persistent gate, including after reload. */
+export function assertRepositoryMaintenanceOwner(accountId: string, journalId: string): void {
+  if (typeof localStorage === 'undefined' || localStorage.getItem(prefix + accountId) !== journalId) {
+    throw new Error('REPOSITORY_MAINTENANCE_OWNER_MISMATCH');
+  }
+}

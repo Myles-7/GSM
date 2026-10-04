@@ -1,3 +1,5 @@
+import type { RepositoryDetailsAnalysis } from '../types/repositoryDetails';
+
 export const CANONICAL_PLATFORMS = [
   'windows',
   'macos',
@@ -83,4 +85,13 @@ export function getPlatformDisplayName(platform: string): string {
     return PLATFORM_NAME_MAP[norm];
   }
   return PLATFORM_NAME_MAP[platform.toLowerCase()] ?? platform;
+}
+
+/** Preserve the existing combined filter while details keep three separate dimensions. */
+export function platformsFromDetails(details: Pick<RepositoryDetailsAnalysis, 'platforms' | 'software_forms' | 'deployment_modes'>): string[] {
+  return getCanonicalPlatforms([
+    ...(details.platforms ?? []),
+    ...(details.software_forms ?? []).filter(form => form === 'cli' || form === 'web'),
+    ...(details.deployment_modes?.includes('container') ? ['docker'] : []),
+  ]).map(platform => details.platforms?.find(raw => normalizePlatform(raw) === platform) ?? platform);
 }

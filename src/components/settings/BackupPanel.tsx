@@ -2,7 +2,7 @@
 import { TranslateFn } from '../../i18n/useT';
 import { Button } from '../ui/button';
 import React from 'react';
-import { Download, Upload, RefreshCw, Cloud, AlertCircle } from 'lucide-react';
+import { Download, Upload, RefreshCw, Cloud, AlertCircle, HardDrive } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { IncludeKeysToggle } from './IncludeKeysToggle';
 import { useBackupActions } from '../../features/settings/hooks/useBackupActions';
@@ -26,6 +26,19 @@ export const BackupPanel: React.FC<BackupPanelProps> = ({ t }) => {
         </h3>
       </div>
 
+      <section className="rounded-lg border border-border bg-background p-4 sm:p-5">
+        <div className="flex items-start gap-3">
+          <HardDrive className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0">
+            <h4 className="font-medium text-foreground">{ux('settingsUx.localBackup')}</h4>
+            <p className="mt-1 text-sm text-muted-foreground">{ux('settingsUx.localBackupHint')}</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={() => window.dispatchEvent(new CustomEvent('gsm:navigate-to-settings-tab', { detail: { tab: 'data' } }))}>
+              {ux('settingsUx.openLocalBackup')}
+            </Button>
+          </div>
+        </div>
+      </section>
+
       {!activeConfig && (
         <div className="p-4 bg-muted dark:bg-muted/40 rounded-lg border border-border dark:border-border">
           <div className="flex items-start space-x-3">
@@ -35,7 +48,7 @@ export const BackupPanel: React.FC<BackupPanelProps> = ({ t }) => {
                 {t('app:backupPanel.please-configure-and-activate-webdav-service-fir')}
               </p>
               <p className="text-xs text-muted-foreground dark:text-muted-foreground mt-1">
-                {t('app:backupPanel.backup-and-restore-features-require-webdav-servi')}
+                {ux('settingsUx.webdavBackupHint')}
               </p>
               <Button variant="outline" size="sm" className="mt-3" onClick={() => window.dispatchEvent(new CustomEvent('gsm:navigate-to-settings-tab', { detail: { tab: 'webdav' } }))}>{ux('settingsUx.configureWebdav')}</Button>
             </div>

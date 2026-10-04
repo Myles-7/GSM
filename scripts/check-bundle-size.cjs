@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DIST_ASSETS_DIR = path.resolve('dist/assets');
+const DIST_ASSETS_DIR = path.resolve(process.argv[2] || 'dist', 'assets');
 const MAX_BUNDLE_KIB = 3000;
 const LEGACY_ASSET_PATTERN = /-legacy-.*\.js$/;
 
@@ -15,7 +15,7 @@ const legacyEntries = fs
   .filter((fileName) => LEGACY_ASSET_PATTERN.test(fileName));
 
 if (legacyEntries.length === 0) {
-  console.error('Bundle budget check failed: no legacy entry was generated in dist/assets.');
+  console.error(`Bundle budget check failed: no legacy entry was generated in ${DIST_ASSETS_DIR}.`);
   process.exit(1);
 }
 

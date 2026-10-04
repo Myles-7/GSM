@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.app.json",
+  "include": ["render-performance-data.ts", "render-performance-renderer.ts", "ai-ux-audit.ts", "../../src/vite-env.d.ts"]
+}

@@ -9,12 +9,11 @@ import { getPlatformDisplayName } from "./platformMeta";
 import {
   RepositoryLanguageStars,
   RepositorySoftwareForms,
-  repositoryListDescriptionClass,
-  repositoryListSurfaceClass,
 } from "./RepositoryListPresentation";
 import { Button } from "./ui/button";
 import { RepositoryAnalysisFreshness } from './RepositoryAnalysisFreshness';
 import { applyRepositoryAnalysisAsset, useRepositoryAnalysisAssets } from '../services/repositoryAnalysisAssets';
+import { repositoryNameParts, repositoryListDescriptionClass, repositoryListSurfaceClass } from '../lib/repositoryReadingPresentation';
 
 interface Props {
   repo: Repository;
@@ -44,6 +43,7 @@ export function RepositoryTextBlock({
   if (account !== undefined) repo = applyRepositoryAnalysisAsset(String(account), repo, language);
   const zh = language.startsWith("zh");
   const [avatarFailed, setAvatarFailed] = useState(false);
+  const identity = repositoryNameParts(repo.full_name);
   const details = readRepositoryDetails(repo.ai_details);
   const date = Date.parse(repo.pushed_at || repo.updated_at);
   const license =
@@ -86,13 +86,13 @@ export function RepositoryTextBlock({
           />
         ) : (
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium">
-            {repo.owner.login.slice(0, 2).toUpperCase()}
+            {identity.initials}
           </span>
         )}
         <div className="min-w-0 flex-1 basis-28">
-          <h3 className="break-all text-base font-semibold">{repo.name}</h3>
+          <h3 className="break-all text-base font-semibold">{identity.name}</h3>
           <p className="break-all text-sm text-muted-foreground">
-            {repo.owner.login}
+            {identity.owner}
           </p>
         </div>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1">

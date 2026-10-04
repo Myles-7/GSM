@@ -46,8 +46,8 @@ export const GeneralPanel: React.FC<GeneralPanelProps> = ({ t }) => {
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground dark:text-muted-foreground">
             {user?.login
-              ? t('generalPanel.account-token-hint', { login: user.login })
-              : t('generalPanel.token-hint')}
+              ? t('settings:generalPanel.account-token-hint', { login: user.login })
+              : t('settings:generalPanel.token-hint')}
           </p>
           <div className="space-y-2">
             <Label htmlFor="settings-github-token">GitHub Personal Access Token</Label>
@@ -139,8 +139,8 @@ export const GeneralPanel: React.FC<GeneralPanelProps> = ({ t }) => {
             <CardTitle>{t('generalPanel.check-for-updates')}</CardTitle>
           </div>
         </CardHeader>
-        <CardContent className="flex items-center justify-between">
-          <div>
+        <CardContent className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="mb-1 text-sm text-muted-foreground dark:text-muted-foreground">{t('generalPanel.current-version-v-version', { version: version })}</p>
             <p className="text-xs text-muted-foreground dark:text-muted-foreground">{t('generalPanel.check-if-a-new-version-is-available')}</p>
           </div>

@@ -1,0 +1,2 @@
+# Preserve this legacy mixed-ending file until a separate normalization change.
+src/components/SearchBar.tsx -text
