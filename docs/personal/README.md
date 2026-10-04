@@ -1,6 +1,11 @@
 # 个人版仓库与基线记录
 
-记录日期：2026-10-02（Asia/Shanghai）。
+当前源码记录日期：2026-10-04（Asia/Shanghai）；下文保留原交付历史。
+
+本轮源码基线为 `485ad725ef516d487615c26beb3a94caa2f3ae06`，
+通过 PR 和两项必需 CI 向 `personal/main` 集成；验收和恢复方法见
+[2026-10-04 源码交付](upgrades/2026-10-04-source-publication.md)。
+package 仍为 0.8.4，既有个人发行与日常运行记录保持 P0.2.1；本次没有替换日常构建或发布安装包。
 
 ## 当前迁移状态
 
@@ -17,10 +22,10 @@ P0.2.0 已快进合入 `D:/桌面/GSM`，日常只需这个目录和已有 `GSM-
 常用入口加载构建后的 file-origin；5174 是保留的独立开发入口，不能混用两套存储。
 P0.2.1 已同时修正遗留桌面快捷方式，关闭自动上游更新提示；维护记录见
 [桌面启动修复](upgrades/P0.2.1-desktop-startup.md)。本维护版本随 2026-10-03 源码集成推送个人仓库。
-当前个人交付分支为 `personal/main`，源码集成提交为
+个人交付分支为 `personal/main`，2026-10-03 的历史源码集成提交为
 `fda2d9aeeeb7438c83d53271c83581ed426d8dd8`，不代表已发布新桌面安装包。
 个人版支持中文和英语；分支与检查规则见[仓库治理](repository-governance.md)，
-本轮验证范围见[源码交付](upgrades/2026-10-03-source-publication.md)。
+该轮验证范围见[2026-10-03 源码交付](upgrades/2026-10-03-source-publication.md)。
 原账号、仓库 AI/分类及 Workbench 历史已通过实际生产界面验证；常用 Store 为 v17，
 本机服务为 migration 4，身份 dry-run 无候选，未执行历史重键或远端向量部署。
 完整记录见 [本机交付](upgrades/P0.2.0-rollout.md)。恢复材料不属于运行依赖；

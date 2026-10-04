@@ -1,708 +1,348 @@
-# GithubStarsManager 海量数据（千级 Stars）虚拟化与功耗控制分析报告
+# GithubStarsManager 多页面大量内容卡顿、按需虚拟化与功耗分析
 
-> **文档定位**：技术架构诊断与改造实施方案
-> **审查方向**：千级 Stars 海量数据虚拟化、状态树细粒度响应与后台功耗治理
-> **归档路径**：`docs/product/GSM_海量数据虚拟化与功耗控制分析.md`
+> **阶段 4～8 代码更新（2026-10-03）**：本轮阶段 4～8 未增加虚拟化/Worker/warm store。启动 trace 仍有 grid 几何读取及首批 50 卡挂载成本，不能把启动单点改善描述为 DOM 瓶颈已解决。 详见 [连续开发交付报告](GSM_阶段4至8连续开发交付报告.md)。
 
----
-
-## 目录
-- [1. 审查背景与核心定位](#1-审查背景与核心定位)
-- [2. DOM 与内存审计（3,000 ~ 5,000 规模基准）](#2-dom-与内存审计3000--5000-规模基准)
-  - [2.1 单卡片 DOM 节点解构与膨胀核算](#21-单卡片-dom-节点解构与膨胀核算)
-  - [2.2 现有 GroupBatch 瀑布流的假优化陷阱](#22-现有-groupbatch-瀑布流的假优化陷阱)
-  - [2.3 渲染掉帧曲线与主线程阻塞 (Frame Jank Curve)](#23-渲染掉帧曲线与主线程阻塞-frame-jank-curve)
-- [3. 状态树与渲染性能审查：Zustand 细粒度隔离](#3-状态树与渲染性能审查zustand-细粒度隔离)
-  - [3.1 核心缺陷 1：useRepositoryCardActions 响应式订阅全量 repositories 数组](#31-核心缺陷-1userepositorycardactions-响应式订阅全量-repositories-数组)
-  - [3.2 核心缺陷 2：全量 Releases 数组在 render 周期线性检索](#32-核心缺陷-2全量-releases-数组在-render-周期线性检索)
-  - [3.3 细粒度 Selector 与回调即时取值优化](#33-细粒度-selector-与回调即时取值优化)
-- [4. TanStack Virtual 虚拟化重构方案](#4-tanstack-virtual-虚拟化重构方案)
-  - [4.1 多列自适应网格与分组折叠的虚拟化挑战](#41-多列自适应网格与分组折叠的虚拟化挑战)
-  - [4.2 核心设计：行切片分块（Chunked Row Virtualization）与扁平流](#42-核心设计行切片分块chunked-row-virtualization与扁平流)
-  - [4.3 完整代码实现：VirtualRepositoryGrid.tsx](#43-完整代码实现virtualrepositorygridtsx)
-  - [4.4 接入 RepositoryGroups 与 RepositoryList 的平滑替换方案](#44-接入-repositorygroups-与-repositorylist-的平滑替换方案)
-- [5. 后台轮询与功耗治理策略](#5-后台轮询与功耗治理策略)
-  - [5.1 当前 5s 轮询逻辑的致命缺陷诊断](#51-当前-5s-轮询逻辑的致命缺陷诊断)
-  - [5.2 自适应智能同步状态机（Adaptive Sync FSM）](#52-自适应智能同步状态机adaptive-sync-fsm)
-  - [5.3 Focus-Aware 窗口感知与指数退避实现](#53-focus-aware-窗口感知与指数退避实现)
-  - [5.4 服务端 ETag / HTTP 304 条件请求改造](#54-服务端-etag--http-304-条件请求改造)
-  - [5.5 完整代码改造 Diff](#55-完整代码改造-diff)
-- [6. 改造前后核心指标全景对照](#6-改造前后核心指标全景对照)
-- [7. 落地路线与依赖安装指引](#7-落地路线与依赖安装指引)
+> **文档定位**：仅本机 Windows 的当前卡顿诊断、计算治理与按需虚拟化。
+> **用户决策**：保留现有本机 Home；不扩展远程部署或跨设备同步。本轮只改文档。
+> **校准日期**：2026-10-03
+> **代码基线**：当前工作区 `package.json` 版本 `0.8.4` 及现有 Repository / Home Sync 实现
+> **实施原则**：先消除便宜且确定的重复工作，再引入真正的 windowing；同步侧优先向 Home Sync v2 收敛，不继续扩张 legacy 全量轮询协议。
 
 ---
 
-## 1. 审查背景与核心定位
+## 1. 现状校准 / 修订说明
 
-GithubStarsManager (GSM) 定位于高阶开发者的 GitHub 星标资产管理中枢。当活跃用户的 Star 仓库规模达到 **3,000 ~ 5,000 个** 时，系统暴露出了三大严重的系统级架构瓶颈：
-1. **渲染管线过载与 DOM 爆炸**：`RepositoryGrid.tsx` 与平铺视图直接渲染全量卡片，或使用累进式分页哨兵，旧 DOM 从不卸载。
-2. **状态树过度订阅**：Zustand Store 中的全量数组被单个卡片级 Hook 订阅，导致单个卡片的元数据变更引发全表数千张卡片的连锁重渲染（Re-render）。
-3. **后台高能耗固定轮询**：`autoSync.ts` 以固定 5 秒间隔无差别并发向后端发起 7 个全量数据切片请求，在窗口失焦或电脑休眠时持续耗电并浪费网络流量。
+原文对两个核心问题的判断仍然成立：
 
-本报告对上述三项方向进行深度基准审计，并给出代码级的改造实施方案。
+1. `RepositoryList.tsx` 与 `RepositoryGroups.tsx` 的“按批增加可见数量”只能降低首批挂载量，滚动到底后旧卡片仍然留在 DOM 中，因此它不是虚拟化。
+2. 大量仓库同时挂载时，卡片级宽订阅、全量扫描、分组重复遍历会放大渲染成本，值得优先治理。
+
+本版对原方案做以下校准：
+
+- 删除原文中没有仓库基准夹具支持的固定 DOM 数量、内存占用、帧率与 Style Recalc 等绝对数字。它们只能通过当前版本、当前设备、当前数据集实测，不能作为已证实事实。
+- 删除“虚拟化后 DOM 必然稳定在 15～25 张卡片”等绝对承诺。窗口大小取决于 viewport、列数、估算高度、overscan 与动态测量。
+- 当前顺序为：**复现卡顿 → selector / index / group partition → 同条件复测 → 仅在残余 DOM 瓶颈成立时选择一个常用视图虚拟化**。不预先要求统一虚拟行模型或 list/grid/group 全覆盖。
+- 不再把虚拟化描述为“新建一个组件即可无缝替换”。当前分组目录跳转、拖拽、卡片本地 Modal/Sheet 状态都依赖真实 DOM 或组件持续挂载，必须先改这些依赖。
+- 同步侧不再把“给 legacy 7 个请求加 ETag”作为主路线。当前项目已有 Home Sync v2，且服务端明确把 v2 视为 canonical sync；保留当前 v2 主路径；只有实际复现旧入口的重复请求或双写问题才局部处理，不把所有 legacy 退役设为本机优化前置。
+- 原文提出的 `COUNT + MAX(timestamp)` ETag 不能作为可靠变更协议：某些修改未必改变被选中的 timestamp，会产生漏变更风险。
+- `@tanstack/react-virtual` 当前不在 `package.json` 依赖中。是否采用它，应在虚拟行模型与交互契约确定后再决定；本方案描述的是所需能力，不把某个库 API 当成既成事实。
+
+当前代码证据：
+
+- [`src/components/RepositoryList.tsx`](../../src/components/RepositoryList.tsx) 使用 `visibleCount` + `slice(0, visibleCount)`。
+- [`src/features/repositories/components/RepositoryGroups.tsx`](../../src/features/repositories/components/RepositoryGroups.tsx) 的 `GroupBatch` 以 50 为批次递增，并继续渲染 `slice(0, count)`。
+- 同一 `RepositoryGroups` 使用 `headingRefs`、`getBoundingClientRect()` 和 `scrollIntoView()` 驱动分组目录定位；这些逻辑假定 heading 真实挂载。
+- [`src/features/repositories/hooks/useRepositoryCardActions.ts`](../../src/features/repositories/hooks/useRepositoryCardActions.ts) 仍把完整 `repositories` 放进卡片级 Zustand selector，主要是给显式触发的 `findSimilar` 使用。
+- [`src/components/RepositoryCard.tsx`](../../src/components/RepositoryCard.tsx) 每张卡订阅完整 `releases`，并在 render 派生最新 Release；同一组件还持有 edit / README / release sheet 等本地打开状态。
+- [`src/services/autoSync.ts`](../../src/services/autoSync.ts) 的 legacy 路径仍有 5 秒 poll 和多 shard 并发 pull，但 `getDesktopHomeSync()` 激活时 `startAutoSync()` 直接 no-op，`syncFromBackend()` 也转为 `flushDesktopHome()`。
+- [`src/home/sync.ts`](../../src/home/sync.ts) 已具备 visibility-aware 轮询、local change debounce、cursor changes、paged snapshot、operation push 与指数 backoff。
+- [`server/src/routes/syncV2.ts`](../../server/src/routes/syncV2.ts) 明确声明 v2 为 canonical sync，并在 workspace 初始化后拦截受保护的 legacy 写路径。
 
 ---
 
-## 2. DOM 与内存审计（3,000 ~ 5,000 规模基准）
+## 2. 当前瓶颈：先把真正的重复工作拆掉
 
-### 2.1 单卡片 DOM 节点解构与膨胀核算
+用户明确反馈当前使用存在卡顿，不能因 P0.2.1 历史验收只有 62 个仓库就降为“未来海量数据问题”。触发场景已确认：滚动、切换分类/分组、展开折叠都略卡，重点是多个页面突然展示大量内容，尤其发现页大量仓库。当前数量、最小复现步骤和活动任务仍需采样；以下代码形态是排查点，不是已证实根因。
 
-在 [`src/components/RepositoryCard.tsx`](../../src/components/RepositoryCard.tsx) 中，每个卡片组件平均包含约 **48 个真实 DOM 节点**：
+先使用日常 production file-origin 和同条件匿名 fixture，对比主仓库与发现页整批展示、滚动、分类/分组/折叠；同时观察搜索/filter、resize、详情与 Home capture 是否触发额外工作。不要直接在用户原存储中注入压力数据或自动重建索引。
 
-```
-单个卡片平均包含 48 个 DOM 节点：
-├── 外层包装与选择指示 (4) [div.data-detail-repository, div.repository-card, drag-handle, selection-checkbox]
-├── 标题与作者元数据 (8) [avatar-img, repo-link, org-badge, platform-icons, external-link]
-├── 描述与 AI 摘要 (10) [p.description/summary, highlight-spans, expand-btn, ai-status-badge]
-├── 标签元数据矩阵 (16) [software-forms x2, ai-tags x4, language-pill, license-pill, stars-counter, pushed-date, release-pill]
-└── 操作工具栏 (10) [overflow-actions, ask-btn, github-btn, dropdown-menu-trigger, svg-icons]
-```
+### 2.1 批加载只能控制首批挂载，不控制长期 DOM 上限
 
-当数据量在 3,000 ~ 5,000 规模时，平铺或全部展开状态下的物理资源消耗测算如下：
-
-| 审计维度 | 3,000 个仓库 (当前全量) | 5,000 个仓库 (当前全量) | 浏览器推荐安全阈值 |
-| :--- | :--- | :--- | :--- |
-| **DOM 节点总数** | **~144,000 个** | **~240,000 个** | 推荐 ≤ 1,500，警戒 > 3,000 |
-| **React Fiber 节点数** | **~380,000 个** | **~630,000 个** | 容易诱发 V8 GC 长停顿 |
-| **JS 堆内存 (Heap)** | **180 MB ~ 260 MB** | **320 MB ~ 450 MB** | 内存持续高压 |
-| **Blink 渲染内存 (DOM+Style)** | **280 MB ~ 420 MB** | **480 MB ~ 750 MB** | 易引发移动端 / 低配机 OOM |
-| **单帧 Recalculate Style 时间** | **38ms ~ 75ms** | **85ms ~ 160ms** | 需 ≤ 16.6ms (满足 60 FPS) |
-| **滚动平均帧率 (FPS)** | **18 ~ 25 FPS (剧烈掉帧)** | **8 ~ 15 FPS (严重卡死)** | 60 FPS 稳定运行 |
-
-### 2.2 现有 GroupBatch 瀑布流的假优化陷阱
-
-在 [`src/features/repositories/components/RepositoryGroups.tsx`](../../src/features/repositories/components/RepositoryGroups.tsx) 中，当前实现采用了 `GroupBatch` 配合 `IntersectionObserver` 哨兵模式：
+当前非分组列表：
 
 ```tsx
-// 现有实现：累加切片，只增不减
-const [count, setCount] = useState(BATCH); // 50
-// ...
+const [visibleCount, setVisibleCount] = useState(LOAD_BATCH);
+const visibleRepositories = filteredRepositories.slice(0, visibleCount);
+```
+
+当前分组列表：
+
+```tsx
+const [count, setCount] = useState(BATCH);
+
 <RepositoryGrid viewMode={viewMode}>
   {repositories.slice(0, count).map(renderRepository)}
 </RepositoryGrid>
 ```
 
-- **问题本质**：随着用户向下滑动，哨兵被反复触碰，`count` 每次递增 50，直到 `count >= repositories.length`。**旧卡片的 DOM 节点从未被卸载或回收**。
-- **不可逆恶化**：当用户滚到底部时，DOM 节点依旧会累积到 150,000+ 个。复合图层（Composite Layers）和渲染脏区面积巨大，导致长列表快速滚动时极易白屏并伴随高延迟。
+这两种方式都只会让挂载集合不断增长。它们可以继续作为小数据量路径或 virtualization 尚未启用时的退化方案，但不能承担大列表长期内存治理。
 
-### 2.3 渲染掉帧曲线与主线程阻塞 (Frame Jank Curve)
+### 2.2 卡片级宽订阅应先缩小
 
-```
-FPS 帧率
- 60 ┼───────╮ (0 ~ 100 个卡片: 流畅 60 FPS)
-    │       │
- 45 ┼       ╰────────╮ (100 ~ 500 个卡片: 偶发掉帧 45 FPS)
-    │                │
- 30 ┼                ╰────────╮ (500 ~ 1500 个卡片: 掉帧至 30 FPS, Style Recalc > 20ms)
-    │                         │
- 15 ┼                         ╰─────────── (2000+ 个卡片: 严重掉帧 8~18 FPS, 交互延迟 > 100ms)
-  0 ┴───────────────────────────────────────►
-    0      500     1000     2000     3000   累积挂载卡片数
+`useRepositoryCardActions` 中的 `findSimilar` 只有在用户点击时才真正需要全量仓库候选，但当前 Hook 把完整 `repositories` 放在响应式 selector 中。更合适的边界是：
+
+```ts
+const findSimilar = useCallback(async () => {
+  const currentRepositories = useAppStore.getState().repositories;
+  // 在动作执行时读取，而不是让每张已挂载卡片持续订阅整个数组。
+}, [/* 与 UI 状态直接相关的依赖 */]);
 ```
 
----
+这里的目标不是“所有卡片都只能订阅一个字段”，而是把响应式依赖限制到**渲染当前卡片真正需要的状态**。显式命令需要的大对象可以在命令执行时读取。
 
-## 3. 状态树与渲染性能审查：Zustand 细粒度隔离
+### 2.3 Release 应一次建索引，不应每卡扫描全量数组
 
-### 3.1 核心缺陷 1：useRepositoryCardActions 响应式订阅全量 repositories 数组
-
-在 [`src/features/repositories/hooks/useRepositoryCardActions.ts`](../../src/features/repositories/hooks/useRepositoryCardActions.ts) 中存在严重的过度订阅设计缺陷：
+当前 `RepositoryCard` 逻辑：
 
 ```tsx
-// ⚠️ 致命性能问题：每个卡片都调用此 Hook，且订阅了全量 repositories 数组
-const {
-  githubToken,
-  activeAIConfig,
-  setAnalyzingRepository,
-  language,
-  updateRepository,
-  deleteRepository,
-  vectorSearchConfig,
-  vectorSearchStatus,
-  embeddingConfigs,
-  repositories, // <--- 每一个卡片都通过浅比较订阅了数千对象的全量数组！
-  enterSimilarView,
-  aiConfigs,
-  toggleReleaseSubscription: toggleStoreReleaseSubscription,
-} = useAppStore(
-  useCallback(
-    (state) => ({
-      // ...
-      repositories: state.repositories,
-    }),
-    [],
-  ),
-  shallow,
+const cachedReleases = useAppStore((state) => state.releases);
+const latestRelease = useMemo(
+  () => cachedReleases
+    ?.filter((release) => release.repository.id === repository.id)
+    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0],
+  [cachedReleases, repository.id],
 );
 ```
 
-#### 破坏链式反应：
-1. 任何一个仓库的标签变更、AI 分析完成（`updateRepository`）或星标变动，都会生成全新的 `repositories` 数组引用。
-2. 页面中已挂载的 **3,000 个卡片实例内部的 `useAppStore` 均被唤起**。
-3. `shallow` 比较检测到 `repositories !== prevRepositories`，**3,000 个卡片全部被标记为 Dirty 并触发组件重渲染**！
-4. 外层的 `React.memo` 只能阻止父级 props 未变引起的更新，对内部 Hook 状态变更无能为力。React 主线程发生长达 1.2s ~ 3.5s 的全量协调与虚拟 DOM 比较（TBT 严重超标）。
+随着卡片数与 Release 数同时增长，这会把同一份 `releases` 重复扫描很多次。建议在 Release 集合变化时只计算一次：
 
-### 3.2 核心缺陷 2：全量 Releases 数组在 render 周期线性检索
-
-在 [`src/components/RepositoryCard.tsx`](../../src/components/RepositoryCard.tsx) 中：
-```tsx
-// ⚠️ 性能缺陷：每个卡片订阅全局 releases 数组，并在 render 周期执行全量 filter 和 sort
-const cachedReleases = useAppStore((state) => state.releases);
-const latestRelease = useMemo(() => cachedReleases?.filter((release) => release.repository.id === repository.id)
-  .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0], [cachedReleases, repository.id]);
-```
-- 若全局有 1,000 条 release 记录，3,000 个卡片挂载时将执行 $3,000 \times 1,000 = 3,000,000$ 次过滤比较，时间复杂度达 $O(N \times M)$。
-
-### 3.3 细粒度 Selector 与回调即时取值优化
-
-#### 治理方案：
-1. **事件回调即时取值**：`repositories` 仅在 `findSimilar`（向量相似查找）执行时需要作为候选集。改用 `useAppStore.getState().repositories` 在回调中取值，彻底切断渲染周期的响应式绑定。
-2. **原子化 Selector**：卡片仅需订阅 `vectorSearchAvailable` 布尔值，避免浅比较庞大状态切片。
-3. **单仓 Release 局部 Selector**：通过仓库 ID 进行局部线性搜寻，或使用 Store 派生的 Map 索引。
-
-```typescript
-// 优化后的 useRepositoryCardActions 片段：
-const vectorSearchAvailable = useAppStore((state) => {
-  const cfg = state.vectorSearchConfig;
-  return Boolean(cfg.enabled && state.vectorSearchStatus?.connected && (state.vectorSearchStatus?.vectorCount ?? 0) > 0);
-});
-
-// findSimilar 内按需获取：
-const findSimilar = useCallback(async () => {
-  // ...
-  const currentRepos = useAppStore.getState().repositories;
-  const similar = await findSimilarRepositories(repository, {
-    // ...
-    allRepos: currentRepos,
-  });
-  // ...
-}, [repository]);
-```
-
----
-
-## 4. TanStack Virtual 虚拟化重构方案
-
-### 4.1 多列自适应网格与分组折叠的虚拟化挑战
-
-现有 `RepositoryGrid` 采用 CSS Grid：
-```css
-grid-template-columns: repeat(columns, minmax(0, 1fr));
-```
-列数 $C$ 根据容器宽度动态伸缩（如每列最小 336px）。
-若直接按单卡片进行一维虚拟化，会导致 CSS Grid 破坏或每列独立滚动。
-
-### 4.2 核心设计：行切片分块（Chunked Row Virtualization）与扁平流
-
-```
-虚拟流模型（Flattened Virtual Stream）：
-┌─────────────────────────────────────────────────────────────┐
-│ 1. 扁平流计算 (Flattened Stream)                            │
-│    Group A Header (Sticky / Collapsible)                    │
-│    ├── Row 0: [ Card 1, Card 2, Card 3 ] (CSS Grid 列宽自适应) │
-│    ├── Row 1: [ Card 4, Card 5, Card 6 ]                     │
-│    └── Row 2: [ Card 7 ]                                    │
-│    Group B Header (Collapsed: 无子行)                       │
-│    Group C Header                                           │
-│    ├── Row 0: [ Card 8, Card 9 ]                            │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 2. TanStack Virtual 调度器 (useWindowVirtualizer)            │
-│    - 视口仅渲染：可见的 3~4 行 + 缓冲区 2 行               │
-│    - 真实 DOM 驻留卡片数：始终保持在 15 ~ 25 个之间          │
-│    - 动态高度自动测量：measureElement 适配卡片高度差异      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 4.3 完整代码实现：VirtualRepositoryGrid.tsx
-
-新建自适应虚拟网格组件，无缝替换现有的全量渲染：
-
-```tsx
-// src/features/repositories/components/VirtualRepositoryGrid.tsx
-import React, { useRef, useMemo, useEffect, useState } from 'react';
-import { useWindowVirtualizer } from '@tanstack/react-virtual';
-import type { Repository } from '../../../types';
-
-export interface VirtualGroupSection {
-  key: string;
-  name: string;
-  icon?: string;
-  id: string | null;
-  repositories: Repository[];
-}
-
-export type VirtualStreamItem =
-  | { type: 'header'; section: VirtualGroupSection; count: number; collapsed: boolean }
-  | { type: 'empty'; sectionKey: string }
-  | { type: 'row'; sectionKey: string; rowIndex: number; repositories: Repository[] };
-
-interface VirtualRepositoryGridProps {
-  sections: VirtualGroupSection[];
-  collapsedSections: Set<string>;
-  viewMode: 'grid' | 'list';
-  renderHeader?: (section: VirtualGroupSection, count: number, collapsed: boolean) => React.ReactNode;
-  renderEmpty?: (sectionKey: string) => React.ReactNode;
-  renderRepository: (repo: Repository) => React.ReactNode;
-  scrollMarginTop?: number;
-}
-
-export const VirtualRepositoryGrid: React.FC<VirtualRepositoryGridProps> = ({
-  sections,
-  collapsedSections,
-  viewMode,
-  renderHeader,
-  renderEmpty,
-  renderRepository,
-  scrollMarginTop = 80,
-}) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerWidth, setContainerWidth] = useState(0);
-
-  // 1. 响应式列数动态测算：保持与原 RepositoryGrid 列宽算法完全一致
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const updateWidth = () => setContainerWidth(node.getBoundingClientRect().width);
-    updateWidth();
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  const columns = useMemo(() => {
-    if (viewMode === 'list') return 1;
-    return Math.max(1, Math.floor((containerWidth + 16) / 336));
-  }, [viewMode, containerWidth]);
-
-  // 2. 将分组折叠状态与二维网格数据合并为一维虚拟流
-  const flattenedItems = useMemo(() => {
-    const items: VirtualStreamItem[] = [];
-
-    for (const section of sections) {
-      const isCollapsed = collapsedSections.has(section.key);
-      const count = section.repositories.length;
-
-      // 存在分组系统时渲染分组头部
-      if (renderHeader) {
-        items.push({ type: 'header', section, count, collapsed: isCollapsed });
-      }
-
-      if (isCollapsed) continue;
-
-      if (count === 0 && renderEmpty) {
-        items.push({ type: 'empty', sectionKey: section.key });
-        continue;
-      }
-
-      // 将组内卡片按当前 columns 切割为行 (Rows)
-      const rowsCount = Math.ceil(count / columns);
-      for (let r = 0; r < rowsCount; r++) {
-        const chunk = section.repositories.slice(r * columns, (r + 1) * columns);
-        items.push({
-          type: 'row',
-          sectionKey: section.key,
-          rowIndex: r,
-          repositories: chunk,
-        });
-      }
-    }
-    return items;
-  }, [sections, collapsedSections, columns, renderHeader, renderEmpty]);
-
-  // 3. TanStack Virtual 核心：基于 Window 滚动的虚拟调度器
-  const virtualizer = useWindowVirtualizer({
-    count: flattenedItems.length,
-    estimateSize: (index) => {
-      const item = flattenedItems[index];
-      if (!item) return 200;
-      if (item.type === 'header') return 52;
-      if (item.type === 'empty') return 72;
-      return viewMode === 'list' ? 130 : 220;
-    },
-    overscan: 3, // 上下预渲染 3 行缓冲区，保证快速滚动不露白
-    scrollMargin: scrollMarginTop,
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-
-  return (
-    <div ref={containerRef} className="relative w-full min-w-0">
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          width: '100%',
-          position: 'relative',
-        }}
-      >
-        {virtualItems.map((virtualRow) => {
-          const item = flattenedItems[virtualRow.index];
-          if (!item) return null;
-
-          return (
-            <div
-              key={virtualRow.key}
-              data-index={virtualRow.index}
-              ref={virtualizer.measureElement}
-              className="absolute left-0 top-0 w-full"
-              style={{
-                transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
-              }}
-            >
-              {item.type === 'header' && renderHeader && (
-                renderHeader(item.section, item.count, item.collapsed)
-              )}
-
-              {item.type === 'empty' && renderEmpty && (
-                renderEmpty(item.sectionKey)
-              )}
-
-              {item.type === 'row' && (
-                <div
-                  className="grid min-w-0 gap-4 mb-4"
-                  style={{
-                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                  }}
-                >
-                  {item.repositories.map((repo) => (
-                    <div key={repo.id} className="min-w-0 h-full flex flex-col">
-                      {renderRepository(repo)}
-                    </div>
-                  ))}
-                  {/* 当行未填满时用空白占位保证网格等宽 */}
-                  {item.repositories.length < columns &&
-                    Array.from({ length: columns - item.repositories.length }).map((_, i) => (
-                      <div key={`spacer-${i}`} className="min-w-0" aria-hidden="true" />
-                    ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-```
-
-### 4.4 接入 RepositoryGroups 与 RepositoryList 的平滑替换方案
-
-在 [`src/features/repositories/components/RepositoryGroups.tsx`](../../src/features/repositories/components/RepositoryGroups.tsx) 中替换原有的全量渲染：
-
-```tsx
-// 改造后：直接将 sections 传入 VirtualRepositoryGrid，移除原有的 GroupBatch 累加器
-<VirtualRepositoryGrid
-  sections={sections.map(section => ({
-    ...section,
-    repositories: customSort
-      ? orderedIds(state.repositoryOrder ?? [], getMembers(section).map(r => r.id)).map(id => getMembers(section).find(r => r.id === id)!)
-      : getMembers(section)
-  }))}
-  collapsedSections={collapsed}
-  viewMode={viewMode}
-  renderHeader={(section, count, isCollapsed) => (
-    <GroupHeader
-      section={section}
-      count={count}
-      isCollapsed={isCollapsed}
-      onToggleCollapse={() => toggleCollapse(section.key)}
-      // ... 保持原有编辑、拖拽及操作菜单
-    />
-  )}
-  renderEmpty={() => (
-    <div className="flex items-center justify-center rounded-lg border border-dashed border-border/60 py-6 text-center text-xs text-muted-foreground mb-8">
-      {t('organization.emptyGroup')}
-    </div>
-  )}
-  renderRepository={(repo) => (
-    <div className="flex h-full min-w-0 flex-col" onDragOver={acceptDrag} onDrop={event => drop(event, repo.subcategory_id, repo.id)}>
-      {renderRepository(repo)}
-    </div>
-  )}
-/>
-```
-
----
-
-## 5. 后台轮询与功耗治理策略
-
-### 5.1 当前 5s 轮询逻辑的致命缺陷诊断
-
-在 [`src/services/autoSync.ts`](../../src/services/autoSync.ts#L829-L833)：
 ```ts
-// 现有实现：纯定时器死循环
-_pollTimer = setInterval(() => {
-  syncFromBackend();
-}, 5000);
+type LatestReleaseIndex = Map<number, Release>;
 ```
 
-#### 缺陷清单：
-1. **背景态高能耗（Battery Drain）**：无论标签页是否可见、窗口是否最小化、电脑是否合盖/锁屏，`setInterval` 依然每 5 秒唤醒 CPU 与网络基带。
-2. **多分片全量雪崩（Network & I/O Storm）**：
-   每次轮询并发请求 7 个全量端点：`/api/repositories?limit=10000`、`/api/releases`、`/api/settings`、`/api/ai-configs`、`/api/webdav-configs`、`/api/embedding-configs`、`/api/vector-search-config`。
-   - 3,000 个仓库的 JSON 响应约 **2.5 MB ~ 4.2 MB**。
-   - 5 秒拉取一次意味着：**每分钟消耗 30 MB ~ 50 MB 流量，1 小时消耗 2.5 GB 流量**！
-3. **主线程 JSON.stringify 算力浪费**：
-   收到全量数据后，客户端在主线程执行 `repositoryPayloadHash(reposResult.value.repositories)` 对数千个对象进行深拷贝字段过滤与 JSON 序列化哈希比对，CPU 瞬间飙升。
-4. **无容灾退避（No Backoff）**：
-   当服务端 SQLite 锁死或网络故障返回 500 时，前端依然每 5 秒硬重试，加剧服务端拥塞。
+索引可以是 selector 派生值、store 外 memoized selector，或专门的只读 projection。关键约束：
 
----
+- `releases` 才是事实源；index 是可重建派生数据。
+- 同一 repo 只保留发布时间最新的 Release。
+- 卡片只按自己的 `repository.id` 读取结果。
+- 不为了这个索引再新增一份需要持久化和迁移的数据库状态。
 
-### 5.2 自适应智能同步状态机（Adaptive Sync FSM）
+### 2.4 分组应一次 partition，再按 rank 排序
 
-```mermaid
-stateDiagram-v2
-    [*] --> SUSPENDED : 初始页面不可见
-    [*] --> ACTIVE_POLLING : 初始页面可见
+当前 `RepositoryGroups` 对每个 section 都执行：
 
-    state ACTIVE_POLLING {
-        [*] --> WAITING
-        WAITING --> TICK_PROBE : 定时周期到达 (15s ~ 30s)
-        TICK_PROBE --> CONDITIONAL_PULL : 探测通过/有更新
-        CONDITIONAL_PULL --> WAITING : 成功 (重置退避)
-    }
-
-    ACTIVE_POLLING --> SUSPENDED : 窗口失焦 / document.hidden
-    SUSPENDED --> ACTIVE_POLLING : 窗口聚焦激活
-
-    state ACTIVE_POLLING {
-        WAITING --> IN_FLIGHT_PUSH : 本地数据变更 (2s 防抖)
-        IN_FLIGHT_PUSH --> WAITING : 推送完成
-    }
-
-    ACTIVE_POLLING --> BACKOFF : 网络异常 / HTTP 5xx
-    BACKOFF --> BACKOFF : 指数退避等待 (min(base * 1.5^n, 60s) + jitter)
-    BACKOFF --> ACTIVE_POLLING : 重试成功恢复
-    SUSPENDED --> CONDITIONAL_PULL : 重新激活且静默时长 > 12s (Immediate Catch-up)
+```tsx
+const members = repositories.filter(/* 当前 section */);
 ```
 
----
+自定义顺序时又对 `repositoryOrder`、`members` 做重复查找。建议先构建：
 
-### 5.3 Focus-Aware 窗口感知与指数退避实现
-
-- **挂起策略（Suspend）**：通过 `document.visibilityState` 与 `window.onblur` 检测失焦，立即清除当前定时器，CPU 占用归零。
-- **即时补偿拉取（Immediate Catch-up）**：当用户切回窗口时，计算距离上次成功同步的时间差：若超过 12 秒阈值，立即发起一次前台补偿同步，保证用户所见数据最新。
-- **指数退避与随机抖动（Exponential Backoff with Jitter）**：遇到网络异常或服务端报错时，下一次轮询时间按 $T = \min(60\text{s}, 15\text{s} \times 1.5^{\text{failures}}) \pm 15\%\text{jitter}$ 递增，避免惊群。
-
----
-
-### 5.4 服务端 ETag / HTTP 304 条件请求改造
-
-在服务端端点 [`server/src/routes/repositories.ts`](../../server/src/routes/repositories.ts) 中增加版本探测头：
-
-```typescript
-// server/src/routes/repositories.ts
-import { createHash } from 'node:crypto';
-
-// GET /api/repositories
-router.get('/api/repositories', (req, res) => {
-  try {
-    const db = getDb();
-
-    // 1. 快速探测版本指纹：利用表的最大修改时间和总数合成 ETag
-    const meta = db.prepare(`
-      SELECT
-        COUNT(*) as total,
-        MAX(COALESCE(last_edited, updated_at, pushed_at, '')) as latest_ts
-      FROM repositories
-    `).get() as { total: number; latest_ts: string };
-
-    const etag = `W/"repos-${meta.total}-${createHash('md5').update(meta.latest_ts || '').digest('hex').slice(0, 12)}"`;
-
-    // 2. 检查客户端 If-None-Match
-    const clientEtag = req.headers['if-none-match'];
-    if (clientEtag === etag && !req.query.search) {
-      // 数据未变更，直接返回 304，0 字节 Payload，耗时 < 1ms
-      res.status(304).end();
-      return;
-    }
-
-    res.setHeader('ETag', etag);
-    res.setHeader('Cache-Control', 'private, no-cache');
-
-    // 3. 数据发生变动时才执行全量查询与 JSON 序列化
-    // ... 原查询逻辑
-  } catch (err) {
-    // ...
-  }
-});
+```ts
+type GroupPartition = Map<string, Repository[]>;
+type RepositoryRank = Map<number, number>;
 ```
 
+一次遍历把仓库分到 group，另一次把 `repositoryOrder` 变成 `id -> rank`。每个 group 只对自己的成员按 rank 排序。这样即使暂时不做 virtualization，也能减少 section × repositories 的重复过滤与 `find`。
+
 ---
 
-### 5.5 完整代码改造 Diff
+### 2.5 发现页是独立热点，不能套用主仓库列表结论
 
-在 [`src/services/autoSync.ts`](../../src/services/autoSync.ts) 中的完整改造代码 Diff：
+已核对的调用链：
 
-```diff
---- a/src/services/autoSync.ts
-+++ b/src/services/autoSync.ts
-@@ -33,9 +33,18 @@
--// Polling timer for pull-from-backend
--let _pollTimer: ReturnType<typeof setInterval> | null = null;
--
--// Polling interval in milliseconds
--const POLL_INTERVAL = 5000;
-+let _pollTimer: ReturnType<typeof setTimeout> | null = null;
-+let _isPageVisible = typeof document !== 'undefined' ? !document.hidden : true;
-+let _consecutiveFailures = 0;
-+let _lastSuccessfulSyncAt = 0;
-+let _visibilityCleanup: (() => void) | null = null;
-+
-+// 自适应时间参数配置
-+const BASE_POLL_INTERVAL = 15000;          // 前台活跃期轮询基础间隔 15s (原 5s)
-+const MAX_POLL_INTERVAL = 60000;           // 最大退避或空闲间隔 60s
-+const IMMEDIATE_CATCHUP_THRESHOLD = 12000;    // 后台切回前台时，超过 12s 静默立即触发即时拉取
+- [`DiscoveryView.tsx`](../../src/components/DiscoveryView.tsx) 用当前频道 `allRepos` 传给 [`BuiltinRepositoryResults.tsx`](../../src/features/discovery/components/BuiltinRepositoryResults.tsx)。后者每次 render 对整批 `items` 生成分析投影，并以 `repos.map()` 挂载全部 `SubscriptionRepoCard`，当前组件内没有 windowing。
+- Builtin results 订阅整个 custom `data`、analysis store 和 analysis assets；卡片渲染逐项 `tasks.find()`，失败任务又用 `repos.some()` 交叉查找。一次内容批次或无关任务进度变化可能触发重派生，需 Profiler 确认实际次数/耗时。
+- [`CustomChannelUI.tsx`](../../src/features/discovery/components/CustomChannelUI.tsx) 对 `visibleCount` 做 slice，属于渐进批量；[`CustomChannelResults.tsx`](../../src/features/discovery/components/CustomChannelResults.tsx) 仍订阅大域并派生传入候选。
+- [`CustomRepositoryBlock.tsx`](../../src/features/discovery/components/CustomRepositoryBlock.tsx) 的 starred selector 对主 repositories 做 `some()`，每卡查其它频道 recommended；它不等于 RepositoryCard，主仓库 actions 的修复不会自动解决这里的扫描。
+- [`useDiscoveryReading.ts`](../../src/features/discovery/hooks/useDiscoveryReading.ts) 的 `useReadingAnchor()` 使用 `[data-reading-key]` DOM 查找、几何信息和 layout shift 修正。若挂载策略变更，必须保留按账户/session/item identity 的阅读位置恢复，不能仅删除 anchor 逻辑来减少工作。
 
-@@ -265,6 +274,13 @@
- export async function syncFromBackend(options: { force?: boolean } = {}): Promise<void> {
-   try { assertRepositoryIdentityWritable(); } catch { return; }
-   if (getDesktopHomeSync()) { await flushDesktopHome(); return; }
-   if (!backend.isAvailable) return;
-+
-+  // 功耗控制：非强制同步下，页面失焦/在后台挂起时，坚决不发起网络拉取
-+  if (!options.force && !_isPageVisible) {
-+    return;
-+  }
-   if (!options.force && (
-     _isSyncingFromBackendActive ||
-     _isPushingToBackend ||
-@@ -583,6 +599,8 @@
-     logger.info('sync.pullFromBackend', 'Synced from backend (data changed)', { ...changed, durationMs: Date.now() - startTime });
-+    _consecutiveFailures = 0;
-+    _lastSuccessfulSyncAt = Date.now();
-   } catch (err) {
-     task.item('pull', 'failed', err);
-+    _consecutiveFailures++;
-     logger.errorFromError('sync.pullFromBackend', 'Failed to sync from backend', err, { durationMs: Date.now() - startTime });
-   } finally {
-@@ -828,9 +846,75 @@
--  // 2. Poll backend every 5s → pull fresh data for cross-device sync
--  _pollTimer = setInterval(() => {
--    syncFromBackend();
--  }, POLL_INTERVAL);
-+  // 2. 自适应调度循环 (替换固定的 setInterval 5s)
-+  const scheduleNextPoll = () => {
-+    if (_pollTimer) {
-+      clearTimeout(_pollTimer);
-+      _pollTimer = null;
-+    }
-+    if (!_isPageVisible) return; // 后台失焦状态下彻底挂起，不消耗任何 CPU 定时器
-+
-+    // 指数退避与抖动算法：连续失败时退避
-+    let delay = BASE_POLL_INTERVAL;
-+    if (_consecutiveFailures > 0) {
-+      const backoff = BASE_POLL_INTERVAL * Math.pow(1.5, Math.min(_consecutiveFailures, 5));
-+      delay = Math.min(backoff, MAX_POLL_INTERVAL);
-+    }
-+    // 添加 ±15% 的随机抖动（Jitter），防止多端并发惊群
-+    const jitter = delay * (Math.random() * 0.3 - 0.15);
-+    const finalDelay = Math.round(delay + jitter);
-+
-+    _pollTimer = setTimeout(async () => {
-+      await syncFromBackend();
-+      scheduleNextPoll();
-+    }, finalDelay);
-+  };
-+
-+  // 3. 页面前后台与焦点状态感知（Focus-Aware & Visibility-Aware）
-+  const handleVisibilityChange = () => {
-+    const wasVisible = _isPageVisible;
-+    _isPageVisible = typeof document !== 'undefined' ? !document.hidden : true;
-+
-+    if (!wasVisible && _isPageVisible) {
-+      // 从后台重新切回前台：检查静默时长
-+      const idleTime = Date.now() - _lastSuccessfulSyncAt;
-+      if (idleTime >= IMMEDIATE_CATCHUP_THRESHOLD) {
-+        logger.info('sync.focusCatchup', 'Window focused after idle, triggering immediate sync', { idleTime });
-+        void syncFromBackend();
-+      }
-+      scheduleNextPoll();
-+    } else if (!_isPageVisible) {
-+      // 切入后台：取消定时器，进入挂起省电模式
-+      if (_pollTimer) {
-+        clearTimeout(_pollTimer);
-+        _pollTimer = null;
-+      }
-+      logger.info('sync.suspend', 'Window hidden, auto-sync suspended to save battery');
-+    }
-+  };
-+
-+  if (typeof document !== 'undefined') {
-+    document.addEventListener('visibilitychange', handleVisibilityChange);
-+    window.addEventListener('focus', handleVisibilityChange);
-+    window.addEventListener('blur', handleVisibilityChange);
-+    _visibilityCleanup = () => {
-+      document.removeEventListener('visibilitychange', handleVisibilityChange);
-+      window.removeEventListener('focus', handleVisibilityChange);
-+      window.removeEventListener('blur', handleVisibilityChange);
-+    };
-+  }
-+
-+  // 启动初次调度
-+  scheduleNextPoll();
+优先候选：一次构建 task key lookup/repo ID membership、让命中分析投影按真实输入变化更新、收窄结果域/进度订阅；只在实际热点上实施。索引只读派生，不持久化、不替代 Discovery/analysis owner，不触发重新分析或 embedding。
 
-   logger.info('sync.start', 'Auto-sync started (push debounce: 2s, poll: 5s)');
-   return unsubscribe;
- }
+### 2.6 本轮排查不扩成全应用重写
 
- export function stopAutoSync(unsubscribe: () => void): void {
-+  if (_visibilityCleanup) {
-+    _visibilityCleanup();
-+    _visibilityCleanup = null;
-+  }
-   if (_debounceTimer) {
-     clearTimeout(_debounceTimer);
-     _debounceTimer = null;
-   }
-   if (_pollTimer) {
--    clearInterval(_pollTimer);
-+    clearTimeout(_pollTimer);
-     _pollTimer = null;
-   }
+主仓库和发现都进入复现范围，但一次只修一个证据明确的路径。先保留其它页面行为；出现同类热点后再复用 helper，不预建万能列表组件。外部文章/消息等结果类型只有复现受影响时才纳入，不能机械套用 repository row model。
+
+---
+
+## 3. 虚拟化的进入门槛
+
+虚拟化属于**解决当前残余卡顿的候选方案**，不是为了支持未来数千仓库而预先建设的架构。
+
+先确认：
+
+1. 当前大量内容操作能稳定复现；采样区分整批派生、渲染/布局/挂载与查询/同步工作。
+2. 实际热点上的宽订阅、Release/group 扫描或发现 task/repo/channel 交叉查找已处理。
+3. 相同 fixture 复测后，DOM/内容挂载仍是主要瓶颈。
+4. 给用户展示最小页面/视图范围、阅读定位/交互变化、依赖成本与验证计划，请用户决定是否接入。
+
+仅当这些条件成立才选 virtualizer。`@tanstack/react-virtual` 目前未在依赖中，不因文档示例安装它。若查询 CPU、Home capture 或任务造成卡顿，先修对应热点；virtualizer 不能替代根因修复。
+
+### 3.1 先对用户常用视图做最小验证
+
+list 常用可先验证 list，grid/group 常用则针对实际布局做小原型，不因抽象上的先后顺序强迫用户换视图。不要一开始建全局 `RepositoryVirtualRow` 编译器、entity store 或 Worker。
+
+只在分组 header、grid 分行与定位确实需要共享表示时，增加纯函数派生 row model；不持久化、不拥有第二份 repository 数据，不要求所有小列表同步切换实现。
+
+---
+
+## 4. 接入虚拟化时仍必须保护的交互
+
+这些是进入该方案后的验收要求，不是当前全部必做的改造。
+
+| 现有依赖 | 虚拟化后的必要处理 |
+| --- | --- |
+| group `headingRefs` / `scrollIntoView()` | 未挂载的 header 不能靠 DOM 定位；使用 group ID -> index/offset，仅为实际启用的视图实现 |
+| 卡片局部 edit/README/Release overlay | 源卡片卸载时不能关闭 overlay；按 repoId 放到稳定宿主，详情页面层实现可参考 |
+| modal 关闭后的焦点 | 优先回触发卡片；离屏则定位后恢复，已被过滤则回列表/控制项 |
+| 发现阅读定位与候选任务 | 保留 reading key/anchor、频道切换、选中、详情/问答、已读、待核实/采纳和任务进度；不能因离屏变更事实或重复触发分析 |
+| grid 列数 | row chunking 与实际布局必须使用同一列数算法，不并行维护 CSS/ResizeObserver/virtualizer 三套规则 |
+| 动态高度 | 描述/摘要/语言/字段显隐影响高度；需测量，不能永久假定固定高度 |
+| resize/filter/sort | repoId 阅读 anchor 与顺序保持可预测 |
+| drag/drop 与键盘重排 | 明确 offscreen target、autoscroll、焦点与 drop 行为，不能静默丢操作 |
+
+若方案要限制拖拽、关闭分组或让某些视图退回非虚拟化，先请用户决定。不能为降低技术成本暗改已有交互。
+
+---
+
+## 5. 当前性能任务拆分
+
+| 子阶段 | 当前文件/调用链 | 验证 | 停止条件 |
+| --- | --- | --- | --- |
+| A：复现/采样 | 主仓库 List/Groups/Card；发现 View -> Builtin/CustomResults -> 对应 card、reading hooks；Home capture | 固定触发操作与 fixture，记录热点 | 证明卡顿在哪个路径，未修改用户事实 |
+| B：去一个宽订阅 | useRepositoryCardActions 的 findSimilar 候选读取 | 触发时读最新 store；账户/取消/动作回归；commit 对比 | 无关仓库变化不再因该依赖唤醒所有卡片 |
+| C：Release 派生索引 | RepositoryCard 的 releases filter/sort，现有 Release selector/helper | 集合变化统一派生，逐卡读取；保留最新判定与账户隔离 | 可测减少重复扫描，map 未持久化 |
+| D：group partition/rank | RepositoryGroups 与 repositoryGroupOrder | 引用现有 orderedIds/replaceGroupOrder 语义；自定义顺序/折叠/DnD 回归 | 固定 fixture 消除 section×全量过滤与重复 find |
+| E：发现低风险计算治理 | Builtin/CustomResults 的 task lookup、repo membership、分析投影与订阅 | 频道/analysis/account/selection/reading 契约 + 同 fixture 派生/commit 对比 | 减少整批重派生与交叉查找，不创建新 DB |
+| F：仅必要的虚拟化 | 用户选定的页面/常用视图和必要的 overlay/导航/reading anchor | 上节交互 + 同条件 mounted DOM/long task/commit 对比 | 当前卡顿达到可用目标即停止，不自动扩展其它视图 |
+
+一次只实现一个独立子阶段；B/C/D/E 根据实际热点选择，不因候选表全部存在就连续开发。性能变化必须有修改前后 fixture 对比；本轮只有文档校准，不宣称有性能提升。
+
+---
+
+## 6. 功耗治理：收敛到 Home Sync v2
+
+### 6.1 legacy 5 秒轮询仍值得控制，但不是所有桌面场景的真实路径
+
+legacy `autoSync.ts` 目前会：
+
+```text
+每 5 秒触发 syncFromBackend
+  -> fetchRepositories
+  -> fetchReleases
+  -> fetchAIConfigs
+  -> fetchWebDAVConfigs
+  -> fetchEmbeddingConfigs
+  -> fetchVectorSearchConfig
+  -> fetchSettings
 ```
 
+这条路径的问题是高频拉取多个完整 shard，尤其在 backend 内容没有变化时仍会发生网络与序列化工作。
+
+但当 desktop Home Sync 已激活时：
+
+- `startAutoSync()` 直接返回空 unsubscribe；
+- `syncFromBackend()` 调用 `flushDesktopHome()` 后返回；
+- `forceSyncToBackend()` 最终也走 Home Sync 路径。
+
+因此不能把当前所有本机后台功耗都归因于 legacy polling。先确认实际激活路径；保留 v2 主方向，不自动启动所有旧入口迁移或协议退役。
+
+### 6.2 Home Sync v2 已具备应复用的机制
+
+`src/home/sync.ts` 当前已经有：
+
+- 页面隐藏时跳过自动 poll。
+- local edit 2 秒 debounce。
+- `online` / `visibilitychange` 唤醒。
+- cursor-based `changes`。
+- 固定边界的 paged snapshot。
+- operation batch + acknowledgement / conflict。
+- 失败指数 backoff，认证错误停止自动重试。
+
+服务端 v2 还具备 workspace-bound identity 与 canonical record/changes 存储。
+
+因此推荐的同步演进顺序：
+
+```text
+业务写入 / 跨设备同步
+        │
+        ├── Home backend 可用 → Home Sync v2（主路径）
+        │
+        └── 仍需 legacy 的场景 → 最小维护 + 逐步迁移
+```
+
+### 6.3 不扩大 legacy ETag 协议
+
+原文建议给多个 legacy endpoint 增加 ETag/304。HTTP conditional request 本身可以减少响应体，但它不应成为 GSM 下一代同步协议。
+
+不推荐：
+
+```text
+repositories ETag
+releases ETag
+ai-config ETag
+webdav ETag
+embedding ETag
+vector-config ETag
+settings ETag
+```
+
+这会继续维护 shard 级变更语义，还要处理跨 shard 一致性、hash 成本和缓存失效。
+
+如果某个 legacy GET 因兼容性必须长期保留，可以局部使用可靠 revision/ETag 做带宽优化；但不能用 `COUNT + MAX(timestamp)` 代替真正 revision/change feed，也不要把“304”当成解决同步功耗的核心设计。
+
+### 6.4 本机功耗只根据实测处理
+
+v2 不是“已无功耗问题”。当前可见时 15 秒检查，网络请求还受 pending、nextAutomaticSync/backoff 控制；Home capture 也会比较领域变化。若隐藏/空闲卡顿或唤醒异常，记录实际请求、long task 与 main/renderer CPU，再调整当前路径。
+
+不规划 SSE/long-poll/server push、新同步协议、移动端弱网、多设备 batch 平台或统一调度器。不新增 legacy ETag 体系；不把改变 polling cadence 当成必然降低电量的证据。
+
 ---
 
-## 6. 改造前后核心指标全景对照
+## 7. 本机维护的依赖边界
 
-| 指标维度 | 改造前 (当前实现) | 改造后 (Virtual + Focus-Aware + Selector) | 提升幅度 / 效果说明 |
-| :--- | :--- | :--- | :--- |
-| **DOM 节点总数 (5,000 Stars)** | **240,000+ 个节点** | **~800 个节点 (视口行+缓冲区)** | **降低 99.6%**（彻底根绝 DOM 爆炸） |
-| **页面内存驻留 (Heap + GPU)** | **700 MB ~ 1.2 GB** | **80 MB ~ 130 MB** | **节省 ~85% 内存**，低配设备无崩溃风险 |
-| **快速滚动帧率 (FPS)** | **8 ~ 15 FPS (严重卡顿/假死)** | **58 ~ 60 FPS (丝滑稳定)** | 达到原生应用级平滑滚动 |
-| **单个卡片更新耗时 (AI/分类)** | **1,200ms ~ 3,500ms (全量重渲染)** | **< 16ms (仅单卡片重渲染)** | **性能提升 100+ 倍**（TBT 归零） |
-| **后台 1 小时网络流量消耗** | **~2.5 GB / 小时 (5s 连续全量)** | **< 5 MB / 小时 (失焦挂起+304探测)** | **网络传输降低 99.8%** |
-| **后台/移动端电池功耗** | **持续占用 20%~45% CPU 单核** | **近乎 0% CPU 占用 (彻底休眠)** | 功耗降至基线水平，无后台发热 |
-| **服务端 SQLite QPS 压力** | 持续 1.4 Req/s 密集全表扫描 | 降低至 0.05 Req/s (无修改 304 极速响应) | 服务端资源开销降低 95%+ |
+```text
+当前复现 -> 找到热点 -> 一个最小修复 -> 相同 fixture 复测
+                                       -> 已够用：停止
+                                       -> DOM 残余热点：提请用户选择虚拟化范围
+```
+
+保留现有 Home v2 和 legacy guard；发现实际双写/重复轮询时再按调用入口修复。旧兼容路径的退役要有可达性与数据迁移证明，不能作为本轮文档简化的附带工作。
 
 ---
 
-## 7. 落地路线与依赖安装指引
+## 8. 风险与保护措施
 
-### 阶段一：紧急止血（Zustand Selector 细粒度隔离）
-- **范围**：`src/features/repositories/hooks/useRepositoryCardActions.ts`、`src/components/RepositoryCard.tsx`。
-- **目标**：移除 `repositories` 全局响应式订阅，使用原子 Selector 替换 Releases 数组全局 filter。
-- **收益**：立即可解决单卡片操作导致 3,000 张卡片卡死 2 秒的问题，无破坏性 API 变动。
+| 风险 | 触发点 | 保护措施 |
+| --- | --- | --- |
+| 滚动跳动 | 动态高度、列数变化 | 稳定 row key、实际测量、repoId scroll anchor |
+| Overlay 意外关闭 | 源卡片被 virtualizer 卸载 | overlay 提升到稳定宿主、repoId 驱动 |
+| 分组目录失效 | header 未挂载 | group key -> virtual index，active group 从 virtual range 推导 |
+| 拖拽目标缺失 | offscreen group/card 不存在 DOM | drag overlay、autoscroll、显式 drop 规则 |
+| 筛选后排序丢失 | row model 重建 | 只从当前 filtered/ordered repo ids 构建 rows，保持单一顺序事实源 |
+| resize 后定位漂移 | grid 列数变化 | row 重建前后使用 repo anchor 恢复 |
+| selector 优化读到旧数据 | callback 捕获旧数组 | 命令执行时 `getState()` 读取最新 store |
+| Release index 变成第二事实源 | 把 map 持久化/同步 | index 仅派生、可丢弃重建 |
+| v2/legacy 双写冲突 | 同一业务同时经过两套同步 | workspace 启用 v2 后继续执行现有 guard，迁移按入口逐项收敛 |
+| 为性能过早牺牲交互 | 一次改 virtualization + drag + overlays | 分阶段独立验收；按用户常用视图选择范围，改变交互先请用户决定 |
 
-### 阶段二：功耗与网络治理（Focus-aware 与 ETag 探测）
-- **范围**：`src/services/autoSync.ts`、`server/src/routes/repositories.ts`。
-- **目标**：落地失焦挂起、窗口激活即时增量拉取、指数退避、304 探测。
-- **收益**：彻底消除后台无意义消耗，1 小时流量从 2.5 GB 降至 5 MB。
+---
 
-### 阶段三：长列表虚拟化（TanStack Virtual 接入）
-1. **依赖安装**：
-   ```powershell
-   npm install @tanstack/react-virtual@^3.13.0
-   ```
-2. **落地组件**：
-   - 接入 `src/features/repositories/components/VirtualRepositoryGrid.tsx`。
-   - 替换 `RepositoryGroups.tsx` 与 `RepositoryList.tsx` 中的平铺映射。
-3. **回归验证**：
-   ```powershell
-   npm run check:boundaries
-   npm test
-   ```
+## 9. 验收按本次子阶段限定
+
+### 9.1 当前计算治理
+
+使用实际规模或可复现匿名 fixture，在相同 Windows 机器、production/dev、窗口与视图下采样。按热点比较 commit、扫描次数/耗时、long task、mounted cards；滚动问题再采 frame/DOM，后台问题再采请求/CPU。不要为每个小修复强制全指标仪表盘。
+
+- findSimilar 保持最新候选、账户和取消语义，减少无关宽订阅。
+- Release map 是派生 lookup，保留当前 latest-release 展示，集合变化才统一重算。
+- group partition/rank 保持自定义顺序、未分组、折叠、键盘与拖拽契约。
+- 发现页比较整批首次展示、追加批次、任务进度更新、频道切换和滚动定位；实际 provider 请求用 fixture/mock 隔离，保留分析资产、已读/采纳状态与阅读 anchor。
+- 不通过删除用户数据、已读状态或 outbox 缩短测量。
+
+### 9.2 仅在实施虚拟化时
+
+在用户选择的视图验证离屏卸载、overlay 保持、远处分组跳转、动态高度、resize anchor、filter/sort、selection/bulk/DnD。挂载数量应由 viewport/overscan 决定；具体阈值与收益根据前后数据，不承诺固定 FPS/MB 或固定卡片数量。
+
+### 9.3 仅在涉及同步时
+
+确认 v2 激活不再启动 legacy 5 秒 poll，保留 account/workspace 和未确认操作；offline/hidden/auth failure/reconnect/cursor expired 无紧密重试。不要从 Node/mock 测试推断真实 Windows hidden renderer 的功耗。
+
+现有测试可复用：RepositoryGroups/group order/card actions/Card、Home sync/desktop 与服务端 homeWorkspace；发现使用 SubscriptionRepoCard 的 weekly/noDescription、CustomRepositoryBlock、useDiscoveryEntryLoading、useDiscoveryReading/useChannelEditionReading、custom analysis 测试。当前没有 BuiltinRepositoryResults 的整批挂载性能基准，相应优化时补真实路径的组件 fixture/集成，不能以主仓库测试冒充覆盖。`home/performance.test.ts` 仅验证 5000 repo/10000 message 增量正确性，不能替代 UI benchmark。
+
+修改后运行 typecheck、相关单元/集成、必要时 build/fixture 与 `git diff --check`。
+
+---
+
+## 10. 明确非目标
+
+- 不为假设中的数千仓库预先实现全视图虚拟化或统一虚拟行平台。
+- 不改 RepositoryCard 视觉来混淆性能收益，不新建业务 store 或第二份 repositories warm 数据。
+- 不做 server-side repository pagination、normalized entity store、统一 Worker 平台或深层持久化拆分。
+- 不扩展 legacy ETag，不新增远程/跨设备同步传输，不无证据删除兼容逻辑。
+- 不使用 GC、working-set trim、MinWorkingSet，不承诺固定功耗下降比例。
+
+---
+
+## 11. 下一步
+
+优先对主仓库和发现页突然展示大量内容做同条件复现，给出热点证据，再选 B/C/D/E 中一个必要的小修复。只有残余 DOM 瓶颈成立才讨论虚拟化；需改变交互时由用户决定。达到当前可用目标就停止，本轮不自动开始代码实现。

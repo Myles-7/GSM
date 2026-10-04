@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "recordedOn": "2026-10-03",
+  "recordedOn": "2026-10-04",
   "timeZone": "Asia/Shanghai",
   "status": "validated-local-release",
   "repositories": {
@@ -186,8 +186,27 @@
     "sourceComparedWithUpstream": true,
     "pushed": true,
     "lastPublishedPersonalVersion": "P0.2.1",
-    "sourceIntegrationCommit": "fda2d9aeeeb7438c83d53271c83581ed426d8dd8",
-    "sourceIntegrationRecord": "upgrades/2026-10-03-source-publication.md",
+    "sourceIntegrationCommit": "485ad725ef516d487615c26beb3a94caa2f3ae06",
+    "sourceIntegrationRecord": "upgrades/2026-10-04-source-publication.md",
     "supportedLanguages": ["zh", "en"]
+  },
+  "sourceIntegration": {
+    "recordedOn": "2026-10-04",
+    "kind": "date-and-sha",
+    "sourceCommit": "485ad725ef516d487615c26beb3a94caa2f3ae06",
+    "baseCommit": "253b910852691f3cf0cc357246c6a31bfe1e77f6",
+    "previousSourceIntegrationCommit": "fda2d9aeeeb7438c83d53271c83581ed426d8dd8",
+    "branch": "personal/main",
+    "developmentBranch": "codex/daily-html-reading-loop-20261004",
+    "validationStatus": "validated-local-source",
+    "remoteAcceptance": "latest PR required checks and merge commit",
+    "requiredChecks": [
+      "Quality gates",
+      "Server quality gates"
+    ],
+    "record": "upgrades/2026-10-04-source-publication.md",
+    "evidence": "upgrades/2026-10-04-source-validation.json",
+    "newFormalVersion": false,
+    "dailyRuntimeReplaced": false
   }
 }

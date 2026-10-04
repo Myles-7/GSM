@@ -1,823 +1,332 @@
-# GSM 优化方向可行性与架构改进综合分析报告
+# GSM 本机 Windows 自用优化总指导
 
-> 分析日期：2026-10-03
-> 分析范围：`docs/product` 六份优化方向文档及其对应前端、Electron、Server、Home Sync 实现
-> 当前版本：`package.json` = `0.8.4`
-> 文档目的：判断现有优化方案的真实性、可行性、风险与实施顺序，并给出比“逐文档照搬实现”更稳妥的统一架构方案。
+> **阶段 4～8 代码更新（2026-10-03）**：阶段 4B～8 已按本机范围实施并验证；阶段 3 未扩展。备份安全范围、搜索 session、启动单点收益、grid 和 Windows 验收边界以交付报告为准。下文原文档校准/候选描述保留历史语境。 详见 [连续开发交付报告](GSM_阶段4至8连续开发交付报告.md)。
 
----
-
-## 1. 执行结论
-
-六份文档的主要问题诊断大多抓住了真实痛点，但不能按六条互相独立的改造线直接实施。当前 GSM 已经同时存在 Zustand 持久化、IndexedDB、Discovery/Workbench 独立存储、Home Sync v2、Electron `userData` 文件、安全存储和后端 SQLite。若再分别引入“启动快照”“新备份模型”“主进程 Release 状态”“独立标签真相源”，会把同一份业务数据复制到更多位置，最终让迁移、恢复、同步和故障排查更困难。
-
-本次代码审查后的总体判断如下。
-
-| 方向 | 原方案可行性 | 结论 | 建议优先级 |
-| --- | --- | --- | --- |
-| 单一配置文件备份与迁移 | 高，但必须重定义范围 | 应落地为**统一的版本化 Portable Profile/Backup 协议**，不能替代运行时存储，也不能宣称覆盖完整机器工作区 | P0/P1 |
-| 个人开发流与冷启动 | 高，但指标缺少基线 | 字体、i18n 前置加载、全量 IDB 水合屏障都是真问题；“第二份完整 warm cache”不建议 | P0/P1 |
-| 海量数据虚拟化与功耗 | 很高，当前性能收益最大 | 先修宽订阅、重复扫描和分组计算，再引入虚拟化；同步侧优先收敛到已有 Home Sync v2 | P0/P1 |
-| 混合检索与标签降噪 | 检索高，标签自动合并中等 | Hybrid Search 应优先；标签治理要改为**来源感知、可逆 alias、人工确认**，不能自动重写用户标签 | P1/P2 |
-| 卡片视觉与微交互 | 中高，适合增量改良 | 多数应复用现有设计 token、Radix Sheet 和 reduced-motion；不应重写 `RepositoryCard` | P2 |
-| 桌面原生融合与后台监控 | 生命周期修复高；后台监控中高；强制内存压缩不建议 | 多项桌面设置已经实现；应修复真实生命周期问题，后台 Release 任务需复用已有同步权威；**删除 PowerShell 工作集修剪方案** | P0/P2 |
-
-其中优先级定义为：P0 是低风险正确性/架构止损；P1 是高收益核心改造；P2 是在基础稳定后实施的能力与体验升级。
-
-最重要的统一原则只有一条：**业务事实尽量只有一个权威来源，其余缓存、索引、预览、搜索结果和桌面通知状态都必须是可重建的派生数据。**
+> 文档状态：**本机自用开发总纲**
+> 修订日期：2026-10-03（Asia/Shanghai）
+> 应用 package 版本：`0.8.4`；个人交付记录：`P0.2.1`，两者不是同一个版本号
+> 权威关系：本文定义六个专项的范围、优先级和验收边界；专项提供当前代码证据与按需细节。
+> 本轮交付：只校准这七份文档，未实现本文中的待办功能。
 
 ---
 
-## 2. 审查方法与证据边界
+## 0. 用户已经确认的范围
 
-本次没有只阅读产品文档，而是沿每份文档涉及的真实调用链核对实现，重点检查了：
+| 决策项 | 本轮确认 | 对后续开发的影响 |
+| --- | --- | --- |
+| 使用平台 | 仅当前本机 Windows | Windows 是开发与实机验收目标；保留既有 macOS/Linux 分支，但不新增适配或要求全平台验收 |
+| Home | 保留现有本机 Home backend / Home Sync v2 | 不规划远程部署、多设备、新同步传输；不停止服务、不改变其已有 owner |
+| 备份 | 本地 JSON 优先，保留 WebDAV 兼容 | 不规划全域/整机归档、Device Profile 或跨账户克隆；共享必要格式逻辑即可 |
+| 当前体验 | 多页面突然展示大量内容时卡顿；包括滚动、分类/分组、展开折叠及发现页大量仓库 | 首要排查整批派生与挂载，不能只处理主仓库列表，也不能因历史小规模验收忽略现状 |
+| 标签治理 | 不列为确定开发目标 | 保护原标签；来源模型、alias registry、Worker、批量治理只记录边界 |
+| Release 后台通知 | 不列为确定开发目标 | 保留现有前台 Release；不新增 scheduler、watermark、通知队列或主进程业务缓存 |
+| 启动投影 | 不列为确定开发目标 | 不新增 Bootstrap Projection；先测现有启动与渲染路径 |
 
-- Zustand store、`partialize`、迁移和水合：`src/store/useAppStore.ts`、`src/store/persistence/*`、`src/services/indexedDbStorage.ts`。
-- 本地文件与 WebDAV 备份恢复：`DataManagementPanel.tsx`、`useBackupActions.ts`、Discovery workspace 备份、AI 配置恢复和组织结构 helper。
-- 启动链路：`src/main.tsx`、`src/App.tsx`、`src/i18n/index.ts`、主题与字体入口。
-- 仓库大列表：`RepositoryList.tsx`、`RepositoryGroups.tsx`、`RepositoryGrid.tsx`、`RepositoryCard.tsx` 与卡片 hooks。
-- 搜索：`useSearchActions.ts`、`repoSearch.ts`、`vectorSearchService.ts`、AI 搜索与重排相关逻辑。
-- 桌面：`electron/main.js`、`desktopPrefs.js`、`preload.js`、`electronProxy.ts`、`GeneralPanel.tsx`。
-- 同步：legacy `autoSync.ts`、`backendAdapter.ts`、`src/home/*`、`server/src/routes/syncV2.ts`、仓库服务端分页接口。
-- Release：`useReleaseTimelineActions.ts`、GitHub API、多源解析、Home projection 与后端 release 持久化。
+涉及功能范围、数据覆盖、交互取舍的后续决策，应提出具体选项请用户决定。代码事实、已有兼容逻辑和数据安全约束不能因本机自用而省略。
 
-仓库中已经存在性能埋点，但没有足够的可重复基准数据支持六份文档里的很多绝对数字。例如“FCP < 120ms”“700MB 降到 80MB”“2.5GB/h”“100% 精确率”“标签减少 65%”都没有对应测试夹具或基准结果。因此本报告把这些数字视为**目标假设**，不视为已经验证的收益。
+### 0.1 如何使用专项文档
 
-现有 `dist` 快照的 bundle report 显示现代入口约 1.54 MiB、legacy 入口约 1.75 MiB，但当前工作区有大量未提交改动，`dist` 也不能证明来自当前精确源码状态，所以只适合说明“启动包仍有优化空间”，不适合作为优化前正式基线。正式实施前应在干净、可复现构建上建立基线。
+| 专项 | 当前主线 | 按需内容 |
+| --- | --- | --- |
+| [备份迁移](GSM_单一配置文件备份与迁移分析.md) | 本地导出版本/字段完整性、兼容、安全恢复边界 | 跨库恢复只在实际选中的数据需要时设计 |
+| [冷启动](GSM_个人开发流与冷启动效率全方位深度分析.md) | 保持生产 file-origin 入口，定位真实阻塞 | i18n/IDB/font/chunk 优化须有启动证据 |
+| [列表与功耗](GSM_海量数据虚拟化与功耗控制分析.md) | 当前卡顿复现、宽订阅/重复扫描治理 | 残余瓶颈需要时才接虚拟化，先验证常用视图 |
+| [搜索与标签](GSM_混合检索与标签分类降噪全方位分析.md) | exact/lexical 不能被向量硬过滤，维持查询排序 | 标签治理不排期，保留已有语义能力 |
+| [卡片视觉](GSM_卡片视觉体系、微交互与动效质感全方位打磨分析.md) | 在现有 token/Radix 上做可独立验证的小改动 | 不以虚拟化或完整设计系统重构为前置条件 |
+| [桌面后台](GSM_桌面原生融合与后台监控全方位分析.md) | 现有 Windows 托盘/退出路径的实际问题 | 安装包、系统通知、其它平台不作为日常使用前置 |
 
-并行只读核验还执行了现有启动/Home 数据库与桌面开发地址测试，报告结果分别为 23/23 与 4/4 通过。它们证明当前已经有一些启动懒加载和固定开发 origin 的行为保护，后续改造需要保留这些契约。
+优先级按问题证据确定：数据丢失/错误写入先处理；当前卡顿先复现；代码确认的算法/正确性问题随后分小步处理。可选功能不因在文档里出现就自动进入开发计划。
 
 ---
 
-## 3. 六份文档共同存在的架构风险：事实源继续增加
+## 1. 当前问题、根因与停止条件
 
-如果逐份照文档实现，可能形成下面的状态结构：
+当前有两类问题，不能混为一谈：
 
-```mermaid
-flowchart LR
-  Z[Zustand + 单大键 IDB] --> A[新 warm startup cache]
-  Z --> B[DataManagement v1.0]
-  Z --> C[WebDAV v1.2]
-  Z --> D[拟议 Backup v2]
-  Z --> E[Electron Release Monitor cache]
-  Z --> H[Home Sync v2]
-  Z --> T[拟议 Taxonomy registry]
+1. **文档范围过大**：原路线把全域恢复协调器、机器可读 Registry、全平台生命周期、虚拟行编译器、标签 Worker、后台通知等组合成固定阶段。这些方案有适用条件，但本机自用没有自动需要它们。
+2. **已有代码仍有确定的改进点**：卡片宽订阅、逐卡 Release 扫描、分组重复查找、搜索向量硬过滤和本地导出字段漂移都能在源码中定位。它们是否解释当前卡顿，仍需 trace，不能仅凭代码形态下结论。
+
+本轮目标是缩小文档的强制范围，保留数据与账户安全，并使后续每次开发只解决一个可复现问题。
+
+后续性能工作的停止条件：当前常用操作在相同机器、数据 fixture、视图与窗口尺寸下达到双方确认的可用程度，且回归通过。达到目标就停止增加基础设施，不自动继续 Worker、实体化 store、分 object store 或全视图虚拟化。
+
+历史验收的 62 仓库不是当前规模证明，也不是“不会卡顿”的证据。用户已确认触发场景集中在突然展示大量内容，发现页也明显受影响；当前数量、最小复现步骤、后台任务和瓶颈位置仍须在下一次性能任务中确认。1000/5000 仓库可作为压力夹具，不是本机交付的固定规模承诺。
+
+---
+
+## 2. 当前代码基线：必须承认已经存在的能力
+
+后续设计必须从真实代码出发，而不是从六份文档最初撰写时的假设出发。
+
+### 2.0 个人版实际交付
+
+- [个人版记录](../personal/README.md)与[P0.2.1 启动维护记录](../personal/upgrades/P0.2.1-desktop-startup.md)已记录日常快捷方式走 `start-desktop.vbs -> start-home-desktop.cjs -> electron/main.js -> dist/index.html`。
+- [生产启动器](../../scripts/start-home-desktop.cjs)剔除 dev URL，以 production 模式启动已有构建；不启动 Vite，也不管理已有 Windows 后端服务。
+- `http://127.0.0.1:5174` 是保留的独立开发来源；生产 file-origin 和开发 HTTP origin 的存储不可混用。本轮不改 URL、userData、服务或快捷方式。
+- 个人版语言入口已限中英，历史语言资源与 API 兼容仍保留，见 [languages.ts](../../src/i18n/languages.ts)。不继续做通用多语言扩展。
+- P0.2.1 的耗时是历史单次样本，不是本轮 benchmark；当前卡顿以新的用户复现为准。
+
+### 2.1 状态与持久化
+
+- 主应用仍以 Zustand 为运行时 UI/领域状态入口。
+- `appPersistenceOptions` 当前 persistence version 为 `17`，主快照写入 IndexedDB，失败时回退 localStorage。
+- 主持久化已经有 stringify/write 耗时日志，以及 `gsm:store-hydration-start`、`gsm:store-hydrated`、`gsm:first-hydrated-frame` 等性能 mark。
+- Discovery、Workbench/Home 等大域已经部分脱离主 Zustand 单大键，存在各自的存储边界。
+- `HomeDatabase` 已经实现**缓存 IDB connection、Zod backup schema、账户/工作区校验、20MB 上限、单事务导入和 secret stripping**，这是后续 Portable Profile 和主 IndexedDB 改造的重要参考实现。
+
+### 2.2 Home Sync v2
+
+Home Sync v2 已经具备：
+
+- workspace + GitHub account identity。
+- cursor changes / paged snapshot。
+- operation outbox、版本冲突和 pending replay。
+- visibility-aware 调度、online wake、backoff。
+- server 端 canonical guard，阻止已绑定 workspace 继续走 legacy 写入。
+
+`src/home/performance.test.ts` 已经覆盖 5000 repositories + 10000 messages 的增量缓存场景。它不是 UI 性能基准，但说明项目已经有适合大规模数据的增量存储模型，应优先复用，而不是继续强化 legacy 全量同步。
+
+### 2.3 跨存储迁移已有可靠范式
+
+`repositoryIdentityMigration.ts` 已经包含一套比原备份文档更成熟的跨存储操作模式：
+
+- writer gate / exclusive operation。
+- durable journal。
+- pre-image backup。
+- participant checkpoint。
+- fingerprint 防止恢复期间本地状态漂移。
+- 分阶段 apply / resume / explicit restore。
+- Home、Vector、Workbench、Discovery、App Store 多参与者协调。
+
+Portable Profile 的“真正跨域恢复”应复用这套思想，而不是把一次 `useAppStore.setState()` 称为原子恢复。
+
+### 2.4 UI 与桌面基础设施
+
+- `RepositoryCard` 已承载键盘、拖拽、选择、插件、README/Release 等复杂行为。
+- `ui-card`、shadow/radius token 与 reduced-motion 已存在。
+- `ui/sheet.tsx` 已基于 Radix Dialog 实现抽屉基础能力。
+- Electron 已经有 single-instance、自启、close/minimize-to-tray、desktop prefs、preload bridge 和设置面板。
+- Windows 生命周期细节是独立候选；原生通知与后台业务整合不排期，不能再造一套 desktop prefs。
+
+### 2.5 本轮验证的范围
+
+文档校准使用现有测试核实启动、备份、搜索、分类、账户与 Home 行为，不把这些测试当成待办功能已实现的证明。
+
+- 根项目类型检查：`npm run typecheck`。
+- 修改后相关前端/领域测试：30 文件、312 项通过；覆盖 App 启动、备份入口、Discovery backup/结果卡片/分析/阅读定位/存储、搜索、卡片/分组/详情/Sheet、Home、身份迁移与账户 helper。
+- 服务端集成：`server/tests/integration/homeWorkspace.test.ts`，1 文件、3 项；采用内存 SQLite 与 mock provider。
+- Node 桌面测试：生产/开发启动器、desktop prefs、WebDAV IPC，共 69 项。
+
+本轮文档还检查了本地链接、代码路径、UTF-8、标题层级、代码围栏与 diff whitespace。测试运行中的 Node localStorage 参数 warning 不影响退出码与通过结果；它不提供 renderer 性能测量。
+
+`src/home/performance.test.ts` 的 5000 repositories + 10000 messages 仅验证增量缓存契约，没有采集 UI FPS、heap 或 CPU，因此不能证明当前 renderer 卡顿已经解决。搜索测试保护现有行为，不代表拟议的 hybrid union 已完成；备份测试也不代表跨库原子恢复已实现。
+
+本轮不运行生产数据 benchmark、付费 AI、真实 Star 写入、索引重建或服务部署。纯文档变更无需重新生成 build/installers。
+
+---
+
+## 3. 六条不可违反的架构原则
+
+### 原则 A：业务事实只有一个权威来源
+
+Repository、Release、Organization、用户偏好、账户身份等事实可以有缓存和投影，但任何时刻必须能回答“谁有最终写权限”。
+
+允许：
+
+- Search index。
+- latestReleaseByRepoId。
+- taxonomy alias index。
+- bootstrap preview。
+- virtual row model。
+
+这些都应是可重建的派生状态。
+
+不允许：
+
+- 为冷启动复制一份可写 repositories warm store。
+- Electron Release monitor 自己维护一套不写回主领域的 release truth。
+- 为本地文件和 WebDAV 继续增加互相漂移的字段清单；历史格式仍通过兼容读取保留。
+
+### 原则 B：账户和工作区身份是所有持久化操作的第一维度
+
+凡是涉及以下内容，都必须明确 `githubUserId`，有 Home backend 时还必须明确 `workspaceId`：
+
+- backup/import。
+- taxonomy alias。
+- Release monitor cache/subscriptions。
+- search/vector namespace。
+- Discovery/Workbench 数据。
+
+禁止依赖 repo name 或全局 cache 推断账户作用域。
+
+### 原则 C：测量优先于“优化数字”
+
+专项文档中任何 FCP、内存、FPS、流量、搜索精确率百分比，如果没有当前基线脚本/trace 结果，都只是目标，不得写成改造后承诺。
+
+工程评审只接受三类证据：
+
+1. 可重复自动 benchmark/test。
+2. 可重复 Electron/浏览器 trace。
+3. 固定 fixture/query corpus 上的前后对比。
+
+### 原则 D：先降低算法/订阅复杂度，再引入复杂基础设施
+
+典型顺序：
+
+```text
+宽订阅 / 重复扫描 / 不必要全量复制
+        ↓
+预计算索引 / ID lookup / 分区
+        ↓
+虚拟化 / worker / 分域存储
 ```
 
-问题不在于“缓存多”，而在于每一层都可能开始承担写入和恢复职责。一旦两个层都能修改业务实体，就需要解决版本、冲突、回滚、跨账户身份和部分失败问题。
+如果第一层仍然存在，直接加 virtualizer、Web Worker 或第二个数据库通常只是在隐藏根因。
 
-更稳妥的目标架构应收敛为：
+### 原则 E：跨存储写入必须可恢复，不把“内存一次 setState”当事务
+
+涉及用户事实的跨 durable store 修改，必须明确 journal/checkpoint/recovery/rollback；先确定本次真实写入集合，不能用一次 `setState()` 宣称原子性。仅派生索引可失败后重建，但未确认的 outbox/用户编辑不能当缓存删除。若安全恢复边界尚未实现，先交付只读导出或预览，不开放破坏性恢复。
+
+### 原则 F：桌面主进程是系统集成层，不重新实现业务域
+
+Electron main 适合负责：
+
+- window/tray/lifecycle。
+- Notification。
+- native credential vault。
+- 系统调度和唤醒。
+
+Release 解析、订阅源语义、持久化和业务排序仍应复用共享 domain service / Home backend。
+
+---
+
+## 4. 最小架构：沿用现有 owner，不新建通用平台
 
 ```mermaid
 flowchart TD
-  D[领域事实<br/>Repository / Organization / Releases / Preferences] --> P[运行时持久化<br/>Zustand + IDB / Home Sync v2]
-  D --> X[Portable Profile<br/>版本化导出投影]
-  D --> I[派生索引<br/>Search / latestReleaseByRepo / Taxonomy alias]
-  D --> V[只读启动投影<br/>Theme/Lang/Shell/可选近期预览]
-  P --> D
-  X --> M[校验 + 迁移 + 预览 + 原子应用协调器] --> D
-  I -.可重建.-> D
-  V -.水合后替换.-> D
-  H[Electron 系统层] --> N[托盘/通知/窗口生命周期]
-  H --> P
+  UI[现有 React / Zustand UI] --> DOMAIN[现有领域动作与 helper]
+  DOMAIN --> LOCAL[现有本地持久化]
+  DOMAIN --> SYNC[已启用的 Home Sync v2]
+  SYNC --> HOME[现有本机 Home canonical records]
+  DOMAIN --> DERIVED[按需派生 lookup / 搜索排序]
+  LOCAL --> EXPORT[显式备份 projection / codec]
+  EXPORT --> FILE[本地 JSON]
+  EXPORT -.兼容入口按需复用.-> DAV[现有 WebDAV]
+  ELECTRON[Electron main] --> OS[窗口 / 托盘 / 系统集成]
 ```
 
-这里最关键的区别是：
+图中运行路径沿用既有边界，备份 projection/codec 的共享收敛仍是待办。它不要求建立新的 Domain State 框架、统一任务调度器或 Durable Data Registry。文档清单加对应测试足以支撑本机维护；只有持续遗漏且简单办法无法控制时才另行提案。
 
-1. **Portable Profile 是导出投影，不是新的运行时数据库。**
-2. **启动快照是只读快速投影，不参与正常业务写入。**
-3. **搜索索引、Release 映射、标签 alias 都是派生层，可以重新生成。**
-4. **Electron 主进程优先负责系统能力和调度，不再维护另一份独立业务世界。**
-5. **配置了 Home backend 时，Home Sync v2 应优先成为跨进程/跨设备同步的收敛路径。**
+### 4.1 当前所有权与恢复边界
 
----
+| 数据 | 当前权威边界 | 可否重建/省略 |
+| --- | --- | --- |
+| Repository / 分类 / Release / 订阅 / 已读 | Home v2 激活后，已确认记录以本机 server v2 canonical records 为准；本地领域入口提交编辑，Home IDB outbox 保存未确认意图，Zustand/专属 store 承接投影 | GitHub 元数据可重取；用户注释、分类、已读及未确认操作不可按缓存删除 |
+| 未启用 Home 的上述数据 | 现有 app/domain 持久化及账户 workspace；保留当前兼容模式 | 不另建 warm store，不借文档瘦身改变运行路径 |
+| 全局偏好与设备配置 | 沿用 app store、Electron userData、既有 credential owner 的各自边界 | 默认不把设备路径/凭据变成 portable 内容 |
+| Discovery / Workbench / chat / analysis / HTML Reading | 各自专属 store；仅已经纳入 Home 的 collections 按现有协议投影 | 本地 JSON 不覆盖全部域；不能宣称可完整恢复这些用户历史 |
+| Release lookup、group partition/rank、搜索 session、virtual rows | 不持久化的派生计算 | 可丢弃重算；先有收益再引入 |
+| Vector index | 当前 vector service/provider 的派生索引 | 可重建但有网络/embedding 成本，不能自动触发大批重建 |
+| Taxonomy suggestion | 未排期的派生建议 | 可重建；用户将来批准的 alias 则是配置事实，不能混为缓存 |
+| Electron window/tray | Electron main | 系统运行状态；不持有第二份 Release 或 Repository 业务事实 |
 
-## 4. 单一配置文件备份与迁移：方向正确，但应改名为 Portable Profile
+唯一 authoritative owner 不等于只允许一个数据库文件。现有缓存、投影与 durable outbox 有不同职责；不能删除它们来追求形式上的“单一存储”。
 
-### 4.1 当前问题是真实的
+### 4.2 本地 JSON 的最小协议
 
-目前至少有两套主要 JSON 备份语义：
+只定义一套显式字段 projection、schema/version、身份与空值语义。不要直接导出 persistence `partialize` 的全部结果：其内容可能含凭据、账户 workspace 或运行细节。`partialize` 是完整性核对依据，不是默认备份白名单。
 
-- `DataManagementPanel.tsx` 导出 `version: '1.0'`。
-- `useBackupActions.ts` 的 WebDAV 路径导出 `version: '1.2'`。
+本地优先修 appVersion、二级分类和顺序等已证实遗漏，沿用 normalizer、`incomingOrganizationSnapshot()`、`restoreAIConfigs()`。保留 v1.0/v1.2 读取；WebDAV 只在需要维护相关字段时复用共享格式逻辑，不成为本地修复的前置项目。
 
-两条路径字段覆盖并不一致。DataManagement v1.0 的字段清单落后于当前 `appPersistenceOptions`，容易遗漏 `subcategories`、`subcategoryOrder`、`repositoryOrder`、`categoryListIdMap`、`themeTokens`、`repositoryCardFields`、`repositoryChatSettings`、active AI 配置等新资产，同时仍带有部分 Discovery 会话/运行时数据。
-
-更明显的是版本信息已经漂移：`package.json` 当前是 `0.8.4`，但 `DataManagementPanel` 和文档拟议的新 `SingleBackupPanel` 示例都硬编码了 `appVersion: '0.4.0'`。这说明继续靠每个导出入口手工维护字段和版本，长期必然再次分叉。
-
-WebDAV v1.2 路径的设计更成熟：它复用了 `incomingOrganizationSnapshot`，并通过 `restoreAIConfigs` 处理脱敏密钥恢复，比本地 v1.0 的分支式多次写入更接近正确方向。
-
-### 4.2 文档中的 V2 不能直接复制
-
-文档提出 Zod schema、版本适配、replace/merge 两种模式，这些思路值得保留，但样例实现有若干实质问题：
-
-- `Repository` 投影不完整，容易遗漏 owner、fork/timestamp 等当前模型仍需要的字段。
-- 缺少 `repositoryOrder`，会导致用户手工排序无法完整迁移。
-- `activeAIConfigId` 被导出但示例 patch 没有完整恢复。
-- `assetFilters.length > 0` 才恢复意味着“用户明确恢复为空集合”无法表达。
-- merge 示例使用 `local.custom_description || incoming.custom_description`，会把“用户明确清空为空字符串”误判为缺失。现有持久化迁移已经专门处理过空字符串语义，不能回退。
-- `categoryListIdMap` 不能简单按 key 跨账户覆盖，因为 GitHub List ID 有账户上下文。
-- “一次 `useAppStore.setState(finalPatch)` 即原子恢复”只保证**内存里一次 React 状态提交**，不能保证 Discovery DB、Workbench DB、Home DB、IndexedDB 持久化和后端同步的持久原子性。
-
-### 4.3 更好的备份分层
-
-建议把“单一配置文件”重新定义为三层产品：
-
-**A. Portable Profile（主推）**
-
-用于设备间迁移个人配置、仓库注释与知识组织，默认不包含机器绑定信息和明文密钥。它应包括：
-
-- 仓库用户资产与必要 GitHub 元数据。
-- 分类、子分类、排序、锁定状态与稳定 ID。
-- 用户/AI 描述与标签。
-- AI 配置的非敏感部分，密钥默认省略或脱敏。
-- 主题、语言、卡片字段、搜索/Release 偏好等可迁移偏好。
-- Release 订阅与已读状态。
-- 可选的 Discovery/Workbench 数据块，但必须通过各自已有导入导出服务接入，而不是直接抓运行时缓存。
-
-**B. Device Profile（默认不随 Portable Profile 导出）**
-
-包括代理地址、RPC、本机路径、AGY executable、Electron desktop prefs、插件本机状态等。它们要么留在本机，要么以明确的“高级设备配置”可选导出。
-
-**C. Full Workspace/Machine Backup**
-
-如果未来真的需要“整机恢复”，应是单独的协调器/归档格式。它要处理 Home DB、Workbench、Discovery、Electron 安全存储、插件数据、backend SQLite 及 encryption key，而不是把所有东西塞进 Zustand JSON。
-
-### 4.4 推荐实现
-
-新增一个共享 backup codec/service，而不是新建一套 UI 内嵌逻辑：
-
-```text
-src/services/backup/
-  schema.ts          # Canonical schema + Zod
-  projection.ts      # buildPortableProfile(state, externalStores)
-  adapters.ts        # v1.0 / v1.2 -> canonical
-  validate.ts        # schema + semantic invariants + identity checks
-  apply.ts           # preview / replace / merge / rollback coordination
-```
-
-本地文件和 WebDAV 都调用这组服务。版本号来自 package/build metadata，不再硬编码。导入前先完成全量 parse、schema 校验、账户身份检查、冲突预览与 patch 构建；真正跨多个持久化域时，复用项目已经存在的 repository identity migration 思路：writer gate、pre-image、checkpoint/fingerprint 和失败恢复，而不是把“setState 一次”当作持久原子事务。
-
-### 4.5 结论
-
-这份文档值得实施，但产品命名和架构边界必须修正。**最高价值不是“一个 JSON”，而是“只有一个受版本控制的可移植备份协议”。**
+如果选中的恢复范围会经 Home capture 写 outbox 或触及独立 DB，也属于跨存储恢复。必须先设计该真实参与集合的恢复协议，或先只交付导出/预览；不能为“本地文件”取消一致性约束。
 
 ---
 
-## 5. 冷启动与个人开发流：先测量，再缩短首屏关键路径
+## 5. 六个方向的范围决定
 
-### 5.1 文档识别的瓶颈大多成立
+| 方向 | 现在保留 | 不排期/进入条件 |
+| --- | --- | --- |
+| 当前卡顿 | 固定主仓库与发现页大量内容复现，采样派生/render/commit/long task；优先宽订阅、Release/分组/任务查找重复扫描 | 简单修复后仍是 DOM/挂载瓶颈，才让用户决定常用视图的虚拟化范围 |
+| 备份 | 本地版本与字段、兼容 fixture、身份与 masked-secret/空值保护 | 不做全域归档、Device Profile、加密 secret package、跨账户 clone、通用 adapter 拓扑框架 |
+| 搜索 | exact full_name/name + lexical 不被向量候选硬排除，filters 保持查询顺序；保留当前语义配置 | 需要会话状态时仅内存 IDs/rank/query/identity，避免新持久化 slice 或复杂 generation 平台 |
+| 启动 | 保持生产入口，区分首次渲染与 Home 后台就绪；按 trace 优化已存在 i18n/IDB/chunk/font 工作 | Bootstrap Projection 不列目标；当前启动已可用时不再新增缓存层 |
+| 视觉 | 复用 ui-card/token/Radix，局部一致性、焦点与 reduced-motion | 不重写卡片、主题框架；视觉改善不强制等待虚拟化，也不为动画保留大 DOM |
+| 桌面 | 当前 Windows tray unfocused 行为、菜单与 session-end 的真实问题 | 不新增 macOS/Linux 适配、安装包工程、AUMID/通知链路或 Release scheduler；只有明确使用需要再提案 |
 
-`src/main.tsx` 在入口静态 import 了 15 组字体包，并且在 `createRoot` 之前等待 `ensureLanguageLoaded(initialLanguage)` 与 fallback language。`src/i18n/index.ts` 的 `ensureLanguageLoaded` 会一次装入该语言的全部 14 个 namespace，因此非 fallback 语言启动时确实可能在 React 挂载前拉取两组 namespace。
-
-`src/App.tsx` 又有 `if (!hasHydrated) return Loading...` 的完整水合屏障。底层 `indexedDbStorage.ts` 每次 get/set/delete 都重新 `indexedDB.open`，同时 Zustand 快照作为一个 JSON 字符串整体读取、`JSON.parse` 和迁移。
-
-这些都是可以优化的真实结构问题。
-
-### 5.2 文档有三处需要降级结论
-
-第一，文档把字体静态 CSS import 直接等同于“15 款字体二进制全部在首屏下载”，这个结论需要浏览器网络 trace 验证。静态导入肯定增加 CSS/module 入口负担，但真正字体文件加载还受 `@font-face` 使用、预加载与浏览器策略影响。
-
-第二，文档认为主视图存在大量没有懒加载的页面组件，但 `App.tsx` 已经对 Release、Fork、Settings、Discovery、Gist 和 AI Workbench 做了 `React.lazy`。真正剩余的优化对象主要是 Repository 主路径内部的重模态/面板，而不是重新做整个 App 路由懒加载。
-
-第三，文档提出 FCP 120/150ms 等绝对目标，但仓库没有可重复 Electron 冷/热启动基准，因此这些只能是性能预算，不是预期必达结果。
-
-### 5.3 不建议复制完整仓库到第二份 warm cache
-
-`authStorage.ts` 已经有同步 localStorage 镜像。文档提出进一步把 Top 15 仓库等数据写入同步缓存，以达到“0ms 真实卡片”。如果这个缓存参与业务状态初始化和后续 merge，它会立刻成为第二套需要迁移和一致性维护的数据库。
-
-更好的方式是只维护一个**非权威 Bootstrap Projection**：
-
-```ts
-type BootstrapProjection = {
-  schemaVersion: number;
-  theme: string;
-  themePreset: string;
-  language: string;
-  lastView: string;
-  authPresent: boolean; // 不复制 token
-  recentRepoPreview?: Array<{
-    id: number;
-    fullName: string;
-    description?: string | null;
-    language?: string | null;
-  }>;
-};
-```
-
-它只负责首屏“看起来已经进入应用”，水合完成后整块被权威状态替换，不承接修改。任何需要完整 Repository、密钥或可写分类语义的操作，在 full hydration 完成前保持受控状态。
-
-### 5.4 建议的冷启动顺序
-
-建议按以下顺序改，而不是先做大规模双缓存：
-
-1. **先建立基准**：扩展现有 `gsm:store-hydration-start`、`gsm:store-hydrated`、`gsm:first-hydrated-frame`，增加 Electron process start、DOM ready、React mount、search-ready 等时间点；分别测 cold/warm + 100/1000/5000 repo。
-2. **移除空白水合屏障**：先渲染 shell/bootstrap projection，再异步替换完整数据。
-3. **i18n 改为 critical namespace 首载**：首屏只装 `common/app/login/repositories` 等必要资源，其余由 view boundary 预取。还要给 `ensureLanguageLoaded` 增加 in-flight 去重，避免并发重复请求。
-4. **复用 IndexedDB 连接**：缓存 DB connection，并正确处理 `versionchange`/close，而不是每次 open/close。
-5. **字体按主题/预设加载**：保留稳定 fallback；当前主题所需字体首载，其余动态加载。验证 FOIT/FOUT 后再扩大。
-6. **主路径内部 lazy**：只 lazy 确认会显著增加入口的 README、批量分类、AI 整理等重组件。
-7. **列表首屏策略与虚拟化统一设计**：不要一边把初始 50 改成 15，一边另一份文档再引入 virtualizer，最终保留两套机制。
-
-### 5.5 `SyncModeChoiceModal` 不应以“性能优化”名义直接删除
-
-它确实是 blocking modal，且重复启动用户通常不需要它。但“默认 `syncModeConfigured=true` 并静默选择 stars”会改变首次使用的同步语义，可能让用户无意识失去 Lists 能力。
-
-更合适的策略是把它当产品决策：个人版可以给出明确默认值，同时把首次选择降级为非阻塞提示或在设置中保证可发现性。它不是启动性能优化的必要条件。
-
-### 5.6 开发流还有一个独立问题
-
-仓库存在两套桌面开发启动习惯：`dev-desktop.mjs` 与另一个固定端口 launcher 的行为并不完全一致，DevTools 和 backend 启动策略也不同。对 GSM 这类 IndexedDB 强依赖应用，dev origin 变化会改变浏览器存储 origin，导致“像丢数据一样”的开发体验。
-
-建议最终合并为一个 launcher，显式支持：
-
-```text
---origin stable|ephemeral
---backend auto|on|off
---devtools on|off
-```
-
-日常个人开发默认使用稳定 origin；只有需要并行隔离实例时才使用动态端口。
+搜索 exact 正确性是规模无关问题，值得保留；标签 Worker 与搜索正确性并没有必须一起实现的依赖。
 
 ---
 
-## 6. 海量数据虚拟化与功耗：最值得先做，但先修 O(N×M) 与宽订阅
+## 6. 后续每次只做一个子阶段
 
-### 6.1 文档判断“批加载不是虚拟化”完全成立
+以下是候选队列，不是一次实施所有项目的授权。本轮结束后不自动开始。
 
-`RepositoryList.tsx` 的 `visibleCount` 和 `RepositoryGroups.tsx` 的 GroupBatch 都是每次增加 50，然后继续渲染 `slice(0, count)`。一旦滚到底，之前所有卡片仍然挂在 DOM 中。因此它改善的是首批挂载，而不是长期内存和 DOM 上限。
+| 顺序 | 可独立交付的任务 | 核心文件 | 不改 | 验证/退出条件 |
+| --- | --- | --- | --- | --- |
+| 1 | 多页面大量内容卡顿复现与定位 | RepositoryList/Card/Groups、DiscoveryView、Builtin/CustomChannelResults、阅读 anchor hooks、既有采样入口 | 用户数据、存储、同步、视觉样式 | 在当前常用操作可重复定位热点；区分渲染、查询、Home capture 与后台任务 |
+| 2 | 按证据选择一项低风险修复 | 卡片 actions/Release/group helper，或发现 results 的任务/成员 lookup 与订阅 | 不同时接 virtualizer/Worker | 相同 fixture 前后比较；原有动作、排序与账户回归通过 |
+| 3 | 本地导出一个正确性修复 | DataManagementPanel、现有配置/分类 helper；必要的共享 codec | 不拓展所有 DB、不顺带替换 WebDAV restore | 对应版本/字段 roundtrip 和 legacy fixture 通过；导出不触及业务写入 |
+| 4 | 搜索候选与查询状态小步修复 | useSearchActions、repoSearch、SearchBar | 不做 taxonomy、AI 服务升级或向量重建 | 完整 exact/unindexed/outage/中文/semantic corpus 与筛选/取消回归 |
+| 5 | 根据当前需要选启动、视觉或 Windows 生命周期的小修复 | 对应专项列出的既有入口 | 不把多个方向打包合并 | 只验收实际改动的路径；需求或证据不足就停止 |
 
-在 3000～5000 repo 场景里，引入真正 windowing/virtualization 是合理的。
-
-### 6.2 但在引入 TanStack Virtual 之前，还有三个更便宜的高收益问题
-
-**问题 A：每张卡片订阅完整 repositories**
-`useRepositoryCardActions.ts` 为“找相似”这类显式点击动作订阅整个 `repositories` 数组。仓库任意变化都会扩大更新传播。这里直接在动作发生时 `useAppStore.getState().repositories` 更合理。
-
-**问题 B：每张卡片扫描完整 releases**
-`RepositoryCard.tsx` 订阅完整 releases，再按 repo filter + sort 求最新 release。卡片数量与 release 数量都上去后是典型 N×M。应在 releases 变化时一次生成：
-
-```ts
-latestReleaseByRepoId: Map<number, Release>
-```
-
-卡片只按自己的 repo id 取值。
-
-**问题 C：分组计算重复遍历**
-`RepositoryGroups` 有 section×repositories 的过滤和顺序查找。应先一次性把仓库 partition 到 Map，再基于 `repositoryOrder` 建 id->rank index，避免反复 `filter/find`。
-
-这些修复风险低，而且会让后续 virtualizer 的真实收益更容易测量。
-
-### 6.3 虚拟化的真实接入成本比文档写的高
-
-当前分组列表依赖真实 DOM heading ref、`getBoundingClientRect()`、拖拽目标和卡片本地 modal/menu 状态。offscreen row 被虚拟化卸载后，这些假设都会变化。
-
-因此推荐先把数据模型扁平化：
-
-```ts
-type RepositoryVirtualRow =
-  | { type: 'group-header'; groupId: string }
-  | { type: 'cards'; groupId?: string; repoIds: number[] };
-```
-
-并完成以下基础改造：
-
-- 目录跳转从 DOM heading ref 改为 `groupId -> virtualIndex -> scrollToIndex`。
-- 卡片详情、编辑、README、Release Sheet 的打开对象尽量提升为 ID 驱动的 overlay state，避免卡片一离开 overscan 区就关闭。
-- 拖拽使用 overlay，并设计 offscreen autoscroll/drop 行为。
-- dynamic measurement 处理卡片高度变化。
-- resize 后列数变化时保留 scroll anchor。
-- 小数据量不必强制 virtualizer，可设置 300～500 条阈值，减少复杂度。
-
-建议先做 list mode，再做 grid/group mode，因为 list 的一维高度与滚动模型简单得多。
-
-### 6.4 与视觉动效文档存在直接冲突
-
-视觉文档建议折叠分组使用 CSS Grid `0fr -> 1fr`，本质是为了动画而保留子 DOM。对于小分组很好，但对于几百/几千卡片会抵消虚拟化的主要收益。
-
-建议采用阈值策略：
-
-- 小分组：允许短暂保留 DOM 做展开/收起动画。
-- 大分组：立即卸载内容，header 只做 opacity/chevron 动效。
-- virtualized group：由 virtual row model 决定可见性，不能长期保留整组 DOM。
-
-### 6.5 功耗问题应优先收敛同步协议，而不是继续装补丁
-
-legacy `autoSync.ts` 确实存在固定 5 秒轮询和多个完整数据 shard 拉取，但这条路径在 `getDesktopHomeSync()` 激活后会直接 no-op。因此文档把 5 秒轮询描述为所有桌面场景的固定功耗来源并不准确。
-
-更重要的是，项目已经有更好的 Home Sync v2：
-
-- `src/home/sync.ts` 有 visibility-aware 轮询、local change debounce、online/visibility wake。
-- 使用 cursor-based changes 和 paged snapshot。
-- 支持 operation push 和 backoff。
-- `server/src/routes/syncV2.ts` 已明确声明 v2 是 canonical sync，并保护 workspace-bound identity。
-
-所以优先策略应是：**能迁到 Sync v2 的调用方继续收敛过去，而不是给 legacy 的 7 个全量接口分别增加 ETag。**
-
-如果 legacy 必须长期保留，再借用 v2 的原则：visibility、指数退避、随机抖动，以及最好增加单调 revision/change feed。文档提出的 `COUNT + MAX(timestamp)` ETag 不够稳，因为某些数据变化可能不更新被选中的 timestamp，存在漏变更风险。
-
-此外，服务端仓库接口本身支持 `page/limit`，但 `backendAdapter.fetchRepositories()` 直接请求 `?limit=10000`，说明“服务端有分页”目前并没有转化为客户端的内存收益。后续如果 normalized entity store 和 v2 sync 已经解决常驻状态规模，再决定 UI 是否需要真正的 server pagination，不要把分页、虚拟化、同步协议同时改成三套新机制。
+若第 2 步后仍存在严重卡顿，不能因顺序表而强迫先做备份/视觉。应根据残余热点提出下一项方案；DOM 瓶颈才评估虚拟化，CPU 查找/排序热点先改算法。
 
 ---
 
-## 7. 混合检索与标签降噪：搜索要先修正确性，标签要先修数据模型
+## 7. 验收按实际改动缩放
 
-### 7.1 向量 TopK 硬过滤是真正的搜索正确性缺陷
+### 7.1 通用要求
 
-当前 `useSearchActions.ts` 在向量结果非空时建立 vector score map，然后把 repositories 过滤成向量返回的 ID 集合。也就是说：
+- 开始前读专项、检查 git status 和调用链，列出修改文件/owner/明确非目标。
+- 一次只实现一个可独立测试与回滚的子阶段；涉及新产品取舍先请用户决定。
+- 修改后运行 TypeScript、对应单元与集成测试、`git diff --check`。bundle/打包入口变化才需要 build；性能实现变化才需要固定 fixture 前后比较。
+- 新 durable state 必须列 owner、schema/version、account/workspace scope、backup/migration/clear policy。新后台任务必须列 identity、cancellation、retry/backoff、前后台行为与恢复策略。
+- 代码回退不等于持久化数据回滚；不删除未经证明可退役的兼容路径。
 
-- 未建立向量的新同步仓库可能完全消失。
-- 名称完全匹配但向量得分不足的仓库可能消失。
-- 缩写、专有名词和短 query 的 embedding 漂移会比普通自然语言更明显。
+### 7.2 当前卡顿与启动
 
-只有 vector 为空/失败时才回退关键词，这不是 hybrid search。
+固定复现操作、数据、机器、production/dev、窗口大小、视图、前后台状态和采样方法。至少区分 React commit、JS long task、DOM 挂载量、数据扫描、Home capture/网络任务，按热点选择指标。先以实际规模或匿名 fixture 复现；压力夹具另记，不替代当前问题。
 
-因此文档提出词法 + 向量并行召回、再融合的核心方向是正确的。
+启动场景单独记录 hydration、首个可操作页面、Home 后台就绪。历史单次耗时不能写成预算；重复采样后才讨论 median/p95。不要求每个普通 UI 小修复都搭建全套性能 CI。
 
-### 7.2 不能只把当前搜索器替换成一个简单 RRF 函数
+### 7.3 搜索
 
-现有搜索路径不仅有纯向量，还包含 query expansion、可选 HyDE、LLM selection/rerank 等语义能力。文档示例若全部拿掉，长自然语言检索可能反而退化。
+涉及搜索时必须覆盖 exact owner/repo、exact repo name、同名不同 owner、未 vector indexed repo、vector unavailable、中文自然语言、semantic query；同时验证筛选、显式排序、取消旧请求和账户切换。fixture 使用确定性 provider mock，不调用付费模型来证明单元正确性。
 
-更好的搜索调度器是“按 query intent 控制昂贵步骤”：
+### 7.4 备份/迁移
 
-```text
-标识符/短词查询
-  -> 立即 local lexical
-  -> 向量并行（若就绪）
-  -> exact/prefix tier + RRF
+涉及备份实现时必须覆盖 legacy adapter、current version roundtrip、empty/null/absent、account/workspace mismatch、masked secret、partial failure/recovery。只交付导出时明确验证无写入且恢复未启用；实际涉及多个 durable store 的恢复先有 journal/checkpoint/recovery/rollback 验证。
 
-自然语言查询
-  -> local lexical 立即给第一版结果
-  -> semantic branch: expansion/HyDE -> vector
-  -> union + fusion
-  -> 仅对 Top-K 可选 rerank
-```
+不能把 Home 单 DB import 的事务保证外推为本地 JSON 全应用原子恢复。旧备份身份缺失也不能自动当作当前账户数据。
 
-精确字段应有确定性优先级：
+### 7.5 桌面
 
-1. exact `full_name`
-2. exact `name`
-3. name/full_name prefix
-4. tags/topics/language exact token
-5. lexical weighted score
-6. vector fused rank
-
-不能宣称“官方仓库必然 #1”，因为多个 owner 可以拥有同名 repo，系统也没有可靠“官方 owner”事实源。能保证的是：用户输入 `owner/repo` 时 exact full_name 必须稳定置顶；仅输入 `express` 这类名称时允许多个 exact-name 候选按次级信号排序。
-
-### 7.3 搜索状态本身也要升级
-
-当前 SearchBar 会在 repos/filter 变化时重新执行基本过滤，而 vector path 又靠临时 score map/ref 保存排序。引入 hybrid 后，如果仍沿用这套旁路，很容易在同步、筛选或分类切换后丢掉融合排序。
-
-建议新增一等的 search session：
-
-```ts
-type SearchSession = {
-  query: string;
-  mode: 'lexical' | 'semantic' | 'hybrid';
-  candidateIds: number[];
-  rankById: Record<number, number>;
-  scoreById?: Record<number, number>;
-  sourcesById?: Record<number, Array<'exact' | 'lexical' | 'vector' | 'rerank'>>;
-};
-```
-
-筛选逻辑消费这个 session，而不是自己重新构造另一套搜索结果。
-
-### 7.4 标签治理文档最大风险：`custom_tags` 不是纯 AI 噪声
-
-当前代码里 `custom_tags` 可能来自用户手工编辑，也可能承载 GitHub Lists 名称，并参与 category matching。文档样例把 `ai_tags` 和 `custom_tags` 一起做自动同义词改写，会修改用户明确输入的数据，甚至改变分类结果。
-
-文档内置 alias 也存在语义过强的问题，例如：
-
-- `container -> Docker`
-- `diffusion -> Stable Diffusion`
-- `sd -> Stable Diffusion`
-- `agent -> AI Agent`
-
-这些映射在特定 repo 上并不总成立。前缀和 Levenshtein 相似也只能证明字符串像，不能证明概念同义。
-
-### 7.5 推荐的 Taxonomy 模型
-
-自动行为只做无损标准化：NFKC、trim、分隔符/大小写显示规范。真正同义词通过 alias 层表达，不直接改写原始数据：
-
-```ts
-type TagSource = 'ai' | 'user' | 'github-list' | 'github-topic';
-
-type TagAlias = {
-  alias: string;
-  canonicalId: string;
-  sourceScope?: TagSource[];
-  confidence: number;
-  approvedByUser: boolean;
-};
-```
-
-推荐规则：
-
-- AI tag 可以在模型输出后自动应用**已批准 alias**。
-- 用户 tag、GitHub List tag 默认不做破坏性改写。
-- fuzzy/Levenshtein 只生成 suggestion，不自动 merge。
-- 治理中心展示“合并后会影响哪些 repo/分类/向量索引”，支持 preview 与撤销。
-- O(T²) 聚类放 Web Worker，不能在 modal render/useMemo 里同步跑。
-- canonical vocabulary 由高频标签 + 用户批准词表组成，但 Prompt 不应强制“至少两个必须来自 Top Tags”，否则热门标签会不断吞噬真正的新领域。
-- 大批标签确认变更后，把向量 reindex 明确显示为独立的后续任务及成本，而不是宣称索引自动已经更新。
-
-Hybrid Search 应先于 Taxonomy 改造，因为前者是当前搜索正确性问题，后者是知识库治理能力。
+本机 Windows 为实机验收目标。纯 helper/IPC 测试不能代替注销、重启、真实托盘和安装包验证；未实测标为未验证。macOS/Linux 分支保留兼容，相关结果不推断为其它平台通过，不要求为本机任务准备 icns/Linux 发布产物。
 
 ---
 
-## 8. 卡片视觉、微交互与动效：适合增量打磨，不适合另起设计体系
+## 8. 明确排除的复杂化
 
-### 8.1 文档里值得直接采用的部分
+本机路线不规划：通用数据域 Registry/CI 完备框架、万能 Restore Coordinator、Device Profile/全域归档、跨账户克隆、多设备同步传输、统一后台调度平台、taxonomy provenance/alias/Worker 管理界面、Release 后台采集/系统通知、Bootstrap Projection，以及无证据的 normalized store/分 object store/全视图 virtual row model。
 
-- `RepositoryGrid.tsx` 当前 width 初始为 0，再由 `ResizeObserver` 计算列数，首帧自然从 1 列开始。CSS Grid `repeat(auto-fit/auto-fill, minmax(...))` 可以消除这类 JS 测量闪变。
-- 部分 grid/list 的文本尺寸和 footer 细节不统一，值得整理。
-- `RepositoryLanguageStars.tsx` 使用固定颜色点，可以增加与背景的对比 ring，并保证文字仍是信息主载体。
-- Details drawer 动效方向合理。
+下列约束继续强制保留：
 
-### 8.2 但项目已经有一套设计 token 与无障碍动效基础
-
-`src/index.css` 已经定义：
-
-- `--ui-shadow-card`
-- `--ui-shadow-float`
-- radius token
-- `.ui-card`
-- 用户级 animation reduced 模式
-- `@media (prefers-reduced-motion: reduce)`
-
-所以文档不应再引入平行的 card shadow/radius/motion token 体系。应扩充现有 token，而不是重新命名一套。
-
-同样，`src/components/ui/sheet.tsx` 已经基于 Radix Dialog 实现 focus trap、overlay、close、slide-in/out。Repository details 若要改成抽屉，应复用/扩展 Sheet，而不是自己造 raw fixed drawer。
-
-### 8.3 不建议重写 RepositoryCard
-
-当前 `RepositoryCard.tsx` 很大，但它已经承载键盘操作、selection、drag、插件 action、README/Release 等 lazy overlay、菜单状态和多种 view mode。文档里的 ModernRepositoryCard 示例只覆盖视觉层，直接替换会丢大量行为契约。
-
-更合理的是拆分内部 presentation component，同时保留现有 controller/interaction semantics。
-
-### 8.4 动效必须服从大列表架构
-
-以下做法不建议全局使用：
-
-- 给几千卡片常驻 `will-change: transform`，会增加合成 layer 和显存压力。
-- draggable 卡片大幅 translate hover，会影响拖拽触感；最多在 fine pointer 上轻微 1px 位移，或者只用 border/shadow。
-- 对大量 skeleton 同时 shimmer，会制造不必要 GPU 活动；只给视口内虚拟行使用，并尊重 reduced motion。
-- 为动画永久保留折叠组 DOM，会与 virtualization 冲突。
-
-视觉优化应放在列表状态订阅和虚拟化基础完成之后，否则很容易用更多 GPU 动效掩盖底层 DOM 过量问题。
+1. 不新增可写业务事实源或第二份完整 repositories warm store。
+2. Search/Release/virtual rows 等派生状态可丢弃；用户事实与未确认操作不能当缓存清除。
+3. 账户相关持久化考虑 GitHub scope；涉及 Home 同时考虑 workspace。
+4. 不把一次 Zustand setState 当跨 IDB/Home/backend 的事务。
+5. 不扩张 legacy 全量同步，不借瘦身拆掉当前 Home v2。
+6. Electron main 只负责系统集成，不重新实现 Repository/Release。
+7. 不自动模糊合并 user/List/topic 标签。
+8. 不用强制 GC、PowerShell working-set trim、MinWorkingSet 掩盖实际内存问题。
+9. 不承诺未经 benchmark 验证的性能数字，不改变首次使用或账户切换语义。
 
 ---
 
-## 9. 桌面原生融合与后台监控：文档部分已过时，部分问题非常真实
+## 9. 本轮修改与后续决策
 
-### 9.1 文档“需要实现”的一部分已经存在
+本轮仅修订文档范围与现状：把“六方向全部实施”改为“证实当前问题后逐项选择”，纠正生产/开发入口与个人版本背景，并保留安全约束。没有新增 owner、数据库、后台任务、依赖或功能开关。
 
-当前代码已经实现：
+下一步推荐：先对主仓库与发现页“突然展示大量内容”的卡顿做一个独立复现与采样任务。采样后提供具体热点、最小修复文件、预期影响、验证方法和需要用户决定的取舍，不直接实施下一个阶段。
 
-- 跨平台开机自启。
-- OS 应用失败时的 auto-launch rollback。
-- `--hidden` 启动。
-- close to tray / minimize to tray。
-- desktop prefs 持久化。
-- Tray 创建与菜单。
-- GeneralPanel 中三项桌面设置。
-- preload/renderer bridge。
-
-因此文档第 4 章若按样例再实现一遍，会制造重复路径。应以现有 `desktopPrefs.js` 和 `useDesktopActions` 为基线扩展。
-
-### 9.2 真实存在且值得优先修的生命周期问题
-
-**macOS Dock 激活隐藏窗口**
-`app.on('activate')` 目前只有在 `BrowserWindow.getAllWindows().length === 0` 时 createWindow。close-to-tray 后窗口仍存在但 hidden，点击 Dock 可能没有恢复。这里应统一走 `restoreMainWindow()`。
-
-**Windows/Linux tray click 三态问题**
-当前只要 `isVisible()` 就 hide。窗口虽然 visible 但在其他窗口后面时，第一次点击托盘会把它隐藏。正确状态应是：hidden/minimized -> restore；visible but unfocused -> focus；visible and focused -> hide（macOS 则按菜单栏习惯单独设计）。
-
-**Tray menu 状态**
-当前文本固定“显示主窗口”，且没有 `minimizeToTray` 开关，可以基于窗口状态动态显示“显示/隐藏”，并补齐现有 prefs。
-
-**second-instance 参数**
-现在只 restore，没有读取 commandLine/additionalData。它不是当前重大 bug，但在未来加入 `gsm://` deep link 或 notification click routing 时必须修。
-
-**Windows native notification AUMID**
-当前没有显式 `app.setAppUserModelId`。`electron-builder.yml` 已有稳定的 `appId: com.github-stars-manager.app`，可以直接作为 AUMID 来源，在真正引入 Notification 之前补上并在打包环境验证 Action Center 行为。
-
-**打包图标配置还有一处独立错误**
-`electron-builder.yml` 的 Windows/macOS/Linux/DMG `icon` 都指向 `dist/vite.svg`，但当前 `dist/vite.svg` 实际不存在；仓库里已经有 `build/icon.ico`、`build/icon.png` 和 `build/gsm-star.ico`。这会直接影响原生安装包、通知和系统 UI 的一致性，应与 AUMID 一起作为桌面 P0/P1 修复，而不是等 Release monitor 完成后再处理。
-
-**Windows session end**
-文档指出 close-to-tray 可能干扰关机的风险值得处理，但样例建议监听 `app.on('session-end')` 不符合当前 Electron 类型。当前 Electron 的 `query-session-end` / `session-end` 是 BrowserWindow 事件，应按实际 API 在 window 层置位 quitting/允许关闭，并写平台测试。
-
-另外，`desktopPrefs.js` 当前是直接 `writeFileSync`，如果后续把 desktop prefs 扩大，应改为 tmp + rename 的原子写入，而不是文档中直接声称已有“原子持久化”。
-
-### 9.3 Release monitor 不应复制第二套 Release 业务逻辑
-
-文档提出在 Electron main 里维护订阅仓库、latest tag、ETag 与 release cursor，然后弹系统通知。这在离线桌面模式可行，但当前项目已经有：
-
-- `resolveReleaseSources()` 统一解析 starred subscription、Watch/custom sources。
-- renderer 的 foreground refresh 已有受控并发、分页、prerelease 语义、add/upsert。
-- Home projection 已同步 `releases` 和 `releaseSubscriptions`。
-- server 已有 release UPSERT。
-- ReleaseTimeline 已有 task target/定位入口。
-
-如果 main process 只存“发现了 tag X”，而不把完整 Release 通过现有领域路径写入，用户点击通知后很可能跳到一个 timeline 里还不存在的 release。
-
-文档给出的 monitor 样例还存在几个实现级缺口：
-
-- 样例只请求 `releases?per_page=1`，但当前 `githubApi.getMultipleRepositoryReleases()` 在 `includePreRelease=false` 时会继续翻页，直到找到最新 stable release。直接改成 `per_page=1` 会让后台语义比现有前台刷新更弱。
-- 仅比较 `tag_name` 是否变化无法可靠表达“出现了哪些新 release”，两次轮询之间产生多个 release 时可能丢事件；更稳妥的是使用 release id/published time + 已知水位线。
-- 文档定义了 class、IPC contract 和 preload 片段，但没有完整展示 monitor 实例化、`ipcMain.handle('desktop:releaseMonitor:*')` 注册、renderer 订阅同步和 renderer ready 前导航队列，不能视为端到端可直接落地代码。
-- GSM 已支持多账户 workspace。monitor cache、subscription 和 credential 必须按 GitHub identity/workspace 隔离，并在 logout/account switch 时显式清空。文档样例的全局 repo-name cache 与“token 只有 truthy 时才覆盖”会留下旧账户 token/订阅的风险。
-- 文档样例用 `repoFullName` 调 `toggleReleaseExpandedRepository`，但当前 store API 要求 numeric `repoId`。已有 `ReleaseTimeline` 的 `useTaskTarget('releases', releaseId)` 更适合作为通知点击后的统一定位入口。
-
-推荐分部署模式：
-
-**有 Home backend**
-后台服务承担定时 Release 检查和 release 持久化，因为它才是天然常驻、已有 credential 和同步数据库的一方。Electron main 只消费“有新 release”的事件，负责 OS Notification 和点击后窗口导航。
-
-**纯离线 Electron**
-主进程可以有轻量 scheduler，但应该调用抽离出来的共享 release domain service，结果写回统一存储/renderer ingest 通道，不能维护独立 latest-tag 事实源。
-
-令牌处理也不应简单通过 `syncSubscriptions({repos, token})` 长期塞在 main 内存里。项目已经有 Electron `safeStorage` 的 X/auth 等先例；若纯桌面 monitor 必须持有 GitHub credential，应设计专门 credential vault，或者让 backend 持有它。
-
-### 9.4 ETag 值得用，但不能夸大
-
-针对订阅源的 conditional request 可以减少响应体和部分限流压力，但不应把“304 一定完全零配额”作为架构前提。真正决定功耗的是：
-
-- 只轮询用户明确订阅的 source。
-- 使用足够低频的 schedule，例如 30～60 分钟级，而不是分钟级全扫。
-- 有 Home backend 时服务端集中调度。
-- 根据 rate-limit header 做 backoff。
-- 对大量 repo 研究批量/GraphQL/集中变更源，而不是单纯让 1000 个 GET 都带 ETag。
-
-### 9.5 强制 PowerShell 工作集修剪应从方案中删除
-
-文档“隐藏 15 秒后将 200MB 工作集压到 30MB”这一类方案不建议实施，原因包括：
-
-- Electron 有 main/renderer/GPU/utility 多进程，只针对当前 PID 并不代表整体内存。
-- OS working-set trim 不是释放 JS heap，而是把页面踢出 working set，恢复时会产生 page fault 和明显抖动。
-- 启动 PowerShell 子进程容易受到策略、路径、杀软和企业环境影响。
-- 内存数字没有实测依据。
-
-正确的后台内存治理优先级应是：虚拟化 DOM、限制缓存、避免重复全量快照、停止真正无意义的网络和 timer，并用 Electron process metrics 分别测 main/renderer/GPU。剩余的内存管理交给 Chromium 和 OS。
-
-实际测量可以直接从 `app.getAppMetrics()`/renderer 性能指标开始，先证明是哪一个进程、哪一类缓存持续占用，再决定是否在 hide 时清理特定可重建缓存。
-
----
-
-## 10. 跨文档冲突清单
-
-### 10.1 “折叠动画保留 DOM” vs “虚拟化卸载 DOM”
-
-二者不能无条件同时成立。按 group size 和虚拟化模式决定动画策略。
-
-### 10.2 “Top 15 仓库 warm cache” vs “单一事实源”
-
-只允许只读 bootstrap projection，不允许它成为第二个可写 store。
-
-### 10.3 “主进程 Release Monitor” vs “Home Sync/Server Release 状态”
-
-后台 monitor 必须成为已有 release domain 的生产者，而不是另一套独立 release cache。
-
-### 10.4 “标签自动合并” vs “custom_tags 是用户/List 数据”
-
-未经来源建模和用户确认，不能批量重写 custom_tags。
-
-### 10.5 “继续优化 legacy autoSync” vs “Home Sync v2 已经存在”
-
-应先决定 legacy 的生命周期。若计划淘汰，就不值得投入完整 ETag/FSM 重构；只做必要止损，然后迁移调用方。
-
-### 10.6 “单文件完整备份” vs “多个独立持久化域”
-
-一份 portable profile 可以统一用户可迁移语义，但完整 workspace 备份需要多域协调器，不能把问题伪装成一次 Zustand `setState`。
-
----
-
-## 11. 推荐统一目标架构
-
-### 11.1 Domain State
-
-保留清晰的领域对象和稳定身份：Repository、Organization、Release、Preferences、AI/Embedding 配置、Discovery/Workbench workspace。
-
-中期可以考虑把巨大 repositories 数组进一步 normalized 为 entity map + ordered ids，但不要仅为了“架构漂亮”立刻全量改写。首先用 selector/index 解决已知热点；当 search/virtualization 共同需要高频 ID lookup 时再推进 normalized store。
-
-建议的派生结构：
-
-```ts
-repositoriesById: Map<number, Repository>
-repositoryIds: number[]
-latestReleaseByRepoId: Map<number, Release>
-groupRepoIds: Map<string, number[]>
-searchSession: SearchSession | null
-taxonomyAliases: TagAlias[]
-```
-
-其中后四项都可以根据领域事实重建，不应成为备份中不可替代的核心真相。
-
-### 11.2 Runtime Persistence
-
-短期继续 Zustand + IDB，但：
-
-- 缓存 IDB connection。
-- 监控 snapshot bytes/stringify/parse/hydration duration。
-- 把非常大的独立域继续留在专属数据库，不重新塞回主 Zustand snapshot。
-- 长期如果主 snapshot 仍达到多 MB 并持续产生 long task，再按域拆 object store，而不是靠更多 localStorage mirror。
-
-### 11.3 Sync
-
-Home Sync v2 是目前仓库里最完整的同步基础：账户绑定、changes、snapshot、operation、冲突和 backoff。桌面/Home 场景应继续朝 v2 收敛。
-
-legacy backend sync 只保留明确的兼容窗口和最小止损，不继续发展成第二套先进协议。
-
-### 11.4 Portable Backup
-
-从当前 persistence/domain normalizer 派生明确的 portable projection，并通过同一个 codec 服务本地文件、WebDAV 与未来 archive coordinator。
-
-### 11.5 Derived Services
-
-搜索、taxonomy、release index、bootstrap preview 都是派生服务，要求：可重建、有 schema/version、失败不污染领域事实。
-
----
-
-## 12. 推荐实施路线
-
-### Phase 0：测量 + 正确性止损
-
-这一阶段不依赖大型新库，适合立即执行。
-
-1. 建立可重复的 cold/warm Electron 启动基准和 100/1000/5000 repo fixture。
-2. 修复导出 `appVersion: 0.4.0` 硬编码。
-3. 定义统一 backup codec/projection 的字段清单与身份边界，停止新增第三套手工导出结构。
-4. 去掉每卡完整 repositories 订阅，建立 `latestReleaseByRepoId`。
-5. RepositoryGroups 一次 partition + order index。
-6. 修 macOS activate hidden window、tray visible-unfocused、动态 tray menu。
-7. 给 Hybrid Search 建固定 query corpus，覆盖 exact full_name、同名不同 owner、缩写、自然语言、未向量化 repo、vector outage。
-
-**预期收益**：先降低无意义 rerender/O(N×M)，消除明确桌面 bug，并为后面所有性能声称建立证据。
-
-### Phase 1：高收益核心架构
-
-1. Hybrid lexical + vector union，加入 exact/prefix tier 和 search session。
-2. i18n critical namespace 首载 + in-flight 去重。
-3. IDB connection reuse。
-4. 非权威 bootstrap projection，移除全屏 hydration blank barrier。
-5. 默认主题字体与其他字体拆分按需加载。
-6. list mode virtualization；稳定后扩展到 grid/group flattened virtual rows。
-7. 明确 legacy sync 退役计划；可迁移调用方收敛 Home Sync v2。
-8. Portable Profile vNext 正式上线，本地/WEBdav 共用同一 codec。
-
-### Phase 2：知识治理与桌面深度能力
-
-1. 标签 provenance + canonical registry + alias persistence。
-2. Web Worker taxonomy suggestion + preview/undo。
-3. UI card/detail 增量视觉整理，复用现有 Sheet/token/reduced-motion。
-4. 桌面原生 Notification + AUMID + deep link/navigation contract。
-5. Release 后台监控：Home backend 优先；纯离线桌面采用共享 release domain service。
-6. Electron session-end、second-instance 参数与通知点击的端到端平台测试。
-
-### Phase 3：只有数据证明需要时再做
-
-1. 主 Zustand snapshot 按领域拆成多 object store。
-2. repositories entity normalization 的全面 store 重构。
-3. 更激进的启动 repo preview 缓存。
-4. 服务端搜索/分页接管部分 UI 状态。
-
-这些都不应在没有明确性能证据时提前实施，因为它们提高长期维护复杂度。
-
----
-
-## 13. 验收指标建议
-
-### 13.1 启动
-
-至少记录：
-
-- process start -> DOM ready
-- DOM ready -> React mount
-- store hydration duration
-- first shell paint
-- first hydrated frame
-- first searchable/interactable time
-- IDB payload bytes / JSON parse time
-
-分 cold/warm，100/1000/5000 repo，重复至少多轮取 median 与 p95。
-
-### 13.2 大列表
-
-记录：
-
-- DOM node 数量峰值
-- React commit p95
-- scroll frame p95 / long task
-- renderer JS heap
-- renderer working set/private memory
-- 从顶部滚到底再返回顶部后的内存回落
-- grid resize / group collapse / DnD / modal open 的滚动锚点与状态正确性
-
-虚拟化验收目标不应只写“FPS 60”，而应保证 DOM 数量与总 repo 数量近似解耦。
-
-### 13.3 搜索
-
-建立固定人工 query set，至少分：
-
-- `owner/repo` exact
-- bare repo name
-- acronym / framework name
-- 中文功能描述
-- 多词 AND 条件
-- 新同步未向量化 repo
-- vector service unavailable
-- 相同 name 不同 owner
-
-用 Recall@20、MRR/NDCG 等指标比较 lexical、vector、hybrid，不再用单个 demo query 声称“100% 精确率”。
-
-### 13.4 备份
-
-自动化覆盖：
-
-- v1.0/v1.2 migration fixture
-- 当前版本 round trip
-- 空数组/空字符串语义
-- masked secret 不冲刷本地真密钥
-- 跨账户 category/List identity
-- malformed JSON/schema
-- external store 中途失败后的 rollback
-- backup size cap
-
-### 13.5 桌面
-
-Windows/macOS/Linux 至少验证：
-
-- close/minimize/tray click 三态
-- macOS Dock activate
-- second instance
-- auto-launch rollback
-- system logout/shutdown
-- Notification 到 Action Center
-- 通知点击 -> restore -> navigate -> release 已存在于领域状态
-
----
-
-## 14. 明确不建议实施的方案
-
-以下内容建议从后续执行计划中删除或改写：
-
-1. **把 Portable Backup 当成新的运行时存储格式。**
-2. **复制完整 repositories/token 到第二份 localStorage warm store。**
-3. **直接复制文档中的 V2 merge 代码。** 当前存在字段缺失、空值语义和身份边界问题。
-4. **对 `custom_tags` 做无人确认的 fuzzy 自动合并。**
-5. **把 Levenshtein/前缀相似当成同义关系。** 只能用于 suggestion。
-6. **为每张卡片长期 `will-change`，或为了折叠动画永久保留大组 DOM。**
-7. **整块替换 `RepositoryCard` 为文档示例卡片。** 会丢失现有行为契约。
-8. **在已有 Home Sync v2 的情况下，把 legacy full-shard polling 再发展成另一套完整同步协议。**
-9. **Electron main 建一套不写回领域状态的独立 Release truth/cache。**
-10. **通过 PowerShell/working-set API 强制压 Electron 内存。**
-11. **在没有真实 benchmark 前把文档中的 FCP、内存、流量、搜索精度百分比写成承诺。**
-
----
-
-## 15. 最终建议排序
-
-如果目标是在较短时间内得到最明显且风险最低的提升，推荐实际执行顺序为：
-
-1. **性能测量与卡片状态隔离**：去宽订阅、release index、group partition，并建立启动/列表基准。
-2. **统一备份协议**：先解决当前 v1.0/v1.2 分叉和字段漂移，避免继续积累不可迁移资产。
-3. **Hybrid Search 正确性**：解决向量 TopK 硬过滤，再做高级 rerank。
-4. **启动关键路径**：i18n、IDB connection、bootstrap shell、字体按需。
-5. **真正 virtualization**：在卡片状态、group navigation 和 overlay 模型准备好后接入。
-6. **桌面生命周期 bug**：这部分改动小、用户可感知强，可与前几项并行推进。
-7. **同步协议收敛**：优先 Home Sync v2，确定 legacy 的退出边界。
-8. **Taxonomy 治理**：先 provenance/alias，再做 AI prompt 约束和治理 UI。
-9. **视觉与动效**：在性能架构稳定后做增量打磨。
-10. **后台 Release 通知**：明确 Home/离线两种部署模型后实现，避免重复状态源。
-
-这套顺序与六份原文档最大的区别是：先解决**数据与状态所有权、正确性和可测量性**，再投入视觉、后台常驻和更复杂的自动治理。这样能够让后续每一项优化建立在稳定的事实源上，也能避免今天解决的性能问题在新的备份、搜索或桌面模块里再次出现。
-
----
-
-## 16. 逐文档最终判定
-
-### `GSM_单一配置文件备份与迁移分析.md`
-
-**判定：值得做，方案需重构。** 采用 versioned Portable Profile + shared codec + identity scope；不要承诺单 JSON 覆盖完整机器状态。
-
-### `GSM_个人开发流与冷启动效率全方位深度分析.md`
-
-**判定：核心诊断正确，数字和部分现状已经过时。** 先测量，使用轻量只读 bootstrap projection；不要复制完整业务状态到第二份缓存。
-
-### `GSM_海量数据虚拟化与功耗控制分析.md`
-
-**判定：最高优先级之一。** 真虚拟化很有价值，但先消除卡片宽订阅、releases N×M 与 group 重复扫描；同步优先收敛已有 v2。
-
-### `GSM_混合检索与标签分类降噪全方位分析.md`
-
-**判定：Hybrid Search 应尽快做；自动 taxonomy merge 需要重新设计。** 用 deterministic exact tier + lexical/vector union + fusion；标签采用 provenance + alias + confirm/undo。
-
-### `GSM_卡片视觉体系、微交互与动效质感全方位打磨分析.md`
-
-**判定：适合作为增量 UI backlog，不适合作为组件重写方案。** 复用现有 token、Sheet、reduced-motion，并服从 virtualized list 的 DOM 生命周期。
-
-### `GSM_桌面原生融合与后台监控全方位分析.md`
-
-**判定：需要拆开处理。** 已实现能力不要重做；真实生命周期 bug 先修；Release monitor 与 Home/Release domain 合流后再做；PowerShell 工作集修剪删除。
+重新引入被排除的功能、扩大备份覆盖或选择改变交互的虚拟化方案时，先请用户明确决定，再更新本文与相应专项。

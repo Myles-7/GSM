@@ -1,930 +1,210 @@
-# GithubStarsManager 单一 JSON 配置文件极简备份与迁移分析报告
+# GSM 本地 JSON 备份与兼容恢复分析
 
-> **文档定位**：技术架构诊断与改造实施方案
-> **审查方向**：单一 JSON 配置文件极简备份与换机迁移全方位分析
-> **归档路径**：`docs/product/GSM_单一配置文件备份与迁移分析.md`
+> **阶段 4～8 代码更新（2026-10-03）**：本地导出现在为 v1.1，已补子分类/顺序和选定偏好；仓库/组织/偏好有独立 journal 安全恢复，其它字段仍走兼容导入，WebDAV 写出未改。下文关于旧本地 v1.0/缺字段/候选协调器的描述是改动前基线，不能作为现状重复开发。 详见 [连续开发交付报告](GSM_阶段4至8连续开发交付报告.md)。
 
----
-
-## 目录
-- [1. 审查背景与核心定位](#1-审查背景与核心定位)
-- [2. 数据完备性审查：用户资产全景与垃圾数据剔除](#2-数据完备性审查用户资产全景与垃圾数据剔除)
-  - [2.1 核心用户打标与个性化资产全景](#21-核心用户打标与个性化资产全景)
-  - [2.2 现有实现严重遗漏点深度剖析](#22-现有实现严重遗漏点深度剖析)
-  - [2.3 冗余垃圾数据与设备绑定陷阱梳理](#23-冗余垃圾数据与设备绑定陷阱梳理)
-- [3. 原子性导入器设计：Zod 强校验与多版本适配](#3-原子性导入器设计zod-强校验与多版本适配)
-  - [3.1 统一备份规范 (GSM Backup Schema v2.0)](#31-统一备份规范-gsm-backup-schema-v20)
-  - [3.2 历史版本自适应适配器 (兼容 v1.0 与 v1.2)](#32-历史版本自适应适配器-兼容-v10-与-v12)
-  - [3.3 双模覆写算法设计（全新覆盖 vs 增量合并）](#33-双模覆写算法设计全新覆盖-vs-增量合并)
-- [4. 一键操作闭环：极简交互组件与 Store 注入引擎](#4-一键操作闭环极简交互组件与-store-注入引擎)
-  - [4.1 导出/导入交互动线与规范命名机制](#41-导出导入交互动线与规范命名机制)
-  - [4.2 极简备份与恢复交互组件实现 (SingleBackupPanel.tsx)](#42-极简备份与恢复交互组件实现-singlebackuppaneltsx)
-- [5. 现有系统改造与集成路径建议](#5-现有系统改造与集成路径建议)
-  - [5.1 设置面板结构重组方案](#51-设置面板结构重组方案)
-  - [5.2 DataManagementPanel 瘦身与架构解耦](#52-datamanagementpanel-瘦身与架构解耦)
-  - [5.3 自动化测试与质量保护网建设](#53-自动化测试与质量保护网建设)
+> **适用范围**：仅本机 Windows，自用；本地文件优先，保留已有 WebDAV 兼容。
+> **用户决策（2026-10-03）**：不规划全域/整机备份、Device Profile 或跨设备产品。保留现有 Home backend 与 Home Sync v2。
+> **目标**：先修本地导出版本/字段漂移，再按实际恢复范围收敛共享格式与校验；不先建设通用数据域框架。
+> **交付状态**：本文是后续指导，本轮没有改变导出文件、恢复逻辑或数据。
 
 ---
 
-## 1. 审查背景与核心定位
+## 1. 现状校准 / 修订说明
 
-GithubStarsManager (GSM) 定位于高阶开发者的 GitHub 星标资产整理与知识萃取中枢。用户在使用过程中投入了巨大精力：通过 LLM 进行批量深度分析、手工校正分类、打上专属自定义标签、锁定防覆盖分类规则、精心调优 AI 提示词与卡片视图。
+原文识别出了本地导出字段漂移、二级分类遗漏、密钥掩码覆盖风险和导入原子性不足等真实问题，但“单一 JSON = 完整备份”和“一次 `useAppStore.setState()` = 原子恢复”这两个结论与当前架构不一致，需要重定义。
 
-然而，在跨设备迁移或系统重装场景下，用户面临以下严峻问题：
-1. **过度依赖远端服务**：原系统的“备份与恢复”默认绑定 WebDAV，未配置 WebDAV 的用户直接面临不可用警告。
-2. **本地导出碎片化与严重数据遗漏**：现有的“数据管理”面板将导出拆分成多达 11 个 Checkbox，极易漏勾选，且导出逻辑遗漏了核心的**二级分类组织树（Subcategories）**。
-3. **缓存垃圾严重膨胀**：旧导出逻辑将数兆甚至数十兆的外部爬虫抓取缓存（Trending、X、Telegram）一同打包，导致文件臃肿、序列化卡顿。
-4. **导入缺乏强校验与原子性**：导入 JSON 时缺乏 Zod 校验，损坏数据可轻易注入 Zustand Store 并污染 IndexedDB，导致应用持久化崩溃。
+当前代码至少同时存在以下事实：
 
-**核心目标**：构建确定的“**单一本地 JSON 配置文件一键导出与导入**”方案。零网络服务依赖、零垃圾数据污染、百分百保留用户打标资产、换电脑秒级原子恢复。
+- `DataManagementPanel.tsx` 仍维护本地 JSON `version: '1.0'` 的手工字段清单，并且应用版本来自硬编码常量，而不是 package/build metadata。
+- `useBackupActions.ts` 的 WebDAV 路径使用 `version: '1.2'`，字段覆盖更完整，已包含 `subcategories`、`subcategoryOrder`、`repositoryOrder`，并复用 `incomingOrganizationSnapshot()` 与 `restoreAIConfigs()`。
+- WebDAV restore 仍先写 Discovery workspace，再写 Zustand organization/release/config 等多个区域；部分后续恢复失败会记录 warning 并继续，因此它不是跨持久化域的原子事务。
+- 主 Zustand store 只是一个持久化域。项目还存在 Discovery、Workbench、Home v2、repository chat、analysis assets、HTML Reading 等独立 IndexedDB/localStorage 数据，以及 Electron 本机配置、安全存储和后端 SQLite。
+- Repository identity migration 已经实现了更适合作为恢复协调器参考的机制：账户作用域、writer gate、pre-image、journal、fingerprint、checkpoint、暂停 Home sync、失败恢复与续跑。
+- Home v2 自己的 backup/import 已具有 schema 校验、GitHub account/workspace identity binding、大小限制、in-flight/unconfirmed task 拒绝，以及单个 IDB 内多 object store transaction。
+
+已存在的保护也必须承认：本地入口已有 `isRealSecret()`，WebDAV 对 password/secret 检查 `!== '***'`，AI 配置共用 `restoreAIConfigs()`。这不等于所有字段和失败场景都已覆盖，但不能再把“没有 masked-secret 保护”当成当前事实。
+
+本方向改为：**本地 JSON 的明确覆盖范围 + 一套必要的共享 projection/codec + 实际写入集合的安全恢复方案。**
+
+本地与 WebDAV 是介质差异；新字段不应继续产生不同语义。但本地导出的一个修复不必等待 WebDAV 整体重构，更不必等待全域恢复协调器。
 
 ---
 
-## 2. 数据完备性审查：用户资产全景与垃圾数据剔除
+## 2. 最小产品边界：文件覆盖什么就明确写什么
 
-### 2.1 核心用户打标与个性化资产全景
+### 2.1 默认优先保留的内容
 
-经对 `src/store/`、`src/types/` 及 IndexedDB 持久化架构的全量审计，用户在 GSM 中不可替代的高价值资产分为四大维度：
+| 内容 | 策略 | 注意事项 |
+| --- | --- | --- |
+| Repository 用户整理成果 | 备份重点 | stable identity、分类/子分类、锁定、描述、标签、AI 沉淀与顺序；不得只备 GitHub 可重取字段 |
+| 分类与顺序 | 备份重点 | 保留稳定 ID 与引用；与 repositories 一起核对完整性 |
+| Release 订阅、来源偏好、已读 | 沿用现有覆盖并校验 | 不把 loading/刷新状态当用户资产 |
+| 主题、语言、常用视图配置 | 显式白名单 | `partialize` 仅用于查漏，不整体复制它的凭据与账户快照 |
+| AI/Embedding 配置 | 明确所选范围 | 默认排除凭据；缺少必要 credential 的新配置不得自动激活 |
+| Discovery workspace | 保留当前独立 exporter/validator 的兼容入口 | 这是已存在的独立域，不等于所有 Discovery/Workbench 历史已纳入 |
+| WebDAV 历史文件 | 保留 v1.2 读取与已有恢复路径 | 涉及相同新字段时复用共享规则，不继续扩展另一套字段语义 |
 
-```mermaid
-mindmap
-  root((GSM 用户核心资产))
-    仓库级打标资产
-      分类归属 category_id & subcategory_id
-      人工锁定标志 category_locked
-      自定义标签白名单 custom_tags
-      个人备注笔记 custom_description
-      AI 沉淀资产 ai_summary / ai_tags / ai_details
-    分类组织体系
-      自定义一级分类 customCategories
-      二级子分类树 subcategories
-      二级分类排序 subcategoryOrder
-      一级分类排序 categoryOrder
-      内置分类魔改 defaultCategoryOverrides
-      GitHub Lists 映射 categoryListIdMap
-    AI 模型与提示词
-      自定义 System Prompt customPrompt
-      提示词启用标志 useCustomPrompt
-      模型与并发配置 model / concurrency / reasoningEffort
-      仓库对话预算 repositoryChatSettings
-    界面与个性化偏好
-      主题外观与设计 Tokens theme / themeTokens
-      卡片可见字段 repositoryCardFields
-      Release 资源下载过滤白名单 assetFilters
-      Release 订阅与已读状态 releaseSubscriptions
+### 2.2 不规划的内容与代价
+
+不新增 Device Profile、全域/整机 archive、加密 secret package、跨账户 clone、插件私有数据迁移、后端服务安装迁移或 encryption key 托管。
+
+**范围缩小有明确代价**：本地 JSON 不保证恢复全部 Workbench/chat/HTML Reading、后端 SQLite、Electron 安全存储或所有独立 DB 历史。界面和说明必须列出 included/excluded，不能把“单一文件”称为完整机器恢复方案。
+
+未来若用户要求扩大个人历史覆盖，先展示遗漏数据域与恢复成本请用户决定；不自动启动全域框架。已有独立备份/同步能力保留，不因本轮文档瘦身删除。
+
+---
+
+## 3. 当前实现中的真实问题
+
+### 3.1 两套 JSON 备份已经产生字段漂移
+
+本地 v1.0 和 WebDAV v1.2 分别在 UI/hook 中手写字段。现有 v1.0 字段清单没有跟随 `appPersistenceOptions` 演进，容易遗漏：
+
+- `subcategories` / `subcategoryOrder` / `repositoryOrder`；
+- `categoryListIdMap`；
+- `themeTokens` / `repositoryCardFields`；
+- `repositoryChatSettings` 与 active configuration；
+- 新增的账户 workspace 字段和未来 durable domain。
+
+另一方面，当前本地导出还会混入 Discovery runtime 结果、分页状态、搜索过滤等不一定适合换机恢复的内容。
+
+问题根因不是某几个字段漏写，而是**每个入口都自行定义 backup projection**。
+
+### 3.2 “Store 一次提交”不是 durable atomicity
+
+一次 `setState()` 可以让 React 观察到单次内存状态切换，但无法同时回滚：
+
+- 独立 IndexedDB；
+- Discovery workspace；
+- Home v2；
+- Workbench / repository chat；
+- 后端 SQLite；
+- 已经开始的 sync/task/background writer。
+
+因此恢复设计不能把“UI 同一 tick 更新”当成数据原子性证明。
+
+### 3.3 Replace / Merge 语义必须显式
+
+恢复不能通过“字段缺失”“数组为空”推断用户意图。
+
+- `merge`：只合并明确存在的输入；缺失字段表示“不参与本次操作”。
+- `replace`：对声明为 complete snapshot 的域，以输入为完整事实；空数组可以明确表示“恢复为空”。
+- `preview`：只产生 diff、冲突、需要 credential 的项和预计写入域，不修改真实状态。
+
+特别要保留“空值”和“缺失”的区别。不能使用 `localValue || incomingValue` 之类写法，因为用户明确清空的空字符串、空集合会被误判为无值。
+
+### 3.4 沿用现有 secret 保护，不增加 secret package
+
+`***` 只表示旧格式的掩码，不能恢复为真实密钥。新格式默认省略 secret；必要时只标明 credential 已排除/缺失，不设计加密包、vault 引用或 key 管理产品。
+
+同机 merge 保留当前合法 credential；新配置缺少 credential 时保持 inactive。空值/缺失/用户主动清空应分别定义，不能以统一 truthy 判断代替。保留历史 `includeKeysInBackup` 的兼容行为；不借本轮文档删除已存在的用户选择。
+
+---
+
+## 4. 建议的最小共享格式
+
+### 4.1 小模块即可，不先建框架
+
+需要共享代码时，在现有 services 附近放置少量 schema、projection、legacy adapter 与 codec；具体拆文件以实现可读性为准，不要求七个模块、插件式 domain adapter 或拓扑排序器。
+
+Envelope 只需说明：format、schemaVersion、appVersion（package/build metadata）、createdAt、GitHub identity、涉及 Home 时的 workspace identity，以及本次文件包含哪些部分。字段版本在实施时确定，本文不伪造一个已发布的新格式版本。
+
+不使用任意 `Record<string, unknown>` domain 注册协议来适配尚无需求的数据域。旧 v1.0/v1.2 只读适配，新导出使用共享字段定义；未知 future version 拒绝写入。
+
+### 4.2 Projection 的来源
+
+- Repository 复用现有 normalizer/schema，明确保留用户资产与 identity。
+- Organization 复用 `incomingOrganizationSnapshot()`；校验 category/subcategory/repositoryOrder 引用。
+- 配置复用 `backupAIConfig()` / `restoreAIConfigs()`；不复制 mask 处理代码。
+- `appPersistenceOptions.partialize` 是核对字段是否遗漏的参考，不是直接导出全部字段的 API。
+- Discovery 若被选择，调用现有 `exportDiscoveryWorkspaceBackup()` 与 validator，不直接扫描内部 object store。
+
+共享的只有必要的格式与规则，不创建第二个业务数据 owner。本地格式稳定后，WebDAV 在相关维护时接入；读取旧文件的适配必须一直保留到证实可以退役。
+
+---
+
+## 5. 身份与空值语义不能因同机使用省略
+
+- repositories、分类、GitHub List mapping、Release 用户状态按 GitHub account scope 校验。
+- 恢复会触及 Home 时，还需固定 workspace scope；开始、每个写入阶段与完成前重新核对当前 identity。
+- account/workspace mismatch 默认拒绝对应业务写入；跨账户结构克隆不在本机路线内。
+- 旧文件可能没有账户身份。缺失不是匹配证明；先只读预览，说明来源不可自动验证，再由用户明确选择是否继续受支持的旧格式恢复。
+- `merge` 的 absent 表示不参与；`replace` 的显式空集合可表示清空，但仅在声明完整覆盖的部分内生效。null、empty string、empty array 与 absent 分别验证。
+- 不因为应用在一台电脑上运行，就假定只会有一个 GitHub 登录身份。
+
+---
+
+## 6. 恢复只协调实际写入的参与者
+
+### 6.1 先识别调用链
+
+本地 import 也可能调用独立 Discovery importer，并因 Zustand 订阅触发 Home capture、outbox 和 backend 写入。文件来源是本地，不代表它是单库操作。
+
+若只修导出，可直接交付 schema/projection/codec 与只读 preview，不启动 destructive restore。若要修改 restore，则必须列出实际参与 store、后台 writer 与 durable commit 点。
+
+### 6.2 保留恢复约束，去掉万能框架
+
+针对实际选中的参与集合设计：
+
+```text
+decode/validate -> identity + diff preview
+ -> 暂停相关 writer / drain 已有同步
+ -> durable journal + pre-image/checkpoint
+ -> 按既有依赖顺序写入并 checkpoint
+ -> 重读关键 invariants
+ -> success resume；failure recovery/rollback
 ```
 
-| 资产维度 | 关键字段 / Store 键 | 业务价值与丢失后果 |
-| :--- | :--- | :--- |
-| **仓库级个性化打标** | `repositories` 中的：<br>• `category_id` & `subcategory_id`<br>• `category_locked` (手动锁定标志)<br>• `custom_tags` (手动自定义标签白名单)<br>• `custom_description` (个人备注笔记)<br>• `ai_summary`, `ai_tags`, `ai_details` | **极高**。AI 分析消耗了宝贵的 API 成本，手动分类凝聚了大量整理时间。若丢失，用户需被迫重新触发昂贵且耗时的 AI 全量扫描。 |
-| **分类组织体系** | • `customCategories` (自定义一级分类)<br>• `subcategories` (二级子分类)<br>• `subcategoryOrder` (子分类顺序)<br>• `categoryOrder` (一级分类顺序)<br>• `defaultCategoryOverrides` (内置分类改名/改图标)<br>• `hiddenDefaultCategoryIds` (隐藏内置分类)<br>• `categoryMatchMode` (规则匹配模式)<br>• `categoryListIdMap` (GitHub Lists 映射) | **极高**。这是仓库整理的骨架。分类体系与仓库 ID 存在外键关联，必须保证两端同步导出与原子映射。 |
-| **AI 提示词与模型参数** | • `aiConfigs` 中的 `customPrompt`, `useCustomPrompt`<br>• `model`, `apiType`, `baseUrl`, `concurrency`<br>• `activeAIConfig`<br>• `repositoryChatSettings` (Agent 对话预算与参数) | **高**。用户经过大量试错调优出的 Prompts，丢失后难以凭记忆完全复原。 |
-| **个性化偏好与规则** | • `theme`, `themePreset`, `themeTokens`<br>• `repositoryCardFields` (卡片显示字段开关)<br>• `assetFilters` (Release 下载正则过滤规则)<br>• `releaseSubscriptions` & `releaseSourceSettings`<br>• `proxyConfig` & `rpcDownloadConfig` (代理与下载网络配置) | **中高**。保证换机后新设备立即具备一致的视觉体验与下载路由行为。 |
+复用 `repositoryIdentityMigration.ts` 的 gate/journal/fingerprint 思想，但它是特定身份迁移协议，不能未经验证直接当任意 backup coordinator。尤其要覆盖进程中断后恢复、Home outbox 与未确认操作；单个内存 `setState()` 不构成 durable commit。
+
+只为真实参与者写具体步骤，不先建设 `AppDataRegistry`、自动 adapter 发现、通用依赖图、任意 required/optional domain manifest、全应用 maintenance 平台。文档表和局部类型已经能表达范围时就使用它们。
+
+现有 restore 的 partial-warning 行为是已知限制，不能标成 atomic。新恢复安全边界未就绪时，不扩大替换范围，也不删除旧兼容路径。
 
 ---
 
-### 2.2 现有实现严重遗漏点深度剖析
+## 7. 可独立交付的候选子阶段
 
-审查现行代码（WebDAV 备份 `useBackupActions.ts` 与本地导出 `DataManagementPanel.tsx`）：
+| 子阶段 | 修改候选 | 明确不改 | 验证 |
+| --- | --- | --- | --- |
+| A：版本来源 | DataManagementPanel 的 export metadata、既有 build/version 来源 | schema 大迁移、UI、WebDAV restore | 导出 appVersion 与 package 一致；旧文件仍可读 |
+| B：导出字段查漏 | 本地 projection、分类/顺序 helper、对应 fixture | 全域备份、破坏性恢复、secret 包 | 分类引用与二级分类/顺序 roundtrip；无业务写入 |
+| C：最小共享 codec | 必要 schema/adapter、两个入口相关字段 | 通用 Registry、同步协议 | v1.0/v1.2 adapter、current-format roundtrip、空值/secret/identity |
+| D：有明确需要的恢复修复 | 本次实际参与的 store/helper/Home 边界 | 不选择的用户历史域 | failure injection、journal 恢复/rollback、账户切换 |
 
-#### 🚨 严重遗漏 1：`DataManagementPanel.tsx` 导出时彻底遗漏二级子分类体系
-在 [`src/components/settings/DataManagementPanel.tsx`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/components/settings/DataManagementPanel.tsx#L657-L662) 中，勾选 `customCategories` 导出时：
-```typescript
-if (selectedTypes.includes('customCategories')) {
-  exportDataObj.data.customCategories = store.customCategories;
-  exportDataObj.data.hiddenDefaultCategoryIds = store.hiddenDefaultCategoryIds;
-  exportDataObj.data.defaultCategoryOverrides = store.defaultCategoryOverrides;
-  exportDataObj.data.categoryOrder = store.categoryOrder;
-}
-```
-**严重缺陷**：`subcategories`、`subcategoryOrder` 和 `repositoryOrder` 字段被完全忽略。
-用户辛辛苦苦建立的二级子分类（如 `前端/React`、`后端/Go`）在导出时未包含，新电脑导入后所有仓库的 `subcategory_id` 将成为悬空外键（Orphaned ID），子分类全部蒸发！
-
-#### 🚨 严重遗漏 2：遗漏 GitHub Lists 同步映射 `categoryListIdMap`
-在 [`src/store/types.ts`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/store/types.ts#L73) 中维护了分类与 GitHub Lists 的映射关系。现有两处导出逻辑均未导出该映射，导致迁移到新电脑后无法增量推送已有 Lists，反而在 GitHub 远端创建大量重名列表。
-
-#### 🚨 严重遗漏 3：卡片可见性偏好与设计 Tokens 丢失
-用户通过 [`repositoryCardFields`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/store/persistence/options.ts#L98) 精心隐藏了不关心的指标（如健康度徽章、创建时间等），以及通过 `themeTokens` 自定义的主题色，在现有导出中均被遗漏。
+一次只执行一行，不把 A～D 打包成一个实现阶段。阶段 B 的导出修复不能冒充恢复链路已经支持所有新增字段。
 
 ---
 
-### 2.3 冗余垃圾数据与设备绑定陷阱梳理
+## 8. 数据清单与架构变化要求
 
-在现行 [`DataManagementPanel.tsx`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/components/settings/DataManagementPanel.tsx#L666-L678) 中存在严重的冗余导出与设备绑定问题：
+本机维护先使用文档清单：字段/域、owner、版本、GitHub/workspace scope、secret policy、included/excluded、导入/清理入口。不要自动增加机器可读 Registry 与 CI 完备性门槛。
 
-1. **瞬态网络爬虫缓存膨胀 (`discoveryRepos` & `subscriptionRepos`)**：
-   - 导出了发现页、X 推文、Telegram 频道的临时抓取结果。这些数据常达 5MB ~ 20MB。
-   - `src/store/persistence/options.ts` 已明确警告：`discoveryRepos` 会导致 Electron V8 引擎序列化崩溃。在备份中包含这些瞬态爬虫垃圾毫无意义。
-2. **瞬态 UI 交互状态污染 (`searchFilters`)**：
-   - 导出了当前的 `query`（如 `"docker"`）及过滤勾选。换机导入后，用户一开软件就莫名处于上次搜索的过滤态中。
-3. **不可移植的设备绑定数据 (`AgyAIConfig.deviceBound`)**：
-   - 包含与特定本地环境绑定的路径与 Daemon 标志。必须在导出时通过 [`inertAgyDescriptor`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/utils/aiConfig.ts#L23) 将其置为未激活的便携描述符。
-4. **敏感密钥脱敏占位符 (`***`) 冲刷风险**：
-   - 当用户关闭“导出包含密钥”时，导出的密钥为 `***`。导入器如果不做防冲刷判定，直接覆盖会导致新电脑上原本正常的本地 API Key 被替换为无效的 `"***"`。
+如果引入新 journal，它是维护元数据，必须说明 schema/version、account/workspace key、pre-image 是否含敏感数据、完成后的保留/删除策略和中断后的恢复入口。不让正常业务查询从 journal 读取事实，不把 checkpoint 变为第二份可编辑 store。
+
+新的跨存储恢复不是为扩展预留的复杂化，而是选中写入范围的必要正确性成本；如果不接受这一成本，就保持导出/只读预览阶段，不宣称提供安全全量 replace。
 
 ---
 
-## 3. 原子性导入器设计：Zod 强校验与多版本适配
+## 9. 验收与现有测试
 
-为保证任何破损、跨版本或手工篡改的 JSON 绝不损坏现有 Store 与 IndexedDB，我们采用严格的前置验证管道：
+现有入口/域测试：
 
-```
-                      ┌─────────────────────────────────┐
-                      │   读取单一本地 JSON 配置文件    │
-                      └────────────────┬────────────────┘
-                                       │
-                                       ▼
-                       JSON.parse 语法解析 (拦截损坏文件)
-                                       │
-                                       ▼
-                   Version & Envelope Detector (检测协议版本)
-                     ├─ Version 2.0 (规范 V2) ──────┐
-                     ├─ Version 1.0 (旧本地导出) ───┼─► 统一规范化为 Canonical V2
-                     └─ Version 1.2 (旧 WebDAV) ────┘
-                                       │
-                                       ▼
-                    Zod Schema 严密类型校验 (safeParse)
-                     ├─ 校验失败 ──► 抛出具体字段路径与错误信息，Store 零变更
-                     └─ 校验成功 ──► 进入覆写阶段
-                                       │
-                                       ▼
-                        覆写策略选择 (Replace / Merge)
-                     ├─ Replace (全新覆盖): 全量组织树重建 + 保留本地真实密钥
-                     └─ Merge (增量合并): 按 repo.id 智能融合同步打标与分类
-                                       │
-                                       ▼
-                     单 Tick useAppStore.setState 原子注入
-                                       │
-                                       ▼
-                     全局 UI 即时平滑重载 (0 刷新 / 0 重启)
-```
+- `src/components/settings/DataManagementPanel.test.tsx`。
+- `src/features/settings/hooks/useBackupActions.test.tsx`。
+- `src/services/discoveryWorkspaceBackup.test.ts`。
+- `src/home/database.test.ts`、`src/home/desktop.identity.test.ts`。
+- `src/services/repositoryIdentityMigration.test.ts`。
+- `electron/webdavIpc.test.js`。
 
-### 3.1 统一备份规范 (GSM Backup Schema v2.0)
+它们证明各自现有契约，不证明未来共享新格式或跨库 restore 已实现。
 
-新建独立迁移服务文件：`src/services/backupMigrationService.ts`
-
-```typescript
-import { z } from 'zod';
-import type { AppStoreState } from '../store/types';
-import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
-import { restoreAIConfigs } from '../utils/aiConfig';
-
-const SafeString = z.string().trim();
-const TimestampString = z.string().datetime({ offset: true }).or(z.string());
-
-// 仓库核心打标模型（完整保护用户标注资产，忽略不可移植字段）
-export const RepositoryBackupSchema = z.object({
-  id: z.number().int().positive(),
-  name: SafeString,
-  full_name: SafeString,
-  description: z.string().nullable().optional(),
-  html_url: z.string().url(),
-  stargazers_count: z.number().default(0),
-  language: z.string().nullable().optional(),
-  topics: z.array(z.string()).default([]),
-  starred_at: z.string().optional(),
-  // 用户高价值标注资产
-  category_id: z.string().nullable().optional(),
-  subcategory_id: z.string().nullable().optional(),
-  category_locked: z.boolean().default(false),
-  custom_category: z.string().optional(),
-  custom_tags: z.array(z.string()).default([]),
-  custom_description: z.string().optional(),
-  // AI 沉淀资产
-  ai_summary: z.string().optional(),
-  ai_tags: z.array(z.string()).default([]),
-  ai_platforms: z.array(z.string()).default([]),
-  ai_details: z.record(z.string(), z.unknown()).optional(),
-  analyzed_at: z.string().optional(),
-  last_edited: z.string().optional(),
-  subscribed_to_releases: z.boolean().optional(),
-}).passthrough();
-
-// 一级分类与二级子分类模式
-export const CategoryItemSchema = z.object({
-  id: SafeString,
-  name: SafeString,
-  icon: z.string().default('📁'),
-  keywords: z.array(z.string()).default([]),
-  isCustom: z.boolean().optional(),
-});
-
-export const SubcategoryItemSchema = z.object({
-  id: SafeString,
-  parentId: SafeString,
-  name: SafeString,
-  icon: z.string().default('📁'),
-});
-
-// AI 提示词与模型配置模式
-export const AIConfigBackupSchema = z.object({
-  id: SafeString,
-  name: SafeString,
-  provider: z.string().optional(),
-  apiType: z.string().optional(),
-  model: SafeString,
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  isActive: z.boolean().default(false),
-  customPrompt: z.string().optional(),
-  useCustomPrompt: z.boolean().default(false),
-  concurrency: z.number().int().min(1).max(20).default(1),
-  requestsPerMinute: z.number().int().default(0),
-  reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
-  supportsToolCalls: z.boolean().optional(),
-}).passthrough();
-
-// 统一备份规范 v2.0 根模式
-export const GsmBackupSchemaV2 = z.object({
-  gsm_backup_version: z.literal(2),
-  app: z.literal('GithubStarsManager'),
-  exported_at: TimestampString,
-  meta: z.object({
-    app_version: z.string(),
-    repository_count: z.number().int().nonnegative(),
-    category_count: z.number().int().nonnegative(),
-    ai_config_count: z.number().int().nonnegative(),
-    includes_keys: z.boolean(),
-  }),
-  data: z.object({
-    repositories: z.array(RepositoryBackupSchema),
-    categories: z.object({
-      customCategories: z.array(CategoryItemSchema),
-      subcategories: z.array(SubcategoryItemSchema),
-      subcategoryOrder: z.array(SafeString).default([]),
-      categoryOrder: z.array(SafeString).default([]),
-      defaultCategoryOverrides: z.record(SafeString, z.record(SafeString, z.unknown())).default({}),
-      hiddenDefaultCategoryIds: z.array(SafeString).default([]),
-      categoryMatchMode: z.enum(['legacy', 'effective']).default('effective'),
-      categoryListIdMap: z.record(SafeString, SafeString).default({}),
-      collapsedSidebarCategoryCount: z.number().default(20),
-    }),
-    ai: z.object({
-      aiConfigs: z.array(AIConfigBackupSchema),
-      activeAIConfigId: z.string().nullable().default(null),
-      repositoryChatSettings: z.record(SafeString, z.unknown()).optional(),
-    }),
-    preferences: z.object({
-      theme: z.enum(['light', 'dark']).default('dark'),
-      themePreset: z.string().default('default'),
-      themeTokens: z.record(SafeString, z.unknown()).optional(),
-      language: z.string().default('zh'),
-      repositoryCardFields: z.record(SafeString, z.boolean()).optional(),
-      assetFilters: z.array(z.record(SafeString, z.unknown())).default([]),
-    }),
-    releases: z.object({
-      releaseSubscriptions: z.array(z.number().int()).default([]),
-      releaseSourceSettings: z.record(SafeString, z.unknown()).optional(),
-      readReleases: z.array(z.number().int()).default([]),
-    }).optional(),
-    network: z.object({
-      proxyConfig: z.record(SafeString, z.unknown()).optional(),
-      rpcDownloadConfig: z.record(SafeString, z.unknown()).optional(),
-      routeMode: z.enum(['auto', 'backend', 'browser']).default('auto'),
-      backendApiSecret: z.string().nullable().optional(),
-    }).optional(),
-  }),
-});
-
-export type GsmBackupV2 = z.infer<typeof GsmBackupSchemaV2>;
-```
+实现涉及备份/迁移时至少验证 legacy adapter、current version roundtrip、empty/null/absent、account/workspace mismatch、masked secret、partial failure/recovery。导出阶段的失败应留下原状态、没有业务写入；恢复阶段则需 durable checkpoint/recovery 与账户切换注入。另运行 typecheck、对应集成测试和 `git diff --check`，无需为单个 metadata 修复建立整机 benchmark。
 
 ---
 
-### 3.2 历史版本自适应适配器 (兼容 v1.0 与 v1.2)
+## 10. 当前限制与下一步
 
-保障无论用户传入现代 V2 格式、旧版 WebDAV 备份还是旧版数据管理导出，导入器均能自动平滑适配：
+当前仍存在本地 v1.0 字段漂移与硬编码 `0.4.0`，WebDAV v1.2 覆盖较多但 restore 有 partial-warning、跨 store 协调不足。已存在 secret 保护和 Discovery/Home 校验不能被重复实现，也不能被夸大为全局保障。
 
-```typescript
-export function adaptLegacyBackupToV2(raw: unknown): GsmBackupV2 {
-  if (!raw || typeof raw !== 'object') {
-    throw new Error('BACKUP_FORMAT_INVALID: 导入数据不是合法的 JSON 对象');
-  }
-
-  const obj = raw as Record<string, any>;
-
-  // 1. 标准 V2 格式直接解析
-  if (obj.gsm_backup_version === 2) {
-    const result = GsmBackupSchemaV2.safeParse(obj);
-    if (!result.success) {
-      const issue = result.error.issues[0];
-      throw new Error(`校验失败 [${issue.path.join('.')}]: ${issue.message}`);
-    }
-    return result.data;
-  }
-
-  // 2. 旧版 DataManagementPanel (v1.0 嵌套格式)
-  if (obj.version === '1.0' && obj.data && typeof obj.data === 'object') {
-    const d = obj.data;
-    const repos = Array.isArray(d.repositories) ? d.repositories : [];
-    const customCats = Array.isArray(d.customCategories) ? d.customCategories : [];
-    const aiConfigs = Array.isArray(d.aiConfigs) ? d.aiConfigs : [];
-
-    const normalizedV2: GsmBackupV2 = {
-      gsm_backup_version: 2,
-      app: 'GithubStarsManager',
-      exported_at: obj.exportDate || new Date().toISOString(),
-      meta: {
-        app_version: obj.appVersion || 'legacy-1.0',
-        repository_count: repos.length,
-        category_count: customCats.length,
-        ai_config_count: aiConfigs.length,
-        includes_keys: !!d.includeKeysInBackup,
-      },
-      data: {
-        repositories: repos,
-        categories: {
-          customCategories: customCats,
-          subcategories: Array.isArray(d.subcategories) ? d.subcategories : [],
-          subcategoryOrder: Array.isArray(d.subcategoryOrder) ? d.subcategoryOrder : [],
-          categoryOrder: Array.isArray(d.categoryOrder) ? d.categoryOrder : [],
-          defaultCategoryOverrides: d.defaultCategoryOverrides || {},
-          hiddenDefaultCategoryIds: Array.isArray(d.hiddenDefaultCategoryIds) ? d.hiddenDefaultCategoryIds : [],
-          categoryMatchMode: 'effective',
-          categoryListIdMap: {},
-          collapsedSidebarCategoryCount: 20,
-        },
-        ai: {
-          aiConfigs: aiConfigs,
-          activeAIConfigId: null,
-        },
-        preferences: {
-          theme: d.theme === 'light' ? 'light' : 'dark',
-          themePreset: d.themePreset || 'default',
-          language: d.language || 'zh',
-          assetFilters: Array.isArray(d.assetFilters) ? d.assetFilters : [],
-        },
-        releases: {
-          releaseSubscriptions: Array.isArray(d.releaseSubscriptions) ? d.releaseSubscriptions : [],
-          releaseSourceSettings: d.releaseSourceSettings || {},
-          readReleases: Array.isArray(d.readReleases) ? d.readReleases : [],
-        },
-        network: {
-          proxyConfig: d.proxyConfig,
-          rpcDownloadConfig: d.rpcDownloadConfig,
-          routeMode: d.routeMode || 'auto',
-          backendApiSecret: d.backendApiSecret,
-        },
-      },
-    };
-    return GsmBackupSchemaV2.parse(normalizedV2);
-  }
-
-  // 3. 旧版 WebDAV (v1.2 扁平根级结构)
-  if (obj.version === '1.2' && Array.isArray(obj.repositories)) {
-    const repos = obj.repositories;
-    const customCats = Array.isArray(obj.customCategories) ? obj.customCategories : [];
-    const aiConfigs = Array.isArray(obj.aiConfigs) ? obj.aiConfigs : [];
-
-    const normalizedV2: GsmBackupV2 = {
-      gsm_backup_version: 2,
-      app: 'GithubStarsManager',
-      exported_at: obj.exportedAt || new Date().toISOString(),
-      meta: {
-        app_version: 'legacy-1.2',
-        repository_count: repos.length,
-        category_count: customCats.length,
-        ai_config_count: aiConfigs.length,
-        includes_keys: !!obj.includeKeysInBackup,
-      },
-      data: {
-        repositories: repos,
-        categories: {
-          customCategories: customCats,
-          subcategories: Array.isArray(obj.subcategories) ? obj.subcategories : [],
-          subcategoryOrder: Array.isArray(obj.subcategoryOrder) ? obj.subcategoryOrder : [],
-          categoryOrder: Array.isArray(obj.categoryOrder) ? obj.categoryOrder : [],
-          defaultCategoryOverrides: obj.defaultCategoryOverrides || {},
-          hiddenDefaultCategoryIds: Array.isArray(obj.hiddenDefaultCategoryIds) ? obj.hiddenDefaultCategoryIds : [],
-          categoryMatchMode: 'effective',
-          categoryListIdMap: {},
-          collapsedSidebarCategoryCount: 20,
-        },
-        ai: {
-          aiConfigs: aiConfigs,
-          activeAIConfigId: null,
-        },
-        preferences: {
-          theme: 'dark',
-          themePreset: 'default',
-          language: 'zh',
-          assetFilters: [],
-        },
-        releases: {
-          releaseSubscriptions: Array.isArray(obj.releaseSubscriptions) ? obj.releaseSubscriptions : [],
-          releaseSourceSettings: obj.releaseSourceSettings || {},
-          readReleases: Array.isArray(obj.readReleases) ? obj.readReleases : [],
-        },
-        network: {
-          proxyConfig: obj.proxyConfig,
-          rpcDownloadConfig: obj.rpcDownloadConfig,
-          routeMode: obj.routeMode || 'auto',
-          backendApiSecret: obj.backendApiSecret,
-        },
-      },
-    };
-    return GsmBackupSchemaV2.parse(normalizedV2);
-  }
-
-  throw new Error('BACKUP_VERSION_UNRECOGNIZED: 无法识别该备份文件的版本结构');
-}
-```
-
----
-
-### 3.3 双模覆写算法设计（全新覆盖 vs 增量合并）
-
-```typescript
-const MASKED_SECRET = '***';
-const isRealSecret = (v?: string | null) => typeof v === 'string' && v.length > 0 && v !== MASKED_SECRET;
-
-export function buildStorePatchFromBackup(
-  currentState: AppStoreState,
-  backup: GsmBackupV2,
-  mode: 'replace' | 'merge'
-): Partial<AppStoreState> {
-  const incomingData = backup.data;
-  const wasIncluded = backup.meta.includes_keys;
-
-  // 1. AI 配置合并与防脱敏占位符冲刷
-  let finalAIConfigs = currentState.aiConfigs;
-  if (mode === 'replace') {
-    finalAIConfigs = restoreAIConfigs(
-      currentState.aiConfigs,
-      incomingData.ai.aiConfigs as any,
-      wasIncluded
-    );
-  } else {
-    // 增量合并：保留本地已有配置，添加新 ID 的配置
-    const existingIds = new Set(currentState.aiConfigs.map(c => c.id));
-    const newConfigs = incomingData.ai.aiConfigs
-      .filter(c => !existingIds.has(c.id))
-      .map(c => ({
-        ...c,
-        apiKey: wasIncluded && isRealSecret(c.apiKey) ? c.apiKey! : '',
-      }));
-    finalAIConfigs = [...currentState.aiConfigs, ...newConfigs as any];
-  }
-
-  // 2. 仓库与分类体系合并
-  let targetRepositories = currentState.repositories;
-  let targetCategoriesPayload: Record<string, unknown> = {};
-
-  if (mode === 'replace') {
-    targetRepositories = incomingData.repositories as any;
-    targetCategoriesPayload = {
-      customCategories: incomingData.categories.customCategories,
-      subcategories: incomingData.categories.subcategories,
-      subcategoryOrder: incomingData.categories.subcategoryOrder,
-      categoryOrder: incomingData.categories.categoryOrder,
-      defaultCategoryOverrides: incomingData.categories.defaultCategoryOverrides,
-      hiddenDefaultCategoryIds: incomingData.categories.hiddenDefaultCategoryIds,
-    };
-  } else {
-    // 增量合并算法：以 ID 为锚点融合
-    const localMap = new Map(currentState.repositories.map(r => [r.id, r]));
-    const mergedRepos = [...currentState.repositories];
-
-    for (const inRepo of incomingData.repositories) {
-      const local = localMap.get(inRepo.id);
-      if (local) {
-        // 本地存在：合并标签白名单，如果本地未锁定则允许采纳备份分类
-        const updated = {
-          ...local,
-          custom_tags: Array.from(new Set([...(local.custom_tags || []), ...(inRepo.custom_tags || [])])),
-          custom_description: local.custom_description || inRepo.custom_description,
-          ai_summary: local.ai_summary || inRepo.ai_summary,
-          ai_tags: Array.from(new Set([...(local.ai_tags || []), ...(inRepo.ai_tags || [])])),
-          category_id: local.category_id ?? inRepo.category_id,
-          subcategory_id: local.subcategory_id ?? inRepo.subcategory_id,
-          category_locked: local.category_locked || inRepo.category_locked,
-        };
-        const idx = mergedRepos.findIndex(r => r.id === local.id);
-        if (idx !== -1) mergedRepos[idx] = updated as any;
-      } else {
-        mergedRepos.push(inRepo as any);
-      }
-    }
-    targetRepositories = mergedRepos;
-
-    // 分类与二级子分类求并集
-    const catMap = new Map(currentState.customCategories.map(c => [c.id, c]));
-    incomingData.categories.customCategories.forEach(c => {
-      if (!catMap.has(c.id)) catMap.set(c.id, c as any);
-    });
-
-    const subMap = new Map(currentState.subcategories.map(s => [s.id, s]));
-    incomingData.categories.subcategories.forEach(s => {
-      if (!subMap.has(s.id)) subMap.set(s.id, s as any);
-    });
-
-    targetCategoriesPayload = {
-      customCategories: Array.from(catMap.values()),
-      subcategories: Array.from(subMap.values()),
-      subcategoryOrder: Array.from(new Set([...currentState.subcategoryOrder, ...incomingData.categories.subcategoryOrder])),
-      categoryOrder: Array.from(new Set([...currentState.categoryOrder, ...incomingData.categories.categoryOrder])),
-      defaultCategoryOverrides: {
-        ...currentState.defaultCategoryOverrides,
-        ...incomingData.categories.defaultCategoryOverrides,
-      },
-      hiddenDefaultCategoryIds: Array.from(new Set([...currentState.hiddenDefaultCategoryIds, ...incomingData.categories.hiddenDefaultCategoryIds])),
-    };
-  }
-
-  // 3. 调用核心 incomingOrganizationSnapshot 保证原子一致性与搜索结果重算
-  const organizationPatch = incomingOrganizationSnapshot(
-    currentState,
-    targetCategoriesPayload,
-    targetRepositories
-  );
-
-  // 4. 组装最终 Store Patch
-  const finalPatch: Partial<AppStoreState> = {
-    ...organizationPatch,
-    aiConfigs: finalAIConfigs,
-    categoryMatchMode: incomingData.categories.categoryMatchMode,
-    collapsedSidebarCategoryCount: incomingData.categories.collapsedSidebarCategoryCount,
-    categoryListIdMap: {
-      ...currentState.categoryListIdMap,
-      ...incomingData.categories.categoryListIdMap,
-    },
-  };
-
-  if (mode === 'replace') {
-    finalPatch.theme = incomingData.preferences.theme;
-    finalPatch.themePreset = incomingData.preferences.themePreset as any;
-    finalPatch.language = incomingData.preferences.language as any;
-    if (incomingData.preferences.repositoryCardFields) {
-      finalPatch.repositoryCardFields = incomingData.preferences.repositoryCardFields as any;
-    }
-    if (incomingData.preferences.assetFilters.length > 0) {
-      finalPatch.assetFilters = incomingData.preferences.assetFilters as any;
-    }
-    if (incomingData.network?.routeMode) {
-      finalPatch.routeMode = incomingData.network.routeMode;
-    }
-  }
-
-  return finalPatch;
-}
-```
-
----
-
-## 4. 一键操作闭环：极简交互组件与 Store 注入引擎
-
-### 4.1 导出/导入交互动线与规范命名机制
-
-- **标准化文件名规则**：
-  采用 `GSM_backup_YYYYMMDD_HHmmss.json`（例如 `GSM_backup_20261003_102921.json`），精准到秒级时间戳，杜绝同日多次备份互相覆盖的危险。
-- **免重启热加载（Hot Store Reload）**：
-  Zustand 属于响应式状态管理器。整个导入流程只在内存中组装完完整的 `finalPatch` 之后，**一次性调用 `useAppStore.setState(finalPatch)`**。所有挂载的视图（网格、侧边栏分类树、卡片标签）在同一个浏览器 Tick 内全量同步，零白屏、零加载等待。
-
----
-
-### 4.2 极简备份与恢复交互组件实现 (`SingleBackupPanel.tsx`)
-
-新建组件文件：`src/components/settings/SingleBackupPanel.tsx`
-
-```tsx
-import React, { useState, useRef } from 'react';
-import { Button } from '../ui/button';
-import { Card, CardContent } from '../ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
-import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
-import { Label } from '../ui/label';
-import { Download, Upload, ShieldCheck, Database, FileText, CheckCircle2, AlertTriangle } from 'lucide-react';
-import { useAppStore } from '../../store/useAppStore';
-import { useDialog } from '../../hooks/useDialog';
-import {
-  GsmBackupV2,
-  adaptLegacyBackupToV2,
-  buildStorePatchFromBackup
-} from '../../services/backupMigrationService';
-import { backupAIConfig } from '../../utils/aiConfig';
-
-export const SingleBackupPanel: React.FC = () => {
-  const { toast } = useDialog();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [isExporting, setIsExporting] = useState(false);
-  const [importModalOpen, setImportModalOpen] = useState(false);
-  const [importStrategy, setImportStrategy] = useState<'replace' | 'merge'>('replace');
-  const [parsedBackup, setParsedBackup] = useState<GsmBackupV2 | null>(null);
-
-  // 1. 一键纯净导出
-  const handleExport = async () => {
-    setIsExporting(true);
-    try {
-      const state = useAppStore.getState();
-      const includeKeys = state.includeKeysInBackup;
-
-      const now = new Date();
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-
-      const backupPayload: GsmBackupV2 = {
-        gsm_backup_version: 2,
-        app: 'GithubStarsManager',
-        exported_at: now.toISOString(),
-        meta: {
-          app_version: '0.4.0',
-          repository_count: state.repositories.length,
-          category_count: state.customCategories.length,
-          ai_config_count: state.aiConfigs.length,
-          includes_keys: includeKeys,
-        },
-        data: {
-          repositories: state.repositories.map(r => ({
-            id: r.id,
-            name: r.name,
-            full_name: r.full_name,
-            description: r.description,
-            html_url: r.html_url,
-            stargazers_count: r.stargazers_count,
-            language: r.language,
-            topics: r.topics || [],
-            starred_at: r.starred_at,
-            category_id: r.category_id,
-            subcategory_id: r.subcategory_id,
-            category_locked: r.category_locked || false,
-            custom_category: r.custom_category,
-            custom_tags: r.custom_tags || [],
-            custom_description: r.custom_description,
-            ai_summary: r.ai_summary,
-            ai_tags: r.ai_tags || [],
-            ai_platforms: r.ai_platforms || [],
-            ai_details: r.ai_details,
-            analyzed_at: r.analyzed_at,
-            last_edited: r.last_edited,
-            subscribed_to_releases: r.subscribed_to_releases,
-          })),
-          categories: {
-            customCategories: state.customCategories,
-            subcategories: state.subcategories,
-            subcategoryOrder: state.subcategoryOrder,
-            categoryOrder: state.categoryOrder,
-            defaultCategoryOverrides: state.defaultCategoryOverrides,
-            hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
-            categoryMatchMode: state.categoryMatchMode,
-            categoryListIdMap: state.categoryListIdMap,
-            collapsedSidebarCategoryCount: state.collapsedSidebarCategoryCount,
-          },
-          ai: {
-            aiConfigs: state.aiConfigs.map(cfg => backupAIConfig(cfg, includeKeys)),
-            activeAIConfigId: state.activeAIConfig,
-            repositoryChatSettings: state.repositoryChatSettings as any,
-          },
-          preferences: {
-            theme: state.theme,
-            themePreset: state.themePreset,
-            themeTokens: state.themeTokens,
-            language: state.language,
-            repositoryCardFields: state.repositoryCardFields,
-            assetFilters: state.assetFilters,
-          },
-          releases: {
-            releaseSubscriptions: Array.from(state.releaseSubscriptions),
-            releaseSourceSettings: state.releaseSourceSettings,
-            readReleases: Array.from(state.readReleases),
-          },
-          network: {
-            proxyConfig: {
-              ...state.proxyConfig,
-              password: includeKeys ? state.proxyConfig.password : (state.proxyConfig.password ? '***' : ''),
-            },
-            rpcDownloadConfig: {
-              ...state.rpcDownloadConfig,
-              secret: includeKeys ? state.rpcDownloadConfig.secret : (state.rpcDownloadConfig.secret ? '***' : ''),
-            },
-            routeMode: state.routeMode,
-            backendApiSecret: includeKeys ? state.backendApiSecret : (state.backendApiSecret ? '***' : null),
-          },
-        },
-      };
-
-      const blob = new Blob([JSON.stringify(backupPayload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `GSM_backup_${timestamp}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      toast('配置与全量打标已成功导出为单一 JSON！', 'success');
-    } catch (err: any) {
-      toast(`导出失败: ${err.message}`, 'error');
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  // 2. 选择文件与原子校验预检
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const rawJson = JSON.parse(text);
-
-        // 统一归一化为 V2 并进行 Zod 强校验
-        const validV2 = adaptLegacyBackupToV2(rawJson);
-        setParsedBackup(validV2);
-        setImportStrategy('replace');
-        setImportModalOpen(true);
-      } catch (err: any) {
-        toast(`文件校验未通过: ${err.message}`, 'error');
-      } finally {
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // 3. 执行单 Tick 原子注入
-  const executeImport = () => {
-    if (!parsedBackup) return;
-    try {
-      const currentState = useAppStore.getState();
-      const patch = buildStorePatchFromBackup(currentState, parsedBackup, importStrategy);
-
-      useAppStore.setState(patch);
-
-      toast(
-        importStrategy === 'replace'
-          ? `全新覆盖完成！成功恢复 ${parsedBackup.meta.repository_count} 个仓库及分类架构`
-          : `增量合并完成！`,
-        'success'
-      );
-      setImportModalOpen(false);
-    } catch (err: any) {
-      toast(`导入过程发生异常: ${err.message}`, 'error');
-    }
-  };
-
-  return (
-    <Card className="border border-border/80 shadow-sm bg-card">
-      <CardContent className="p-6 space-y-6">
-        <div className="flex items-start justify-between">
-          <div className="space-y-1">
-            <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
-              <Database className="w-5 h-5 text-primary" />
-              本地单一配置文件极简备份与换机迁移
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              完整打包所有 AI 整理分类、手动打标、仓库锁定状态、二级分组、AI 提示词及界面外观偏好。不依赖任何第三方服务，换电脑秒级迁移。
-            </p>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>无污染 · 零临时缓存</span>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Button
-            variant="default"
-            size="lg"
-            className="w-full flex items-center justify-center gap-2.5 py-6 text-sm font-medium"
-            onClick={handleExport}
-            disabled={isExporting}
-          >
-            <Download className="w-4 h-4" />
-            <span>{isExporting ? '正在打包导出...' : '导出配置文件 (GSM_backup.json)'}</span>
-          </Button>
-
-          <Button
-            variant="outline"
-            size="lg"
-            className="w-full flex items-center justify-center gap-2.5 py-6 text-sm font-medium border-border hover:bg-muted/60"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Upload className="w-4 h-4" />
-            <span>导入并恢复配置...</span>
-          </Button>
-
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            accept=".json,application/json"
-            className="hidden"
-          />
-        </div>
-
-        {/* 导入预览与策略选择弹窗 */}
-        <Dialog open={importModalOpen} onOpenChange={setImportModalOpen}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-base">
-                <FileText className="w-5 h-5 text-primary" />
-                确认导入备份配置
-              </DialogTitle>
-            </DialogHeader>
-
-            {parsedBackup && (
-              <div className="space-y-4 py-2">
-                <div className="bg-muted/50 rounded-lg p-3 text-xs space-y-1.5 border border-border/60">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">备份生成时间:</span>
-                    <span className="font-mono text-foreground">{new Date(parsedBackup.exported_at).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">包含仓库资产:</span>
-                    <span className="font-medium text-foreground">{parsedBackup.meta.repository_count.toLocaleString()} 个</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">分类组织架构:</span>
-                    <span className="font-medium text-foreground">{parsedBackup.meta.category_count} 个自定义分类</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">AI 服务与提示词:</span>
-                    <span className="font-medium text-foreground">{parsedBackup.meta.ai_config_count} 组配置</span>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    选择导入模式
-                  </Label>
-                  <RadioGroup
-                    value={importStrategy}
-                    onValueChange={(val) => setImportStrategy(val as 'replace' | 'merge')}
-                    className="space-y-2"
-                  >
-                    <div className="flex items-start space-x-3 p-3 rounded-lg border border-border hover:bg-muted/40 transition-colors cursor-pointer">
-                      <RadioGroupItem value="replace" id="r_replace" className="mt-1" />
-                      <Label htmlFor="r_replace" className="cursor-pointer space-y-1">
-                        <div className="font-medium text-foreground flex items-center gap-1.5">
-                          全新覆盖恢复
-                          <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">新机迁移推荐</span>
-                        </div>
-                        <p className="text-xs text-muted-foreground font-normal">
-                          完全采纳备份中的仓库列表、分类体系与偏好，彻底清除悬空孤立数据。
-                        </p>
-                      </Label>
-                    </div>
-
-                    <div className="flex items-start space-x-3 p-3 rounded-lg border border-border hover:bg-muted/40 transition-colors cursor-pointer">
-                      <RadioGroupItem value="merge" id="r_merge" className="mt-1" />
-                      <Label htmlFor="r_merge" className="cursor-pointer space-y-1">
-                        <div className="font-medium text-foreground">增量合并模式</div>
-                        <p className="text-xs text-muted-foreground font-normal">
-                          保留本机已有仓库，将备份中的新仓库及手动分类/锁定标签融合补充进来。
-                        </p>
-                      </Label>
-                    </div>
-                  </RadioGroup>
-                </div>
-
-                <div className="flex items-center gap-2 p-2.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded text-xs border border-amber-500/20">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>导入后 Store 将即时无缝平滑重载，无需强制重启应用。</span>
-                </div>
-              </div>
-            )}
-
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="ghost" size="sm" onClick={() => setImportModalOpen(false)}>
-                取消
-              </Button>
-              <Button variant="default" size="sm" onClick={executeImport}>
-                确认执行导入
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </CardContent>
-    </Card>
-  );
-};
-```
-
----
-
-## 5. 现有系统改造与集成路径建议
-
-### 5.1 设置面板结构重组方案
-
-- **面板角色重定义**：
-  现有 [`src/components/settings/BackupPanel.tsx`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/components/settings/BackupPanel.tsx) 改版为双层架构：
-  1. **首要层（Top）**：挂载 `SingleBackupPanel`，提供开箱即用、零门槛的本地 JSON 单键导入导出；
-  2. **进阶层（Bottom）**：保留现有的 WebDAV 云备份，供有自建云盘需求的用户配置定期自动备份。
-  未配置 WebDAV 的用户不再面临全屏黄色警告，体验清爽确定。
-
-### 5.2 DataManagementPanel 瘦身与架构解耦
-
-- [`src/components/settings/DataManagementPanel.tsx`](file:///d:/%E6%A1%8C%E9%9D%A2/GSM/src/components/settings/DataManagementPanel.tsx) 专注于**缓存清理与危险操作**（如单独清理阮一峰周刊数据库、清空搜索历史、重置本地库）。
-- 彻底移除其中易导致 Bug 的 11 项碎片化导出 Checkbox 列表，统一重定向至 `backupMigrationService.ts`，消除代码重复与字段维护脱节。
-
-### 5.3 自动化测试与质量保护网建设
-
-为保证未来代码迭代不再遗漏新增字段，在 `src/services/__tests__/backupMigrationService.test.ts` 中建立持续集成护栏：
-1. **全量资产导出完备性测试**：断言生成的 JSON 包含 `subcategories`、`category_locked`、`customPrompt` 等 18 项核心元数据；
-2. **5000+ 仓库大负载压测**：测试单 Tick `buildStorePatchFromBackup` 在数千量级下执行时间控制在 50ms 以内；
-3. **安全防冲刷回归测试**：断言当备份文件中 `apiKey` 为 `***` 时，本地已配置的真实密钥绝不被覆盖清空。
+下一步只推荐本地导出版本/字段的一个独立修复；实际开始前再核对代码与用户要备份的资产。全域/整机恢复与通用 coordinator 不排期。

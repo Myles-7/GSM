@@ -1,0 +1,389 @@
+{
+  "recordedOn": "2026-10-04",
+  "timeZone": "Asia/Shanghai",
+  "kind": "source-validation",
+  "sourceCommit": "485ad725ef516d487615c26beb3a94caa2f3ae06",
+  "baseCommit": "253b910852691f3cf0cc357246c6a31bfe1e77f6",
+  "sourceTree": "e946c671a2496305804936fed3b95b7657a4a7fc",
+  "packageVersion": "0.8.4",
+  "personalReleaseUnchanged": "P0.2.1",
+  "rawSourceManifest": {
+    "path": "output/source-publication-20261004/fixed-source-inputs.json",
+    "nonMarkdownNonDeletedFiles": 1333,
+    "sha256": "65ed6d8c415c12a2752c27df24be9a21b0083f17eb1662d4119c21f47e4a72ab",
+    "encoding": "SHA256 of JSON.stringify of sorted raw-byte manifest entries; docs and markdown excluded"
+  },
+  "environment": {
+    "platform": "win32",
+    "frontendNode": "24.19.0",
+    "localServerNode": "25.8.2",
+    "ciFrontendNode": "24",
+    "ciServerNode": "22",
+    "nodeOptions": "--no-experimental-webstorage"
+  },
+  "tests": {
+    "frontend": {
+      "files": 301,
+      "passed": 3241
+    },
+    "nodeElectron": {
+      "passed": 360,
+      "skipped": 1
+    },
+    "server": {
+      "files": 40,
+      "passed": 365
+    },
+    "afterWhitespaceCleanup": {
+      "components": 16,
+      "readingDelivery": 18
+    }
+  },
+  "lint": {
+    "errors": 0,
+    "warnings": 0,
+    "command": "eslint . --max-warnings 0"
+  },
+  "bundleBudgetKiB": {
+    "actual": 1909.49,
+    "limit": 3000
+  },
+  "nativeSmoke": {
+    "passed": true,
+    "isolatedProfile": true,
+    "paidAI": false,
+    "realMail": false,
+    "realUserData": false,
+    "checks": [
+      "candidate-production-entry",
+      "trusted-preload-IPC",
+      "reading-preview-without-IPC-or-Node",
+      "five-widths-light-and-dark",
+      "detail-note-return-export",
+      "preview-network-denied",
+      "new-preview-session-isolated"
+    ],
+    "forbidden": [],
+    "capturedAt": "2026-10-04T06:20:29.236Z"
+  },
+  "runs": {
+    "tests": [
+      {
+        "name": "root-tests",
+        "startedAt": "2026-10-04T06:03:19.140Z",
+        "endedAt": "2026-10-04T06:04:54.847Z",
+        "args": [
+          "node_modules/vitest/vitest.mjs",
+          "run",
+          "--maxWorkers=4"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-electron-mcp",
+        "startedAt": "2026-10-04T06:04:54.849Z",
+        "endedAt": "2026-10-04T06:04:55.680Z",
+        "args": [
+          "--test",
+          "electron/mcpLocalServer.test.js",
+          "electron/repoHealth.test.js",
+          "electron/desktopPrefs.test.js",
+          "electron/desktopWindow.test.js",
+          "electron/trustedRenderer.test.js",
+          "electron/xAuthStorage.test.js"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-electron-agy",
+        "startedAt": "2026-10-04T06:04:55.680Z",
+        "endedAt": "2026-10-04T06:04:57.718Z",
+        "args": [
+          "--test",
+          "electron/agyProtocol.test.js",
+          "electron/agyRuntime.test.js",
+          "electron/agyDesktop.test.js",
+          "electron/agyIpc.test.js",
+          "electron/agyQueue.test.js",
+          "electron/agyLocalProjects.test.js"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-electron-plugins",
+        "startedAt": "2026-10-04T06:04:57.718Z",
+        "endedAt": "2026-10-04T06:04:58.605Z",
+        "args": [
+          "--test",
+          "electron/plugins/capabilityRouter.test.js",
+          "electron/plugins/clipboardSnapshot.test.js",
+          "electron/plugins/manifestSchema.test.js",
+          "electron/plugins/pluginCatalog.test.js",
+          "electron/plugins/pluginHostOperations.test.js",
+          "electron/plugins/pluginIntegration.test.js",
+          "electron/plugins/pluginIpc.test.js",
+          "electron/plugins/pluginLogger.test.js",
+          "electron/plugins/pluginManager.test.js",
+          "electron/plugins/pluginPage.test.js",
+          "electron/plugins/pluginPageBridge.test.js",
+          "electron/plugins/pluginPageSessions.test.js",
+          "electron/plugins/pluginProtocol.test.js",
+          "electron/plugins/pluginRegistry.test.js",
+          "electron/plugins/pluginRuntime.test.js",
+          "electron/plugins/pluginState.test.js",
+          "electron/plugins/pluginStorage.test.js",
+          "electron/plugins/releaseDownload.test.js",
+          "electron/plugins/smartReleaseRecommender.test.js",
+          "electron/plugins/webSearch.test.js"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-electron-webdav",
+        "startedAt": "2026-10-04T06:04:58.606Z",
+        "endedAt": "2026-10-04T06:04:59.948Z",
+        "args": [
+          "--test",
+          "electron/webdavIpc.test.js"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-update-version",
+        "startedAt": "2026-10-04T06:04:59.949Z",
+        "endedAt": "2026-10-04T06:05:02.034Z",
+        "args": [
+          "--test",
+          "scripts/update-version.test.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-ci-gates",
+        "startedAt": "2026-10-04T06:05:02.034Z",
+        "endedAt": "2026-10-04T06:05:12.131Z",
+        "args": [
+          "--test",
+          "scripts/check-pr-release-files.test.cjs",
+          "scripts/check-i18n.test.cjs",
+          "scripts/check-plugin-registry.test.cjs",
+          "scripts/diagnose-render-performance.test.cjs",
+          "scripts/clean-workspace.test.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-desktop-launcher",
+        "startedAt": "2026-10-04T06:05:12.132Z",
+        "endedAt": "2026-10-04T06:05:12.464Z",
+        "args": [
+          "--test",
+          "scripts/desktop-dev-address.test.mjs",
+          "scripts/start-home-desktop.test.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "test-electron-html-reading",
+        "startedAt": "2026-10-04T06:05:12.465Z",
+        "endedAt": "2026-10-04T06:05:13.044Z",
+        "args": [
+          "--test",
+          "electron/htmlReading.test.js",
+          "electron/htmlReadingLoop.test.js",
+          "electron/htmlReadingPreview.test.js"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      }
+    ],
+    "static": [
+      {
+        "name": "lint",
+        "startedAt": "2026-10-04T06:06:48.762Z",
+        "endedAt": "2026-10-04T06:06:58.791Z",
+        "args": [
+          "node_modules/eslint/bin/eslint.js",
+          ".",
+          "--max-warnings",
+          "0"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "typecheck",
+        "startedAt": "2026-10-04T06:06:58.793Z",
+        "endedAt": "2026-10-04T06:07:13.274Z",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "-b",
+          "--noEmit"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "fixture-types",
+        "startedAt": "2026-10-04T06:07:13.275Z",
+        "endedAt": "2026-10-04T06:07:15.594Z",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "--project",
+          "scripts/fixtures/render-performance.tsconfig.json",
+          "--noEmit"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-i18n",
+        "startedAt": "2026-10-04T06:07:15.595Z",
+        "endedAt": "2026-10-04T06:07:15.968Z",
+        "args": [
+          "scripts/check-i18n.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-ai-core",
+        "startedAt": "2026-10-04T06:07:15.969Z",
+        "endedAt": "2026-10-04T06:07:16.035Z",
+        "args": [
+          "scripts/check-ai-core.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-boundaries",
+        "startedAt": "2026-10-04T06:07:16.036Z",
+        "endedAt": "2026-10-04T06:07:16.150Z",
+        "args": [
+          "scripts/check-boundaries.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-html-reading",
+        "startedAt": "2026-10-04T06:07:16.151Z",
+        "endedAt": "2026-10-04T06:07:16.219Z",
+        "args": [
+          "scripts/check-html-reading-boundaries.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-plugin-registry",
+        "startedAt": "2026-10-04T06:07:16.219Z",
+        "endedAt": "2026-10-04T06:07:16.331Z",
+        "args": [
+          "scripts/check-plugin-registry.cjs"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "check-vector-worker",
+        "startedAt": "2026-10-04T06:07:16.332Z",
+        "endedAt": "2026-10-04T06:07:16.463Z",
+        "args": [
+          "scripts/build-vector-worker.cjs",
+          "--check"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "frontend-build",
+        "startedAt": "2026-10-04T06:07:16.464Z",
+        "endedAt": "2026-10-04T06:08:16.159Z",
+        "args": [
+          "node_modules/vite/bin/vite.js",
+          "build",
+          "--outDir",
+          "output/source-publication-20261004/build"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      },
+      {
+        "name": "bundle-budget",
+        "startedAt": "2026-10-04T06:08:16.161Z",
+        "endedAt": "2026-10-04T06:08:16.246Z",
+        "args": [
+          "scripts/check-bundle-size.cjs",
+          "output/source-publication-20261004/build"
+        ],
+        "status": 0,
+        "nodeVersion": "24.19.0"
+      }
+    ],
+    "server": [
+      {
+        "name": "server-tests",
+        "startedAt": "2026-10-04T06:03:19.153Z",
+        "endedAt": "2026-10-04T06:03:23.602Z",
+        "args": [
+          "node_modules/vitest/vitest.mjs",
+          "run",
+          "--maxWorkers=4"
+        ],
+        "status": 0,
+        "nodeVersion": "25.8.2"
+      },
+      {
+        "name": "server-build",
+        "startedAt": "2026-10-04T06:03:23.604Z",
+        "endedAt": "2026-10-04T06:03:25.459Z",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "--outDir",
+          "../output/source-publication-20261004/server-build"
+        ],
+        "status": 0,
+        "nodeVersion": "25.8.2"
+      }
+    ]
+  },
+  "ciAcceptance": {
+    "requiredChecks": [
+      "Quality gates",
+      "Server quality gates"
+    ],
+    "requiresLatestPrHead": true,
+    "mergeMethod": "merge-commit",
+    "evidence": "Associated PR checks, merge event and final delivery receipt; local results do not assert remote CI completion"
+  },
+  "snapshot": {
+    "path": "D:/Temp/User/gsm-source-before-publication-20261004-F74MDc",
+    "includes": [
+      "source",
+      "manifest.json",
+      "history.bundle",
+      "working-tree.patch",
+      "index.patch",
+      "status.txt"
+    ]
+  },
+  "sideEffects": {
+    "realAI": false,
+    "realMail": false,
+    "realStar": false,
+    "realDataRestore": false,
+    "replaceDailyBuild": false,
+    "deploy": false,
+    "newTagOrRelease": false
+  }
+}
