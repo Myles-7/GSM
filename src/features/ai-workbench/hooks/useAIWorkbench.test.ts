@@ -52,6 +52,15 @@ beforeEach(() => {
 });
 
 describe('AI workbench integration', () => {
+  it('opens the AI settings tab without creating a session or calling a model', () => {
+    const hook = renderHook(useAIWorkbench);
+    act(() => hook.result.current.openAISettings());
+    expect(useAppStore.getState().currentView).toBe('settings');
+    expect(sessionStorage.getItem('gsm:pending-settings-tab')).toBe('ai');
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.answer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
   it('routes result follow-ups to the overview without another requirements interview or deep research', async () => {
     const hook = renderHook(useAIWorkbench);
     await act(async () => { await hook.result.current.createSession(); });

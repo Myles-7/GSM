@@ -1092,6 +1092,7 @@ export const createEvidenceToolbox = (input: RepositoryChatTurnInput, budget: Re
       return { ok: true, value };
     } catch (error) {
       if (input.signal?.aborted) throw error;
+      if (error instanceof Error && error.name === 'AIStreamInterruptedError') throw error;
       // 失败的动作释放去重键，让后续轮次能以相同参数重试（仍受工具预算、
       // 轮次与无进展上限约束）；成功动作的去重键保留，防止重复读取。
       actionHashes.delete(actionHash);

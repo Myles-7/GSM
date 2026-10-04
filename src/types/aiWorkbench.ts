@@ -85,6 +85,7 @@ export interface WorkbenchSessionData {
   inputIntent?: WorkbenchInputIntent;
 }
 export interface WorkbenchTaskState {
+  taskId?: string;
   sessionId: string | null;
   ownerId: string | null;
   stage: string;

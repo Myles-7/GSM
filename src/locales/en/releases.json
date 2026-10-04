@@ -72,7 +72,9 @@
     "failed-to-generate-summary-please-try-again": "Failed to generate summary. Please try again.",
     "download-count": "{{count}} downloads",
     "show-all-assets": "Show all {{count}}",
-    "show-matched-assets": "Show matched assets"
+    "show-matched-assets": "Show matched assets",
+    "regenerate-summary": "Regenerate",
+    "previous-summary": "This is a previous summary. The language or model configuration has changed. Regenerate to update it."
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "Plugin analysis failed",
@@ -202,7 +204,9 @@
     "this-repository-has-no-releases": "This repository has no releases.",
     "v1-live-releases-loaded": "{{v1}} live releases loaded",
     "release-pagination": "Release pagination",
-    "no-matching-releases": "No releases match the selected asset filters."
+    "no-matching-releases": "No releases match the selected asset filters.",
+    "regenerate-summary": "Regenerate",
+    "previous-summary": "This is a previous summary. The language or model configuration has changed. Regenerate to update it."
   },
   "subscriptionRepoCard": {
     "no-description": "No description available",

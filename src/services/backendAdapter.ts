@@ -203,20 +203,24 @@ class BackendAdapter {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    // If the caller provides a signal, forward its abort to our internal controller
+    // Keep the caller's signal attached to the body after response headers arrive.
     const callerSignal = options?.signal;
-    if (callerSignal) {
-      if (callerSignal.aborted) {
-        controller.abort();
-      } else {
-        callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
-      }
+    const legacySignal = !!callerSignal && typeof AbortSignal.any !== 'function';
+    const requestSignal = callerSignal && !legacySignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    const cleanupLegacy = () => { clearTimeout(timeoutId); callerSignal?.removeEventListener('abort', onCallerAbort); };
+    if (legacySignal) {
+      controller.signal.addEventListener('abort', cleanupLegacy, { once: true });
+      if (callerSignal?.aborted) onCallerAbort();
+      else callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
     }
+    let returnedResponse = false;
+    const privateAIRequest = /\/proxy\/ai(?:\?|$)/.test(path);
 
     // Capture request details for debug logging
     let requestHeaders: Record<string, string> | undefined;
     let requestBody: string | undefined;
-    if (logger.isDebugMode()) {
+    if (logger.isDebugMode() && !privateAIRequest) {
       if (options?.headers) {
         if (options.headers instanceof Headers) {
           requestHeaders = {};
@@ -249,8 +253,8 @@ class BackendAdapter {
     }
 
     try {
-      const response = await fetch(url, { ...options, signal: controller.signal, redirect: 'error' });
-      if (logger.isDebugMode()) {
+      const response = await fetch(url, { ...options, signal: requestSignal, redirect: 'error' });
+      if (logger.isDebugMode() && !privateAIRequest) {
         // Capture response headers
         const responseHeaders: Record<string, string> = {};
         response.headers.forEach((v, k) => { responseHeaders[k] = v; });
@@ -281,9 +285,10 @@ class BackendAdapter {
           requestHeaders, requestBody, responseHeaders, responseBody,
         });
       }
+      returnedResponse = true;
       return response;
     } catch (err) {
-      if (logger.isDebugMode()) {
+      if (logger.isDebugMode() && !privateAIRequest) {
         logger.debug('backendAdapter', 'Backend request', {
           method, path, error: 'timeout/network error', durationMs: Date.now() - startTime,
           requestHeaders, requestBody,
@@ -291,7 +296,9 @@ class BackendAdapter {
       }
       throw err;
     } finally {
-      clearTimeout(timeoutId);
+      // Older browsers need a manual listener through body consumption. Its
+      // lifetime is bounded by the request deadline or caller cancellation.
+      if (!legacySignal || !returnedResponse) { clearTimeout(timeoutId); cleanupLegacy(); }
     }
   }
 
@@ -581,7 +588,7 @@ class BackendAdapter {
       headers: this.getAuthHeaders(),
       body: JSON.stringify({ configId, body }),
       signal,
-    }, 120000);
+    }, 600000);
     if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
     return res.json();
   }
@@ -594,7 +601,7 @@ class BackendAdapter {
       headers: this.getAuthHeaders(),
       body: JSON.stringify({ config: aiConfig, body }),
       signal,
-    }, 120000);
+    }, 600000);
     if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
     return res.json();
   }
@@ -610,7 +617,7 @@ class BackendAdapter {
           headers: this.getAuthHeaders(),
           body: JSON.stringify({ configId, body }),
           signal,
-        }, 120000);
+        }, 600000);
         if (res.ok) return res.json();
         // Fall through to inline config on 404 (config not synced yet)
         if (res.status !== 404) await this.throwTranslatedError(res, 'AI proxy error');
@@ -626,6 +633,20 @@ class BackendAdapter {
   }
 
   // === WebDAV Proxy ===
+  /** Body lifetime is bounded by AIService's deadline and caller cancellation. */
+  async proxyAIRequestStream(configId: string, aiConfig: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string }, body: object, signal?: AbortSignal): Promise<Response> {
+    if (!this._backendUrl) throw new Error('Backend not available');
+    const send = (payload: object) => this.fetchWithTimeout(`${this._backendUrl}/proxy/ai`, {
+      method: 'POST', headers: this.getAuthHeaders(), body: JSON.stringify({ ...payload, body, stream: true }), signal,
+    }, 600000);
+    let response = await send(configId ? { configId } : { config: aiConfig });
+    if (response.status === 404 && configId && aiConfig.apiKey) {
+      const error = await response.clone().json().catch(() => null) as { code?: string } | null;
+      if (error?.code === 'AI_CONFIG_NOT_FOUND') { await response.body?.cancel(); response = await send({ config: aiConfig }); }
+    }
+    if (!response.ok) await this.throwTranslatedError(response, 'AI proxy error');
+    return response;
+  }
 
   async proxyWebDAV(configId: string, method: string, path: string, body?: string, headers?: Record<string, string>): Promise<Response> {
     if (!this._backendUrl) throw new Error('Backend not available');

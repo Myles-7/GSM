@@ -105,6 +105,28 @@ describe('insecure endpoint guard', () => {
   });
 });
 
+describe('completion verification', () => {
+  it.each([
+    ['openai', 'data: {"choices":[{"delta":{"content":"Answer"},"finish_reason":"stop"}]}\n\n'],
+    ['openai-responses', 'data: {"type":"response.output_text.delta","delta":"Answer"}\n\ndata: {"type":"response.completed"}\n\n'],
+    ['claude', 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Answer"}}\n\ndata: {"type":"message_stop"}\n\n'],
+    ['gemini', 'data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"STOP"}]}\n\n'],
+  ] as const)('accepts the normal terminal event for %s', async (apiType, body) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } })));
+    try { expect(await new AIService({ ...baseConfig('https://example.com'), apiType }, 'en').generateChatTextStream({ system: '', user: 'Question', onChunk: vi.fn() })).toBe('Answer'); }
+    finally { vi.unstubAllGlobals(); }
+  });
+  it('rejects a partial JSON response when the provider ignores the stream flag', async () => {
+    const body = JSON.stringify({ status: 'incomplete', output_text: 'Partial answer' });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(body, { headers: { 'content-type': 'application/json' } })));
+    const service = new AIService({ ...baseConfig('https://example.com'), apiType: 'openai-responses' }, 'en');
+    try {
+      await expect(service.generateChatTextStream({ system: '', user: 'Question', onChunk: vi.fn() })).rejects.toMatchObject({ name: 'AIStreamInterruptedError' });
+      await expect(service.generateChatText({ system: '', user: 'Question' })).rejects.toMatchObject({ name: 'AIStreamInterruptedError' });
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
 describe('redirect and sniff safety', () => {
   it('passes redirect: error so direct fetches never follow redirects with credentials', async () => {
     const service = new AIService(baseConfig('https://api.example.com/v1'), 'en');
@@ -207,6 +229,20 @@ describe('missing Content-Type sniffing', () => {
 });
 
 describe('requestTextStream gating', () => {
+  it.each([
+    ['openai-responses', 'data: {"type":"response.output_text.delta","delta":"partial"}\n\ndata: {"type":"response.failed","response":{"error":{"message":"failed"}}}\n\n'],
+    ['claude', 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\ndata: {"type":"error","error":{"message":"failed"}}\n\n'],
+    ['openai', 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'],
+    ['openai', 'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'],
+  ] as const)('does not accept incomplete %s output as a completed answer', async (apiType, body) => {
+    const service = new AIService({ ...baseConfig('https://api.example.com/v1'), apiType }, 'en');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } })));
+    const onChunk = vi.fn();
+    try {
+      await expect(service.generateChatTextStream({ system: 's', user: 'u', onChunk })).rejects.toMatchObject({ name: 'AIStreamInterruptedError', partialText: 'partial' });
+      expect(onChunk).toHaveBeenCalledWith('partial');
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('rejects streaming for deepseek-reasoner so reasoning_content stays on the blocking path', async () => {
     const config: AIConfig = {
       id: 'ai-reasoner',

@@ -1,6 +1,7 @@
 
 import { getDateFnsLocale, getIntlLocale } from '../i18n/format';
 import { useT, type TranslateFn } from '../i18n/useT';
+import { latestRepositoryRelease } from '../utils/latestRepositoryRelease';
 import type { AppLanguage } from '../i18n/languages';
 import React, { Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -31,7 +32,8 @@ import { pluginClient } from '../plugins/pluginClient';
 import type { RegisteredPluginAction } from '../plugins/types';
 import { openPluginPage } from '../plugins/pluginPageSession';
 import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
-import { RepositoryLanguageStars, RepositorySoftwareForms, repositoryListDescriptionClass, repositoryListSurfaceClass } from './RepositoryListPresentation';
+import { RepositoryLanguageStars, RepositorySoftwareForms } from './RepositoryListPresentation';
+import { repositoryListDescriptionClass, repositoryListSurfaceClass } from '../lib/repositoryReadingPresentation';
 
 type DialogContentPointerDownOutsideHandler = NonNullable<
   React.ComponentProps<typeof DialogContent>['onPointerDownOutside']
@@ -390,9 +392,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
 }) => {
     const t = useT('repositories');
   const language = useAppStore((state) => state.language);
-  const cachedReleases = useAppStore((state) => state.releases);
-  const latestRelease = useMemo(() => cachedReleases?.filter((release) => release.repository.id === repository.id)
-    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0], [cachedReleases, repository.id]);
+  const latestRelease = useAppStore(useCallback(
+    (state) => latestRepositoryRelease(state.releases, repository.id), [repository.id],
+  ));
   // 卡片可见字段（开发守则 §14）：未提供时按默认（显示）处理
   const cardFields = useAppStore((state) => state.repositoryCardFields);
   const softwareForms = useMemo(() => showAISummary && isRepositoryCardFieldVisible(cardFields, 'tags')
@@ -1163,6 +1165,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         {/* Language and Stars */}
         <div className={`flex items-center ${viewMode === 'list' ? 'space-x-3 flex-wrap gap-y-1' : 'space-x-4'} text-xs text-muted-foreground dark:text-muted-foreground`}>
           <RepositoryLanguageStars language={isRepositoryCardFieldVisible(cardFields, 'language') ? repository.language : null}
+            outlinedLanguage={viewMode === 'grid'}
             stars={isRepositoryCardFieldVisible(cardFields, 'stars') ? repository.stargazers_count : undefined} />
           {viewMode === 'list' && displayPlatforms.length > 0 && (
             <div className="flex items-center space-x-1 min-w-0">

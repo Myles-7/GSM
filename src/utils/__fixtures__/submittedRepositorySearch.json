@@ -1,0 +1,292 @@
+{
+  "version": 1,
+  "diagnosticOnly": true,
+  "account": "990001",
+  "repositories": [
+    {
+      "id": 101,
+      "name": "ui-kit",
+      "full_name": "atlas/ui-kit",
+      "description": "Accessible component library",
+      "language": "TypeScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/atlas/ui-kit",
+      "owner": {
+        "login": "atlas",
+        "avatar_url": ""
+      },
+      "stargazers_count": 101,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 102,
+      "name": "ui-kit",
+      "full_name": "nova/ui-kit",
+      "description": "Theme component collection",
+      "language": "JavaScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/nova/ui-kit",
+      "owner": {
+        "login": "nova",
+        "avatar_url": ""
+      },
+      "stargazers_count": 102,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 103,
+      "name": "ui-kit-tools",
+      "full_name": "atlas/ui-kit-tools",
+      "description": "Tooling for component packages",
+      "language": "TypeScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/atlas/ui-kit-tools",
+      "owner": {
+        "login": "atlas",
+        "avatar_url": ""
+      },
+      "stargazers_count": 103,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 104,
+      "name": "offline-sync",
+      "full_name": "fresh/offline-sync",
+      "description": "离线同步工具，断网时同步数据",
+      "language": "Rust",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/fresh/offline-sync",
+      "owner": {
+        "login": "fresh",
+        "avatar_url": ""
+      },
+      "stargazers_count": 104,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 105,
+      "name": "message-hub",
+      "full_name": "meadow/message-hub",
+      "description": "Event relay for collaborative applications",
+      "language": "TypeScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/meadow/message-hub",
+      "owner": {
+        "login": "meadow",
+        "avatar_url": ""
+      },
+      "stargazers_count": 105,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 106,
+      "name": "dashboard",
+      "full_name": "field/dashboard",
+      "description": "Cloud dashboard toolkit",
+      "language": "JavaScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/field/dashboard",
+      "owner": {
+        "login": "field",
+        "avatar_url": ""
+      },
+      "stargazers_count": 106,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    },
+    {
+      "id": 107,
+      "name": "stream-client",
+      "full_name": "atlas/stream-client",
+      "description": "Streaming client with reconnect support",
+      "language": "TypeScript",
+      "topics": [],
+      "custom_tags": [],
+      "ai_tags": [],
+      "ai_platforms": [],
+      "html_url": "https://example.invalid/atlas/stream-client",
+      "owner": {
+        "login": "atlas",
+        "avatar_url": ""
+      },
+      "stargazers_count": 107,
+      "forks_count": 0,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z",
+      "pushed_at": "2026-01-02T00:00:00Z",
+      "starred_at": "2026-01-03T00:00:00Z",
+      "license": null
+    }
+  ],
+  "cases": [
+    {
+      "id": "exact-full-name",
+      "query": "atlas/ui-kit",
+      "vector": [
+        {
+          "id": "103",
+          "score": 0.95
+        }
+      ],
+      "mustInclude": [
+        101
+      ],
+      "tierBefore": {
+        "first": 101,
+        "second": 103
+      }
+    },
+    {
+      "id": "exact-name-same-owners",
+      "query": "ui-kit",
+      "vector": [
+        {
+          "id": "103",
+          "score": 0.95
+        }
+      ],
+      "mustInclude": [
+        101,
+        102
+      ],
+      "exactTier": [
+        101,
+        102
+      ],
+      "noOfficialOwner": true
+    },
+    {
+      "id": "lexical-only",
+      "query": "stream",
+      "vector": [
+        {
+          "id": "105",
+          "score": 0.95
+        }
+      ],
+      "mustInclude": [
+        107,
+        105
+      ]
+    },
+    {
+      "id": "unindexed-Chinese",
+      "query": "离线同步",
+      "vector": [
+        {
+          "id": "105",
+          "score": 0.95
+        }
+      ],
+      "mustInclude": [
+        104
+      ],
+      "neverReindex": true
+    },
+    {
+      "id": "vector-outage",
+      "query": "atlas/ui-kit",
+      "vector": [],
+      "mockFailure": "unavailable",
+      "mustInclude": [
+        101
+      ]
+    },
+    {
+      "id": "Chinese-natural-language",
+      "query": "断网时同步数据",
+      "vector": [
+        {
+          "id": "104",
+          "score": 0.95
+        },
+        {
+          "id": "105",
+          "score": 0.85
+        }
+      ],
+      "mustInclude": [
+        104,
+        105
+      ]
+    },
+    {
+      "id": "semantic-query",
+      "query": "tools for live updates",
+      "vector": [
+        {
+          "id": "105",
+          "score": 0.92
+        },
+        {
+          "id": "106",
+          "score": 0.8
+        }
+      ],
+      "mustInclude": [
+        105,
+        106
+      ],
+      "mockRerank": [
+        106,
+        105
+      ]
+    }
+  ],
+  "integrationContracts": [
+    "filter",
+    "sort-decision-required",
+    "cancel-late-result",
+    "account-switch",
+    "repository-update",
+    "empty-query",
+    "IME"
+  ]
+}

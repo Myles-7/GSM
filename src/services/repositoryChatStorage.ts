@@ -1,4 +1,6 @@
 import { organizationDraftSchema } from './aiOrganizationSchema';
+import { repositoryDetailsSchema } from '../utils/repositoryDetailsSchema';
+import { deleteResearchCheckpoint } from './workbenchResearchCheckpoint';
 import type {
   RepositoryChatMessage,
   RepositoryChatSession,
@@ -41,6 +43,10 @@ const emptySnapshot = (): FallbackSnapshot => ({
   projects: [],
   proposals: [],
 });
+
+// Applied operations remain an audit/undo record; drafts are conversation data.
+const keepOperationHistory = (proposal: WorkbenchProposal) => !!proposal.organization
+  || proposal.operations.some(item => ['success', 'restored', 'unknown', 'conflict', 'running'].includes(item.status));
 
 const notifyGlobalHistoryChanged = (source?: 'home-projection'): void => {
   if (typeof window === 'undefined') return;
@@ -318,7 +324,7 @@ const EVIDENCE_KEYS = ['id', 'source', 'repoFullName', 'refSha', 'path', 'lineSt
 const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'repositories', 'selectedRepositoryNames', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
 const OPERATION_KEYS = ['id', 'repository', 'kind', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
-const EDITABLE_KEYS = ['custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
+const EDITABLE_KEYS = ['category_id', 'subcategory_id', 'custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
 const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject', 'inputIntent'] as const;
 const REQUIREMENTS_KEYS = ['purpose', 'required', 'preferred', 'excluded', 'questions', 'queries'] as const;
 const SEARCH_BATCH_KEYS = ['id', 'createdAt', 'requirements', 'candidates', 'queries', 'nextPage', 'overviewSummary'] as const;
@@ -331,6 +337,8 @@ const REPOSITORY_KEYS = [
   'custom_description', 'custom_tags', 'custom_category', 'category_locked', 'last_edited',
   'vector_indexed_at', 'vector_indexed_license', 'last_release_fetch_time', 'has_fetched_releases',
   'license',
+  'category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details',
+  'vector_indexed_identity', 'vector_indexed_generation', 'vector_indexed_content_hash',
 ] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
@@ -463,6 +471,18 @@ const validateRepository = (value: unknown, label: string): Repository => {
   }
   asOptionalNullableString(record.vector_indexed_license, `${label}.vector_indexed_license`);
   asOptionalNullableString(record.license, `${label}.license`);
+  asOptionalNullableString(record.category_id, `${label}.category_id`);
+  asOptionalNullableString(record.subcategory_id, `${label}.subcategory_id`);
+  if (record.category_candidates !== undefined) asStringArray(record.category_candidates, `${label}.category_candidates`, 1_000);
+  if (record.category_legacy !== undefined) {
+    const legacy = assertRecord(record.category_legacy, `${label}.category_legacy`, ['custom_category', 'category_locked', 'category_id', 'subcategory_id']);
+    asOptionalString(legacy.custom_category, `${label}.category_legacy.custom_category`);
+    asOptionalBoolean(legacy.category_locked, `${label}.category_legacy.category_locked`);
+    asOptionalNullableString(legacy.category_id, `${label}.category_legacy.category_id`);
+    asOptionalNullableString(legacy.subcategory_id, `${label}.category_legacy.subcategory_id`);
+  }
+  if (record.ai_details !== undefined) repositoryDetailsSchema.parse(record.ai_details);
+  for (const key of ['vector_indexed_identity', 'vector_indexed_generation', 'vector_indexed_content_hash']) asOptionalString(record[key], `${label}.${key}`);
   if (record.ai_tags !== undefined) asStringArray(record.ai_tags, `${label}.ai_tags`, 5_000);
   if (record.ai_platforms !== undefined) asStringArray(record.ai_platforms, `${label}.ai_platforms`, 5_000);
   if (record.custom_tags !== undefined) asStringArray(record.custom_tags, `${label}.custom_tags`, 5_000);
@@ -648,6 +668,8 @@ const validateProject = (value: unknown, label: string, ownerId: string): Workbe
 
 const validateEditableFields = (value: unknown, label: string): void => {
   const record = assertRecord(value, label, EDITABLE_KEYS);
+  asOptionalNullableString(record.category_id, `${label}.category_id`);
+  asOptionalNullableString(record.subcategory_id, `${label}.subcategory_id`);
   asOptionalString(record.custom_category, `${label}.custom_category`, MAX_TEXT);
   asOptionalBoolean(record.category_locked, `${label}.category_locked`);
   if (record.custom_tags !== undefined) asStringArray(record.custom_tags, `${label}.custom_tags`, 5_000);
@@ -1398,9 +1420,14 @@ export const repositoryChatStorage = {
   },
 
   async permanentlyDeleteSession(sessionId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    // A storage failure must remain visible; do not claim a permanent deletion
+    // while device-only research excerpts still exist.
+    if (session?.ownerId) deleteResearchCheckpoint(session.ownerId, sessionId);
     const fallback = () => {
       const snapshot = readFallback();
       snapshot.sessions = snapshot.sessions.filter((item) => item.id !== sessionId);
+      snapshot.proposals = snapshot.proposals.filter((item) => item.sessionId !== sessionId || keepOperationHistory(item));
       const removedToolEvents = snapshot.toolEvents.filter((item) => item.sessionId === sessionId);
       const evidenceIds = new Set([
         ...snapshot.messages.filter((item) => item.sessionId === sessionId).flatMap((item) => item.evidenceIds),
@@ -1416,9 +1443,11 @@ export const repositoryChatStorage = {
       return fallback();
     }
     try {
-      await withTimeout(runTransaction(['sessions', 'messages', 'toolEvents', 'evidence'], 'readwrite', async (stores) => {
+      await withTimeout(runTransaction(['sessions', 'messages', 'toolEvents', 'evidence', 'proposals'], 'readwrite', async (stores) => {
         const messages = await requestValue(stores.messages.index('sessionId').getAll(sessionId)) as RepositoryChatMessage[];
         await requestValue(stores.sessions.delete(sessionId));
+        const proposals = await requestValue(stores.proposals.getAll()) as WorkbenchProposal[];
+        await Promise.all(proposals.filter(item => item.sessionId === sessionId && !keepOperationHistory(item)).map(item => requestValue(stores.proposals.delete(item.id))));
         await Promise.all(messages.map((message) => requestValue(stores.messages.delete(message.id))));
         const toolEvents = await requestValue(stores.toolEvents.index('sessionId').getAll(sessionId)) as RepositoryChatToolEvent[];
         await Promise.all(toolEvents.map((event) => requestValue(stores.toolEvents.delete(event.id))));

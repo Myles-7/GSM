@@ -13,6 +13,16 @@ const repository = { full_name: 'owner/repo', html_url: 'https://github.com/owne
 const options = { repository, accountId: 1, aiConfig: { model: 'mock-model' } as AIConfig, githubToken: 'mock-token', language: 'en' };
 
 describe('repository detail analysis evidence and validation', () => {
+  it('rejects command prefixes that omit documented flags or chained steps', async () => {
+    mocks.readme.mockResolvedValue({ content: '```sh\nnpm install --ignore-scripts\nnpm build && npm test\n```', retrievedAt: '2026-09-01T00:00:00Z' });
+    mocks.generate.mockResolvedValue(JSON.stringify({ ...content, quickstart: [
+      { description: 'Incomplete', command: 'npm install' },
+      { description: 'Incomplete chain', command: 'npm build' },
+      { description: 'Exact', command: 'npm install --ignore-scripts' },
+    ] }));
+    const result = await analyzeRepositoryDetails(options);
+    expect(result.quickstart.map(step => step.command)).toEqual([null, null, 'npm install --ignore-scripts']);
+  });
   it('defaults legacy form/mode evidence to unknown and rejects invented enum values', () => {
     expect(repositoryDetailContentSchema.parse(content)).toMatchObject({ software_forms: [], deployment_modes: [] });
     expect(repositoryDetailContentSchema.safeParse({ ...content, software_forms: ['windows'] }).success).toBe(false);

@@ -71,7 +71,9 @@
     "sort-files": "Files",
     "category-all": "All gists",
     "category-starred": "Starred gists",
-    "category-mine": "My gists"
+    "category-mine": "My gists",
+    "ai-search-scope": "AI selection evaluates up to 120 recalled candidates, ordered by relevance initially. Sorting applies to these results. Search again to refresh candidates.",
+    "no-search-matches": "No Gists match this search or filter. Adjust your criteria or search again."
   },
   "useGistActions": {
     "github-token-not-found-please-login-again": "GitHub token not found. Please login again.",
@@ -110,6 +112,7 @@
     "failed-to-load-gist-details-empty": "Failed to load gist details",
     "failed-to-delete-gist": "Failed to delete gist: {{message}}{{permissionNote}}",
     "failed-to-delete-gist-empty": "Failed to delete gist{{permissionNote}}",
-    "github-token-not-configured": "GitHub token not configured, cannot load file content"
+    "github-token-not-configured": "GitHub token not configured, cannot load file content",
+    "search-fallback": "AI search could not complete. Showing keyword search results."
   }
 }

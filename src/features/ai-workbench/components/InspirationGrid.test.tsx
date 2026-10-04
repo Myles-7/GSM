@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { InspirationGrid, INSPIRATION_STORAGE_KEY } from './InspirationGrid';
+import { InspirationGrid } from './InspirationGrid';
+import { INSPIRATION_STORAGE_KEY } from './inspirationCards';
 
 vi.mock('../../../store/useAppStore', () => ({
   useAppStore: vi.fn((selector) => {

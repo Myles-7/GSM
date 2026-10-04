@@ -21,6 +21,7 @@ const mockWorkbench = {
   settings: { retainSessionDays: 90, chatConfigId: null },
   aiConfigs: [{ id: 'c1', name: 'DeepSeek', model: 'deepseek-chat', apiKey: 'k', baseUrl: 'url', apiType: 'openai', isActive: true }],
   modelId: 'c1',
+  openAISettings: vi.fn(),
   messages: [] as unknown[],
   proposals: [] as WorkbenchProposal[],
   evidence: [] as unknown[],
@@ -85,6 +86,75 @@ describe('AIWorkbench Component (Phase 1)', () => {
     mockWorkbench.proposals = [];
     mockWorkbench.settings.retainSessionDays = 90;
     mockWorkbench.data.scope = 'github';
+  });
+
+  it('explains missing AI configuration and offers a setup destination while preserving the question', () => {
+    const configs = mockWorkbench.aiConfigs;
+    mockWorkbench.aiConfigs = [];
+    try {
+      render(<AIWorkbench />);
+      fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '我的问题' } });
+      expect(screen.getByText('尚未配置 AI 服务。可先填写问题；配置模型后即可发送。')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: '配置 AI 服务' }));
+      expect(mockWorkbench.openAISettings).toHaveBeenCalledOnce();
+      expect(mockWorkbench.send).not.toHaveBeenCalled();
+      expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('我的问题');
+    } finally { mockWorkbench.aiConfigs = configs; }
+  });
+
+  it('distinguishes an incomplete saved configuration from no configuration', () => {
+    const configs = mockWorkbench.aiConfigs;
+    mockWorkbench.aiConfigs = [{ ...configs[0], apiKey: '' }];
+    try {
+      render(<AIWorkbench />);
+      expect(screen.getByText('当前 AI 服务不可用，请补全配置或选择可用模型。已填写的问题会保留。')).toBeVisible();
+      expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    } finally { mockWorkbench.aiConfigs = configs; }
+  });
+
+  it('preserves a manually chosen new search when later batches and saved intent arrive', () => {
+    const originalData = mockWorkbench.data;
+    const originalActive = mockWorkbench.active;
+    Object.assign(mockWorkbench, { active: { id: 's1' } });
+    mockWorkbench.data = { ...originalData, searchBatches: [{ id: 'b1', candidates: [], nextPage: 2, requirements: { purpose: 'fixture', required: [], preferred: [], excluded: [], questions: [], queries: [] } }] };
+    try {
+      const { rerender } = render(<AIWorkbench />);
+      expect(screen.getByRole('button', { name: '问这批结果', pressed: true })).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '搜新项目', pressed: false }));
+      fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '保留我的新查询' } });
+      Object.assign(mockWorkbench.data, { inputIntent: 'results', searchBatches: [...mockWorkbench.data.searchBatches, { ...mockWorkbench.data.searchBatches[0], id: 'b2', nextPage: 3 }] });
+      rerender(<AIWorkbench />);
+      expect(screen.getByRole('button', { name: '搜新项目', pressed: true })).toBeVisible();
+      expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('保留我的新查询');
+    } finally {
+      mockWorkbench.data = originalData;
+      mockWorkbench.active = originalActive;
+    }
+  });
+
+  it('hydrates intent only after the selected session is loaded', () => {
+    const originalData = mockWorkbench.data;
+    const originalActive = mockWorkbench.active;
+    Object.assign(mockWorkbench, { active: { id: 'old' } });
+    mockWorkbench.data = { ...originalData, searchBatches: [] };
+    try {
+      const { rerender } = render(<AIWorkbench />);
+      expect(screen.getByRole('button', { name: '搜新项目', pressed: true })).toBeVisible();
+      Object.assign(mockWorkbench, { active: { id: 's1' } });
+      Object.assign(mockWorkbench.data, { inputIntent: 'results' });
+      rerender(<AIWorkbench />);
+      expect(screen.getByRole('button', { name: '问这批结果', pressed: true })).toBeVisible();
+      mockWorkbench.activeId = 's2';
+      Object.assign(mockWorkbench, { active: { id: 's2' } });
+      Object.assign(mockWorkbench.data, { inputIntent: 'search' });
+      rerender(<AIWorkbench />);
+      expect(screen.getByRole('button', { name: '搜新项目', pressed: true })).toBeVisible();
+    } finally {
+      mockWorkbench.data = originalData;
+      mockWorkbench.activeId = 's1';
+      mockWorkbench.active = originalActive;
+    }
   });
 
   it('1.1 renders InspirationGrid in empty state and clicking a prompt capsule populates the input and updates scope', async () => {

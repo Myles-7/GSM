@@ -477,6 +477,7 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                 <span className="text-xs font-medium text-foreground dark:text-muted-foreground">
                   {t('releaseCard.ai-summary')}
                 </span>
+                <Button size="sm" variant="ghost" className="ml-auto h-7 text-xs" disabled={summary.status === 'loading'} onClick={e => { e.stopPropagation(); void generateSummary(release, { force: true }); }}>{t('releaseCard.regenerate-summary')}</Button>
               </div>
 
               <div className="relative">
@@ -486,8 +487,11 @@ const ReleaseCard: React.FC<ReleaseCardProps> = memo(({
                     <span>{t('releaseCard.analyzing-update')}</span>
                   </div>
                 )}
-                {summary.status === 'done' && summary.content && (
-                  <MarkdownRenderer content={summary.content} shouldRender={true} breaks={true} />
+                {summary.content && (
+                  <div>
+                    {summary.status === 'idle' && <p role="status" className="mb-2 text-xs text-muted-foreground">{t('releaseCard.previous-summary')}</p>}
+                    <MarkdownRenderer content={summary.content} shouldRender={true} breaks={true} />
+                  </div>
                 )}
                 {summary.status === 'error' && (
                   <div className="py-3 text-xs text-destructive">

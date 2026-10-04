@@ -9,16 +9,18 @@ const mocks = vi.hoisted(() => ({
   useAppStore: vi.fn(), indexAllRepos: vi.fn(), cleanup: vi.fn(), verify: vi.fn(),
   capabilities: vi.fn(), setVectorIndexingState: vi.fn(), setVectorSearchConfig: vi.fn(),
   setVectorSearchStatus: vi.fn(), updateRepositoriesMetadata: vi.fn(),
+  embeddingConnection: vi.fn(), workerConnection: vi.fn(),
 }));
 vi.mock('../../../store/useAppStore', () => ({ useAppStore: mocks.useAppStore }));
 vi.mock('../../../services/vectorSearchService', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../services/vectorSearchService')>(),
   EMBEDDING_FORMAT_VERSION: 3,
-  EmbeddingClient: class {},
+  EmbeddingClient: class { testConnection = mocks.embeddingConnection; },
   VectorSearchService: class {
     cleanup = mocks.cleanup;
     verifyGeneration = mocks.verify;
     checkCapabilities = mocks.capabilities;
+    testConnection = mocks.workerConnection;
   },
   indexAllRepos: mocks.indexAllRepos,
 }));
@@ -215,5 +217,31 @@ describe('vector generation publication', () => {
     await waitFor(() => expect(mocks.verify).toHaveBeenCalledOnce());
     await act(async () => { complete(); await indexing; });
     expect(mocks.indexAllRepos).toHaveBeenCalledOnce();
+  });
+
+  it.each(['embedding', 'worker'] as const)('cancels %s tests without overwriting the last successful result, even if the provider ignores abort', async kind => {
+    const connection = kind === 'embedding' ? mocks.embeddingConnection : mocks.workerConnection;
+    const previous = { success: true, dimensions: 3, vectorCount: 7 };
+    connection.mockResolvedValueOnce(previous);
+    const { result } = renderHook(() => useVectorSearchActions());
+    const run = () => kind === 'embedding' ? result.current.testEmbedding(draft) : result.current.testWorker(draft);
+    const getResult = () => kind === 'embedding' ? result.current.embeddingTestResult : result.current.workerTestResult;
+    await act(async () => { await run(); });
+    expect(getResult()).toEqual(previous);
+    let finish!: (value: typeof previous) => void;
+    let signal!: AbortSignal;
+    connection.mockImplementation((requestSignal: AbortSignal) => { signal = requestSignal; return new Promise(resolve => { finish = resolve; }); });
+    let pending!: Promise<void>;
+    act(() => { pending = run(); });
+    await waitFor(() => expect(connection).toHaveBeenCalledTimes(2));
+    await act(async () => { await run(); });
+    expect(connection).toHaveBeenCalledTimes(2);
+    act(() => kind === 'embedding' ? result.current.cancelEmbeddingTest() : result.current.cancelWorkerTest());
+    await act(async () => { await pending; });
+    expect(signal.aborted).toBe(true);
+    expect(getResult()).toEqual(previous);
+    expect(kind === 'embedding' ? result.current.testingEmbedding : result.current.testingWorker).toBe(false);
+    await act(async () => { finish({ ...previous, success: false }); });
+    expect(getResult()).toEqual(previous);
   });
 });

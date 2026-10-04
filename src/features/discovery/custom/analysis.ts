@@ -1,3 +1,4 @@
+import { platformsFromDetails } from '../../../utils/platformNormalization';
 import { create } from 'zustand';
 import type { AIConfig, Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
@@ -32,7 +33,7 @@ export function analyzedRepository(repo: Repository, data: CustomDiscoveryData, 
   const details = scopedLegacy ? data.analyses?.[analysisKey(repo, language, config)]?.details : undefined;
   return details ? {
     ...repo, ai_details: details, ai_summary: details.summary || details.problem || repo.description || '',
-    ai_tags: details.tags || [], ai_platforms: details.platforms || [],
+    ai_tags: details.tags || [], ai_platforms: platformsFromDetails(details),
     analyzed_at: details.generated_at, analysis_failed: false,
   } : {
     ...repo, ai_details: undefined, ai_summary: undefined, ai_tags: undefined, ai_platforms: undefined,

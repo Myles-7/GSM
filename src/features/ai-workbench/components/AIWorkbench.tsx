@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Archive, Bot, Check, ChevronDown, ClipboardList, Copy, Download, ExternalLink, FolderGit2, FolderOpen, FolderPlus,
   Github, History, LayoutGrid, Loader2, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Pin, Plus, RefreshCw,
@@ -35,6 +35,7 @@ import { safeWriteText } from '../../../utils/clipboardUtils';
 import { useAppStore } from '../../../store/useAppStore';
 import { WorkbenchResults } from './WorkbenchResults';
 import { mergeWorkbenchCandidates } from '../../../services/workbenchOverview';
+import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import type { WorkbenchInputIntent } from '../../../types/aiWorkbench';
 import './workbench-layout.css';
 
@@ -372,6 +373,7 @@ export function AIWorkbench() {
     try { const value = Number(localStorage.getItem('gsm:workbench-ratio')); return value >= 35 && value <= 70 ? value : 60; } catch { return 60; }
   });
   const [inputIntent, setInputIntent] = useState<WorkbenchInputIntent>('search');
+  const inputIntentSessionRef = useRef<string | null>(null);
   const splitRef = useRef<HTMLDivElement>(null);
   const seenResults = useRef(new Set<string>());
   const draftKey = `gsm:workbench-draft:${w.ownerId}:${w.activeId ?? 'new'}`;
@@ -427,13 +429,19 @@ export function AIWorkbench() {
       : w.data.scope === 'mixed'
         ? t('research.mixed')
         : t(`workbench.scope-${w.data.scope}`);
-  const currentModelLabel = w.aiConfigs.find((c) => c.id === w.modelId)?.name ?? t('workbench.model');
+  const selectedModel = w.aiConfigs.find((c) => c.id === w.modelId);
+  const modelReady = isAIConfigAvailable(selectedModel);
+  const currentModelLabel = selectedModel?.name ?? t('workbench.model');
   const currentDepthLabel = t(`workbench.${w.data.depth}`);
   const candidates: WorkbenchCandidate[] = tab === 'results' ? batchId === 'all'
     ? mergeWorkbenchCandidates(...w.data.searchBatches.map(item => item.candidates)) : batch?.candidates ?? []
     : w.data.selectedRepositories.map((repository) =>
       [...w.data.searchBatches].reverse().flatMap((b) => b.candidates).find((c) => c.repository.id === repository.id)
       ?? ({ repository, summary: repository.description ?? '', reasons: [], limitations: [], sources: [], status: 'candidate' }));
+  const [overviewScope, setOverviewScope] = useState<WorkbenchCandidate[] | null>(null);
+  useEffect(() => { setOverviewScope(null); }, [w.activeId, batchId, tab]);
+  const askedCandidates = overviewScope ?? candidates;
+  const invalidOverviewScope = w.data.scope === 'github' && inputIntent === 'results' && (askedCandidates.length === 0 || askedCandidates.length > 120);
 
   const hasNewCandidates = candidates.length > 0 || w.data.searchBatches.some((b) => b.candidates.length > 0);
   const hasPendingRequirements = Boolean(w.data.requirements && !readonly);
@@ -446,8 +454,15 @@ export function AIWorkbench() {
     setBatchId('');
   }, [draftKey]);
   useEffect(() => {
-    if (w.active?.id === w.activeId) setInputIntent(w.data.inputIntent ?? (w.data.searchBatches.length ? 'results' : 'search'));
-  }, [w.activeId, w.active?.id]);
+    if (!w.activeId || w.active?.id !== w.activeId) {
+      inputIntentSessionRef.current = null;
+      return;
+    }
+    // Hydrate once per loaded session; arriving batches must not reset a user's choice.
+    if (inputIntentSessionRef.current === w.activeId) return;
+    inputIntentSessionRef.current = w.activeId;
+    setInputIntent(w.data.inputIntent ?? (w.data.searchBatches.length ? 'results' : 'search'));
+  }, [w.activeId, w.active?.id, w.data.inputIntent, w.data.searchBatches.length]);
   useEffect(() => {
     if (loadedDraftKey !== draftKey) return;
     try { if (draft) localStorage.setItem(draftKey, draft); else localStorage.removeItem(draftKey); } catch { /* Storage can be unavailable. */ }
@@ -460,13 +475,13 @@ export function AIWorkbench() {
     seenResults.current.add(w.activeId);
     if (w.data.scope === 'github') setInputIntent('results');
     if (document.activeElement !== textareaRef.current && !window.getSelection()?.toString()) setView('overview');
-  }, [w.activeId, w.active?.id, hasNewCandidates]);
+  }, [w.activeId, w.active?.id, hasNewCandidates, w.data.scope]);
   const resizeResults = (clientX: number) => {
     const rect = splitRef.current?.getBoundingClientRect();
     if (rect) setResultRatio(Math.max(35, Math.min(70, (clientX - rect.left) / rect.width * 100)));
   };
 
-  const checkScrollState = () => {
+  const checkScrollState = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
 
@@ -494,7 +509,7 @@ export function AIWorkbench() {
     } else {
       setShowProposalCapsule(false);
     }
-  };
+  }, [follow, hasPendingProposals]);
 
   // Session switch or reload history: default follow to false, smoothly locate at latest AI response (messagesEndRef)
   useEffect(() => {
@@ -512,7 +527,7 @@ export function AIWorkbench() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
       checkScrollState();
     }
-  }, [w.activeId, w.messages.length, hasPendingProposals]);
+  }, [w.activeId, w.messages.length, hasPendingProposals, checkScrollState]);
 
   // Streaming follow: only follow if user was already near bottom
   useEffect(() => {
@@ -524,7 +539,7 @@ export function AIWorkbench() {
   // Update proposal capsule visibility when proposals change
   useEffect(() => {
     checkScrollState();
-  }, [hasPendingProposals, w.proposals.length, w.data.requirements]);
+  }, [hasPendingProposals, w.proposals.length, w.data.requirements, checkScrollState]);
 
   const scrollToProposals = () => {
     const target = proposalsStartRef.current ?? bottomRef.current;
@@ -600,7 +615,7 @@ export function AIWorkbench() {
 
   const results = <WorkbenchResults workbench={w} candidates={candidates} tab={tab} onTabChange={setTab}
     batch={batch} batchId={batchId} onBatchChange={setBatchId} resolveLanguage={repository => resolveRepoLanguage(repository, t)}
-    onAsk={() => { setInputIntent('results'); setView('chat'); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+    onAsk={items => { setOverviewScope(items); setInputIntent('results'); setView('chat'); requestAnimationFrame(() => textareaRef.current?.focus()); }}
     onResearch={repositories => {
       setView('chat'); setInputIntent('research');
       void w.guard(() => w.send(t('overview.researchQuestion'), false, false, { intent: 'research', repositories }));
@@ -880,14 +895,14 @@ export function AIWorkbench() {
         </div>
           <form className={`shrink-0 border-t border-border sm:px-5 transition-all duration-150 ${isKeyboardOpen ? 'p-1.5 bg-background' : 'p-3'}`} onSubmit={(e) => {
             e.preventDefault();
-            if (!draft.trim() || busy || readonly) return;
+            if (!draft.trim() || busy || readonly || !modelReady || invalidOverviewScope) return;
             const question = draft; setFollow(true);
             requestAnimationFrame(() => {
               messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
             });
             void w.guard(async () => {
               try {
-                await w.send(question, manage, false, { intent: w.data.scope === 'github' ? inputIntent : 'research', candidates });
+                await w.send(question, manage, false, { intent: w.data.scope === 'github' ? inputIntent : 'research', candidates: askedCandidates });
               } catch (error) {
                 const latest = liveWorkbench.current;
                 if (String(useAppStore.getState().user?.id ?? '') === w.ownerId && latest.ownerId === w.ownerId
@@ -946,6 +961,14 @@ export function AIWorkbench() {
                 )}
               </div>
             )}
+            {!modelReady && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status">
+              <span>{t(w.aiConfigs.length ? 'workbench.modelUnavailableHint' : 'workbench.noModelHint')}</span>
+              <Button type="button" variant="outline" size="sm" onClick={w.openAISettings}>{t('workbench.configureModel')}</Button>
+            </div>}
+            {w.data.scope === 'github' && inputIntent === 'results' && <div role="status" className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>{t(invalidOverviewScope ? 'overview.scopeLimit' : 'overview.askScope', { count: askedCandidates.length })}</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => setView('overview')}>{t('overview.chooseScope')}</Button>
+            </div>}
             <Textarea
               ref={textareaRef}
               value={draft}
@@ -1028,7 +1051,7 @@ export function AIWorkbench() {
                   <SelectContent>
                     <SelectItem value="__default__">{t('workbench.model')}</SelectItem>
                     {w.aiConfigs.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
+                      <SelectItem key={c.id} value={c.id} disabled={!isAIConfigAvailable(c)}>
                         {c.name} · {c.model}
                       </SelectItem>
                     ))}
@@ -1061,7 +1084,7 @@ export function AIWorkbench() {
                 )}
               </div>
 
-              <Button type={busy ? 'button' : 'submit'} size="icon" className="ml-auto h-8 w-8 shrink-0" disabled={!busy && (!draft.trim() || readonly)} onClick={busy ? w.stop : undefined}
+              <Button type={busy ? 'button' : 'submit'} size="icon" className="ml-auto h-8 w-8 shrink-0" disabled={!busy && (!draft.trim() || readonly || !modelReady || invalidOverviewScope)} onClick={busy ? w.stop : undefined}
                 aria-label={t(busy ? 'workbench.stop' : 'workbench.send')} title={t(busy ? 'workbench.stop' : 'workbench.send')}>
                 {busy ? <Square className="h-3 w-3" /> : <Send className="h-4 w-4" />}
               </Button>
@@ -1130,7 +1153,7 @@ export function AIWorkbench() {
                 <SelectContent>
                   <SelectItem value="__default__">{t('workbench.model')}</SelectItem>
                   {w.aiConfigs.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
+                    <SelectItem key={c.id} value={c.id} disabled={!isAIConfigAvailable(c)}>
                       {c.name} · {c.model}
                     </SelectItem>
                   ))}

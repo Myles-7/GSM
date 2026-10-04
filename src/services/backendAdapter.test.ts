@@ -5,6 +5,33 @@ vi.mock('../store/useAppStore', () => ({
   useAppStore: { getState: () => ({ backendApiSecret: '' }) },
 }));
 
+it('keeps caller cancellation connected after stream headers on browsers without AbortSignal.any', async () => {
+  const adapter = backend as unknown as { _backendUrl: string | null };
+  const descriptor = Object.getOwnPropertyDescriptor(AbortSignal, 'any');
+  const previousUrl = adapter._backendUrl;
+  const controller = new AbortController();
+  let requestSignal!: AbortSignal;
+  Object.defineProperty(AbortSignal, 'any', { configurable: true, value: undefined });
+  adapter._backendUrl = 'http://localhost:3000/api';
+  vi.mocked(window.fetch).mockImplementation(async (_input, options) => {
+    requestSignal = options!.signal!;
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  });
+  try {
+    const response = await backend.proxyAIRequestStream('', { baseUrl: 'https://example.com', apiKey: 'fixture', model: 'fixture' }, {}, controller.signal);
+    expect(response.ok).toBe(true);
+    expect(requestSignal.aborted).toBe(false);
+    controller.abort();
+    expect(requestSignal.aborted).toBe(true);
+  } finally {
+    controller.abort();
+    if (descriptor) Object.defineProperty(AbortSignal, 'any', descriptor);
+    else delete (AbortSignal as unknown as { any?: unknown }).any;
+    adapter._backendUrl = previousUrl;
+    vi.mocked(window.fetch).mockReset();
+  }
+});
+
 function make429Response(headers: Record<string, string>): Response {
   return {
     ok: false,

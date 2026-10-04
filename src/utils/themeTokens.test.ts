@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ACCENT_PRESETS,
   DEFAULT_THEME_TOKENS,
@@ -123,6 +123,17 @@ describe('themeTokenStyle', () => {
 
 describe('applyThemeTokens', () => {
   const root = () => document.createElement('div');
+  it('avoids computed-style reads for default colors, retaining custom accent contrast reads', () => {
+    const spy = vi.spyOn(globalThis, 'getComputedStyle');
+    try {
+      applyThemeTokens(DEFAULT_THEME_TOKENS, root());
+      expect(spy).not.toHaveBeenCalled();
+      const element = root(); element.style.setProperty('--background', '222.2 84% 4.9%');
+      applyThemeTokens({ ...DEFAULT_THEME_TOKENS, accentColor: '#16a34a' }, element);
+      expect(spy).toHaveBeenCalledExactlyOnceWith(element);
+      expect(element.style.getPropertyValue('--primary-emphasis')).toBe(themeTokenStyle({ ...DEFAULT_THEME_TOKENS, accentColor: '#16a34a' }, '222.2 84% 4.9%').variables['--primary-emphasis']);
+    } finally { spy.mockRestore(); }
+  });
 
   it('writes inline variables, the root font size and the animation attribute', () => {
     const element = root();

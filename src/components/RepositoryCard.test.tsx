@@ -157,6 +157,15 @@ beforeEach(() => {
 });
 
 describe('RepositoryCard view modes', () => {
+  it('outlines the grid language dot without changing list presentation', () => {
+    const { container, rerender } = renderRepositoryCard('grid');
+    const dot = () => container.querySelector('span[style*="background-color"]');
+    expect(dot()).toHaveClass('outline-1');
+    const color = (dot() as HTMLElement).style.backgroundColor;
+    rerender(<TooltipProvider><RepositoryCard repository={repository} allCategories={[]} viewMode="list" /></TooltipProvider>);
+    expect(dot()).not.toHaveClass('outline-1');
+    expect((dot() as HTMLElement).style.backgroundColor).toBe(color);
+  });
   it('shows detailed analysis immediately without hiding personal descriptions or raw-description preference', () => {
     const repo: Repository = { ...repository, analysis_failed: true, ai_summary: 'Old summary', ai_details: {
       version: 1, generated_at: '2026-09-01T00:00:00Z', repository_pushed_at: null, model: 'test',

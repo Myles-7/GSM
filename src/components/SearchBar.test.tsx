@@ -1,9 +1,16 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchBar } from './SearchBar';
 import { useAppStore } from '../store/useAppStore';
 import type { Repository, SearchFilters } from '../types';
+import corpus from '../utils/__fixtures__/submittedRepositorySearch.json';
+const providers = vi.hoisted(() => ({ query: vi.fn(), embed: vi.fn(), prepare: vi.fn() }));
+vi.mock('../services/vectorSearchService', async importOriginal => ({
+  ...await importOriginal<typeof import('../services/vectorSearchService')>(),
+  EmbeddingClient: class { embed = providers.embed; },
+  VectorSearchService: class { query = providers.query; prepareQuery = providers.prepare; },
+}));
 
 vi.mock('../store/useAppStore', () => ({
   useAppStore: vi.fn(),
@@ -83,6 +90,7 @@ const createStoreState = (overrides: Partial<ReturnType<typeof baseStoreState>> 
 const baseStoreState = () => ({
   searchFilters: { ...defaultSearchFilters },
   repositories: [] as Repository[],
+  repositoryOrder: [] as number[],
   releaseSubscriptions: new Set<number>(),
   aiConfigs: [],
   activeAIConfig: null,
@@ -108,6 +116,32 @@ describe('SearchBar', () => {
     vi.clearAllMocks();
     localStorage.clear();
     currentState = baseStoreState();
+  });
+
+  it('retains the submitted union after facet effects and honors explicit and custom sort controls', async () => {
+    currentState.repositories = corpus.repositories.map(repo => ({ ...repo, forks: repo.forks_count }));
+    currentState.repositoryOrder = [102, 101, 103];
+    Object.assign(currentState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.invalid', embeddingConfigId: 'mock', enableHyDE: false, enableReranking: false });
+    currentState.embeddingConfigs = [{ id: 'mock' }] as never;
+    currentState.setSearchFilters.mockImplementation((patch: Partial<SearchFilters>) => { currentState.searchFilters = { ...currentState.searchFilters, ...patch }; });
+    providers.prepare.mockResolvedValue(undefined); providers.embed.mockResolvedValue([[0.1]]); providers.query.mockResolvedValue([{ id: '103', score: 0.95 }]);
+    mockUseAppStore.mockImplementation(((selector?: (state: unknown) => unknown) => selector ? selector(currentState) : currentState) as unknown as typeof useAppStore);
+    const { rerender } = render(<SearchBar />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'ui-kit' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    const ids = () => currentState.setSearchResults.mock.lastCall?.[0].map((repo: Repository) => repo.id);
+    await waitFor(() => expect(ids()).toEqual([101, 102, 103]));
+    currentState.searchFilters = { ...currentState.searchFilters, languages: ['TypeScript'] }; rerender(<SearchBar />);
+    expect(ids()).toEqual([101, 103]);
+    currentState.searchFilters = { ...currentState.searchFilters, languages: [] }; rerender(<SearchBar />);
+    expect(ids()).toEqual([101, 102, 103]);
+    fireEvent.click(screen.getByRole('button', { name: '按降序排列' })); rerender(<SearchBar />);
+    expect(ids()).toEqual([101, 102, 103]); // explicit ascending stars
+    currentState.searchFilters = { ...currentState.searchFilters, sortBy: 'custom' }; rerender(<SearchBar />);
+    expect(ids()).toEqual([102, 101, 103]);
+    expect(providers.query).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } }); rerender(<SearchBar />);
+    expect(currentState.searchFilters.query).toBe(''); expect(ids()).toHaveLength(corpus.repositories.length);
   });
 
   it('clears the committed query when the search input is manually emptied', () => {

@@ -1273,6 +1273,9 @@
     "enable": "Translate page to Chinese",
     "original": "Show original page",
     "translating": "Translating page; click to restore original",
-    "retry": "Some text could not be translated. Retry"
+    "retry": "Some text could not be translated. Retry",
+    "consentTitle": "Enable page translation",
+    "consentBody": "This feature sends eligible readable English on the current page to Microsoft Edge translation for Simplified Chinese. It may include visible conversations and personal descriptions. Code blocks, entered text and marked sensitive areas are excluded. It uses a third party rather than your configured AI model, also processes newly displayed text, and can be turned off at any time.",
+    "consentCancel": "Not now"
   }
 }

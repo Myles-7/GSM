@@ -8,7 +8,12 @@ if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
     verify: account => ipcRenderer.invoke('html-reading:verify', account),
     configure: plan => ipcRenderer.invoke('html-reading:configure', plan),
     send: input => ipcRenderer.invoke('html-reading:send', input),
-    failed: (id, message) => ipcRenderer.invoke('html-reading:failed', id, message),
+    failed: (id, message, reason) => ipcRenderer.invoke('html-reading:failed', id, message, reason),
+    progress: (id, message) => ipcRenderer.invoke('html-reading:progress', id, message),
+    baseline: account => ipcRenderer.invoke('html-reading:baseline', account),
+    resend: (account, id, confirmed) => ipcRenderer.invoke('html-reading:resend', account, id, confirmed),
+    cleanup: () => ipcRenderer.invoke('html-reading:cleanup'),
+    preview: html => ipcRenderer.invoke('html-reading:preview', html),
     onGenerate: listener => { const handler = (_event, request) => listener(request); ipcRenderer.on('html-reading:generate', handler); return () => ipcRenderer.removeListener('html-reading:generate', handler); },
   },
   agy: {

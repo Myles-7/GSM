@@ -1,80 +1,297 @@
 (() => {
   'use strict';
   const snapshot = JSON.parse(document.getElementById('gsm-data').textContent);
-  const items = new Map(snapshot.sections.flatMap(s => s.items).map(x => [String(x.id), x]));
-  const pending = new Map();
-  const storageKey = 'gsm-reading:' + snapshot.accountId + ':' + snapshot.id;
-  const notice = document.getElementById('notice');
-  const status = document.getElementById('change-status');
-  const inform = text => { notice.textContent = text; notice.hidden = false; };
-  const pack = () => ({ format: 'gsm-reading-changes', version: 1, accountId: snapshot.accountId, snapshotId: snapshot.id, operations: [...pending.values()] });
-  const updateCount = () => { status.textContent = pending.size ? pending.size + ' 项修改 · 导出后带回桌面' : '尚无修改'; };
-  const save = () => { try { localStorage.setItem(storageKey, JSON.stringify(pack())); } catch { inform('浏览器无法保存本地记录，请在关闭文件前导出修改。'); } updateCount(); };
+  const groups = JSON.parse(document.getElementById('gsm-presentation').textContent);
+  const settings = snapshot.settings;
+  const $ = id => document.getElementById(id);
+  const node = (tag, className, text) => { const element = document.createElement(tag); if (className) element.className = className; if (text != null) element.textContent = String(text); return element; };
+  const icon = name => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.classList.add('icon'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); const use = document.createElementNS('http://www.w3.org/2000/svg', 'use'); use.setAttribute('href', '#i-' + name); svg.append(use); return svg; };
+  const button = (label, className, iconName) => { const result = node('button', className); result.type = 'button'; if (iconName) result.append(icon(iconName)); if (label) result.append(document.createTextNode(label)); return result; };
+  const safeUrl = value => { try { const parsed = new URL(value); return ['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''; } catch { return ''; } };
+  const link = (label, url) => { const href = safeUrl(url); if (!href) return node('span', '', label); const result = node('a', '', label); result.href = href; result.target = '_blank'; result.rel = 'noopener noreferrer'; return result; };
+  const date = value => { if (!value || !Number.isFinite(Date.parse(value))) return '未记录时间'; return new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }); };
+  const nameParts = value => { const index = value.indexOf('/'); return { owner: index < 0 ? '' : value.slice(0, index), name: index < 0 ? value : value.slice(index + 1) }; };
   const uuid = () => globalThis.crypto?.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const n = Math.random() * 16 | 0; return (c === 'x' ? n : (n & 3 | 8)).toString(16); });
-  const applyControls = () => {
-    document.querySelectorAll('[data-field]').forEach(el => {
-      const item = items.get(el.dataset.repo); const field = el.dataset.field;
-      const value = pending.get(item.id + ':' + field)?.value ?? item.state[field];
-      if (el.type === 'checkbox') el.checked = value; else el.value = value;
-    });
+  const items = new Map(Object.values(snapshot.items || {}).map(item => [String(item.id), item]));
+  snapshot.sections.forEach(section => (section.items || []).forEach(item => { if (!items.has(String(item.id))) items.set(String(item.id), item); }));
+  const views = new Map();
+  const channels = snapshot.sections.filter(section => section.id !== 'repositories');
+  snapshot.sections.forEach(section => {
+    const add = (id, edition, entries) => { const unique = new Set(); views.set(id, { id, section, edition, entries: entries.filter(entry => { if (!items.has(String(entry.repoId)) || unique.has(entry.repoId)) return false; unique.add(entry.repoId); return true; }) }); };
+    if (section.editions?.length) section.editions.forEach(edition => add(section.id + '::' + encodeURIComponent(edition.id), edition, edition.entries));
+    else add(section.id, null, section.entries || (section.items || []).map(item => ({ repoId: item.id, reason: item.reason, release: item.release })));
+  });
+  const firstView = section => section?.editions?.length ? section.id + '::' + encodeURIComponent(section.editions[0].id) : section?.id;
+  const pending = new Map(), positions = new Map(), viewStates = new Map(), lastChannelViews = new Map(), exportedFields = new Set();
+  const resume = new Map((snapshot.resume || []).map(position => [position.viewId, position]));
+  const storageKey = 'gsm-reading:' + snapshot.accountId + ':' + snapshot.id;
+  const uiKey = storageKey + ':ui';
+  let activeReturn = null, page = settings.initialPage, currentView = page === 'repositories' ? 'repositories' : firstView(channels[0]);
+  if (!views.has(currentView)) currentView = views.keys().next().value;
+  if (views.has(snapshot.activeViewId)) currentView = snapshot.activeViewId;
+  page = currentView === 'repositories' ? 'repositories' : 'discovery';
+  let adjacentTarget = null, outlineTarget = null;
+  let editRevision = 0, lastExport = null, savedLocally = true;
+  let detail = null, filtered = [], mountedStart = -1, mountedEnd = -1, rowHeights = new Map(), estimatedRowHeight = 300;
+  let programmatic = false, browsingStarted = false, saveTimer = 0, toastTimer = 0, scrollTimer = 0;
+  const shownResumeNotices = new Set();
+  const inform = text => { $('notice').textContent = text; $('notice').hidden = false; };
+  const toast = text => { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 2300); };
+  const state = id => { const item = items.get(String(id)); const value = { ...item.state }; ['read', 'interest', 'note', 'candidate'].forEach(field => { const change = pending.get(item.id + ':' + field); if (change) value[field] = change.value; }); return value; };
+  const viewState = id => { if (!viewStates.has(id)) viewStates.set(id, { query: '', category: '', reading: 'all', loaded: 40, anchor: resume.get(id)?.repoId || null, anchorOffset: 0, y: 0, detailTabs: {}, detailScroll: {} }); return viewStates.get(id); };
+  const pack = () => ({ format: 'gsm-reading-changes', version: snapshot.version === 2 ? 2 : 1, accountId: snapshot.accountId, snapshotId: snapshot.id, operations: [...pending.values()], ...(snapshot.version === 2 ? { positions: [...positions.values()], activeView: activeReturn } : {}) });
+  const updateCount = () => { const count = pending.size; $('pending-count').textContent = String(count); $('pending-count').hidden = !count; $('change-status').textContent = count + ' 项修改' + (positions.size ? ' · ' + positions.size + ' 个继续阅读位置' : '') + ' · 导出后带回桌面'; $('export').setAttribute('aria-label', '导出 ' + count + ' 项修改和继续阅读位置'); };
+  const save = () => { try { localStorage.setItem(storageKey, JSON.stringify(pack())); localStorage.setItem(uiKey, JSON.stringify({ view: currentView, states: [...viewStates], channels: [...lastChannelViews], exportedFields: [...exportedFields], mode: document.body.dataset.mode, editRevision, lastExport })); savedLocally=true; } catch { savedLocally=false; inform('浏览器无法保存本地记录，请在关闭文件前导出修改与阅读位置。'); } const hint=$('note-save-status');if(hint)hint.textContent=savedLocally?'已保存到本文件的本地记录；仍需导出带回桌面':'本地保存失败，请立即导出，勿关闭文件';updateCount(); };
+  const scheduleSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 180); };
+  const markPosition = repoId => {
+    if (snapshot.version !== 2 || !repoId || !views.get(currentView)?.entries.some(entry => entry.repoId === repoId)) return;
+    const previous = positions.get(currentView);
+    let changed=false;
+    if (!previous || previous.repoId !== repoId){positions.set(currentView, { id: uuid(), viewId: currentView, repoId, revision: (previous?.revision || 0) + 1 });changed=true;}
+    if (!activeReturn || activeReturn.viewId !== currentView){activeReturn = { id: uuid(), viewId: currentView, revision: (activeReturn?.revision || 0) + 1 };changed=true;}
+    if(changed)editRevision++;scheduleSave();
   };
-  document.querySelectorAll('[data-field]').forEach(el => el.addEventListener(el.tagName === 'TEXTAREA' ? 'input' : 'change', () => {
-    const item = items.get(el.dataset.repo); const field = el.dataset.field;
-    const value = el.type === 'checkbox' ? el.checked : el.value;
-    const key = item.id + ':' + field;
-    if (value === item.state[field]) pending.delete(key);
-    else pending.set(key, { id: uuid(), repoId: item.id, field, base: item.state[field], value });
-    // Reflect edits in other channels containing the same repository.
-    document.querySelectorAll('[data-repo="' + item.id + '"][data-field="' + field + '"]').forEach(other => { if (other !== el) { if (other.type === 'checkbox') other.checked = value; else other.value = value; } });
-    save();
-  }));
-  const restore = text => {
-    if (text.length > 4000000) throw Error('文件过大');
+  const refreshStateControls = repoId => {
+    const value = state(repoId);
+    document.querySelectorAll('[data-repo="' + repoId + '"]').forEach(element => {
+      if (element.dataset.action === 'interest') element.setAttribute('aria-pressed', String(value.interest === 'interested'));
+      if (element.dataset.action === 'candidate') element.setAttribute('aria-pressed', String(value.candidate));
+      if (element.dataset.field === 'read') { element.setAttribute('aria-pressed', String(value.read)); element.lastChild.textContent = value.read ? '已读' : '标记已读'; }
+      if (element.dataset.field === 'interest') element.setAttribute('aria-pressed', String(value.interest === element.dataset.value));
+      if (element.dataset.field === 'candidate') { element.setAttribute('aria-pressed', String(value.candidate)); element.lastChild.textContent = value.candidate ? '已加入候选' : '收藏候选'; }
+      if (element.dataset.field === 'note' && document.activeElement !== element) element.value = value.note;
+    });
+    document.querySelectorAll('[data-read="' + repoId + '"]').forEach(element => { element.textContent = value.read ? '已读' : ''; });
+  };
+  const change = (repoId, field, value) => {
+    const item = items.get(String(repoId)); if (!item || !settings.operations[field]) return;
+    const key = item.id + ':' + field; const previous = pending.get(key);
+    if (value === item.state[field] && !exportedFields.has(key)) pending.delete(key);
+    else if (!previous || previous.value !== value) pending.set(key, { id: uuid(), repoId: item.id, field, base: item.state[field], value });
+    editRevision++;refreshStateControls(item.id); if (!detail && viewState(currentView).reading && viewState(currentView).reading !== 'all') { rememberList(); renderList(); restoreListPosition(); } save();
+  };
+  const validUuid = value => typeof value === 'string' && (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) || value === '00000000-0000-0000-0000-000000000000' || value === 'ffffffff-ffff-ffff-ffff-ffffffffffff');
+  const keysEqual = (value, keys) => Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key)));
+  const restore = (text, fromFile = false) => {
+    if (new Blob([text]).size > 4000000) throw Error('回传文件超过 4 MB');
     const data = JSON.parse(text);
-    if (data.format !== 'gsm-reading-changes' || data.version !== 1 || data.snapshotId !== snapshot.id || data.accountId !== snapshot.accountId || !Array.isArray(data.operations) || data.operations.length > 20000) throw Error('请导入由这份 HTML 导出的记录');
-    const next = new Map(); const ids = new Set();
+    const allowedKeys = data.version === 2 ? ['format', 'version', 'accountId', 'snapshotId', 'operations', 'positions', 'activeView'] : ['format', 'version', 'accountId', 'snapshotId', 'operations'];
+    if (!keysEqual(data, allowedKeys) || data.format !== 'gsm-reading-changes' || ![1, 2].includes(data.version) || (snapshot.version === 1 && data.version === 2) || data.snapshotId !== snapshot.id || data.accountId !== snapshot.accountId || !Array.isArray(data.operations) || data.operations.length > 20000) throw Error('请导入由这份 HTML 导出的记录');
+    const next = new Map(), ids = new Set();
     for (const op of data.operations) {
-      const item = items.get(String(op.repoId)); const field = op.field;
-      if (!item || !Object.hasOwn(snapshot.settings.operations, field) || !snapshot.settings.operations[field] || item.state[field] !== op.base || typeof op.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(op.id) || ids.has(op.id)) throw Error('回传记录不匹配');
+      const item = items.get(String(op.repoId)), field = op.field;
+      if (!keysEqual(op, ['id', 'repoId', 'field', 'base', 'value']) || !Number.isSafeInteger(op.repoId) || op.repoId < 1 || !item || !Object.prototype.hasOwnProperty.call(settings.operations, field) || !settings.operations[field] || item.state[field] !== op.base || !validUuid(op.id) || ids.has(op.id)) throw Error('回传记录不匹配');
       const valid = field === 'note' ? typeof op.value === 'string' && op.value.length <= 12000 : field === 'interest' ? ['neutral', 'interested', 'ignored'].includes(op.value) : typeof op.value === 'boolean';
-      const key = op.repoId + ':' + field;
-      if (!valid || next.has(key)) throw Error('回传字段不合法');
+      const key = op.repoId + ':' + field; if (!valid || next.has(key)) throw Error('回传字段不合法');
       ids.add(op.id); next.set(key, op);
     }
-    next.forEach((value, key) => pending.set(key, value)); applyControls(); updateCount();
+    const nextPositions = [];
+    if (data.version === 2) {
+      if (!Array.isArray(data.positions) || data.positions.length > 1000) throw Error('继续阅读位置不合法');
+      for (const position of data.positions) {
+        if (!keysEqual(position, ['id', 'viewId', 'repoId', 'revision']) || typeof position.viewId !== 'string' || position.viewId.length > 600 || !Number.isSafeInteger(position.repoId) || position.repoId < 1 || !validUuid(position.id) || ids.has(position.id) || !Number.isSafeInteger(position.revision) || position.revision < 1 || !views.get(position.viewId)?.entries.some(entry => entry.repoId === position.repoId) || nextPositions.some(other => other.viewId === position.viewId)) throw Error('继续阅读位置不匹配');
+        ids.add(position.id); nextPositions.push(position);
+      }
+      if (data.activeView !== null && (!keysEqual(data.activeView, ['id', 'viewId', 'revision']) || typeof data.activeView.viewId !== 'string' || data.activeView.viewId.length > 600 || !validUuid(data.activeView.id) || ids.has(data.activeView.id) || !views.has(data.activeView.viewId) || !Number.isSafeInteger(data.activeView.revision) || data.activeView.revision < 1)) throw Error('活动页面不匹配');
+    }
+    const signature = value => { const result = {}; Object.keys(value).sort().forEach(key => { result[key] = value[key]; }); return JSON.stringify(result); };
+    const currentIds = new Map([...pending.values(), ...positions.values(), ...(activeReturn ? [activeReturn] : [])].map(value => [value.id, signature(value)]));
+    [...next.values(), ...nextPositions, ...(data.version === 2 && data.activeView ? [data.activeView] : [])].forEach(value => { const existing = currentIds.get(value.id); if (existing && existing !== signature(value)) throw Error('回传记录 ID 与本地内容不一致，未修改本地记录。'); });
+    let conflicts = 0;
+    next.forEach((op, key) => { if (fromFile) exportedFields.add(key); const local = pending.get(key); if (local && local.value !== op.value) { conflicts++; return; } if (!local) pending.set(key, op); });
+    nextPositions.forEach(position => { const current = positions.get(position.viewId); if (current && position.revision === current.revision && signature(current) !== signature(position)) { conflicts++; return; } if (!current || position.revision > current.revision) { positions.set(position.viewId, position); viewState(position.viewId).anchor = position.repoId; } });
+    if (data.version === 2 && data.activeView) { if (activeReturn && data.activeView.revision === activeReturn.revision && signature(activeReturn) !== signature(data.activeView)) conflicts++; else if (!activeReturn || data.activeView.revision > activeReturn.revision) activeReturn = data.activeView; }
+    new Set([...next.values()].map(op => op.repoId)).forEach(repoId => refreshStateControls(repoId)); updateCount();
+    return conflicts;
   };
-  try { const saved = localStorage.getItem(storageKey); if (saved) restore(saved); localStorage.setItem(storageKey, JSON.stringify(pack())); } catch { inform('本地保存不可用或旧记录无法恢复，请使用导出文件保存修改。'); }
-  const sections = [...document.querySelectorAll('.reading-section')];
-  let page = snapshot.settings.initialPage; const counts = new Map();
-  const query = document.getElementById('search'); const category = document.getElementById('category');
-  const render = () => {
-    const needle = query.value.trim().toLocaleLowerCase(); const cat = category.value;
-    let count = 0;
-    sections.forEach(section => {
-      const visible = page === 'repositories' ? section.dataset.section === 'repositories' : section.dataset.section !== 'repositories';
-      section.hidden = !visible; if (!visible) return;
-      const filtered = [...section.querySelectorAll('.project')].filter(card => {
-        const item = items.get(card.dataset.id);
-        return (!needle || [item.name, item.summary, item.description, ...item.tags].join(' ').toLocaleLowerCase().includes(needle)) && (page !== 'repositories' || !cat || item.categoryId === cat);
-      });
-      count += filtered.length;
-      const shown = counts.get(section.dataset.section) || 40;
-      const visibleCards = new Set(filtered.slice(0, shown));
-      section.querySelectorAll('.project').forEach(card => { card.hidden = !visibleCards.has(card); });
-      const more = section.querySelector('.load-more'); more.hidden = filtered.length <= shown;
-      section.querySelector('.section-count').textContent = filtered.length + ' 个项目';
-    });
-    document.querySelectorAll('[data-page]').forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.page === page)));
-    category.hidden = page !== 'repositories'; document.getElementById('empty').hidden = count > 0;
+  let savedAppearance = false;
+  try { const saved = localStorage.getItem(storageKey); if (saved) restore(saved); const savedUi = localStorage.getItem(uiKey); if (savedUi) { const ui = JSON.parse(savedUi); savedAppearance = true;editRevision=Number.isSafeInteger(ui.editRevision)?ui.editRevision:0;lastExport=ui.lastExport&&typeof ui.lastExport.at==='string'&&Number.isSafeInteger(ui.lastExport.revision)?ui.lastExport:null; if (views.has(ui.view)) currentView = ui.view; if (Array.isArray(ui.states)) ui.states.forEach(([id, value]) => { if (views.has(id) && value && typeof value.query === 'string' && typeof value.category === 'string') viewStates.set(id, { query: value.query.slice(0, 1000), category: value.category, reading: ['all','unread','interested','candidate','new'].includes(value.reading) ? value.reading : 'all', loaded: Math.max(40, Math.min(10000, Number(value.loaded) || 40)), anchor: items.has(String(value.anchor)) ? value.anchor : null, y: Math.max(0, Number(value.y) || 0), anchorOffset: Number.isFinite(value.anchorOffset) ? value.anchorOffset : 0, detailTabs: value.detailTabs || {}, detailScroll: value.detailScroll || {} }); }); if (Array.isArray(ui.exportedFields)) ui.exportedFields.forEach(key => { if (typeof key === 'string' && /^\d+:(read|interest|note|candidate)$/.test(key)) exportedFields.add(key); }); if (Array.isArray(ui.channels)) ui.channels.forEach(([id, value]) => { if (views.has(value)) lastChannelViews.set(id, value); }); if (['light', 'dark'].includes(ui.mode)) document.body.dataset.mode = ui.mode; } localStorage.setItem(storageKey, JSON.stringify(pack())); } catch { inform('本地保存不可用或旧记录无法恢复，请在关闭文件前导出。'); }
+  if (settings.theme === 'system' && !savedAppearance) document.body.dataset.mode = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  page = currentView === 'repositories' ? 'repositories' : 'discovery';
+  const profile = () => views.get(currentView).section.presentation;
+  const detailMode = key => profile().detailModes[key] || 'omit';
+  const itemForView = item => { const p = profile(), included = key => p.cardFields.includes(key) || p.detailModes[key] !== 'omit'; return { ...item, summary: included('summary') ? item.summary : '', description: included('description') || included('summary') && !item.summary ? item.description : '', category: included('category') ? item.category : '', categoryId: included('category') ? item.categoryId : '', tags: included('tags') ? item.tags : [], language: included('language') ? item.language : '', stars: included('stars') ? item.stars : 0, updated: included('updated') ? item.updated : '', analysis: item.analysis.filter(block => p.detailModes[block.key || blockKey(block)] !== 'omit') }; };
+  const columns = () => window.innerWidth >= 600 ? 2 : 1;
+  const rowSize = index => rowHeights.get(index) || estimatedRowHeight;
+  const heightUntil = count => { let height = 0; for (let index = 0; index < Math.ceil(count / columns()); index++) height += rowSize(index); return height; };
+  const card = entry => {
+    const item = itemForView(items.get(String(entry.repoId))), value = state(item.id), parts = nameParts(item.name);
+    const article = node('article', 'project'); article.dataset.id = item.id;
+    const main = button('', 'card-main'); main.dataset.open = item.id;
+    const heading = node('span', 'project-heading'), identity = node('span', 'project-identity');
+    heading.append(node('span', 'avatar', (parts.owner || parts.name).slice(0, 1).toUpperCase())); identity.append(node('strong', '', parts.name)); if (parts.owner) identity.append(node('span', 'owner', parts.owner)); heading.append(identity, icon('chevron')); main.append(heading);
+    let lastGroup = null;
+    for (const key of profile().cardFields) {
+      if (key === 'summary' || key === 'description') { const text = key === 'summary' ? item.summary || item.description : item.summary ? '' : item.description; if (text && !(key === 'description' && profile().cardFields.includes('summary'))) { main.append(node('span', 'summary', text)); lastGroup = null; } }
+      else if (key === 'tags' || key === 'category') { const tags = lastGroup?.className === 'tags' ? lastGroup : node('span','tags'); (key === 'tags' ? item.tags : item.category ? [item.category] : []).forEach(tag=>{if(tags.childElementCount<3)tags.append(node('span','',tag));}); if(tags.childElementCount){main.append(tags);lastGroup=tags;} }
+      else { const meta=lastGroup?.className==='meta'?lastGroup:node('span','meta'); if(key==='language'&&item.language){const language=node('span','language');language.append(node('i'),document.createTextNode(item.language));meta.append(language);} else if(key==='stars'){const stars=node('span');stars.append(icon('star'),document.createTextNode(Number(item.stars||0).toLocaleString('zh-CN')));meta.append(stars);} else if(key==='updated'&&item.updated)meta.append(node('span','','更新 '+item.updated.slice(0,10)));if(meta.childElementCount){main.append(meta);lastGroup=meta;} }
+    }
+    if(item.dailyChange)main.append(node('span','daily-change',item.dailyChange==='new'?'本期新增':'分析更新'));
+    const meta=lastGroup?.className==='meta'?lastGroup:node('span','meta'), read=node('span','',value.read?'已读':'');read.dataset.read=item.id;meta.append(read);main.append(meta);article.append(main);
+    const actions = node('div', 'card-actions'); [['interest', '感兴趣', 'heart'], ['candidate', '收藏候选', 'bookmark']].forEach(([field, label, graphic]) => { if (!settings.operations[field]) return; const control = button(label, '', graphic); control.dataset.action = field; control.dataset.repo = item.id; control.setAttribute('aria-pressed', String(field === 'interest' ? value.interest === 'interested' : value.candidate)); actions.append(control); }); if (actions.childElementCount) article.append(actions);
+    return article;
   };
-  query.addEventListener('input', render); category.addEventListener('change', render);
-  document.querySelectorAll('[data-page]').forEach(btn => btn.addEventListener('click', () => { page = btn.dataset.page; render(); window.scrollTo(0, 0); }));
-  document.querySelectorAll('.load-more').forEach(btn => btn.addEventListener('click', () => { const id = btn.closest('section').dataset.section; counts.set(id, (counts.get(id) || 40) + 40); render(); }));
-  const returnDialog = document.getElementById('return-dialog'); const text = document.getElementById('return-text');
-  document.getElementById('export').addEventListener('click', () => { text.value = JSON.stringify(pack()); returnDialog.showModal(); });
-  document.getElementById('close-export').addEventListener('click', () => returnDialog.close());
-  document.getElementById('copy').addEventListener('click', async () => { text.select(); try { await navigator.clipboard.writeText(text.value); document.getElementById('export-status').textContent = '已复制，请在桌面“每日 HTML”中导入。'; } catch { document.getElementById('export-status').textContent = '请长按文本框，选择全部并复制；也可下载文件。'; } });
-  document.getElementById('download').addEventListener('click', () => { const url = URL.createObjectURL(new Blob([text.value], {type:'application/json'})); const a = document.createElement('a'); a.href = url; a.download = 'GSM-阅读回传-' + snapshot.generatedAt.slice(0, 10) + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); document.getElementById('export-status').textContent = '已请求下载，请确认文件已保存。记录仍保留，可再次导出。'; });
-  document.getElementById('restore').addEventListener('change', async event => { try { const file = event.target.files[0]; if (!file || file.size > 4000000) throw Error('文件过大或未选择文件'); restore(await file.text()); save(); inform('已载入这份 HTML 的阅读记录。'); } catch (e) { inform(e.message || '恢复失败'); } event.target.value = ''; });
-  applyControls(); updateCount(); render();
+  const measureWindow = () => {
+    const cards = [...$('project-grid').children]; const cols = columns();
+    for (let index = 0; index < cards.length; index += cols) { const row = cards.slice(index, index + cols); const height = Math.max(...row.map(element => element.getBoundingClientRect().height)) + (settings.density === 'standard' ? 14 : 10); if (height > 0) rowHeights.set(Math.floor((mountedStart + index) / cols), height); }
+    if (rowHeights.size) estimatedRowHeight = [...rowHeights.values()].reduce((sum, value) => sum + value, 0) / rowHeights.size;
+    $('list-top-spacer').style.height = heightUntil(mountedStart) + 'px';
+    $('list-bottom-spacer').style.height = Math.max(0, heightUntil(Math.min(viewState(currentView).loaded, filtered.length)) - heightUntil(mountedEnd)) + 'px';
+  };
+  const renderWindow = start => {
+    const oldAnchor = mountedStart >= 0 ? [...$('project-grid').children].find(element => element.getBoundingClientRect().bottom > document.querySelector('.app-header').getBoundingClientRect().bottom) : null;
+    const anchorId = oldAnchor?.dataset.id, anchorTop = oldAnchor?.getBoundingClientRect().top;
+    const value = viewState(currentView), count = Math.min(value.loaded, filtered.length);
+    start = Math.max(0, Math.min(Math.floor(start / 40) * 40, Math.max(0, count - 120)));
+    start = Math.floor(start / columns()) * columns(); const end = Math.min(count, start + 120);
+    if (start !== mountedStart || end !== mountedEnd) { mountedStart = start; mountedEnd = end; $('project-grid').replaceChildren(...filtered.slice(start, end).map(card)); }
+    measureWindow();
+    if (anchorId && anchorTop != null && !programmatic) { const anchor = $('project-grid').querySelector('[data-id="' + anchorId + '"]'); if (anchor) { const shift = anchor.getBoundingClientRect().top - anchorTop; if (Math.abs(shift) > 1) window.scrollTo(0, window.scrollY + shift); } }
+    $('load-more').hidden = count >= filtered.length; $('list-end').hidden = !filtered.length || count < filtered.length;
+  };
+  const matching = () => { const value = viewState(currentView), query = value.query.trim().toLocaleLowerCase(); return (views.get(currentView)?.entries || []).filter(entry => { const item = itemForView(items.get(String(entry.repoId))), reading = state(item.id); return (value.reading === 'all' || !value.reading || value.reading === 'unread' && !reading.read || value.reading === 'interested' && reading.interest === 'interested' || value.reading === 'candidate' && reading.candidate || value.reading === 'new' && item.dailyChange === 'new') && (!query || [item.name, item.summary, item.description, ...item.tags].join(' ').toLocaleLowerCase().includes(query)) && (page !== 'repositories' || !value.category || item.categoryId === value.category); }); };
+  const renderChips = () => { const value = viewState(currentView); $('filter-chips').replaceChildren(); [['query', value.query], ['category', page === 'repositories' ? value.category : ''], ['reading', value.reading === 'all' ? '' : value.reading]].forEach(([key, field]) => { if (!field) return; let label = key === 'reading' ? ({unread:'未读',interested:'感兴趣',candidate:'收藏候选',new:'本期新增'}[field] || '') : field; if (key === 'category') label = [...items.values()].find(item => item.categoryId === field)?.category || field; const chip = button(label, '', 'close'); chip.addEventListener('click', () => { value[key] = key === 'reading' ? 'all' : ''; value.anchor = null; value.loaded = 40; renderList(); window.scrollTo(0, 0); save(); }); $('filter-chips').append(chip); }); };
+  const channelDescription = section => ({ trending: 'GitHub 当前趋势 · 查看新近受到关注的项目', 'most-popular': '寻找成熟、广泛使用的工具', topic: '按主题发现感兴趣的项目', 'hot-release': '项目真实版本与已有发布说明' }[section.id] || (section.kind === 'custom' || section.editions?.length ? '已有桌面期刊 · 选择日期继续阅读' : '桌面已有发现内容'));
+  const renderList = () => {
+    const view = views.get(currentView); if (!view) return; page = currentView === 'repositories' ? 'repositories' : 'discovery'; const value = viewState(currentView);
+    $('page-title').textContent = page === 'repositories' ? '仓库' : '发现'; $('section-title').textContent = view.section.title; $('section-description').textContent = (page === 'repositories' ? '收藏的项目与已有 AI 分析' : channelDescription(view.section)) + (view.edition?.generatedAt || view.section.updatedAt ? ' · 更新于 ' + date(view.edition?.generatedAt || view.section.updatedAt) : ' · 尚无更新时间');
+    $('search').value = value.query; $('clear-search').hidden = !value.query; $('category-open').hidden = page !== 'repositories'; $('channels-open').hidden = page !== 'discovery'; $('channel-tabs').hidden = page !== 'discovery';
+    $('channel-tabs').replaceChildren(...channels.map(section => { const control = button(section.title); control.setAttribute('aria-pressed', String(view.section.id === section.id)); control.addEventListener('click', () => navigate(lastChannelViews.get(section.id) || firstView(section))); return control; }));
+    document.querySelectorAll('[data-page]').forEach(control => control.setAttribute('aria-pressed', String(control.dataset.page === page)));
+    $('edition-row').hidden = !view.section.editions?.length; $('edition-select').replaceChildren(); (view.section.editions || []).forEach(edition => { const option = node('option', '', edition.date.slice(0, 10) + ' · ' + edition.entries.length + ' 项' + (edition.complete ? '' : ' · 未完成')); option.value = edition.id; option.selected = edition.id === view.edition?.id; $('edition-select').append(option); }); $('edition-status').textContent = view.edition ? (view.edition.complete ? '已完成' : '部分内容') : '';
+    const warning = [view.section.warning, view.edition?.warning].filter(Boolean).join('；'); $('section-warning').textContent = warning; $('section-warning').hidden = !warning;
+    filtered = matching(); $('result-count').textContent = filtered.length + ' 个项目'; $('empty').hidden = filtered.length > 0; renderChips(); mountedStart = -1; mountedEnd = -1; rowHeights = new Map();
+    const anchorIndex = filtered.findIndex(entry => entry.repoId === value.anchor); const desired = anchorIndex < 0 ? 0 : anchorIndex; value.loaded = Math.min(filtered.length || 40, Math.max(40, value.loaded, Math.ceil((desired + 1) / 40) * 40)); renderWindow(Math.max(0, desired - 40));
+    const resumeNotice = resume.get(currentView)?.notice; if (resumeNotice && !shownResumeNotices.has(currentView)) { shownResumeNotices.add(currentView); inform(resumeNotice); }
+  };
+  const rememberList = () => { const value = viewState(currentView); value.y = window.scrollY; const cards = [...$('project-grid').children]; const headerBottom = document.querySelector('.app-header').getBoundingClientRect().bottom; const first = cards.find(element => element.getBoundingClientRect().bottom > headerBottom) || cards[0]; if (first) { value.anchor = Number(first.dataset.id); value.anchorOffset = first.getBoundingClientRect().top - headerBottom - 12; } };
+  const restoreListPosition = () => { const value = viewState(currentView); programmatic = true; requestAnimationFrame(() => { const element = $('project-grid').querySelector('[data-id="' + value.anchor + '"]'); if (element) window.scrollTo(0, Math.max(0, element.getBoundingClientRect().top + window.scrollY - document.querySelector('.app-header').getBoundingClientRect().height - 12 - (value.anchorOffset || 0))); else window.scrollTo(0, value.y || 0); requestAnimationFrame(() => { programmatic = false; }); }); };
+  const navigationState = overlay => ({ gsmReader: true, view: currentView, detail: detail?.repoId || null, tab: detail?.tab || null, overlay: overlay || null });
+  const route = value => '#gsm/' + encodeURIComponent(value.view || '') + (value.detail ? '/project/' + value.detail : '') + (value.overlay ? '/' + value.overlay : '');
+  const push = overlay => { const value = navigationState(overlay); try { history.pushState(value, '', route(value)); } catch { /* Sandboxed previews may not grant history access. */ } };
+  const closeDialogs = () => document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+  const navigate = (id, pushHistory = true) => {
+    if (!views.has(id)) return; rememberList(); closeDialogs(); closeDetail(false); currentView = id; const view = views.get(id); if (view.section.id !== 'repositories') { lastChannelViews.delete(view.section.id); lastChannelViews.set(view.section.id, id); } renderList(); restoreListPosition(); if (pushHistory) { push(); const anchor = viewState(id).anchor || filtered[0]?.repoId; if (anchor) markPosition(anchor); } save();
+  };
+  const openDialog = dialog => { closeDialogs(); dialog.showModal(); push(dialog.id); };
+  const closeDialog = dialog => { if (history.state?.gsmReader && history.state.overlay === dialog.id) history.back(); else dialog.close(); };
+  document.querySelectorAll('dialog').forEach(dialog => { dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(dialog); }); dialog.addEventListener('click', event => { if (event.target === dialog) closeDialog(dialog); }); });
+  document.querySelectorAll('[data-close-dialog]').forEach(control => control.addEventListener('click', () => closeDialog(control.closest('dialog'))));
+  const blockKey = block => block.key || ({ '解决的问题': 'problem', '主要功能': 'features', '使用场景': 'scenarios', '技术架构': 'architecture', '快速开始': 'quickstart', '部署方式': 'deployment', '成本': 'cost', '维护情况': 'maintenance' }[block.title]);
+  const contentAvailable = block => Boolean(block.text?.trim() || block.values?.some(value => value?.trim()) || block.steps?.some(step => step.description?.trim() || step.command?.trim()));
+  const renderAnalysis = block => {
+    const section = node('section', 'detail-block'); section.append(node('h3', '', block.title));
+    if (block.kind === 'steps' && block.steps?.length) { const list = node('ol'); block.steps.forEach(step => { const li = node('li'); if (step.description) li.append(node('p', '', step.description)); if (step.command) { const command = node('div', 'command'), copy = button('复制命令', '', 'copy'), pre = node('pre'); pre.append(node('code', '', step.command)); copy.dataset.command = step.command; command.append(copy, pre); li.append(command); } list.append(li); }); section.append(list); }
+    else if (block.kind === 'list' && block.values?.length) { const list = node('ul'); block.values.forEach(value => { if (value) list.append(node('li', '', value)); }); section.append(list); }
+    else if (block.text) section.append(node('p', 'content', block.text));
+    return section;
+  };
+  const renderDetailTab = tab => {
+    detail.tab = tab; viewState(currentView).detailTabs[detail.repoId] = tab; const item = itemForView(items.get(String(detail.repoId)));
+    $('detail-tabs').querySelectorAll('button').forEach(control => control.setAttribute('aria-selected', String(control.dataset.tab === tab))); $('detail-content').replaceChildren();
+    const parts = new Map(), summary = item.summary || item.description;
+    if (tab === 'overview') {
+      if (summary && detailMode('summary') !== 'omit') parts.set('summary', node('p', 'analysis-summary', summary));
+      if (item.description && item.description !== item.summary && (item.summary || detailMode('summary') === 'omit')) { const description = node('section', 'detail-block'); description.append(node('h3', '', '原始介绍'), node('p', 'content', item.description)); parts.set('description', description); }
+      if (detail.entry?.reason || item.reason) { const reason = node('section', 'detail-block reason-block'); reason.append(node('h3', '', '发现推荐理由'), node('p', '', detail.entry?.reason || item.reason)); parts.set('reason', reason); }
+      for (const key of ['tags','category']) { const values = key === 'tags' ? item.tags : item.category ? [item.category] : []; if (values.length) { const tags = node('div', 'tags detail-block'); values.forEach(tag => tags.append(node('span', '', tag))); parts.set(key, tags); } }
+      for (const key of ['language','stars','updated']) if (key === 'stars' || item[key]) parts.set(key, node('span', '', {language:'语言：',stars:'Star：',updated:'更新：'}[key] + (key==='updated'?item[key].slice(0,10):item[key])));
+    }
+    item.analysis.filter(block => contentAvailable(block) && (groups[tab].includes(blockKey(block)) || tab === 'overview' && !blockKey(block))).forEach(block => { const text = block.text?.trim().toLocaleLowerCase(), other = summary.trim().toLocaleLowerCase(); if (blockKey(block) === 'problem' && text && other && (text === other || text.includes(other) || other.includes(text))) return; parts.set(blockKey(block), renderAnalysis(block)); });
+    if (tab === 'overview') {
+      const release = detail.entry?.release || item.release;
+      if (release) { const block = node('section', 'detail-block'); block.append(node('h3', '', '版本 ' + release.tag), node('p', 'muted', date(release.date)), node('p', 'content', release.text), link('查看发布来源', release.url)); parts.set('release', block); }
+      if (item.sources.length || item.generatedAt) { const sources = node('section', 'sources'); if (item.generatedAt) sources.append(node('p', 'muted', '分析生成于 ' + date(item.generatedAt))); item.sources.forEach(source => { const paragraph = node('p'); paragraph.append(link(source.label, source.url)); sources.append(paragraph); }); parts.set('sources', sources); }
+    }
+    const labels = { summary:'项目摘要',description:'原始介绍',tags:'标签',category:'分类',language:'语言',stars:'Star',updated:'更新时间',notes:'已有笔记',reason:'发现推荐理由',release:'真实版本说明',sources:'查看依据' };
+    let metadata = null;
+    for (const key of profile().detailOrder) { const element = parts.get(key), mode = detailMode(key); if (!element || mode === 'omit') continue;element.dataset.outline=labels[key]||item.analysis.find(block=>blockKey(block)===key)?.title||key; if (mode==='expanded' && ['language','stars','updated'].includes(key)) { if(!metadata){metadata=node('div','detail-hero-meta');$('detail-content').append(metadata);}metadata.append(element);continue;}metadata=null; if (mode === 'collapsed') { const fold = node('details', 'folded-block' + (key === 'sources' ? ' sources' : ''));fold.dataset.outline=element.dataset.outline;delete element.dataset.outline; const title = labels[key] || item.analysis.find(block => blockKey(block) === key)?.title || key; fold.append(node('summary', '', title)); element.querySelector('h3')?.remove(); fold.append(element); $('detail-content').append(fold); } else $('detail-content').append(element); }
+    if (tab === 'overview') { const contexts = []; views.forEach(view => { if (view.section.id === 'repositories' || view.section.id === views.get(currentView).section.id) return; const entry = view.entries.find(entry => entry.repoId === item.id); if (entry) contexts.push({view,entry}); }); if (contexts.length) { const sources = node('details', 'folded-block'); sources.append(node('summary', '', '其他入选频道（' + new Set(contexts.map(c=>c.view.section.id)).size + '）')); contexts.forEach(({view,entry})=>{const block=node('div','context-source');const control=button(view.section.title+(view.edition?' · '+view.edition.date:''));control.addEventListener('click',()=>{navigate(view.id);openDetail(item.id);});block.append(control);if(entry.reason)block.append(node('p','content',entry.reason));if(entry.release)block.append(link('版本 '+entry.release.tag,entry.release.url));sources.append(block);});$('detail-content').append(sources); } }
+    scheduleSave();
+  };
+  const renderReadingPanel = item => {
+    const panel = $('detail-reading'); panel.replaceChildren(); if (!Object.values(settings.operations).some(Boolean) && detailMode('notes') === 'omit') return;
+    const value = state(item.id); panel.append(node('h3', '', '阅读记录')); const controls = node('div', 'reading-controls');
+    const add = (field, label, graphic, pressed, selected) => { const control = button(label, '', graphic); control.dataset.repo = item.id; control.dataset.field = field; if (selected != null) control.dataset.value = selected; control.setAttribute('aria-pressed', String(pressed)); controls.append(control); };
+    if (settings.operations.read) add('read', value.read ? '已读' : '标记已读', 'check', value.read);
+    if (settings.operations.interest) { add('interest', '感兴趣', 'heart', value.interest === 'interested', 'interested'); add('interest', '忽略', 'close', value.interest === 'ignored', 'ignored'); }
+    if (settings.operations.candidate) add('candidate', value.candidate ? '已加入候选' : '收藏候选', 'bookmark', value.candidate);
+    panel.append(controls);
+    if (settings.operations.note) { const label = node('label', 'note-label', '阅读笔记'), input = node('textarea'); input.maxLength = 12000; input.placeholder = '写下用途、疑问或使用想法'; input.value = value.note; input.dataset.repo = item.id; input.dataset.field = 'note'; label.append(input); const hint=node('p','note-hint',savedLocally?'已保存到本文件的本地记录；仍需导出带回桌面':'本地保存失败，请立即导出');hint.id='note-save-status';hint.setAttribute('role','status'); if(detailMode('notes')==='collapsed'&&value.note){const fold=node('details','folded-block');fold.append(node('summary','','阅读笔记'),label,hint);panel.append(fold);}else panel.append(label,hint); }
+    else if (detailMode('notes') !== 'omit' && value.note) { const text=node('p','content',value.note);if(detailMode('notes')==='collapsed'){const fold=node('details','folded-block');fold.append(node('summary','','已有笔记'),text);panel.append(fold);}else panel.append(text); }
+  };
+  const openDetail = (repoId, pushHistory = true, requestedTab, replaceHistory = false) => {
+    const raw = items.get(String(repoId)); if (!raw) return; const item = itemForView(raw); if (!detail) rememberList(); closeDialogs(); const value = viewState(currentView);
+    detail = { repoId: item.id, entry: views.get(currentView)?.entries.find(entry => entry.repoId === item.id), tab: requestedTab || value.detailTabs[item.id] || 'overview' };
+    $('detail-title').textContent = item.name; const githubUrl = safeUrl(item.url); $('detail-github').hidden = !githubUrl; if (githubUrl) $('detail-github').href = githubUrl;
+    $('detail-hero').replaceChildren();
+    const available = ['overview', 'usage', 'maintenance'].filter(tab => tab === 'overview' || item.analysis.some(block => groups[tab].includes(blockKey(block)) && contentAvailable(block)));
+    if (!available.includes(detail.tab)) detail.tab = 'overview'; $('detail-tabs').replaceChildren(...available.map(tab => { const control = button({ overview: '概览', usage: '使用', maintenance: '维护' }[tab]); control.dataset.tab = tab; control.setAttribute('role', 'tab'); control.addEventListener('click', () => { value.detailScroll[item.id + ':' + detail.tab] = $('detail-scroll').scrollTop; renderDetailTab(tab); $('detail-scroll').scrollTop = value.detailScroll[item.id + ':' + tab] || 0; if (history.state?.detail) history.replaceState(navigationState(), '', route(navigationState())); }); return control; })); $('detail-tabs').hidden = available.length === 1;
+    renderDetailTab(detail.tab); renderReadingPanel(item); $('detail-page').hidden = false; document.body.dataset.detail = 'true'; $('detail-scroll').scrollTop = value.detailScroll[item.id + ':' + detail.tab] || 0;
+    if (pushHistory) { if (settings.operations.read && settings.autoRead !== false) change(item.id, 'read', true); markPosition(item.id); if (replaceHistory) history.replaceState(navigationState(), '', route(navigationState())); else push(); } save();
+  };
+  const closeDetail = restorePosition => { if (!detail) return; viewState(currentView).detailScroll[detail.repoId + ':' + detail.tab] = $('detail-scroll').scrollTop; detail = null; $('detail-page').hidden = true; delete document.body.dataset.detail; if (restorePosition) { const value = viewState(currentView), index = filtered.findIndex(entry=>entry.repoId===value.anchor); renderList(); if(!filtered.some(entry=>entry.repoId===value.anchor)) { value.anchor=filtered[Math.min(Math.max(0,index),filtered.length-1)]?.repoId||null;value.anchorOffset=0;renderList(); } restoreListPosition(); } scheduleSave(); };
+  const backDetail = () => { if (history.state?.gsmReader && history.state.detail) history.back(); else closeDetail(true); };
+  $('detail-back').addEventListener('click', backDetail);
+  $('detail-options-open').addEventListener('click', () => { const index = filtered.findIndex(entry=>entry.repoId===detail.repoId); $('previous-project').disabled=index<=0; $('next-project').disabled=index<0||index>=filtered.length-1; $('detail-index').textContent=(index+1)+' / '+filtered.length+' · 当前列表'; $('detail-outline').replaceChildren();$('detail-content').querySelectorAll('[data-outline]').forEach(target=>{const control=button(target.dataset.outline,'drawer-item');control.addEventListener('click',()=>{outlineTarget=target;closeDialog($('detail-options'));if(!history.state?.overlay&&outlineTarget){outlineTarget=null;target.closest('details')?.setAttribute('open','');target.scrollIntoView({block:'start',behavior:'auto'});}});$('detail-outline').append(control);});openDialog($('detail-options')); });
+  const applyAdjacent = repoId => { const value=viewState(currentView);value.anchor=repoId;value.anchorOffset=0;value.detailScroll[repoId+':overview']=0;renderList();openDetail(repoId,true,'overview',true); };
+  const adjacent = direction => { const index=filtered.findIndex(entry=>entry.repoId===detail.repoId), next=filtered[index+direction];if(!next)return;closeDialogs();if(history.state?.overlay){adjacentTarget=next.repoId;history.back();}else applyAdjacent(next.repoId); };
+  $('previous-project').addEventListener('click',()=>adjacent(-1)); $('next-project').addEventListener('click',()=>adjacent(1));
+  $('reading-view-open').addEventListener('click', () => { $('drawer-title').textContent='阅读视图'; $('drawer-content').replaceChildren(); [['all','全部'],['unread','未读'],['interested','感兴趣'],['candidate','收藏候选'],['new','本期新增']].forEach(([id,label])=>{const control=button(label,'drawer-item');control.setAttribute('aria-pressed',String((viewState(currentView).reading||'all')===id));control.addEventListener('click',()=>{const value=viewState(currentView);value.reading=id;value.anchor=null;value.loaded=40;value.y=0;closeDialog($('drawer'));renderList();window.scrollTo(0,0);save();});$('drawer-content').append(control);});openDialog($('drawer')); });
+
+  document.addEventListener('click', event => {
+    const opening = event.target.closest('[data-open]'); if (opening) { openDetail(Number(opening.dataset.open)); return; }
+    const control = event.target.closest('[data-repo]'); if (control && control.tagName !== 'TEXTAREA') { const repoId = Number(control.dataset.repo), value = state(repoId); const field = control.dataset.action || control.dataset.field; if (field === 'interest') { const next = control.dataset.value || 'interested'; change(repoId, field, value.interest === next ? 'neutral' : next); } else change(repoId, field, !value[field]); markPosition(repoId); if (field === 'candidate') toast(state(repoId).candidate ? '已加入收藏候选 · 回桌面确认' : '已移出收藏候选'); }
+    const command = event.target.closest('[data-command]'); if (command) copyText(command.dataset.command, command);
+  });
+  document.addEventListener('input', event => { const element = event.target; if (element.dataset.field === 'note') change(Number(element.dataset.repo), 'note', element.value); });
+  const copyText = async (text, control) => { try { if (!navigator.clipboard?.writeText) throw Error('clipboard unavailable'); await navigator.clipboard.writeText(text); toast('已复制'); } catch { const fallback = node('textarea'); fallback.value = text; fallback.style.position = 'fixed'; fallback.style.left = '0'; fallback.style.top = '0'; document.body.append(fallback); fallback.select(); let copied = false; try { copied = document.execCommand('copy'); } catch { /* Manual selection is still available in export. */ } fallback.remove(); if (copied) toast('已复制'); else { if (control?.closest('.command')) { const range = document.createRange(); range.selectNodeContents(control.closest('.command').querySelector('code')); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); } toast('请长按已选文本进行复制'); } } };
+  window.addEventListener('popstate', event => { const value = event.state; closeDialogs(); if(outlineTarget){const target=outlineTarget;outlineTarget=null;target.closest('details')?.setAttribute('open','');target.scrollIntoView({block:'start',behavior:'auto'});return;} if(adjacentTarget){const target=adjacentTarget;adjacentTarget=null;applyAdjacent(target);return;} if (!value?.gsmReader) { closeDetail(true); return; } if (views.has(value.view) && value.view !== currentView) navigate(value.view, false); if (value.detail) openDetail(value.detail, false, value.tab); else closeDetail(true); if (value.overlay && [ 'drawer', 'information', 'return-dialog', 'detail-options' ].includes(value.overlay)) $(value.overlay).showModal(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && detail && !document.querySelector('dialog[open]')) { event.preventDefault(); backDetail(); } });
+  document.querySelectorAll('[data-page]').forEach(control => control.addEventListener('click', () => { if (control.dataset.page === 'repositories') navigate('repositories'); else { const last = [...lastChannelViews.values()].reverse().find(id => views.has(id)); navigate(last || firstView(channels[0])); } }));
+  $('search').addEventListener('input', () => { const value = viewState(currentView); value.query = $('search').value; value.loaded = 40; value.anchor = null; value.y = 0; renderList(); window.scrollTo(0, 0); scheduleSave(); });
+  $('clear-search').addEventListener('click', () => { $('search').value = ''; $('search').dispatchEvent(new Event('input')); $('search').focus(); });
+  $('search-toggle').addEventListener('click', () => { rememberList(); const open = $('search-row').hidden; $('search-row').hidden = !open; $('search-toggle').setAttribute('aria-expanded', String(open)); $('search-toggle').setAttribute('aria-label', open ? '收起搜索' : '展开搜索'); if (open) $('search').focus({ preventScroll: true }); restoreListPosition(); });
+  $('edition-select').addEventListener('change', () => navigate(views.get(currentView).section.id + '::' + encodeURIComponent($('edition-select').value)));
+  $('channels-open').addEventListener('click', () => { $('drawer-title').textContent = '发现频道'; $('drawer-content').replaceChildren(); [['内置频道', channels.filter(section => !section.editions?.length && section.kind !== 'custom')], ['自定义频道', channels.filter(section => section.editions?.length || section.kind === 'custom')]].forEach(([label, sections]) => { if (!sections.length) return; $('drawer-content').append(node('h3', 'drawer-group', label)); sections.forEach(section => { const control = button(section.title, 'drawer-item'); const target = lastChannelViews.get(section.id) || firstView(section); control.setAttribute('aria-pressed', String(views.get(currentView).section.id === section.id)); const count = section.editions?.[0]?.entries.length ?? section.entries?.length ?? section.items?.length ?? 0; control.append(node('span', 'drawer-count', count + ' 项')); control.addEventListener('click', () => { closeDialogs(); if (history.state?.overlay) { history.replaceState(navigationState(), '', route(navigationState())); } navigate(target); }); $('drawer-content').append(control); }); }); openDialog($('drawer')); });
+  $('category-open').addEventListener('click', () => { $('drawer-title').textContent = '仓库分类'; $('drawer-content').replaceChildren(); const categories = new Map(); views.get('repositories')?.entries.forEach(entry => { const item = items.get(String(entry.repoId)); if (item.categoryId && item.category) { const value = categories.get(item.categoryId) || { name: item.category, count: 0 }; value.count++; categories.set(item.categoryId, value); } }); const choose = (id, label, count) => { const control = button(label, 'drawer-item'); control.setAttribute('aria-pressed', String(viewState(currentView).category === id)); control.append(node('span', 'drawer-count', count)); control.addEventListener('click', () => { viewState(currentView).category = id; viewState(currentView).loaded = 40; viewState(currentView).anchor = null; closeDialog($('drawer')); renderList(); window.scrollTo(0, 0); save(); }); $('drawer-content').append(control); }; choose('', '全部分类', views.get('repositories')?.entries.length || 0); categories.forEach((value, id) => choose(id, value.name, value.count)); openDialog($('drawer')); });
+  $('load-more').addEventListener('click', () => { const value = viewState(currentView); value.loaded = Math.min(filtered.length, value.loaded + 40); renderWindow(Math.max(0, value.loaded - 120)); scheduleSave(); });
+  const onScroll = () => {
+    if (detail || programmatic || document.querySelector('dialog[open]')) return;
+    const value = viewState(currentView); const startY = $('project-grid').getBoundingClientRect().top + window.scrollY - heightUntil(mountedStart); const offset = Math.max(0, window.scrollY - startY - 80); let row = 0, sum = 0;
+    while (row < Math.ceil(value.loaded / columns()) && sum + rowSize(row) < offset) { sum += rowSize(row++); }
+    const itemIndex = row * columns();
+    if (itemIndex < mountedStart || itemIndex >= mountedEnd - 40) renderWindow(Math.max(0, itemIndex - 40));
+    const bottom = $('project-grid').getBoundingClientRect().bottom + $('list-bottom-spacer').getBoundingClientRect().height;
+    if (bottom < window.innerHeight + 220 && value.loaded < filtered.length) { value.loaded = Math.min(filtered.length, value.loaded + 40); renderWindow(Math.max(0, value.loaded - 120)); }
+    rememberList(); if (value.anchor) markPosition(value.anchor); scheduleSave();
+  };
+  window.addEventListener('wheel', () => { browsingStarted = true; }, { passive: true });
+  window.addEventListener('touchmove', () => { browsingStarted = true; }, { passive: true });
+  window.addEventListener('pointerdown', event => { if (event.target.closest?.('#list-page')) browsingStarted = true; }, { passive: true });
+  window.addEventListener('keydown', event => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key) && !['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) browsingStarted = true; });
+  window.addEventListener('scroll', () => { if (programmatic || !browsingStarted || detail) return; clearTimeout(scrollTimer); scrollTimer = setTimeout(onScroll, 60); }, { passive: true });
+  $('detail-scroll').addEventListener('scroll', () => { if (!detail) return; viewState(currentView).detailScroll[detail.repoId + ':' + detail.tab] = $('detail-scroll').scrollTop; scheduleSave(); }, { passive: true });
+  const syncLayout=()=>{const header=document.querySelector('.app-header'),nav=document.querySelector('.bottom-nav');document.documentElement.style.setProperty('--header-height',header.getBoundingClientRect().height+'px');document.documentElement.style.setProperty('--nav-height',nav.getBoundingClientRect().height+'px');document.documentElement.style.setProperty('--keyboard-inset',Math.max(0,window.innerHeight-(window.visualViewport?.height||window.innerHeight)-(window.visualViewport?.offsetTop||0))+'px');};
+  if(globalThis.ResizeObserver)new ResizeObserver(syncLayout).observe(document.querySelector('.app-header'));window.visualViewport?.addEventListener('resize',syncLayout);window.visualViewport?.addEventListener('scroll',syncLayout);
+  window.addEventListener('resize', () => { if(!detail){rememberList();rowHeights.clear();mountedStart=-1;mountedEnd=-1;renderList();restoreListPosition();}syncLayout(); });
+  $('theme').addEventListener('click', () => { document.body.dataset.mode = document.body.dataset.mode === 'dark' ? 'light' : 'dark'; save(); });
+  // Preview messages control appearance only. They never modify records or export data.
+  window.addEventListener('message', event => { if (event.source !== window.parent || window.parent === window) return; const data = event.data; if (data && Object.keys(data).every(key => ['type', 'theme'].includes(key)) && data.type === 'gsm-reading-preview-theme' && ['light', 'dark'].includes(data.theme)) document.body.dataset.mode = data.theme; });
+  if(snapshot.comparisonAvailable===false)$('snapshot-warnings').append(node('p','muted','尚无上一份 Gmail 已接受日报作为比较基准。'));
+  (snapshot.warnings || []).forEach(warning => $('snapshot-warnings').append(node('p', 'notice', warning)));
+  $('info').addEventListener('click', () => openDialog($('information')));
+  const flushNote=()=>{const input=document.querySelector('textarea[data-field="note"]');if(input&&input.value!==state(Number(input.dataset.repo)).note)change(Number(input.dataset.repo),'note',input.value);};
+  const showExportHistory=()=>{$('export-history').textContent=lastExport?'上次'+(lastExport.kind==='copy'?'复制':'请求下载')+'：'+date(lastExport.at)+' · '+(editRevision>lastExport.revision?'之后还有新的修改或阅读位置，请重新导出':'此后没有新的修改')+'。不代表电脑已导入。':'尚未复制或请求下载；本文件的记录不会自动转移到下一份日报。';};
+  const recordExport=kind=>{lastExport={at:new Date().toISOString(),kind,revision:editRevision};save();showExportHistory();};
+  $('export').addEventListener('click', () => {flushNote();showExportHistory(); clearTimeout(saveTimer); pending.forEach((_op, key) => exportedFields.add(key)); save(); $('return-text').value = JSON.stringify(pack()); $('export-status').textContent = ''; openDialog($('return-dialog')); });
+  $('close-export').addEventListener('click', () => closeDialog($('return-dialog')));
+  $('copy').addEventListener('click', async () => { $('return-text').select(); try { if (!navigator.clipboard?.writeText) throw Error('clipboard unavailable'); await navigator.clipboard.writeText($('return-text').value);recordExport('copy'); $('export-status').textContent = '已复制，请在桌面“每日 HTML”中导入。'; } catch { let copied = false; try { copied = document.execCommand('copy'); } catch { /* Keep textarea selected for manual copy. */ } if(copied)recordExport('copy');$('export-status').textContent = copied ? '已复制，请在桌面“每日 HTML”中导入。' : '请长按文本框，选择全部并复制；也可下载文件。'; } });
+  $('download').addEventListener('click', () => { const url = URL.createObjectURL(new Blob([$('return-text').value], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'GSM-阅读回传-' + snapshot.generatedAt.slice(0, 10) + '.json'; anchor.click();recordExport('download'); setTimeout(() => URL.revokeObjectURL(url), 30000); $('export-status').textContent = '已请求下载，请确认文件已保存。阅读记录仍保留，可再次导出。'; });
+  $('restore').addEventListener('change', async event => { try { const file = event.target.files[0]; if (!file || file.size > 4000000) throw Error('文件过大或未选择文件'); const conflicts = restore(await file.text(), true); save(); closeDialogs(); renderList(); restoreListPosition(); if (detail) { renderReadingPanel(items.get(String(detail.repoId))); renderDetailTab(detail.tab); } inform(conflicts ? '已恢复可合并记录；' + conflicts + ' 项不同的本地修改已保留，没有被旧回传覆盖。' : '已载入这份 HTML 的阅读记录。'); } catch (error) { inform(error.message || '恢复失败'); } event.target.value = ''; });
+  window.addEventListener('pagehide', () => {flushNote();save();});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushNote();save();}});
+  document.addEventListener('focusout',event=>{if(event.target.matches?.('textarea[data-field="note"]')){flushNote();save();}});
+  renderList();syncLayout(); updateCount(); const navigation = navigationState(); try { history.replaceState(navigation, '', route(navigation)); } catch { /* Reader works without navigable history in a preview. */ }
+  if (viewState(currentView).anchor || viewState(currentView).y) restoreListPosition();
 })();

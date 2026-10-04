@@ -224,11 +224,13 @@ export const themeTokenStyle = (tokens: ThemeTokens, surfaceTriplet = '0 0% 100%
 
 /** 把 token 应用到根节点；恢复默认 = 删除内联属性，让预设与基础样式表接管。 */
 export const applyThemeTokens = (tokens: ThemeTokens, root: HTMLElement = document.documentElement): void => {
-  const computedSurface = typeof getComputedStyle === 'function'
+  const normalized = normalizeThemeTokens(tokens);
+  // Default accent tokens do not consume the surface color or need a style flush.
+  const computedSurface = normalized.accentColor && typeof getComputedStyle === 'function'
     ? getComputedStyle(root).getPropertyValue('--background').trim()
     : '';
   const fallbackSurface = root.classList.contains('dark') ? '222.2 84% 4.9%' : '0 0% 100%';
-  const style = themeTokenStyle(tokens, computedSurface || fallbackSurface);
+  const style = themeTokenStyle(normalized, computedSurface || fallbackSurface);
 
   for (const [name, value] of Object.entries(style.variables)) {
     if (value === null) root.style.removeProperty(name);

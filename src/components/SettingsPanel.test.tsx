@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
 
@@ -39,6 +39,36 @@ const changeTab = (tab: string) => {
 };
 
 describe('Settings navigation', () => {
+  it('supports manual keyboard activation and one tab stop in each navigation', () => {
+    render(<SettingsPanel />);
+    const desktop = screen.getAllByRole('tablist')[0];
+    const tabs = within(desktop).getAllByRole('tab');
+    expect(tabs.filter(tab => tab.tabIndex === 0)).toHaveLength(1);
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowDown' });
+    expect(tabs[1]).toHaveFocus();
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('General controls');
+    fireEvent.click(tabs[1]);
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Appearance controls');
+    fireEvent.keyDown(tabs[1], { key: 'End' });
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+    fireEvent.keyDown(tabs[tabs.length - 1], { key: 'ArrowDown' });
+    expect(tabs[0]).toHaveFocus();
+  });
+  it('lets mobile users search settings and navigate filtered tabs horizontally', () => {
+    render(<SettingsPanel />);
+    const searches = screen.getAllByRole('textbox', { name: 'Search settings' });
+    expect(searches).toHaveLength(2);
+    fireEvent.change(searches[1], { target: { value: 'Appearance' } });
+    const mobile = screen.getAllByRole('tablist')[1];
+    const tabs = within(mobile).getAllByRole('tab');
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' });
+    expect(tabs[0]).toHaveFocus();
+    fireEvent.click(tabs[0]);
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Appearance controls');
+  });
   it('keeps the last click when tabs are switched rapidly', () => {
     render(<SettingsPanel />);
     fireEvent.click(screen.getAllByRole('tab', { name: 'Appearance' })[0]);
@@ -47,7 +77,7 @@ describe('Settings navigation', () => {
   });
   it('filters the grouped sidebar and restores it when search is cleared', () => {
     render(<SettingsPanel />);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search settings' }), { target: { value: 'Appearance' } });
+    fireEvent.change(screen.getAllByRole('textbox', { name: 'Search settings' })[0], { target: { value: 'Appearance' } });
     expect(screen.getAllByRole('tab', { name: 'Appearance' })).toHaveLength(2);
     expect(screen.getAllByRole('tab', { name: 'Plugin Management' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));

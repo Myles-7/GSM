@@ -5,6 +5,18 @@
 /* stylelint-enable */
 
 @layer utilities {
+  .repository-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* auto-fill preserves column width even when only one card matches.
+     Older CSS engines keep the usable single-column fallback. */
+  @supports (grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr))) {
+    .repository-grid[data-view-mode="grid"] {
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    }
+  }
+
   .line-clamp-3 {
     display: -webkit-box;
     -webkit-line-clamp: 3;

@@ -31,6 +31,7 @@ export function AIServiceSelector({ configs, active, select, agy, actions, confi
     <div>
       <h4 id="active-ai-config-heading" className="text-sm font-semibold">{t('settingsUx.currentAI')}</h4>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('settingsUx.selectionHelp')}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('settingsUx.connectionScope')}</p>
     </div>
     <RadioGroup aria-labelledby="active-ai-config-heading" value={active || ''} onValueChange={select} className="gap-3">
       {candidates.map(candidate => {
@@ -54,8 +55,8 @@ export function AIServiceSelector({ configs, active, select, agy, actions, confi
               </div>
             </div>
             <div className="flex shrink-0 flex-wrap justify-end gap-2">
-              {config && <Button variant="outline" size="sm" disabled={!!actions.testingId || actions.testingForm || !candidate.ready} onClick={() => void actions.testConfig(config)} aria-label={`${t('settingsUx.test')} ${candidate.name}`}>
-                {actions.testingId === config.id ? <RefreshCw size={14} className="animate-spin" /> : <TestTube size={14} />}{t('settingsUx.test')}
+              {config && <Button variant="outline" size="sm" disabled={actions.testingForm || (!!actions.testingId && actions.testingId !== config.id) || !candidate.ready} onClick={() => actions.testingId === config.id ? actions.cancelTest() : void actions.testConfig(config)} aria-label={`${t(actions.testingId === config.id ? 'settingsUx.cancelTest' : 'settingsUx.test')} ${candidate.name}`}>
+                {actions.testingId === config.id ? <RefreshCw size={14} className="animate-spin" /> : <TestTube size={14} />}{t(actions.testingId === config.id ? 'settingsUx.cancelTest' : 'settingsUx.test')}
               </Button>}
               <Button variant="outline" size="sm" onClick={() => candidate.agy ? configureAgy() : config && edit(config)} aria-label={candidate.agy ? t('settingsUx.configureAgy') : `${t('settingsUx.configure')} ${candidate.name}`}><Settings2 size={14} />{t('settingsUx.configure')}</Button>
               {config && <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`${t('settingsUx.delete')} ${candidate.name}`} onClick={() => remove(config)}><Trash2 size={14} /></Button>}

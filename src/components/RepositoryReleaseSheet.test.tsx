@@ -157,6 +157,27 @@ describe('RepositoryReleaseSheet', () => {
     expect(hookMocks.generateSummary).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
   });
 
+  it('keeps the previous summary readable throughout refresh and a refresh error', async () => {
+    const user = userEvent.setup();
+    hookMocks.state.summaries = { 1: { status: 'idle', content: 'Previous verified summary' } };
+    const rendered = renderSheet();
+    await user.click(releaseList().getByText('v1').closest('button')!);
+    await user.click(screen.getByRole('tab', { name: '总结' }));
+    expect(screen.getByText('Previous verified summary')).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('语言或模型配置已变化');
+    expect(screen.getByRole('status')).toHaveTextContent('语言或模型配置已变化');
+    hookMocks.state.summaries = { 1: { status: 'loading', content: 'Previous verified summary' } };
+    rendered.rerender(<RepositoryReleaseSheet isOpen onClose={vi.fn()} repository={repository} />);
+    expect(screen.getByText('Previous verified summary')).toBeVisible();
+    expect(screen.getByRole('button', { name: '正在生成总结…' })).toBeDisabled();
+    hookMocks.state.summaries = { 1: { status: 'error', content: 'Previous verified summary', error: 'Refresh failed' } };
+    rendered.rerender(<RepositoryReleaseSheet isOpen onClose={vi.fn()} repository={repository} />);
+    expect(screen.getByText('Previous verified summary')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('Refresh failed');
+    await user.click(screen.getByRole('button', { name: '重新生成' }));
+    expect(hookMocks.generateSummary).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1 }), { force: true });
+  });
+
   it('shows the same platform badges as the Release page for asset icons', async () => {
     const user = userEvent.setup();
     hookMocks.state.releases = [{

@@ -16,6 +16,18 @@ import type { VectorQueryResult } from '../../../services/vectorSearchService';
 import { isReservedCategoryName } from '../../../utils/categoryUtils';
 import { performBasicTextSearch } from '../../../utils/repoSearch';
 import { inspectRepositoryIdentities, preserveUnconfirmedLegacyRepositories } from '../../../utils/repositoryIdentity';
+import { submittedRepositoryCandidates } from '../../../utils/submittedRepositorySearch';
+
+const searchIdentity = () => {
+  const state = useAppStore.getState();
+  return [state.user?.id, state.githubToken, state.activeAIConfig, state.aiConfigs, state.vectorSearchConfig, state.embeddingConfigs, state.language] as const;
+};
+interface SubmittedSearch {
+  query: string;
+  providerIds: number[];
+  identity: ReturnType<typeof searchIdentity>;
+  sortMode: 'relevance' | 'explicit';
+}
 
 // ===== 提纯纯函数（来源逐字对应 SearchBar 基线行号） =====
 
@@ -184,12 +196,14 @@ export interface SearchActions {
   isSearching: boolean;
   searchPhase: string | null;
   searchReport: { query: string; mode: 'ai' | 'vector' | 'keyword'; total: number; count: number; fallback?: string } | null;
-  // 渲染相关 ref：View 的过滤 effect 仍要读写，故以 RefObject 暴露。
-  // 实体挂 hook、以 RefObject 暴露给 View 原样读写——写点在 aiSearch（本 hook），
-  // 读点在 View 的过滤 effect（依赖 View 本地 applyFilters 闭包），整体搬入 hook
-  // 会扩大改动面、引入漂移风险，"只搬运不改语义"约束下这是风险最低的切法。
+  // 旧调用兼容 refs；SearchBar 的候选与排序以 submitted session 为准。
   vectorScoreMapRef: MutableRefObject<{ query: string; scores: Map<string, number> } | null>;
   skipNextTextSearchRef: MutableRefObject<boolean>;
+  submittedRevision: number;
+  relevanceSearch: boolean;
+  applySubmittedSearch: (query: string, applyFilters: (repos: Repository[]) => Repository[]) => Repository[] | null;
+  clearSubmittedSearch: () => void;
+  setExplicitSearchSort: () => void;
   aiSearch: (query: string, applyFilters: (repos: Repository[]) => Repository[]) => Promise<void>;
   keywordSearch: (
     query: string,
@@ -216,6 +230,8 @@ export const useSearchActions = (): SearchActions => {
     addCustomCategory,
     customCategories,
     defaultCategoryOverrides,
+    vectorSearchConfig,
+    embeddingConfigs,
   } = useAppStore(useShallow((state) => ({
     repositories: state.repositories,
     aiConfigs: state.aiConfigs,
@@ -232,6 +248,8 @@ export const useSearchActions = (): SearchActions => {
     addCustomCategory: state.addCustomCategory,
     customCategories: state.customCategories,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    vectorSearchConfig: state.vectorSearchConfig,
+    embeddingConfigs: state.embeddingConfigs,
   })));
 
   const { toast } = useDialog();
@@ -241,32 +259,67 @@ export const useSearchActions = (): SearchActions => {
   const skipNextTextSearchRef = useRef(false);
   // 当前在途 AI 搜索的控制器：新搜索启动时中止旧请求（超代语义）
   const aiSearchAbortRef = useRef<AbortController | null>(null);
+  const submittedRef = useRef<SubmittedSearch | null>(null);
+  const sortModeRef = useRef<SubmittedSearch['sortMode']>('relevance');
+  const [submittedRevision, setSubmittedRevision] = useState(0);
+  const clearSubmittedSearch = useCallback(() => {
+    aiSearchAbortRef.current?.abort();
+    vectorScoreMapRef.current = null;
+    skipNextTextSearchRef.current = false;
+    if (submittedRef.current) { submittedRef.current = null; setSubmittedRevision(value => value + 1); }
+  }, []);
+  const setExplicitSearchSort = useCallback(() => {
+    sortModeRef.current = 'explicit';
+    if (submittedRef.current?.sortMode === 'relevance') {
+      submittedRef.current.sortMode = 'explicit'; setSubmittedRevision(value => value + 1);
+    }
+  }, []);
+  const applySubmittedSearch = useCallback((query: string, applyFilters: (repos: Repository[]) => Repository[]): Repository[] | null => {
+    const session = submittedRef.current;
+    const currentIdentity = searchIdentity();
+    if (!session || !query.trim() || query !== session.query || !session.identity.every((value, index) => value === currentIdentity[index])) return null;
+    const candidates = submittedRepositoryCandidates(useAppStore.getState().repositories, query, session.providerIds);
+    const filtered = applyFilters(candidates);
+    if (session.sortMode === 'relevance') {
+      const rank = new Map(candidates.map((repo, index) => [repo.id, index]));
+      filtered.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+    }
+    return filtered;
+  }, []);
+  const commitSubmittedSearch = useCallback((query: string, provider: Repository[], applyFilters: (repos: Repository[]) => Repository[]) => {
+    submittedRef.current = { query, providerIds: [...new Set(provider.map(repo => repo.id))], identity: searchIdentity(), sortMode: sortModeRef.current };
+    const results = applySubmittedSearch(query, applyFilters)!;
+    setSubmittedRevision(value => value + 1);
+    return results;
+  }, [applySubmittedSearch]);
   useEffect(() => {
+    clearSubmittedSearch();
     setIsSearching(false);
     setSearchPhase(null);
     return () => {
       aiSearchAbortRef.current?.abort();
       aiSearchAbortRef.current = null;
-      vectorScoreMapRef.current = null;
-      skipNextTextSearchRef.current = false;
     };
-  }, [githubToken, user?.id, activeAIConfig, aiConfigs]);
+  }, [githubToken, user?.id, activeAIConfig, aiConfigs, vectorSearchConfig, embeddingConfigs, language, clearSubmittedSearch]);
   const t = useT('repositories');
   const [searchReport, setSearchReport] = useState<SearchActions['searchReport']>(null);
-  useEffect(() => { setSearchReport(null); }, [githubToken, user?.id, activeAIConfig]);
+  useEffect(() => { setSearchReport(null); }, [githubToken, user?.id, activeAIConfig, aiConfigs, vectorSearchConfig, embeddingConfigs, language]);
 
   const keywordSearch = useCallback(async (
     query: string,
     applyFilters: (repos: Repository[]) => Repository[],
     options?: { signal?: AbortSignal },
   ): Promise<void> => {
+    if (!options?.signal) sortModeRef.current = 'relevance';
     const activeConfig = aiConfigs.find(config => config.id === activeAIConfig);
     const initial = { ...useAppStore.getState() };
     const check = () => {
       options?.signal?.throwIfAborted();
       const current = useAppStore.getState();
       if (current.user?.id !== initial.user?.id || current.githubToken !== initial.githubToken
-          || current.activeAIConfig !== initial.activeAIConfig || current.aiConfigs !== initial.aiConfigs) throw new DOMException('Stale search', 'AbortError');
+          || current.activeAIConfig !== initial.activeAIConfig || current.aiConfigs !== initial.aiConfigs
+          || current.vectorSearchConfig !== initial.vectorSearchConfig || current.embeddingConfigs !== initial.embeddingConfigs
+          || current.language !== initial.language) throw new DOMException('Stale search', 'AbortError');
     };
     check();
 
@@ -289,7 +342,7 @@ export const useSearchActions = (): SearchActions => {
           onFallback: (reason) => {
             check();
             // 端点抖动/配置问题时用户看到的不能只是"空结果"：明确告知已降级
-            if (reason === 'ai_failed') {
+            if (reason === 'ai_failed' || reason === 'unparseable') {
               fallback = t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea');
               toast(t('useSearchActions.ai-request-failed-fell-back-to-local-lexical-sea'), 'warning');
             }
@@ -316,19 +369,10 @@ export const useSearchActions = (): SearchActions => {
 
     // Apply other filters and update results
     check();
-    const finalFiltered = applyFilters(filtered);
+    const finalFiltered = commitSubmittedSearch(query, filtered, applyFilters);
     check();
     if (aiOrdered) {
-      // AI 返回的顺序（LLM 精选序或词法兜底序）就是相关性顺序；applyFilters 会按
-      // 排序控件重排（默认 star 降序），这里恢复 AI 顺序——与向量路径的
-      // rerankOrder 恢复逻辑同构。
-      const aiOrder = new Map(filtered.map((repo, index) => [String(repo.id), index]));
-      finalFiltered.sort((a, b) =>
-        (aiOrder.get(String(a.id)) ?? Number.MAX_SAFE_INTEGER)
-        - (aiOrder.get(String(b.id)) ?? Number.MAX_SAFE_INTEGER));
-      // 下面 setSearchFilters({ query }) 会触发 SearchBar 的过滤 effect，用基础
-      // 文本搜索+star 排序重设结果——LLM 精选的顺序、子集与显式空态都会被覆盖。
-      // 与向量路径同用 skipNextTextSearchRef 挡掉这次 effect（含空结果场景）。
+      // 顺序与候选由 submitted session 保存；此 ref 仅保留旧调用兼容。
       skipNextTextSearchRef.current = true;
     }
     setSearchResults(finalFiltered);
@@ -337,17 +381,19 @@ export const useSearchActions = (): SearchActions => {
 
     // Update search filters to mark that AI search was performed
     setSearchFilters({ query });
-  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, toast, t]);
+  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, toast, t, commitSubmittedSearch]);
 
   const aiSearch = useCallback(async (
     query: string,
     applyFilters: (repos: Repository[]) => Repository[],
   ): Promise<void> => {
-    if (!query.trim()) return;
+    if (!query.trim()) { clearSubmittedSearch(); setIsSearching(false); setSearchPhase(null); setSearchReport(null); return; }
 
     // 新搜索接管：中止上一次仍在途的 AI 请求（搜索进行中按 Enter 可再次触发），
     // 防止过期结果落盘覆盖新结果。被取代的搜索在 finally 里不复位搜索状态。
     aiSearchAbortRef.current?.abort();
+    submittedRef.current = null;
+    sortModeRef.current = 'relevance';
     const controller = new AbortController();
     aiSearchAbortRef.current = controller;
     const initial = { ...useAppStore.getState() };
@@ -362,7 +408,7 @@ export const useSearchActions = (): SearchActions => {
           || current.githubToken !== initial.githubToken || current.activeAIConfig !== initial.activeAIConfig
           || current.aiConfigs !== initial.aiConfigs
           || current.vectorSearchConfig !== initial.vectorSearchConfig
-          || current.embeddingConfigs !== initial.embeddingConfigs) {
+          || current.embeddingConfigs !== initial.embeddingConfigs || current.language !== initial.language) {
         controller.abort();
         throw new DOMException('Stale search', 'AbortError');
       }
@@ -465,20 +511,8 @@ export const useSearchActions = (): SearchActions => {
                 }
 
                 // 保存 LLM 重排序顺序，applyFilters 可能按 UI 排序覆盖它
-                const rerankOrder = rerankSucceeded
-                  ? new Map(reranked.map((repo, index) => [String(repo.id), index]))
-                  : null;
-                const finalFiltered = applyFilters([...reranked]);
+                const finalFiltered = commitSubmittedSearch(query, [...reranked, ...scoredRepos], applyFilters);
                 check();
-                if (rerankOrder) {
-                  // 恢复 LLM 语义排序顺序
-                  finalFiltered.sort((a, b) =>
-                    (rerankOrder.get(String(a.id)) ?? Number.MAX_SAFE_INTEGER)
-                    - (rerankOrder.get(String(b.id)) ?? Number.MAX_SAFE_INTEGER)
-                  );
-                } else {
-                  finalFiltered.sort((a, b) => (scoreMap.get(String(b.id)) ?? 0) - (scoreMap.get(String(a.id)) ?? 0));
-                }
                 console.log('🎯 Vector search results:', finalFiltered.length);
                 vectorScoreMapRef.current = { query, scores: scoreMap };
                 skipNextTextSearchRef.current = true;
@@ -525,7 +559,7 @@ export const useSearchActions = (): SearchActions => {
         setSearchPhase(null);
       }
     }
-  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t, toast]);
+  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t, toast, commitSubmittedSearch, clearSubmittedSearch]);
 
   const syncStars = useCallback(async (mode: 'auto' | 'stars-only' | 'stars-and-lists' = 'auto') => {
     if (!githubToken) {
@@ -636,8 +670,13 @@ export const useSearchActions = (): SearchActions => {
     searchReport,
     vectorScoreMapRef,
     skipNextTextSearchRef,
+    submittedRevision,
+    relevanceSearch: submittedRef.current?.sortMode === 'relevance',
+    applySubmittedSearch,
+    clearSubmittedSearch,
+    setExplicitSearchSort,
     aiSearch,
     keywordSearch,
     syncStars,
-  }), [isSearching, searchPhase, searchReport, aiSearch, keywordSearch, syncStars]);
+  }), [isSearching, searchPhase, searchReport, aiSearch, keywordSearch, syncStars, submittedRevision, applySubmittedSearch, clearSubmittedSearch, setExplicitSearchSort]);
 };

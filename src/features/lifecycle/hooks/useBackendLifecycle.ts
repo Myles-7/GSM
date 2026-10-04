@@ -15,6 +15,7 @@ import {
 import { startPluginSnapshotBridge, stopPluginSnapshotBridge } from '../../../plugins/pluginSnapshotBridge';
 import { refreshAgyDeviceState } from '../../../services/agyClient';
 import { activateDesktopHome, stopDesktopHome } from '../../../home/desktop';
+import { hasPendingLocalBackupRestore } from '../../../services/localBackupRecoveryGate';
 
 /**
  * Owns application-wide backend and Electron MCP startup after Store hydration.
@@ -39,11 +40,13 @@ export const useBackendLifecycle = (hasHydrated: boolean): void => {
     const initialize = async () => {
       performance.mark?.('gsm:backend-initialize-start');
       try {
+        if (await hasPendingLocalBackupRestore()) return;
         await backend.init();
         if (backend.isAvailable && !cancelled) {
           // Session restoration must precede the data pull so a fresh browser
           // receives authentication state before it consumes backend records.
           await tryRestoreAuthFromBackend();
+          if (await hasPendingLocalBackupRestore()) return;
           if (!cancelled && await activateDesktopHome()) return;
           if (!cancelled) {
             await syncLocalGitHubTokenToBackend();

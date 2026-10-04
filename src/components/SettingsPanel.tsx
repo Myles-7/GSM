@@ -74,24 +74,50 @@ const SETTINGS_GROUPS: Array<{ key: string; ids: SettingsTab[] }> = [
   { key: 'advanced', ids: ['network', 'plugins', 'mcp', 'logs'] },
 ];
 
+// Manual activation: arrows move focus; Enter/Space retain native button activation.
+function navigateTabs(event: React.KeyboardEvent<HTMLElement>, vertical = false) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  const target = (event.target as HTMLElement).closest<HTMLElement>('[role="tab"]');
+  if (!target) return;
+  const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+  const index = tabs.indexOf(target);
+  if (index < 0) return;
+  let next: number;
+  if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = tabs.length - 1;
+  else if (event.key === (vertical ? 'ArrowDown' : 'ArrowRight')) next = (index + 1) % tabs.length;
+  else if (event.key === (vertical ? 'ArrowUp' : 'ArrowLeft')) next = (index - 1 + tabs.length) % tabs.length;
+  else return;
+  event.preventDefault();
+  tabs[next].focus();
+  tabs[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function SettingsSearch({ query, onChange }: { query: string; onChange: (query: string) => void }) {
+  const ux = useT('settings');
+  return <div className="relative">
+    <Search size={14} className="pointer-events-none absolute left-2.5 top-3 text-muted-foreground" />
+    <Input value={query} onChange={event => onChange(event.target.value)} aria-label={ux('settingsUx.searchSettings')} placeholder={ux('settingsUx.searchSettings')} className="h-9 pl-8 pr-8 text-sm" />
+    {query && <Button variant="ghost" size="icon" className="absolute right-0 top-0 h-9 w-8" onClick={() => onChange('')} aria-label={ux('settingsUx.clearSearch')}><X size={14} /></Button>}
+  </div>;
+}
+
 function SettingsNav({ tabs, activeTab, onTabChange }: MobileTabNavProps) {
   const t = useT('app');
   const ux = useT('settings');
   const [query, setQuery] = useState('');
   const visible = tabs.filter(tab => tab.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const focusable = visible.find(tab => tab.id === activeTab)?.id ?? visible[0]?.id;
   return <div className="p-3">
-    <div className="relative mb-4">
-      <Search size={14} className="pointer-events-none absolute left-2.5 top-3 text-muted-foreground" />
-      <Input value={query} onChange={event => setQuery(event.target.value)} aria-label={ux('settingsUx.searchSettings')} placeholder={ux('settingsUx.searchSettings')} className="h-9 pl-8 pr-8 text-sm" />
-      {query && <Button variant="ghost" size="icon" className="absolute right-0 top-0 h-9 w-8" onClick={() => setQuery('')} aria-label={ux('settingsUx.clearSearch')}><X size={14} /></Button>}
-    </div>
-    <nav role="tablist" aria-orientation="vertical" aria-label={t('app:settingsPanel.settings-tabs')}>
+    <div className="mb-4"><SettingsSearch query={query} onChange={setQuery} /></div>
+    <nav role="tablist" aria-orientation="vertical" aria-label={t('app:settingsPanel.settings-tabs')} onKeyDown={event => navigateTabs(event, true)}>
       {SETTINGS_GROUPS.map(group => {
         const items = group.ids.flatMap(id => visible.filter(tab => tab.id === id));
         return items.length > 0 && <div key={group.key} className="mb-4 last:mb-0">
           <p className="mb-1 px-2 text-[11px] font-medium tracking-wide text-muted-foreground">{ux(`settingsUx.groups.${group.key}`)}</p>
           {items.map(tab => <Button key={tab.id} type="button" variant={activeTab === tab.id ? 'secondary' : 'ghost'} onClick={() => onTabChange(tab.id)}
             role="tab" id={`settings-tab-${tab.id}`} aria-selected={activeTab === tab.id} aria-controls={`settings-tabpanel-${tab.id}`}
+            tabIndex={tab.id === focusable ? 0 : -1}
             className="h-9 w-full justify-start gap-2.5 px-2 text-left text-sm">
             {tab.icon}<span className="min-w-0 flex-1 whitespace-normal font-medium">{tab.label}</span>
             {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
@@ -112,147 +138,33 @@ interface MobileTabNavProps {
 
 const MobileTabNav: React.FC<MobileTabNavProps> = ({ tabs, activeTab, onTabChange }) => {
   const t = useT('app');
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Map<SettingsTab, HTMLButtonElement>>(new Map());
-  const [indicatorStyle, setIndicatorStyle] = useState({ translateX: 0, width: 0 });
-  const isScrollingRef = useRef(false);
-  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rafRef = useRef<number | null>(null);
-
-  // 使用 requestAnimationFrame 更新指示器，避免闪烁
-  const updateIndicator = useCallback(() => {
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-    }
-
-    rafRef.current = requestAnimationFrame(() => {
-      const activeButton = tabRefs.current.get(activeTab);
-      if (activeButton && scrollContainerRef.current) {
-        // 使用 offsetLeft 代替 getBoundingClientRect，避免重排导致的闪烁
-        const container = scrollContainerRef.current;
-        const translateX = activeButton.offsetLeft - container.scrollLeft;
-        const width = activeButton.offsetWidth;
-
-        setIndicatorStyle({ translateX, width });
-      }
-    });
-  }, [activeTab]);
-
-  // 滚动到活动标签
-  const scrollToActiveTab = useCallback(() => {
-    const activeButton = tabRefs.current.get(activeTab);
-    if (activeButton && scrollContainerRef.current) {
-      const container = scrollContainerRef.current;
-      const scrollLeft = activeButton.offsetLeft - (container.offsetWidth / 2) + (activeButton.offsetWidth / 2);
-      
-      container.scrollTo({
-        left: Math.max(0, scrollLeft),
-        behavior: 'smooth',
-      });
-    }
-  }, [activeTab]);
-
-  // 分离 useEffect：初始化和标签切换时更新指示器
+  const ux = useT('settings');
+  const [query, setQuery] = useState('');
+  const activeRef = useRef<HTMLButtonElement>(null);
+  const visible = tabs.filter(tab => tab.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const focusable = visible.find(tab => tab.id === activeTab)?.id ?? visible[0]?.id;
   useEffect(() => {
-    // 初始计算
-    updateIndicator();
-  }, [updateIndicator]);
+    activeRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTab, query]);
 
-  // 标签切换时先滚动再更新指示器
-  useEffect(() => {
-    scrollToActiveTab();
-    // 延迟更新指示器，等待滚动完成
-    const timer = setTimeout(() => {
-      updateIndicator();
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [activeTab, scrollToActiveTab, updateIndicator]);
-
-  // 处理滚动状态 - 使用 ref 避免重新创建函数
-  const handleScroll = useCallback(() => {
-    if (!isScrollingRef.current) {
-      isScrollingRef.current = true;
-    }
-    
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current);
-    }
-    
-    scrollTimeoutRef.current = setTimeout(() => {
-      isScrollingRef.current = false;
-      updateIndicator();
-    }, 150);
-  }, [updateIndicator]);
-
-  useEffect(() => {
-    return () => {
-      if (scrollTimeoutRef.current) {
-        clearTimeout(scrollTimeoutRef.current);
-      }
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-    };
-  }, []);
-
-  return (
-    <div 
-      className="relative w-full overflow-hidden border-b border-border dark:border-border bg-background/95 dark:bg-card/95 backdrop-blur-sm"
-    >
-      {/* 滚动容器 */}
-      <div
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        role="tablist"
-        className="flex overflow-x-auto scrollbar-hide py-2 px-2 gap-1 snap-x snap-mandatory"
-        style={{
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-          WebkitOverflowScrolling: 'touch',
-        }}
-      >
-        {tabs.map((tab) => (
-          <Button
-            key={tab.id}
-            ref={(el) => {
-              if (el) {
-                tabRefs.current.set(tab.id, el);
-              } else {
-                tabRefs.current.delete(tab.id);
-              }
-            }}
-            type="button"
-            variant={activeTab === tab.id ? 'secondary' : 'ghost'}
-            size="sm"
-            onClick={() => onTabChange(tab.id)}
-            role="tab"
-            id={`settings-tab-mobile-${tab.id}`}
-            aria-selected={activeTab === tab.id}
-            aria-controls={`settings-tabpanel-${tab.id}`}
-            className="min-h-[36px] shrink-0 snap-center rounded-full touch-manipulation"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            <span className="h-4 w-4 shrink-0">{tab.icon}</span>
-            <span className="whitespace-nowrap text-sm font-medium">{tab.label}</span>
-            {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
-          </Button>
-        ))}
-      </div>
-      
-      {/* 底部活动指示器 */}
-      <div
-        className="absolute bottom-0 h-0.5 bg-primary rounded-full transition-all duration-200 ease-out will-change-transform"
-        style={{
-          transform: `translateX(${indicatorStyle.translateX}px)`,
-          width: indicatorStyle.width,
-        }}
-      />
-      
-      {/* 左右渐变遮罩 */}
-      <div className="absolute left-0 top-0 bottom-0 w-4 bg-gradient-to-r from-background/95 dark:from-card/95 to-transparent pointer-events-none md:hidden" />
-      <div className="absolute right-0 top-0 bottom-0 w-4 bg-gradient-to-l from-background/95 dark:from-card/95 to-transparent pointer-events-none md:hidden" />
+  return <div className="min-w-0 border-b border-border bg-background/95">
+    <div className="px-4 pt-3 pb-1 sm:px-6"><SettingsSearch query={query} onChange={setQuery} /></div>
+    <div role="tablist" aria-label={t('app:settingsPanel.settings-tabs')} aria-orientation="horizontal"
+      onKeyDown={event => navigateTabs(event)}
+      className="flex gap-1 overflow-x-auto px-2 py-2 scrollbar-on-scroll">
+      {visible.map(tab => <Button key={tab.id} ref={tab.id === activeTab ? activeRef : undefined}
+        type="button" variant={activeTab === tab.id ? 'secondary' : 'ghost'} size="sm"
+        onClick={() => onTabChange(tab.id)} role="tab" id={`settings-tab-mobile-${tab.id}`}
+        aria-selected={activeTab === tab.id} aria-controls={`settings-tabpanel-${tab.id}`}
+        tabIndex={tab.id === focusable ? 0 : -1}
+        className="min-h-10 shrink-0 rounded-md touch-manipulation">
+        <span className="h-4 w-4 shrink-0">{tab.icon}</span>
+        <span className="whitespace-nowrap text-sm font-medium">{tab.label}</span>
+        {tab.badge != null && <VectorPendingBadge count={tab.badge} t={t} />}
+      </Button>)}
     </div>
-  );
+    {visible.length === 0 && <p role="status" className="px-4 pb-3 text-sm text-muted-foreground">{ux('settingsUx.noResults')}</p>}
+  </div>;
 };
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ 
@@ -449,7 +361,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         role="tabpanel"
         id={`settings-tabpanel-${displayTab}`}
         aria-label={tabs.find((tab) => tab.id === displayTab)?.label ?? t('app:settingsPanel.settings-content')}
-        className="min-w-0"
+        tabIndex={0}
+        className="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {content}
       </div>

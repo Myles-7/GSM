@@ -201,7 +201,7 @@ describe('scoped service and real Worker handler (mock Vectorize, no network)', 
     await service.upsert([vector()]);
     fake.binding.describe.mockResolvedValue({ dimensions: 3, vectorCount: 0, processedUpToMutation: '' });
     const controller = new AbortController();
-    const assertion = expect(service.verifyGeneration([{ id: '1', contentHash: 'a'.repeat(64) }], controller.signal)).rejects.toThrow('Aborted');
+    const assertion = expect(service.verifyGeneration([{ id: '1', contentHash: 'a'.repeat(64) }], controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     controller.abort();
     await assertion;
     expect(fake.stored.size).toBe(1);

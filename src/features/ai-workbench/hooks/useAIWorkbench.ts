@@ -205,6 +205,10 @@ export function useAIWorkbench() {
     const context = record.workbench ?? data;
     if (options?.repositories) await patchData(record.id, { scope: 'selected', selectedRepositories: options.repositories, inputIntent: 'research' });
     const intent = options?.intent ?? context.inputIntent ?? 'search';
+    if (intent === 'results' && !manage) {
+      const scope = options?.candidates ?? mergeWorkbenchCandidates(...context.searchBatches.map(batch => batch.candidates));
+      if (!scope.length || scope.length > 120) throw new Error(t('overview.scopeLimit', { count: scope.length }));
+    }
     const localScope = !options?.repositories && intent !== 'results' && (context.scope === 'local' || context.scope === 'mixed');
     const localGrant = localScope ? getLocalResearchGrant(record.id, ownerId) : undefined;
     if (localScope && !localGrant) throw new Error(t('localResearch.rebind'));
@@ -422,6 +426,10 @@ export function useAIWorkbench() {
     ownerId, sessions, projects, mode, setMode, active, activeId, select, messages, evidence, freshness,
     proposals, project, data, error, task, guard, refresh, repositories, aiConfigs,
     modelId: settings.chatConfigId ?? activeAIConfig ?? '', settings, setSettings,
+    openAISettings: () => {
+      sessionStorage.setItem('gsm:pending-settings-tab', 'ai');
+      useAppStore.getState().setCurrentView('settings');
+    },
     createSession, createProject, saveProject, patchSession, patchData, send, search, addRepository,
     addRepositories: async (items: Repository[]) => {
       const record = active ?? await createSession();

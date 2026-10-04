@@ -1,550 +1,168 @@
 # GithubStarsManager 卡片视觉体系、微交互与动效质感全方位打磨分析
 
-## 1. 背景与核心定位
-
-GithubStarsManager（GSM）桌面端核心交互范式为**轻量卡片流（Visual-Centric）**，以鼠标操控与高密度信息浏览为主。面对海量 Star 仓库的日常检索与整理，用户重点追求现代化精致质感：克制的投影与高光、精准的圆角层叠几何、高阶透气的呼吸感骨架屏、平滑不掉帧的折叠展开微动效，以及符合 WCAG 无障碍标准的清晰标签色彩编码。
-
-本分析报告系统审查当前卡片体系（[RepositoryCard.tsx](file:///d:/桌面/GSM/src/components/RepositoryCard.tsx)、[tailwind.config.js](file:///d:/桌面/GSM/tailwind.config.js)、[index.css](file:///d:/桌面/GSM/src/index.css)、[RepositoryGrid.tsx](file:///d:/桌面/GSM/src/features/repositories/components/RepositoryGrid.tsx)、[RepositoryGroups.tsx](file:///d:/桌面/GSM/src/features/repositories/components/RepositoryGroups.tsx)、[RepositoryLanguageStars.tsx](file:///d:/桌面/GSM/src/components/RepositoryLanguageStars.tsx) 与抽屉组件），诊断视觉硬伤并提供可落地的工程级重构实现规范。
-
----
-
-## 2. 【视觉不一致清单】（Visual Inconsistencies & Rough Edges）
-
-依据设计工程规范，下表详细梳理当前卡片在阴影、圆角、内边距、字体层级等维度上的粗糙细节与修复方案：
-
-| Before | After | Why |
-| :--- | :--- | :--- |
-| `transition-[color,background-color,border-color,box-shadow] duration-200` 与 `.ui-card` 内置 `150ms` 冲突 | `transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 200ms cubic-bezier(0.23, 1, 0.32, 1), border-color 150ms ease-out;` | 避免多重过渡声明冲突；精确指定变换属性，规避主线程样式重算与模糊过渡 |
-| Hover 时仅扩展大阴影 `--ui-shadow-float`，无物理位移反馈 | Hover 时配合 `translateY(-2.5px)` 微上浮与双层阴影；`:active` 时添加 `scale(0.995)` | 无位移的单纯阴影扩散显得扁平生硬；符合真实物理世界的轻微受力反馈与按压阻尼感 |
-| 外卡片 `rounded-lg (8px)`，内部按钮 `rounded-md (6px)`，内边距 `p-4 (16px)` | 外卡片 `rounded-xl (12px)`，内按钮 `rounded-lg (8px)`，标签 `rounded-md (6px)` | 遵循嵌套圆角几何法则 $R_{outer} = R_{inner} + P$。外 8px 与内 6px 配合 16px 内边距会产生明显的同心圆畸变 |
-| 描述文本套用 `-mx-1 px-1 hover:bg-muted` 产生局部闪烁灰块 | 移除描述段落的局部背景 Hover 变色，直接由整卡 Hover 驱动文本微亮度增强 | 局部段落 Hover 灰块切割了卡片整体性，产生视觉噪音与闪烁感 |
-| 底部更新时间用 `text-sm`，甚至大于正文描述（`text-[13px]`） | 底部元数据统一为 `text-xs (12px)`，描述正文使用 `text-[13px] leading-[1.6]` | 修复视觉层级倒挂：辅助时间元数据绝不能比核心描述文本拥有更高级别的字号 |
-| 仓库名与作者名皆为 `text-sm`，仅颜色有细微明暗差异 | 标题 `text-sm font-semibold text-foreground`，Owner 改为 `text-xs font-medium text-muted-foreground` | 强化主副标题视觉层级区分，提升扫读效率 |
-| 网格与列表模式下右侧操作栏按钮尺寸不一（网格 `h-7 w-7` 间距 2px，列表 `h-8 w-8`） | 统一为 `h-8 w-8`（或紧凑网格统一触控靶区 `h-7.5 w-7.5 gap-1`） | 保持跨视图交互心智一致性，防止网格下 2px 极小间距引发鼠标误触 |
-| 深色模式下为纯黑无光泽底色加生硬边框，阴影几乎不可见 | 引入深色微光边框 `border-border/60 dark:border-white/[0.08]` 及顶部天光反射 `inset 0 1px 0 rgba(255,255,255,0.06)` | 深色模式下黑色阴影失效，必须通过表面天光反射与微光边框表达卡片深度 |
-| 语言色点直接硬编码 Hex（如 JavaScript `#f1e05a`）在浅色卡片上几近隐形 | 增加 `ring-1 ring-black/10 dark:ring-white/10` 或动态明度校正 | 纯白底上的黄色点对比度仅 ~1.25:1，违背 WCAG 3:1 图形边界可访问性标准 |
-| `RepositoryGrid` 使用 `ResizeObserver` 动态赋列，初次渲染从 `columns=1` 跃迁 | 采用 CSS Grid 纯 CSS 方案 `grid-template-columns: repeat(auto-fill, minmax(310px, 1fr))` | 彻底消除 JS 测量导致的初次渲染单列闪烁（CLS 布局抖动） |
-| 分组折叠直接 `if (collapsed) return null;` 突兀销毁 DOM | 基于 CSS Grid `grid-template-rows: 0fr -> 1fr` 实现平滑折叠过渡 | 避免分类切换与折叠时视口高度瞬间坍缩，提供平滑视觉过渡 |
-| 骨架屏仅有简单的 `text-skeleton`，网格卡片加载时无占位 | 建立与 `RepositoryCard` 1:1 几何占位的 Shimmer 流光呼吸骨架屏 | 消除加载状态与实体卡片渲染时的跳动，保持视觉占位节奏一致 |
-
----
-
-## 3. 【动效打磨规范】（Motion & Micro-interaction Engineering）
-
-### 3.1 动效缓动与持续时间配置（Easing Tokens）
-在 [tailwind.config.js](file:///d:/桌面/GSM/tailwind.config.js) 与 [index.css](file:///d:/桌面/GSM/src/index.css) 中定义符合物理规律的定制贝塞尔曲线，禁止在 UI 交互中使用迟缓的 `ease-in`：
-
-```css
-/* src/index.css */
-:root {
-  /* 响应迅速、回弹自然的微交互曲线（Emil Kowalski 推荐） */
-  --ease-spring-out: cubic-bezier(0.23, 1, 0.32, 1);
-  /* 侧滑抽屉/面板专属顺滑减速曲线 */
-  --ease-drawer-out: cubic-bezier(0.32, 0.72, 0, 1);
-
-  /* 现代卡片微投影分层 */
-  --card-shadow-resting: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
-  --card-shadow-hover: 0 8px 24px -4px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.04);
-  --card-glow-dark: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 24px -4px rgba(0, 0, 0, 0.5);
-}
-```
-
-```javascript
-// tailwind.config.js 扩展
-extend: {
-  transitionTimingFunction: {
-    'spring-out': 'cubic-bezier(0.23, 1, 0.32, 1)',
-    'drawer-out': 'cubic-bezier(0.32, 0.72, 0, 1)',
-  },
-  transitionDuration: {
-    '180': '180ms',
-    '220': '220ms',
-  },
-}
-```
-
----
-
-### 3.2 卡片 Hover / Active 触感规范
-```css
-/* 现代精致卡片交互类 */
-.repository-card-modern {
-  position: relative;
-  background-color: hsl(var(--card));
-  border-radius: 0.75rem; /* 12px */
-  border: 1px solid hsl(var(--border) / 0.8);
-  box-shadow: var(--card-shadow-resting);
-  /* 精确监听硬件加速属性 */
-  transition:
-    transform 200ms var(--ease-spring-out),
-    box-shadow 200ms var(--ease-spring-out),
-    border-color 150ms ease-out,
-    background-color 150ms ease-out;
-  will-change: transform;
-}
-
-/* 仅在支持高精度鼠标悬停的设备上触发浮起，避免移动端滚动误触发跳动 */
-@media (hover: hover) and (pointer: fine) {
-  .repository-card-modern:hover {
-    transform: translateY(-2.5px);
-    box-shadow: var(--card-shadow-hover);
-    border-color: hsl(var(--ring) / 0.4);
-  }
-}
-
-/* 按压瞬间的紧实阻尼反馈 */
-.repository-card-modern:active {
-  transform: translateY(-0.5px) scale(0.995);
-  transition-duration: 80ms;
-}
-
-/* 深色模式下的微光与边缘天光反射 */
-.dark .repository-card-modern {
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-.dark .repository-card-modern:hover {
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), var(--card-glow-dark);
-}
-```
-
----
-
-### 3.3 分组平滑折叠展开微动效（CSS Grid Trick）
-解决 [RepositoryGroups.tsx](file:///d:/桌面/GSM/src/features/repositories/components/RepositoryGroups.tsx) 中 `if (collapsed) return null;` 突兀闪现的问题，采用无需 JS 测量高度的 0-重排 CSS Grid 方案：
-
-```css
-/* 分组折叠动画容器 */
-.smooth-collapse-grid {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows 220ms var(--ease-spring-out), opacity 180ms ease-out;
-  opacity: 1;
-}
-
-.smooth-collapse-grid.is-collapsed {
-  grid-template-rows: 0fr;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.smooth-collapse-inner {
-  overflow: hidden;
-  min-height: 0;
-}
-```
-
-```tsx
-// 在 RepositoryGroups 中的应用范例
-<div className={`smooth-collapse-grid ${collapsed.has(section.key) ? 'is-collapsed' : ''}`}>
-  <div className="smooth-collapse-inner">
-    <GroupBatch repositories={ordered} ... />
-  </div>
-</div>
-```
-
----
-
-### 3.4 详情抽屉平滑滑入微动效（Drawer Motion）
-针对 [RepositoryDetailsPanel.tsx](file:///d:/桌面/GSM/src/components/RepositoryDetailsPanel.tsx) 错误复用 `Dialog` 导致居中缩放抖动的缺陷，改用纯 GPU `transform` 侧滑进出：
-
-```css
-/* 详情抽屉遮罩 */
-.drawer-backdrop {
-  opacity: 0;
-  transition: opacity 220ms ease-out;
-  backdrop-filter: blur(2px);
-}
-.drawer-backdrop[data-state='open'] {
-  opacity: 1;
-}
-
-/* 详情抽屉面板：Enter 240ms 弹簧减速，Exit 180ms 快速退场 */
-.details-drawer-panel {
-  transform: translateX(100%);
-  transition: transform 240ms var(--ease-drawer-out);
-  will-change: transform;
-}
-
-.details-drawer-panel[data-state='open'] {
-  transform: translateX(0);
-}
-
-.details-drawer-panel[data-state='closed'] {
-  transform: translateX(100%);
-  transition: transform 180ms cubic-bezier(0.4, 0, 1, 1);
-}
-```
-
----
-
-### 3.5 呼吸感流光骨架屏（Shimmer Mesh）
-替换现有简单的 `animate-pulse`，引入均匀平移的微光扫过效果：
-
-```css
-@keyframes shimmerSweep {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-}
-
-.skeleton-shimmer {
-  position: relative;
-  overflow: hidden;
-  background-color: hsl(var(--muted) / 0.6);
-}
-
-.skeleton-shimmer::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    hsl(var(--foreground) / 0.05) 50%,
-    transparent 100%
-  );
-  animation: shimmerSweep 1.8s infinite cubic-bezier(0.4, 0, 0.2, 1);
-}
-```
-
-```tsx
-// 几何 1:1 对齐的卡片骨架屏组件
-export function RepositoryCardSkeleton() {
-  return (
-    <div className="repository-card-modern p-4 flex flex-col h-[220px]">
-      <div className="flex items-start gap-2.5 mb-3">
-        <div className="skeleton-shimmer w-8 h-8 rounded-full shrink-0" />
-        <div className="flex-1 space-y-1.5">
-          <div className="skeleton-shimmer h-4 w-3/4 rounded-md" />
-          <div className="skeleton-shimmer h-3 w-1/3 rounded-md" />
-        </div>
-      </div>
-      <div className="space-y-2 mb-4 flex-1">
-        <div className="skeleton-shimmer h-3 w-full rounded-md" />
-        <div className="skeleton-shimmer h-3 w-4/5 rounded-md" />
-      </div>
-      <div className="flex gap-1.5 mb-4">
-        <div className="skeleton-shimmer h-5 w-14 rounded-md" />
-        <div className="skeleton-shimmer h-5 w-16 rounded-md" />
-      </div>
-      <div className="pt-2 border-t border-border/40 flex justify-between items-center mt-auto">
-        <div className="skeleton-shimmer h-3.5 w-20 rounded-md" />
-        <div className="skeleton-shimmer h-3.5 w-16 rounded-md" />
-      </div>
-    </div>
-  );
-}
-```
-
----
-
-## 4. 【标签与元数据色彩系统】（Tag & Metadata Color Architecture）
-
-建立清晰的三级语义色彩系统，满足 WCAG 2.1 AA 标准（文本对背景对比度 $\ge 4.5:1$，图形边缘 $\ge 3:1$）：
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    标签与元数据色彩层级                        │
-├──────────────────────────────────────────────────────────────┤
-│ 1. 软件架构形态 (CLI, Agent, Lib) ── 结构化冷调 (Indigo/Sky)  │
-│ 2. 仓库 Topics / 业务分类       ── 低调中性质感 (Slate/Zinc)  │
-│ 3. 编程语言色点 (Language Dots)  ── 自适应微光环 (Adaptive)   │
-│ 4. 状态徽章 (AI / Analyzed)      ── 呼吸光感 (Emerald/Violet) │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 4.1 多语言色点对比度强化方案
-针对浅色白底上的亮色（JavaScript `#f1e05a`）与深色底上的暗色（Ruby `#701516`、C `#555555`）：
-
-```tsx
-// src/components/AdaptiveLanguageDot.tsx
-import React from 'react';
-
-const LANGUAGE_PALETTE: Record<string, { light: string; dark: string; borderNeeded?: boolean }> = {
-  JavaScript: { light: '#c99a00', dark: '#f1e05a', borderNeeded: true },
-  TypeScript: { light: '#3178c6', dark: '#4895ef' },
-  Python:     { light: '#2b5b84', dark: '#4584b6' },
-  Java:       { light: '#a65d07', dark: '#e76f51' },
-  'C++':      { light: '#d6336c', dark: '#f34b7d' },
-  C:          { light: '#495057', dark: '#adb5bd' },
-  'C#':       { light: '#1971c2', dark: '#38b000' },
-  Go:         { light: '#0084a8', dark: '#00add8' },
-  Rust:       { light: '#a7522c', dark: '#dea584' },
-  Ruby:       { light: '#701516', dark: '#ff5c5c' },
-  Shell:      { light: '#5c940d', dark: '#89e051' },
-  HTML:       { light: '#d9381e', dark: '#e34c26' },
-  CSS:        { light: '#1864ab', dark: '#4dabf7' },
-  Vue:        { light: '#2f9e44', dark: '#4fc08d' },
-  React:      { light: '#0c8599', dark: '#61dafb' },
-};
-
-export function AdaptiveLanguageDot({ language }: { language: string }) {
-  const config = LANGUAGE_PALETTE[language];
-  const color = config?.light || '#6b7280';
-  const darkColor = config?.dark || '#9ca3af';
-
-  return (
-    <span
-      className="inline-block h-2 w-2 rounded-full shrink-0 ring-1 ring-black/10 dark:ring-white/15"
-      style={{
-        backgroundColor: 'var(--lang-dot-color)',
-        ['--lang-dot-color' as string]: color,
-      }}
-      data-dark-color={darkColor}
-      aria-hidden="true"
-    />
-  );
-}
-```
-
-### 4.2 标签层级 CSS 规范
-```css
-/* 1. 软件架构/形态标签（高阶属性） */
-.tag-software-form {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.125rem 0.4375rem;
-  font-size: 0.6875rem; /* 11px */
-  font-weight: 510;
-  border-radius: 0.375rem; /* 6px */
-  background-color: hsl(var(--primary) / 0.08);
-  color: hsl(var(--primary));
-  border: 1px solid hsl(var(--primary) / 0.18);
-}
-
-/* 2. 普通 Topic 标签（中性温和，不抢视觉） */
-.tag-topic {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.125rem 0.375rem;
-  font-size: 0.6875rem; /* 11px */
-  font-weight: 450;
-  border-radius: 0.375rem; /* 6px */
-  background-color: hsl(var(--muted) / 0.7);
-  color: hsl(var(--muted-foreground));
-  border: 1px solid hsl(var(--border) / 0.6);
-  transition: background-color 140ms ease, color 140ms ease;
-}
-.tag-topic:hover {
-  background-color: hsl(var(--accent));
-  color: hsl(var(--foreground));
-}
-
-/* 3. 用户手动打标（强化识别） */
-.tag-custom {
-  border-left: 2px solid hsl(var(--primary));
-}
-```
-
----
-
-## 5. 【卡片组件重构示例】（Refactored Modern RepositoryCard）
-
-以下为重塑后的现代化轻量卡片组件，全面融入精致投影、自适应微光边框、符合人体工程学的内边距与无毛刺动效：
-
-```tsx
-import React, { useMemo } from 'react';
-import {
-  GripVertical,
-  Star,
-  ExternalLink,
-  Calendar,
-  Sparkles,
-  Bot,
-  ArrowRight,
-  PackageOpen,
-  CheckSquare,
-  Square,
-  MoreHorizontal
-} from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
-import { Button } from './ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { AdaptiveLanguageDot } from './AdaptiveLanguageDot';
-import type { Repository } from '../types';
-
-interface ModernRepositoryCardProps {
-  repository: Repository;
-  isSelected?: boolean;
-  onSelect?: (id: number) => void;
-  selectionMode?: boolean;
-  onViewDetails?: (repo: Repository) => void;
-  searchQuery?: string;
-}
-
-export const ModernRepositoryCard: React.FC<ModernRepositoryCardProps> = ({
-  repository,
-  isSelected = false,
-  onSelect,
-  selectionMode = false,
-  onViewDetails,
-}) => {
-  const isAnalyzed = Boolean(repository.analyzed_at && !repository.analysis_failed);
-
-  const displayTags = useMemo(() => {
-    if (repository.custom_tags && repository.custom_tags.length > 0) {
-      return repository.custom_tags.slice(0, 3).map((t) => ({ tag: t, isCustom: true }));
-    }
-    return (repository.topics || []).slice(0, 3).map((t) => ({ tag: t, isCustom: false }));
-  }, [repository.custom_tags, repository.topics]);
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        if (selectionMode && onSelect) onSelect(repository.id);
-        else onViewDetails?.(repository);
-      }}
-      className={`
-        repository-card-modern group relative flex flex-col h-full cursor-pointer
-        p-4 select-none
-        ${isSelected ? 'ring-2 ring-primary border-primary bg-primary/[0.02]' : ''}
-      `}
-    >
-      {/* 1. 顶部栏：所有者头像、仓库名与右上角微操作区 */}
-      <div className="flex items-start gap-2.5 mb-2.5">
-        <img
-          src={repository.owner.avatar_url}
-          alt={repository.owner.login}
-          className="w-8 h-8 rounded-full shrink-0 ring-1 ring-border/50 object-cover"
-          loading="lazy"
-        />
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 leading-tight">
-            <h3 className="text-sm font-semibold text-foreground tracking-tight truncate">
-              {repository.name}
-            </h3>
-            {isAnalyzed && (
-              <span className="inline-flex shrink-0 text-primary" title="AI 分析就绪">
-                <Sparkles className="w-3 h-3 animate-pulse" />
-              </span>
-            )}
-          </div>
-          <p className="text-xs font-medium text-muted-foreground truncate mt-0.5">
-            {repository.owner.login}
-          </p>
-        </div>
-
-        {/* 悬停快捷操作区（紧凑、精致、防误触） */}
-        <div
-          className="flex items-center gap-0.5 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity duration-150"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <a
-            href={repository.html_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="在 GitHub 上查看"
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground"
-            title="更多操作"
-          >
-            <MoreHorizontal className="w-3.5 h-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      {/* 2. 正文描述区（固定3-4行行高平整展示） */}
-      <div className="flex-1 mb-3">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <p className="text-[13px] leading-[1.6] text-muted-foreground line-clamp-3 [text-wrap:pretty]">
-              {repository.custom_description || repository.ai_summary || repository.description || '暂无描述信息'}
-            </p>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-md text-xs">
-            {repository.custom_description || repository.ai_summary || repository.description}
-          </TooltipContent>
-        </Tooltip>
-      </div>
-
-      {/* 3. 标签展示区 */}
-      {displayTags.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-3">
-          {displayTags.map(({ tag, isCustom }) => (
-            <span
-              key={tag}
-              className={`tag-topic ${isCustom ? 'tag-custom font-medium' : ''}`}
-            >
-              #{tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 4. 底部沉底元数据栏（严格遵循信息从属原则，统一 11~12px 弱化修饰） */}
-      <div className="mt-auto pt-2.5 border-t border-border/50 flex items-center justify-between text-xs text-muted-foreground">
-        <div className="flex items-center gap-3 min-w-0">
-          {/* 语言色点 */}
-          {repository.language && (
-            <span className="flex items-center gap-1.5 truncate">
-              <AdaptiveLanguageDot language={repository.language} />
-              <span className="truncate max-w-[80px]">{repository.language}</span>
-            </span>
-          )}
-
-          {/* Stars 计数 */}
-          <span className="flex items-center gap-1 shrink-0 font-mono text-[11px]">
-            <Star className="w-3 h-3 text-muted-foreground/80" />
-            <span>{repository.stargazers_count?.toLocaleString()}</span>
-          </span>
-
-          {/* 更新相对时间 */}
-          <span className="hidden sm:flex items-center gap-1 shrink-0 text-muted-foreground/70">
-            <Calendar className="w-3 h-3" />
-            <span>
-              {formatDistanceToNow(new Date(repository.pushed_at || repository.updated_at), { addSuffix: true })}
-            </span>
-          </span>
-        </div>
-
-        {/* 详情入口或选择模式复选框 */}
-        <div className="flex items-center gap-1 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
-          {selectionMode ? (
-            <button
-              type="button"
-              onClick={() => onSelect?.(repository.id)}
-              className="p-1 rounded text-primary hover:bg-primary/10 transition-colors"
-            >
-              {isSelected ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-muted-foreground" />}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onViewDetails?.(repository)}
-              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] font-medium text-muted-foreground hover:text-primary hover:bg-primary/5 transition-all"
-            >
-              <span>详情</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-```
-
----
-
-## 6. 系统实施与落地路径
-
-1. **Step 1 - 基础视觉 Token 统一**：
-   在 [index.css](file:///d:/桌面/GSM/src/index.css) 中注入 `--ease-spring-out`、`--card-shadow-resting`、`--card-shadow-hover` 及深色天光高光变量，使全站卡片基底具备现代 SaaS 质感。
-2. **Step 2 - 网格 CLS 修复与骨架屏补全**：
-   将 [RepositoryGrid.tsx](file:///d:/桌面/GSM/src/features/repositories/components/RepositoryGrid.tsx) 切换为原生 CSS Grid 自适应，同时挂载 `RepositoryCardSkeleton` 流光占位组件。
-3. **Step 3 - 色彩系统与 WCAG 无障碍加固**：
-   引入 `AdaptiveLanguageDot` 替换原硬编码色点；统一分类与软件形态 Badge 的背景/字阶对比度。
-4. **Step 4 - 抽屉与折叠容器动效升级**：
-   在 [RepositoryDetailsPanel.tsx](file:///d:/桌面/GSM/src/components/RepositoryDetailsPanel.tsx) 和 [RepositoryGroups.tsx](file:///d:/桌面/GSM/src/features/repositories/components/RepositoryGroups.tsx) 中替换生硬显隐逻辑，注入 CSS Grid 平滑折叠和 240ms 弹簧滑入抽屉。
+> **阶段 4～8 代码更新（2026-10-03）**：阶段 7 只依据实际 light/dark 截图给主仓库 grid 语言点加现有 token outline；list/共享文本默认不变，键盘详情、选择及两条 reduced-motion 验证通过。未重构共享详情/视觉体系。 详见 [连续开发交付报告](GSM_阶段4至8连续开发交付报告.md)。
+
+> **本机范围**：仅 Windows 自用；保留现有主题/组件/账户行为，本轮只修订文档。用户反馈多个页面一次展示大量内容时有卡顿，视觉候选必须服从当前性能证据。
+
+> **现状校准 / 修订说明（2026-10-03）**：本文已按当前代码与《GSM_优化方向可行性与架构改进综合分析报告》重新校准。原文中“另起一套卡片 token、整体替换 RepositoryCard、自造抽屉、为了折叠动画长期保留大量 DOM”的方案不再作为实施建议。后续视觉优化应复用现有 ui-card、主题圆角/阴影 token、Radix Sheet、用户与系统 reduced-motion 机制，若后续因实测残余 DOM 瓶颈接入虚拟化，再与该视图生命周期保持一致；本机路线不预先要求虚拟化。
+
+## 1. 当前基线
+
+GSM 已经具备一套可继续演进的视觉基础，当前问题主要是局部一致性与大列表性能边界，不是缺少设计系统。
+
+| 领域 | 当前代码事实 | 修订后的结论 |
+| --- | --- | --- |
+| 卡片表面 | src/index.css 已有 .ui-card，统一使用 card、border、ui-radius-md、ui-shadow-card、ui-shadow-float | 不新增第二套 repository-card-modern 或 card-shadow 变量；优先收敛现有类 |
+| 圆角/阴影 | tailwind.config.js 的 rounded-md/lg/xl 由 radius 驱动，shadow-subtle/elevated/dialog 由主题 token 驱动；主题 preset 还能覆盖 radius/shadow | 所有新视觉参数从现有 token 派生，避免固定 12px/8px 体系 |
+| Reduced motion | 已同时存在用户选择 data-animation=reduced 与 OS prefers-reduced-motion | 新动效天然接受两层降级，不另造设置 |
+| RepositoryCard | 已承载 selection、键盘、拖拽、插件 action、README/Release lazy overlay、多视图行为 | 不整体替换，只做样式和局部结构增量调整 |
+| 详情面板 | RepositoryDetailsPanel 目前用 Dialog 模拟右侧全高面板；共享 ui/sheet.tsx 已基于 Radix Dialog 提供 overlay、focus、close 与 slide 动画 | 后续迁移到现有 Sheet，不自造 raw fixed drawer |
+| Release 抽屉 | RepositoryReleaseSheet 已复用共享 Sheet | 作为详情类侧滑层的参考实现 |
+| 网格列数 | RepositoryGrid 目前用 ResizeObserver 计算列数，初始 width 为 0 | 可优化首帧，但在虚拟化方案确定前不要引入第二套布局测量 |
+| 分组加载 | RepositoryGroups.GroupBatch 每次增加 50 条，滚动后旧节点仍留在 DOM；collapsed 时直接卸载 | 这是批加载，不是真虚拟化；折叠动画必须服从未来虚拟化 DOM 生命周期 |
+
+原文中仍值得保留的方向包括：统一 hover、边框、阴影和信息层级；提高亮色语言点的边界可见性；将详情交互收敛为真正的侧滑 Sheet；让 skeleton 更接近最终卡片几何；给分组折叠提供清晰视觉反馈。
+
+## 2. 目标视觉架构
+
+### 2.1 单一 token 来源
+
+卡片视觉继续使用现有 radius、ui-radius-sm/md/lg、ui-shadow-card、ui-shadow-float、app-shadow-subtle/elevated/dialog。视觉评审若认为现有 hover elevation 过重，应修改这些 token 或 .ui-card 规则，使所有消费者同步受益，而不是在 RepositoryCard 内再定义一套固定阴影。
+
+主题 preset 已支持 radius、shadowColor、shadowOpacity、shadow 等覆盖，因此任何固定圆角、固定阴影、固定深色微光都会绕开现有主题能力，后续不采用这种实现。
+
+### 2.2 RepositoryCard 保持行为契约
+
+目标不是新增 ModernRepositoryCard，而是围绕当前 RepositoryCard 与 RepositoryListPresentation 做三类小改动：
+
+1. 表面层继续使用 ui-card，减少 consumer 自己叠加的 shadow/radius。
+2. 信息层级统一标题、owner、描述、更新时间、标签的 semantic token。
+3. 交互层让 hover、selection、drag、expanded 等状态协调，避免 hover transform 覆盖 drag/selected 反馈。
+
+视觉改动必须保留键盘进入与 focus ring、selection mode、drag/drop、插件 action、README / Release lazy overlay、list/grid 两种展示，以及现有相关测试覆盖的行为。
+
+## 3. 动效规范
+
+### 3.1 卡片 hover
+
+现有 .ui-card 已有 150ms border/shadow transition。后续优先使用“border-color → shadow → 可选极轻位移”的顺序，不给每张卡片长期设置 will-change: transform。
+
+只在 fine pointer 下考虑极轻位移，建议上限先控制在约 1px，并在拖拽态、selection 态、同步态关闭位移动画。原文建议的 2.5px 上浮与全卡长期 will-change 不再推荐：在数百或数千卡片场景中，它可能增加合成层、显存压力并影响拖拽手感。
+
+是否新增 transform，应在当前常用列表上验证视觉收益与性能；不必等待虚拟化，但当前大量内容挂载时卡顿尚未解决，不先增加动效成本。
+
+### 3.2 reduced motion
+
+所有新增动效必须满足：
+
+- 用户选择 reduced animation 时近乎即时；
+- OS prefers-reduced-motion 时近乎即时；
+- 功能状态仍通过边框、颜色、图标或文本表达，不能只靠位移动画；
+- spinner 等真正表示任务仍在执行的功能性动画继续沿用当前例外策略。
+
+只有当 JS 逻辑需要跳过测量、延迟或过渡阶段时，才额外读取 reduced-motion 状态；基础 CSS 动画不需要再造一套 hook。
+
+### 3.3 详情 Sheet
+
+如果详情容器确有样式/焦点一致性问题，可独立从“Dialog + 手工右侧定位”迁移到共享 Sheet，复用 Radix 已有 portal、overlay、focus、Escape/outside dismiss、标题与动画。当前 Dialog 本身不是性能问题的证明；不要仅为架构统一启动迁移。
+
+迁移只改变容器原语，不借机重写 pinned、previous/next、README、analysis 等详情业务。RepositoryReleaseSheet 已经证明共享 Sheet 可承载实际业务，可直接作为实现参考。
+
+## 4. 标签、语言点与元数据
+
+### 4.1 颜色来源
+
+普通 topic 使用 muted / muted-foreground；强调状态使用 primary、success、warning、destructive；自定义标签通过 border、ring 或 icon 表达差异，不复制固定 Indigo/Sky palette。
+
+编程语言颜色可继续使用 GitHub 语言色，但亮色点应增加可见边界，例如使用 foreground 低透明度 ring。若未来需要按主题调整语言色，应集中到现有语言元数据 helper，而不是新增散落的组件级 palette。
+
+### 4.2 信息层级
+
+| 信息 | 建议 |
+| --- | --- |
+| 仓库名 | foreground + semibold，保持最强 |
+| owner / secondary metadata | muted-foreground，弱于标题 |
+| 描述 | 保持当前可读字号与稳定行高 |
+| 更新时间、统计附注 | 使用较弱层级与 muted-foreground |
+| 操作按钮 | 继续使用共享 Button 的 ghost/icon 变体 |
+
+是否把某一行从 text-sm 改成 text-xs，要基于真实截图和可读性验证；本文不把未验证像素值当成硬指标。
+
+## 5. Grid、分组折叠与 virtualization 协同
+
+这里说明已有批加载限制与未来接入条件，不要求先实现 virtualizer 才能做局部视觉修复。
+
+GroupBatch 当前只是 50 条一批的渐进挂载。用户继续滚动后，之前的卡片仍存在于 DOM。因此后续真正 virtualization 落地时，卡片和分组动效必须接受 offscreen row 会被卸载这一事实。
+
+### 5.1 分组折叠
+
+不采用“一律 CSS Grid 0fr → 1fr 并保留全部子 DOM”的方案。
+
+| 场景 | 折叠策略 |
+| --- | --- |
+| 小分组、未启用 virtualization | 可用短暂 height/grid/opacity 动画 |
+| 大分组或 virtualized group | 内容立即卸载，只动画 header chevron、border、opacity |
+| reduced motion | 直接切换状态 |
+
+“大分组”的阈值不预先拍脑袋写死，应由最终虚拟化实现和真实测量决定。
+
+### 5.2 Grid 首帧
+
+RepositoryGrid 当前 width=0 会先得到 1 列。可以提供合理 CSS fallback 减少首帧抖动，但最终只应有一个列数权威。不要同时维护 CSS auto-fill、ResizeObserver 和 virtualizer 三套列数/measurement 规则。
+
+如果未来 virtualizer 需要固定 column measurement，应让它接管宽度到列数的计算，RepositoryGrid 只负责呈现。
+
+## 6. Skeleton 与加载反馈
+
+原文“几何对齐 skeleton”方向保留，但不建议大量卡片同时无限 shimmer：
+
+- 首屏只渲染接近视口容量的 skeleton；
+- virtualized list 只让 viewport/overscan 内占位参与动画；
+- reduced motion 下使用静态 muted 占位；
+- skeleton 高度来自最终 layout 或可测量结构，不长期维护独立固定高度常量；
+- 已有数据刷新时优先保留旧内容并显示局部 pending 状态，避免整页 skeleton 闪回。
+
+## 7. 本机可独立选择的小任务
+
+用户当前主要反馈大量内容呈现时卡顿，先按性能专项定位；视觉精修不是这次卡顿的替代方案。
+
+| 候选 | 范围 | 验证/退出条件 |
+| --- | --- | --- |
+| 局部视觉收敛 | 一次处理 surface/层级/语言点等一项；沿用 ui-card 与 token | 实际 light/dark/常用 preset 截图、可读性、focus/selection/drag 回归 |
+| 详情容器 | 只有现有 Dialog/侧栏确有一致性问题才迁移共享 Sheet | pinned、previous/next、README、analysis、嵌套 modal 与焦点保持 |
+| 折叠/skeleton | 先减少无意义动画与避免保存大 DOM | 大内容切换无明显新增 long task，两条 reduced-motion 路径通过 |
+| 虚拟化兼容 | 仅实际决定接入的视图 | overlay/anchor、列数、离屏卸载与必要 placeholder 行为 |
+
+不强制搭建 100/500/1000 全主题 GPU 基线矩阵、额外设计系统或新动效框架。性能结论使用本次同条件 fixture；纯颜色/层级改动以截图和交互验证为主。
+
+## 8. 依赖与风险
+
+复用现有 token、Radix Sheet/Button/Card 即可；局部视觉任务不依赖 virtualizer 选型或全面 state 改造。若共享 Card 也用于发现结果，则验证该消费者，不能假设主仓库页通过就覆盖其它布局。
+
+1. 阴影/transform 在大量已挂载内容下可能增加绘制成本。
+2. RepositoryCard 隐含行为多，整块重写容易造成 selection/drag/overlay 回归。
+3. Sheet 迁移不能削弱 pinned、nested modal 与 opener 焦点行为。
+4. 大组为动画保留 DOM 会增加当前挂载成本；不应为了流畅外观隐藏实际卡顿。
+5. 固定颜色/圆角/阴影会绕过主题 preset。
+
+## 9. 验收指标
+
+- light/dark 与主题 preset 下，卡片 surface、radius、shadow 均来自现有 token，无第二套固定视觉变量；
+- keyboard focus、selection、drag、README、Release、详情等既有行为回归通过；
+- user reduced-motion 与 OS reduced-motion 下，新增非必要位移动画均被关闭；
+- 详情迁移后，focus trap、Escape、outside dismiss、focus restore 与共享 Sheet 契约一致；
+- 进入 virtualization 阶段后，折叠大组不会因为动画保留全部子 DOM；
+- 性能报告同时记录改动前后数据集、机器/平台、窗口尺寸、DOM 数量和采样方法；没有测量就不写“提升 X% / 稳定 60 FPS”结论；
+- 对比度使用真实主题背景测量，不凭颜色名称判断。
+
+## 10. 明确非目标
+
+- 不整体替换 RepositoryCard；
+- 不新建平行的卡片 token、shadow、radius 体系；
+- 不自造 raw fixed drawer；
+- 不为了折叠动画永久保留大分组 DOM；
+- 不在每张卡片上长期 will-change；
+- 不并行维护第二套 grid measurement；按实际启用的布局保留唯一规则；
+- 不用未经测量的 FPS、内存或“质感提升百分比”作为既成结果。
+
+本机方向是：在现有设计系统上做独立的小改动，优先解决实际大量内容呈现卡顿；动效遵守 reduced-motion 和当前挂载成本，虚拟化仅在实际选择接入时成为约束。本轮不开始视觉实现。

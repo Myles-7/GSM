@@ -1,7 +1,8 @@
 import { useT } from "../i18n/useT";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { Release } from '../types';
+import type { AIConfig, Release } from '../types';
+import { isAIConfigAvailable } from '../utils/aiConfig';
 import { sendToRpcDownload } from '../services/rpcDownloadService';
 import { AIService } from '../services/aiService';
 import { useAppStore } from '../store/useAppStore';
@@ -15,7 +16,14 @@ export type ReleaseArtifactSummaryState = {
   content?: string;
   error?: string;
   source?: string;
+  generation?: string;
+  owner?: string;
 };
+const releaseSummaryGeneration = (language: string, config: AIConfig | undefined) => JSON.stringify([
+  'release-summary-v2', language, config?.id, config?.provider, config?.apiType, config?.baseUrl, config?.model,
+  config?.reasoningEffort, config?.mimoPlan, config?.provider === 'agy-cli' ? config.agyEffort : null,
+  config?.provider === 'agy-cli' ? config.agyFeatureOverrides : null,
+]);
 export const releaseSummarySource = (release: Release) => JSON.stringify([release.tag_name, release.body ?? '']);
 export const currentReleaseSummary = (release: Release, summaries: Record<number, ReleaseArtifactSummaryState>) => {
   const result = summaries[release.id];
@@ -39,7 +47,7 @@ export interface ReleaseArtifactActions {
   summaries: Record<number, ReleaseArtifactSummaryState>;
   rpcDownloadStates: Record<string, RpcDownloadState>;
   sendRpcDownload: (link: RpcDownloadLink) => Promise<void>;
-  generateSummary: (release: Release) => Promise<void>;
+  generateSummary: (release: Release, options?: { force?: boolean }) => Promise<void>;
   cancelSummaryRequests: () => void;
   /** 清空 summaries 与 RPC 发送状态（sheet 在 loadReleases 时重置，原为其本地 state 置空）。 */
   reset: () => void;
@@ -62,9 +70,14 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
   const [summaries, setSummaries] = useState<Record<number, ReleaseArtifactSummaryState>>({});
   const ownerId = useAppStore(state => String(state.user?.id ?? ''));
   const cachedSummaries = useReleaseSummaryCache(ownerId);
+  const activeConfig = aiConfigs.find(config => config.id === activeAIConfig);
+  const generation = releaseSummaryGeneration(language, activeConfig);
+  const identityRef = useRef(generation); identityRef.current = generation;
   useEffect(() => { void loadReleaseSummaryCache(ownerId); }, [ownerId]);
   const visibleSummaries = useMemo(() => ({ ...Object.fromEntries(Object.entries(cachedSummaries ?? {}).map(([id, item]) =>
-    [id, { status: 'done' as const, content: item.content, source: item.source }])), ...summaries }), [cachedSummaries, summaries]);
+    [id, { status: item.generation === generation ? 'done' as const : 'idle' as const, content: item.content, source: item.source, generation: item.generation }])),
+    ...Object.fromEntries(Object.entries(summaries).filter(([, item]) => item.owner === ownerId && item.generation === generation)),
+  }), [cachedSummaries, summaries, generation, ownerId]);
   // 渲染态用 useState Record 取代原 ReleaseCard 的 refs + forceUpdate（渲染等价）；
   // 同步镜像 ref 保留原 ref 的同步短路语义：同一事件循环内的快速连点不会被
   // setState 的异步批处理放过，避免重复发送。
@@ -85,7 +98,23 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
   useEffect(() => {
     cancelSummaryRequests();
     setSummaries({});
-  }, [ownerId, cancelSummaryRequests]);
+  }, [ownerId, generation, cancelSummaryRequests]);
+
+  useEffect(() => {
+    // React may batch A -> B -> A into one render. Cancel on each identity
+    // change so a late answer cannot survive an account/configuration switch.
+    const identity = (state: ReturnType<typeof useAppStore.getState>) => JSON.stringify([
+      state.user?.id, state.githubToken, state.language, state.activeAIConfig,
+      state.aiConfigs.find(config => config.id === state.activeAIConfig),
+    ]);
+    let previousIdentity = identity(useAppStore.getState());
+    return useAppStore.subscribe(state => {
+      const nextIdentity = identity(state);
+      if (nextIdentity === previousIdentity) return;
+      previousIdentity = nextIdentity;
+      cancelSummaryRequests(); setSummaries({});
+    });
+  }, [cancelSummaryRequests]);
 
   useEffect(() => () => { if (!aiTaskJournal.hasHost()) cancelSummaryRequests(); }, [cancelSummaryRequests]);
 
@@ -126,16 +155,16 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
     }
   }, [applyRpcDownloadState, backendApiSecret, t, toast]);
 
-  const generateSummary = useCallback(async (release: Release) => {
+  const generateSummary = useCallback(async (release: Release, options?: { force?: boolean }) => {
     const existing = currentReleaseSummary(release, summaries);
     // 前置守卫：loading 中或已有结论时不重跑。ReleaseCard 按钮在 loading 期间本就
     // disabled（原实现的"取消上一请求"由此不可达，此处守卫化并兼容 sheet 委托）。
-    if (existing?.status === 'loading' || (existing?.status === 'done' && existing.content)) return;
+    if (existing?.status === 'loading' || (!options?.force && existing?.status === 'done' && existing.content && existing.generation === generation)) return;
     const source = releaseSummarySource(release);
-    if (cachedSummaries?.[release.id]?.source === source) return;
+    if (!options?.force && cachedSummaries?.[release.id]?.source === source && cachedSummaries[release.id].generation === generation) return;
 
     const activeConfig = aiConfigs.find((config) => config.id === activeAIConfig);
-    if (!activeConfig) {
+    if (!isAIConfigAvailable(activeConfig)) {
       toast(
         t('useReleaseArtifactActions.please-configure-ai-service-in-settings-first'),
         'error'
@@ -153,12 +182,13 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
     const controller = new AbortController();
     summaryAbortRefs.current[release.id] = controller;
 
-    const config = activeConfig;
+    const config = activeConfig!;
+    const previousSummary = currentReleaseSummary(release, visibleSummaries);
     const owner = String(useAppStore.getState().user?.id ?? '');
     const task = aiTaskJournal.begin(owner, 'release', [{ id: String(release.id), label: `${release.repository.full_name} ${release.tag_name}` }], config.id, undefined,
       { title: `${release.repository.full_name} ${release.tag_name}`, config: taskConfigSnapshot(config, 'release-summary'), target: { view: 'releases', id: String(release.id) } });
     bindTaskSignal(controller.signal, task); task.bind({ stop: () => controller.abort() }); task.item(String(release.id), 'running');
-    setSummaries((previous) => ({ ...previous, [release.id]: { status: 'loading' } }));
+    setSummaries((previous) => ({ ...previous, [release.id]: { ...previousSummary, source, generation, owner, status: 'loading', error: undefined } }));
     let persistenceFailed = false;
     try {
       const aiService = new AIService(config, language);
@@ -173,10 +203,11 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
       );
       // 对齐原 sheet 的 post-await 守卫：服务不响应 signal 而迟到 resolve 时
       // （如 reset()/unmount 之后），丢弃过期结果，不得回写刚清空的状态。
-      if (controller.signal.aborted || String(useAppStore.getState().user?.id ?? '') !== owner) return;
-      try { await saveReleaseSummaryCache(owner, release.id, content, source); }
+      if (controller.signal.aborted || identityRef.current !== generation || String(useAppStore.getState().user?.id ?? '') !== owner) return;
+      try { await saveReleaseSummaryCache(owner, release.id, content, source, generation); }
       catch (error) { persistenceFailed = true; task.error(error); }
-      setSummaries((previous) => ({ ...previous, [release.id]: { status: 'done', content, source } }));
+      if (controller.signal.aborted || identityRef.current !== generation || String(useAppStore.getState().user?.id ?? '') !== owner) return;
+      setSummaries((previous) => ({ ...previous, [release.id]: { status: 'done', content, source, generation, owner } }));
       task.item(String(release.id), 'complete');
     } catch (error) {
       // 主动取消（卸载/重置）时静默处理，不更新状态、不弹错误
@@ -186,13 +217,13 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
       }
       const message = error instanceof Error ? error.message : String(error);
       task.item(String(release.id), 'failed', error);
-      setSummaries((previous) => ({ ...previous, [release.id]: { status: 'error', error: message } }));
+      setSummaries((previous) => ({ ...previous, [release.id]: { ...previousSummary, source, generation, owner, status: 'error', error: message } }));
       toast(
         t('useReleaseArtifactActions.summary-failed-message', { message: message }),
         'error'
       );
     } finally {
-      if (controller.signal.aborted && String(useAppStore.getState().user?.id ?? '') === owner) {
+      if (controller.signal.aborted && identityRef.current === generation && String(useAppStore.getState().user?.id ?? '') === owner) {
         setSummaries(previous => {
           const next = { ...previous }; delete next[release.id]; return next;
         });
@@ -202,7 +233,7 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
         delete summaryAbortRefs.current[release.id];
       }
     }
-  }, [activeAIConfig, aiConfigs, language, summaries, cachedSummaries, toast, t]);
+  }, [activeAIConfig, aiConfigs, language, summaries, cachedSummaries, visibleSummaries, generation, toast, t]);
 
   return useMemo(() => ({
     summaries: visibleSummaries,

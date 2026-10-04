@@ -1,9 +1,12 @@
 
 import { TranslateFn } from '../../i18n/useT';
+import { version } from '../../../package.json';
+import { decodeLocalBackup, assertLocalBackupIdentity, type LocalBackup } from '../../services/localBackup';
+import { getLocalBackupIdentity } from '../../services/localBackupScope';
+import { compatibilityBackupData } from '../../services/localBackupRestorePlan';
+import { LocalBackupRecoveryPanel, LocalBackupRestorePanel } from './LocalBackupRestorePanel';
 import { aiTaskJournal } from '../../services/aiTaskJournal';
-import { exportDiscoveryWorkspaceBackup, importDiscoveryWorkspaceBackup, validateDiscoveryWorkspaceBackup,
-  type DiscoveryWorkspaceBackup } from '../../services/discoveryWorkspaceBackup';
-import type { AppLanguage } from '../../i18n/languages';
+import { exportDiscoveryWorkspaceBackup, importDiscoveryWorkspaceBackup, validateDiscoveryWorkspaceBackup } from '../../services/discoveryWorkspaceBackup';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Card, CardContent } from '../ui/card';
@@ -60,25 +63,10 @@ import {
 import { useAppStore } from '../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { isThemePresetId } from '../../constants/themePresets';
-import type { ThemePresetId } from '../../constants/themePresets';
 import { indexedDBStorage } from '../../services/indexedDbStorage';
 import { IncludeKeysToggle } from './IncludeKeysToggle';
 import { RepositoryIdentityMigrationPanel } from './RepositoryIdentityMigrationPanel';
-import type { 
-  Repository, 
-  Release, 
-  AIConfig, 
-  WebDAVConfig, 
-  Category, 
-  AssetFilter,
-  DiscoveryRepo,
-  SubscriptionRepo,
-  SubscriptionChannel,
-  SearchFilters,
-  ProxyConfig,
-  RpcDownloadConfig,
-  ReleaseSourceSettings
-} from '../../types';
+import type { DiscoveryRepo } from '../../types';
 import {
   mergeReleaseSourceSettings,
   normalizeReleaseSourceSettings,
@@ -115,46 +103,7 @@ interface OperationLog {
   details?: string;
 }
 
-interface ExportData {
-  version: string;
-  exportDate: string;
-  appVersion: string;
-  data: {
-    repositories?: Repository[];
-    releases?: Release[];
-    aiConfigs?: AIConfig[];
-    webdavConfigs?: WebDAVConfig[];
-    customCategories?: Category[];
-    assetFilters?: AssetFilter[];
-    discoveryRepos?: Record<string, DiscoveryRepo[]>;
-    discoveryWorkspace?: DiscoveryWorkspaceBackup;
-    discoveryTotalCount?: Record<string, number>;
-    discoveryHasMore?: Record<string, boolean>;
-    discoveryNextPage?: Record<string, number>;
-    subscriptionRepos?: Record<string, SubscriptionRepo[]>;
-    subscriptionLastRefresh?: Record<string, string | null>;
-    subscriptionChannels?: SubscriptionChannel[];
-    releaseSubscriptions?: number[];
-    releaseSourceSettings?: ReleaseSourceSettings;
-    readReleases?: number[];
-    searchFilters?: SearchFilters;
-    hiddenDefaultCategoryIds?: string[];
-    defaultCategoryOverrides?: Record<string, Partial<Category>>;
-    categoryOrder?: string[];
-    theme?: 'light' | 'dark';
-    themePreset?: ThemePresetId;
-    language?: AppLanguage;
-    isSidebarCollapsed?: boolean;
-    releaseViewMode?: 'timeline' | 'repository';
-    releaseSelectedFilters?: string[];
-    releaseSearchQuery?: string;
-    releaseExpandedRepositories?: number[];
-    proxyConfig?: ProxyConfig;
-    rpcDownloadConfig?: RpcDownloadConfig;
-    backendApiSecret?: string | null;
-    includeKeysInBackup?: boolean;
-  };
-}
+type ExportData = LocalBackup;
 
 interface DataCleanupSuggestion {
   key: string;
@@ -301,6 +250,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
   const [showErrorMessage, setShowErrorMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [legacyIdentityConfirmed, setLegacyIdentityConfirmed] = useState(false);
   const [importPreview, setImportPreview] = useState<{
     data: ExportData | null;
     isOpen: boolean;
@@ -632,11 +582,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     try {
       const store = useAppStore.getState();
       const includeKeys = store.includeKeysInBackup;
+      const identity = getLocalBackupIdentity(selectedTypes.some(type => type !== 'uiSettings'));
 
       const exportDataObj: ExportData = {
-        version: '1.0',
+        version: '1.1',
+        identity,
+        included: [...selectedTypes],
         exportDate: new Date().toISOString(),
-        appVersion: '0.4.0',
+        appVersion: version,
         data: { includeKeysInBackup: includeKeys }
       };
 
@@ -659,6 +612,9 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         exportDataObj.data.hiddenDefaultCategoryIds = store.hiddenDefaultCategoryIds;
         exportDataObj.data.defaultCategoryOverrides = store.defaultCategoryOverrides;
         exportDataObj.data.categoryOrder = store.categoryOrder;
+        exportDataObj.data.subcategories = store.subcategories;
+        exportDataObj.data.subcategoryOrder = store.subcategoryOrder;
+        exportDataObj.data.repositoryOrder = store.repositoryOrder;
       }
       if (selectedTypes.includes('assetFilters')) {
         exportDataObj.data.assetFilters = store.assetFilters;
@@ -687,6 +643,9 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       if (selectedTypes.includes('uiSettings')) {
         exportDataObj.data.theme = store.theme;
         exportDataObj.data.themePreset = store.themePreset;
+        exportDataObj.data.themeTokens = store.themeTokens;
+        exportDataObj.data.repositoryCardFields = store.repositoryCardFields;
+        exportDataObj.data.repositoryViewMode = store.repositoryViewMode;
         exportDataObj.data.language = store.language;
         exportDataObj.data.isSidebarCollapsed = store.isSidebarCollapsed;
         exportDataObj.data.releaseViewMode = store.releaseViewMode;
@@ -711,6 +670,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       }
 
       if (String(useAppStore.getState().user?.id ?? '') !== String(store.user?.id ?? '')) throw new Error('DISCOVERY_BACKUP_ACCOUNT_CHANGED');
+      assertLocalBackupIdentity(exportDataObj, getLocalBackupIdentity(selectedTypes.some(type => type !== 'uiSettings')));
       const blob = new Blob([JSON.stringify(exportDataObj, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -742,13 +702,14 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     reader.onload = (e) => {
       try {
         const content = e.target?.result as string;
-        const data = JSON.parse(content) as ExportData;
+        const data = decodeLocalBackup(content);
         
         if (!data.version || !data.data) {
           showError(t('dataManagementPanel.invalid-backup-file-format'));
           return;
         }
 
+        setLegacyIdentityConfirmed(false);
         setImportPreview({ data, isOpen: true, fileName: file.name });
       } catch {
         showError(t('dataManagementPanel.failed-to-parse-file-ensure-it-is-a-valid-json-f'));
@@ -766,7 +727,9 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
     setIsImporting(true);
     try {
       const store = useAppStore.getState();
-      const importedData = importPreview.data.data;
+      if (!importPreview.data.identity && !legacyIdentityConfirmed) throw new Error('BACKUP_LEGACY_IDENTITY_CONFIRMATION_REQUIRED');
+      assertLocalBackupIdentity(importPreview.data, getLocalBackupIdentity());
+      const importedData = compatibilityBackupData(importPreview.data.data);
       const account = String(store.user?.id ?? '');
       validateDiscoveryWorkspaceBackup(account, importedData.discoveryWorkspace);
       if (selectedTypes.includes('discoveryRepos') && importedData.discoveryWorkspace !== undefined) {
@@ -1131,7 +1094,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       task.finish();
       setIsImporting(false);
     }
-  }, [importPreview, addLog, showSuccess, showError, t, setBackendApiSecret]);
+  }, [legacyIdentityConfirmed, importPreview, addLog, showSuccess, showError, t, setBackendApiSecret]);
 
   const cleanupSuggestions = useMemo<DataCleanupSuggestion[]>(() => {
     const suggestions: DataCleanupSuggestion[] = [];
@@ -1628,6 +1591,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       )}
 
       <RepositoryIdentityMigrationPanel />
+      <LocalBackupRecoveryPanel />
       {/* Data Statistics */}
       <section>
         <h3 className="text-lg font-semibold text-foreground dark:text-foreground mb-4 flex items-center">
@@ -1664,6 +1628,13 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
           <HardDrive className="w-5 h-5 mr-2 text-muted-foreground dark:text-muted-foreground" />
           {t('dataManagementPanel.data-export-import')}
         </h3>
+
+        <div className="mb-4 rounded-lg border border-border bg-muted/40 p-4 text-sm" role="note">
+          <p className="font-medium">{t('settings:settingsUx.backupScopeTitle')}</p>
+          <p className="mt-1 text-muted-foreground">{t('settings:settingsUx.backupScopeIncluded')}</p>
+          <p className="mt-2 text-muted-foreground">{t('settings:settingsUx.backupScopeExcluded')}</p>
+          <p className="mt-2 text-muted-foreground">{t('settings:settingsUx.backupRestoreScope')}</p>
+        </div>
 
         {/* Include Keys Toggle - Independent Container */}
         <div className="mb-4 p-6 bg-card dark:bg-card rounded-lg border border-border dark:border-border">
@@ -2042,6 +2013,10 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                 <p><strong>{t('dataManagementPanel.version')}</strong> {importPreview.data.appVersion}</p>
               </div>
 
+              {!importPreview.data.identity && <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" data-testid="legacy-backup-confirmation" checked={legacyIdentityConfirmed} onChange={event => setLegacyIdentityConfirmed(event.target.checked)} />
+                <span>{language.startsWith('zh') ? '旧文件缺少完整身份信息。我确认此备份属于当前账户；来源无法自动验证。' : 'This legacy file has no complete identity. I confirm it belongs to the current account; its origin cannot be verified automatically.'}</span>
+              </label>}
               <div className="border-t border-border dark:border-border pt-4">
                 <p className="text-sm font-medium text-foreground dark:text-muted-foreground mb-2">{t('dataManagementPanel.included-data')}</p>
                 <div className="space-y-1 text-sm">
@@ -2088,6 +2063,8 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                 </div>
               )}
 
+              <LocalBackupRestorePanel backup={importPreview.data} legacyConfirmed={legacyIdentityConfirmed} disabled={isImporting} onBusyChange={setIsImporting} />
+              <div className="text-sm text-muted-foreground">{language === 'zh' ? '兼容导入单独处理其余字段，不包含上面的安全恢复范围。多存储导入可能部分成功；不会自动执行安全恢复。' : 'Compatibility import handles the remaining fields separately. It excludes the safe restore sections above. Multiple-store imports may partially succeed; safe restore is never run automatically.'}</div>
               <DialogFooter className="pt-4">
                 <Button
                   variant="outline"
@@ -2099,9 +2076,9 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                 </Button>
                 <Button
                   onClick={() => {
-                    importData(resolveImportTypes(importPreview.data!.data), 'merge');
+                    importData(resolveImportTypes(compatibilityBackupData(importPreview.data!.data)), 'merge');
                   }}
-                  disabled={isImporting}
+                  disabled={isImporting || (!importPreview.data.identity && !legacyIdentityConfirmed) || !resolveImportTypes(compatibilityBackupData(importPreview.data.data)).length}
                   className="flex-1 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center space-x-2"
                 >
                   {isImporting ? (
@@ -2110,15 +2087,15 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                       <span>{t('dataManagementPanel.importing')}</span>
                     </>
                   ) : (
-                    <span>{t('dataManagementPanel.merge-import')}</span>
+                    <span>{language === 'zh' ? '兼容导入：' : 'Compatibility: '}{t('dataManagementPanel.merge-import')}</span>
                   )}
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={() => {
-                    importData(resolveImportTypes(importPreview.data!.data), 'replace');
+                    importData(resolveImportTypes(compatibilityBackupData(importPreview.data!.data)), 'replace');
                   }}
-                  disabled={isImporting}
+                  disabled={isImporting || (!importPreview.data.identity && !legacyIdentityConfirmed) || !resolveImportTypes(compatibilityBackupData(importPreview.data.data)).length}
                   className="flex-1 px-4 py-2 font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center space-x-2"
                 >
                   {isImporting ? (
@@ -2127,7 +2104,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
                       <span>{t('dataManagementPanel.importing')}</span>
                     </>
                   ) : (
-                    <span>{t('dataManagementPanel.replace-import')}</span>
+                    <span>{language === 'zh' ? '兼容导入：' : 'Compatibility: '}{t('dataManagementPanel.replace-import')}</span>
                   )}
                 </Button>
               </DialogFooter>

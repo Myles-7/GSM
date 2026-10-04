@@ -2,6 +2,8 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Category, Repository, VectorSearchConfig } from '../../../types';
 import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIdentity';
+import corpus from '../../../utils/__fixtures__/submittedRepositorySearch.json';
+import { applyRepoFilters } from '../../../utils/repoSearch';
 import {
   applyListsToRepositories,
   buildSearchPatch,
@@ -100,7 +102,7 @@ const createStoreState = () => ({
     apiKey: 'ai-key',
     model: 'ai-model',
   }],
-  activeAIConfig: 'ai-config',
+  activeAIConfig: 'ai-config' as string | null,
   language: 'zh' as const,
   setSearchFilters: vi.fn(),
   setSearchResults: vi.fn(),
@@ -147,10 +149,66 @@ const setupStoreMocks = () => {
   (mockUseAppStore as unknown as { getState: () => typeof storeState }).getState = () => storeState;
 };
 
+describe('submitted search correctness corpus', () => {
+  beforeEach(() => { vi.resetAllMocks(); setupStoreMocks(); });
+  it.each(corpus.cases)('retains required candidates for $id without rebuilding an index', async scenario => {
+    storeState.repositories = corpus.repositories.map(repo => ({ ...repo, forks: repo.forks_count }));
+    Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.invalid', enableHyDE: false, enableReranking: !!scenario.mockRerank });
+    if (!scenario.mockRerank) storeState.activeAIConfig = null;
+    mocks.embed.mockResolvedValue([[0.1]]);
+    if (scenario.mockFailure) mocks.vectorQuery.mockRejectedValue(new Error('mock vector unavailable'));
+    else mocks.vectorQuery.mockResolvedValue(scenario.vector);
+    if (scenario.mockRerank) mocks.searchRepositoriesWithSemanticReranking.mockResolvedValue(scenario.mockRerank.map(id => storeState.repositories.find(repo => repo.id === id)!));
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch(scenario.query, identity); });
+    const ids = storeState.setSearchResults.mock.lastCall![0].map((repo: Repository) => repo.id);
+    for (const id of scenario.mustInclude) expect(ids).toContain(id);
+    if (scenario.exactTier) expect(ids.slice(0, scenario.exactTier.length)).toEqual(scenario.exactTier);
+    if (scenario.tierBefore) expect(ids.indexOf(scenario.tierBefore.first)).toBeLessThan(ids.indexOf(scenario.tierBefore.second));
+    if (scenario.mockRerank) expect(ids.slice(0, scenario.mockRerank.length)).toEqual(scenario.mockRerank);
+    expect(result.current.applySubmittedSearch(scenario.query, identity)?.map(repo => repo.id)).toEqual(ids);
+  });
+  it('retains relevance through facets, allows explicit/custom sorting, and rederives current entities without another provider request', async () => {
+    storeState.repositories = corpus.repositories.map(repo => ({ ...repo, forks: repo.forks_count }));
+    storeState.activeAIConfig = null;
+    Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.invalid', enableHyDE: false, enableReranking: false });
+    mocks.embed.mockResolvedValue([[0.1]]); mocks.vectorQuery.mockResolvedValue([{ id: '103', score: 0.95 }]);
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('ui-kit', identity); });
+    const facet = (repos: Repository[]) => applyRepoFilters(repos, { languages: ['TypeScript', 'JavaScript'], sortBy: 'stars', sortOrder: 'desc' });
+    expect(result.current.applySubmittedSearch('ui-kit', facet)?.map(repo => repo.id)).toEqual([101, 102, 103]);
+    act(() => result.current.setExplicitSearchSort());
+    expect(result.current.applySubmittedSearch('ui-kit', facet)?.map(repo => repo.id)).toEqual([103, 102, 101]);
+    expect(result.current.applySubmittedSearch('ui-kit', repos => applyRepoFilters(repos, { sortBy: 'custom' }, { repositoryOrder: [102, 101, 103] }))?.map(repo => repo.id)).toEqual([102, 101, 103]);
+    storeState.repositories = storeState.repositories.filter(repo => repo.id !== 101).map(repo => repo.id === 102 ? { ...repo, description: 'current metadata' } : repo);
+    expect(result.current.applySubmittedSearch('ui-kit', identity)?.find(repo => repo.id === 102)?.description).toBe('current metadata');
+    expect(result.current.applySubmittedSearch('ui-kit', identity)?.some(repo => repo.id === 101)).toBe(false);
+    expect(mocks.vectorQuery).toHaveBeenCalledTimes(1);
+    act(() => result.current.clearSubmittedSearch()); expect(result.current.applySubmittedSearch('ui-kit', identity)).toBeNull();
+  });
+});
+
 describe('useSearchActions.aiSearch (vector hit)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupStoreMocks();
+  });
+
+  it.each(['language', 'config', 'empty'] as const)('rejects late provider results after %s invalidation', async kind => {
+    Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.example', enableHyDE: false });
+    let resolve!: (value: number[][]) => void;
+    mocks.embed.mockImplementation(() => new Promise(r => { resolve = r; }));
+    const { result } = renderHook(() => useSearchActions());
+    let search!: Promise<void>;
+    await act(async () => { search = result.current.aiSearch('query', identity); });
+    if (kind === 'language') Object.assign(storeState, { language: 'en' });
+    if (kind === 'config') storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, enabled: false };
+    if (kind === 'empty') await act(async () => { await result.current.aiSearch('', identity); });
+    await act(async () => { resolve([[1]]); await search; });
+    expect(mocks.vectorQuery).not.toHaveBeenCalled();
+    expect(storeState.setSearchResults).not.toHaveBeenCalled();
+    expect(storeState.setSearchFilters).not.toHaveBeenCalled();
+    expect(result.current.isSearching).toBe(false);
   });
 
   it('asks for rebuild and avoids embeddings/HyDE/query when the index identity is incompatible', async () => {

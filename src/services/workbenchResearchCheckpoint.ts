@@ -10,6 +10,10 @@ interface Checkpoint { context: string; entries: ResearchCheckpointEntry[]; }
 const keyFor = (owner: string, session: string) => `gsm:research-checkpoint:${encodeURIComponent(owner)}:${encodeURIComponent(session)}`;
 const MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
+export function deleteResearchCheckpoint(owner: string, session: string): void {
+  localStorage.removeItem(keyFor(owner, session));
+}
+
 /** Device-only research checkpoints. No credentials, executable paths or grants. */
 export function loadResearchCheckpoint(owner: string, session: string, context: string): ResearchCheckpointEntry[] {
   try {

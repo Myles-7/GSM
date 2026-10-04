@@ -46,6 +46,9 @@ jobs:
       - name: Frontend layering boundaries
         run: node scripts/check-boundaries.cjs
 
+      - name: Standalone HTML reading boundaries
+        run: npm run check:html-reading
+
       - name: Worker Dashboard bundle matches source
         run: npm run check:vector-worker
 

@@ -159,7 +159,7 @@ const ReleaseContent: React.FC<{
   downloadStates: Record<string, 'idle' | 'sending' | 'sent'>;
   onDownload: (link: ReleaseDownloadLink) => void;
   summary: { status: 'idle' | 'loading' | 'done' | 'error'; content?: string; error?: string } | undefined;
-  onGenerateSummary: () => void;
+  onGenerateSummary: (force?: boolean) => void;
   language: AppLanguage;
   repository: Repository;
 }> = ({ release, links, matchedLinkIndexes, assetPage, onAssetPageChange, downloadStates, onDownload, summary, onGenerateSummary, language, repository }) => {
@@ -220,14 +220,20 @@ const ReleaseContent: React.FC<{
       <TabsContent value="summary" className="mt-3">
         {!hasBody ? (
           <p className="py-5 text-center text-xs text-muted-foreground">{t('repositoryReleaseSheet.this-release-has-no-notes-to-summarize')}</p>
-        ) : summary?.status === 'loading' ? (
+        ) : summary?.status === 'loading' && !summary.content ? (
           <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             {t('repositoryReleaseSheet.generating-summary')}
           </div>
-        ) : summary?.status === 'done' && summary.content ? (
+        ) : summary?.content ? (
           <div className="rounded-md border border-border bg-muted/20 px-3 py-3">
+            {summary.status === 'idle' && <p role="status" className="mb-2 text-xs text-muted-foreground">{t('repositoryReleaseSheet.previous-summary')}</p>}
             <MarkdownRenderer content={summary.content} shouldRender breaks fontSize="small" />
+            {summary.error && <p role="alert" className="mt-2 text-xs text-destructive">{summary.error}</p>}
+            <Button size="sm" variant="ghost" className="mt-2 text-xs" disabled={summary.status === 'loading'} onClick={() => onGenerateSummary(true)}>
+              {summary.status === 'loading' && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+              {t(summary.status === 'loading' ? 'repositoryReleaseSheet.generating-summary' : 'repositoryReleaseSheet.regenerate-summary')}
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col items-center gap-3 py-5 text-center">
@@ -236,7 +242,7 @@ const ReleaseContent: React.FC<{
                 ? t('repositoryReleaseSheet.summary-generation-failed-please-try-again')
                 : t('repositoryReleaseSheet.this-tab-uses-the-current-ai-configuration-to-ge')}
             </p>
-            <Button type="button" variant="secondary" size="sm" onClick={onGenerateSummary}>
+            <Button type="button" variant="secondary" size="sm" onClick={() => onGenerateSummary()}>
               <Sparkles className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
               {summary?.status === 'error' ? t('repositoryReleaseSheet.retry-summary') : t('repositoryReleaseSheet.generate-summary')}
             </Button>
@@ -403,7 +409,7 @@ export const RepositoryReleaseSheet: React.FC<RepositoryReleaseSheetProps> = ({
                         downloadStates={downloadStates}
                         onDownload={(link) => void downloadAsset(link)}
                         summary={currentReleaseSummary(release, summaries)}
-                        onGenerateSummary={() => void generateSummary(release)}
+                        onGenerateSummary={force => { if (force) void generateSummary(release, { force: true }); else void generateSummary(release); }}
                         language={language}
                         repository={repository}
                       />

@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, Gist } from '../../../types';
 import { applyGistAnalysisFailure, applyGistAnalysisSuccess, useGistActions } from './useGistActions';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 
 const mocks = vi.hoisted(() => ({
   useAppStore: vi.fn(),
@@ -437,6 +438,35 @@ describe('useGistActions card actions', () => {
         expect(vi.getTimerCount()).toBe(0);
       });
     }
+
+    it.each(['complete', 'account-change'] as const)('keeps hosted analysis after unmount but respects %s', async outcome => {
+      const pending = deferred<string>();
+      storeState.gistSearchResults = [gist];
+      mocks.analyzeGist.mockReturnValue(pending.promise);
+      const detachHost = aiTaskJournal.attachHost();
+      const hook = renderHook(() => useGistActions());
+      let work!: Promise<void>;
+      try {
+        await act(async () => { work = hook.result.current.analyzeVisibleGists(); });
+        const signal = mocks.analyzeGist.mock.calls[0][2] as AbortSignal;
+        act(() => hook.unmount());
+        expect(signal.aborted).toBe(false);
+        if (outcome === 'account-change') {
+          act(() => { storeState.user = { ...storeState.user, id: 2, login: 'other' }; notifyStore(); });
+          expect(signal.aborted).toBe(true);
+        }
+        await act(async () => { pending.resolve('background summary'); await work; });
+        if (outcome === 'complete') expect(storeState.updateGist).toHaveBeenCalledWith(expect.objectContaining({ ai_summary: 'background summary' }));
+        else expect(storeState.updateGist).not.toHaveBeenCalled();
+        expect(storeState.analyzingGistIds.size).toBe(0);
+        expect(storeListeners.size).toBe(0);
+      } finally {
+        pending.resolve('cleanup');
+        if (work) await act(async () => { await work; });
+        hook.unmount();
+        detachHost();
+      }
+    });
 
     it('cancels all concurrent batch items without launching the next wave', async () => {
       const pending = deferred<string>();

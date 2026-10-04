@@ -9,7 +9,8 @@ const isDev = process.env.NODE_ENV === 'development';
 const { createMcpLocalServer } = require('./mcpLocalServer');
 const { createAgyDesktop } = require('./agyDesktop');
 const { registerAgyIpc } = require('./agyIpc');
-const { registerWebdavIpc, isTrustedWebdavFrame } = require('./webdavIpc');
+const { registerWebdavIpc } = require('./webdavIpc');
+const { isTrustedDocument, isTrustedMainFrame, createTrustedIpcMain, registerMainDocumentNavigation } = require('./trustedRenderer');
 const { pathToFileURL } = require('url');
 const { createPluginManager } = require('./plugins/pluginManager');
 const { createPluginHostOperations } = require('./plugins/pluginHostOperations');
@@ -34,6 +35,9 @@ const {
 let mainWindow;
 let trustedPluginHostURL = null;
 let pluginNavigation = null;
+const getDevURL = () => isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined;
+const isTrustedAppFrame = event => isTrustedMainFrame(event, mainWindow, trustedPluginHostURL, getDevURL());
+const trustedIpcMain = createTrustedIpcMain({ ipcMain, isTrusted: isTrustedAppFrame });
 let agyDesktop;
 let agyQuitReady = false;
 function getAgyDesktop() {
@@ -53,7 +57,7 @@ function getAgyDesktop() {
   return agyDesktop;
 }
 let tray = null;
-// True only when the user explicitly quits (tray menu / Cmd+Q / before-quit).
+// True on explicit quit or the final Windows session-end event.
 // Distinguishes "hide to tray" from "really exit" for close-to-tray (#345).
 let isQuitting = false;
 // In-memory desktop prefs (#345). Source of truth on disk:
@@ -108,6 +112,8 @@ function createWindow() {
   // 添加错误处理和加载事件（fallback 只尝试一次，避免 did-fail-load 死循环）
   const agyOwner = mainWindow.webContents.id;
   trustedPluginHostURL = null;
+  registerMainDocumentNavigation(mainWindow.webContents,
+    url => isTrustedDocument(url, trustedPluginHostURL, getDevURL()), url => shell.openExternal(url));
   pluginNavigation = registerPluginPageNavigation(mainWindow.webContents, () => pluginManager);
   mainWindow.webContents.once('destroyed', () => agyDesktop?.cancel(agyOwner));
   mainWindow.webContents.on('render-process-gone', () => agyDesktop?.cancel(agyOwner));
@@ -281,11 +287,6 @@ function createWindow() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
-  });
-
   mainWindow.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame) return;
     if (!event.url.startsWith(`${PAGE_SCHEME}://`)) {
@@ -317,8 +318,17 @@ function createWindow() {
     }
   });
 
+  // A Windows query can be cancelled by the OS: it must not change tray-close semantics.
+  // Only the final, non-preventable session-end bypasses close-to-tray.
+  if (process.platform === 'win32') {
+    mainWindow.on('session-end', () => { isQuitting = true; });
+  }
+  for (const event of ['show', 'hide', 'minimize', 'restore']) {
+    mainWindow.on(event, refreshTrayMenu);
+  }
   mainWindow.on('closed', () => {
     mainWindow = null;
+    refreshTrayMenu();
   });
 }
 
@@ -394,7 +404,7 @@ function getFetchDispatcher() {
 }
 
 // X 推文频道：主进程代抓 x.com 未登录主页
-ipcMain.handle('x-fetch-timeline', async (_event, handle) => {
+trustedIpcMain.handle('x-fetch-timeline', async (_event, handle) => {
   if (typeof handle !== 'string' || !/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
     return { success: false, error: 'invalid handle' };
   }
@@ -421,7 +431,7 @@ ipcMain.handle('x-fetch-timeline', async (_event, handle) => {
 
 // Telegram 频道：主进程代抓 t.me/s/<name> 公开网页预览（渲染进程受 CORS 限制；
 // net.fetch 走 Chromium 网络栈，自动跟随应用内已设置的代理）
-ipcMain.handle('telegram-fetch-channel', async (_event, channel, before) => {
+trustedIpcMain.handle('telegram-fetch-channel', async (_event, channel, before) => {
   if (typeof channel !== 'string' || !/^[A-Za-z0-9_]{3,64}$/.test(channel)) {
     return { success: false, error: 'invalid channel' };
   }
@@ -462,7 +472,7 @@ const isAllowedXProxyUrl = (url) =>
   url === X_HOME_URL || X_MAIN_JS_PATTERN.test(url) || X_GRAPHQL_API_PATTERN.test(url);
 const X_COOKIE_VALUE_PATTERN = /^[\w%+/=.~-]+$/;
 
-ipcMain.handle('x-fetch-graphql', async (_event, url, auth) => {
+trustedIpcMain.handle('x-fetch-graphql', async (_event, url, auth) => {
   if (typeof url !== 'string' || !isAllowedXProxyUrl(url)) {
     return { success: false, error: 'invalid url' };
   }
@@ -511,7 +521,7 @@ ipcMain.handle('x-fetch-graphql', async (_event, url, auth) => {
   }
 });
 
-ipcMain.handle('x-auth:save', async (_event, auth) => {
+trustedIpcMain.handle('x-auth:save', async (_event, auth) => {
   if (auth === null || auth === undefined) {
     console.log('[x-auth:save] clearing (null payload)');
     return saveEncryptedXAuth({ fs, pathModule: path, userDataPath: app.getPath('userData'), safeStorage }, null);
@@ -542,29 +552,29 @@ ipcMain.handle('x-auth:save', async (_event, auth) => {
   return result;
 });
 
-ipcMain.handle('x-auth:get', async () => {
+trustedIpcMain.handle('x-auth:get', async () => {
   const result = loadEncryptedXAuth({ fs, pathModule: path, userDataPath: app.getPath('userData'), safeStorage });
   console.log('[x-auth:get] result:', result ? 'found credentials' : 'no credentials on disk');
   return result;
 });
 
-ipcMain.handle('x-auth:clear', async () => {
+trustedIpcMain.handle('x-auth:clear', async () => {
   const result = clearEncryptedXAuth({ fs, pathModule: path, userDataPath: app.getPath('userData') });
   console.log('[x-auth:clear] result:', result.success ? 'OK' : `FAIL: ${result.error}`);
   return result;
 });
 
-ipcMain.handle('set-proxy', async (event, config) => {
+trustedIpcMain.handle('set-proxy', async (event, config) => {
   saveProxyConfig(config);
   await applyProxy(config);
   return { success: true };
 });
 
-ipcMain.handle('get-proxy', () => {
+trustedIpcMain.handle('get-proxy', () => {
   return loadProxyConfig();
 });
 
-ipcMain.handle('test-proxy', async (event, config) => {
+trustedIpcMain.handle('test-proxy', async (event, config) => {
   const net = require('net');
   const connectToProxy = () => new Promise((resolve, reject) => {
     const socket = new net.Socket();
@@ -735,12 +745,33 @@ function restoreMainWindow() {
   mainWindow.focus();
 }
 
+function toggleMainWindowFromTray() {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()
+      && (process.platform !== 'win32' || mainWindow.isFocused())) {
+    mainWindow.hide();
+  } else {
+    restoreMainWindow();
+  }
+}
+
+function setTrayPreference(key, enabled) {
+  try {
+    persistDesktopPrefs({ [key]: !!enabled });
+  } catch (error) {
+    // persistDesktopPrefs assigns only after the disk write succeeds.
+    console.error('Failed to save desktop preference:', error);
+  } finally {
+    refreshTrayMenu();
+  }
+}
+
 function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
+  const windowShown = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized();
   const template = [
     {
-      label: '显示主窗口',
-      click: () => restoreMainWindow(),
+      label: windowShown ? '隐藏主窗口' : '显示主窗口',
+      click: () => { if (windowShown) mainWindow.hide(); else restoreMainWindow(); },
     },
     { type: 'separator' },
     {
@@ -756,10 +787,13 @@ function refreshTrayMenu() {
       label: '关闭时最小化到托盘',
       type: 'checkbox',
       checked: desktopPrefs.closeToTray,
-      click: (item) => {
-        persistDesktopPrefs({ closeToTray: !!item.checked });
-        refreshTrayMenu();
-      },
+      click: (item) => setTrayPreference('closeToTray', item.checked),
+    },
+    {
+      label: '最小化时隐藏到托盘',
+      type: 'checkbox',
+      checked: desktopPrefs.minimizeToTray,
+      click: (item) => setTrayPreference('minimizeToTray', item.checked),
     },
     { type: 'separator' },
     {
@@ -802,13 +836,7 @@ function createTray() {
     const icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
     if (process.platform === 'darwin') icon.setTemplateImage(true);
     tray = new Tray(icon);
-    tray.on('click', () => {
-      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-        mainWindow.hide();
-      } else {
-        restoreMainWindow();
-      }
-    });
+    tray.on('click', toggleMainWindowFromTray);
     refreshTrayMenu();
   } catch (err) {
     console.error('Failed to create tray:', err);
@@ -833,25 +861,25 @@ nativeTheme.on('updated', () => {
   if (iconPath) tray.setImage(nativeImage.createFromPath(iconPath));
 });
 
-ipcMain.handle('desktop:getPrefs', () => ({ ...desktopPrefs }));
+trustedIpcMain.handle('desktop:getPrefs', () => ({ ...desktopPrefs }));
 
-ipcMain.handle('desktop:setAutoLaunch', async (_e, enabled) =>
+trustedIpcMain.handle('desktop:setAutoLaunch', async (_e, enabled) =>
   setAutoLaunchWithRollback(!!enabled),
 );
 
-ipcMain.handle('desktop:setCloseToTray', (_e, enabled) => {
+trustedIpcMain.handle('desktop:setCloseToTray', (_e, enabled) => {
   const prefs = persistDesktopPrefs({ closeToTray: !!enabled });
   refreshTrayMenu();
   return { success: true, prefs: { ...prefs } };
 });
 
-ipcMain.handle('desktop:setMinimizeToTray', (_e, enabled) => {
+trustedIpcMain.handle('desktop:setMinimizeToTray', (_e, enabled) => {
   const prefs = persistDesktopPrefs({ minimizeToTray: !!enabled });
   refreshTrayMenu();
   return { success: true, prefs: { ...prefs } };
 });
 
-ipcMain.handle('desktop:show', () => {
+trustedIpcMain.handle('desktop:show', () => {
   restoreMainWindow();
   return { success: true };
 });
@@ -875,7 +903,7 @@ function normalizeMcpHost(_rawHost) {
   return '127.0.0.1';
 }
 
-ipcMain.handle('mcp:setConfig', async (_e, config) => {
+trustedIpcMain.handle('mcp:setConfig', async (_e, config) => {
   const previousHost = mcpConfig.host;
   const previousPort = mcpConfig.port;
   mcpConfig = {
@@ -894,14 +922,14 @@ ipcMain.handle('mcp:setConfig', async (_e, config) => {
   return { success: true };
 });
 
-ipcMain.handle('mcp:getConfig', async () => mcpConfig);
+trustedIpcMain.handle('mcp:getConfig', async () => mcpConfig);
 
-ipcMain.handle('mcp:pushSnapshot', async (_e, snapshot) => {
+trustedIpcMain.handle('mcp:pushSnapshot', async (_e, snapshot) => {
   mcpSnapshot = snapshot || null;
   return { success: true };
 });
 
-ipcMain.handle('mcp:start', async () => {
+trustedIpcMain.handle('mcp:start', async () => {
   try {
     return await mcpServer.start();
   } catch (err) {
@@ -909,9 +937,9 @@ ipcMain.handle('mcp:start', async () => {
   }
 });
 
-ipcMain.handle('mcp:stop', async () => mcpServer.stop());
+trustedIpcMain.handle('mcp:stop', async () => mcpServer.stop());
 
-ipcMain.handle('mcp:getStatus', async () => mcpServer.getStatus());
+trustedIpcMain.handle('mcp:getStatus', async () => mcpServer.getStatus());
 
 // ── Trusted local plugin host (discovery, lifecycle, and restricted IPC) ──
 let pluginManager = null;
@@ -929,7 +957,7 @@ function getPluginManager() {
 }
 
 const handlePluginIpc = createPluginIpcRegistrar({
-  ipcMain, getWindow: () => mainWindow, getHostURL: () => trustedPluginHostURL,
+  ipcMain: trustedIpcMain, getWindow: () => mainWindow, getHostURL: () => trustedPluginHostURL,
   getDevURL: () => isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined,
   isNavigating: () => pluginNavigation?.isNavigating() ?? false,
 });
@@ -996,17 +1024,10 @@ handlePluginIpc('plugins:loadRegistry', async () => loadPluginRegistry({
 handlePluginIpc('plugins:runExporter', async (_event, request) =>
   getPluginManager().runExporter(request)
 );
-function isMainPluginFrame(event) {
-  return mainWindow && event.sender === mainWindow.webContents &&
-    event.senderFrame === mainWindow.webContents.mainFrame;
-}
-registerAgyIpc({ ipcMain, isMainFrame: isMainPluginFrame, getService: getAgyDesktop });
+registerAgyIpc({ ipcMain: trustedIpcMain, isMainFrame: isTrustedAppFrame, getService: getAgyDesktop });
 registerWebdavIpc({
-  ipcMain,
-  isMainFrame: event => isTrustedWebdavFrame(
-    event, mainWindow, pathToFileURL(path.join(__dirname, '../dist/index.html')).href,
-    isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined,
-  ),
+  ipcMain: trustedIpcMain,
+  isMainFrame: isTrustedAppFrame,
   fetchImpl: (...args) => require('undici').fetch(...args),
   getDispatcher: getFetchDispatcher,
 });
@@ -1015,7 +1036,10 @@ const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlRead
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock || isQuitting) return;
   const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
-  registerHtmlReadingIpc({ ipcMain, isMainFrame: isMainPluginFrame, service, getWindow: () => mainWindow, powerMonitor: require('electron').powerMonitor });
+  const { createReadingPreview } = require('./htmlReadingPreview');
+  const electron = require('electron');
+  const openPreview = createReadingPreview({ BrowserWindow: electron.BrowserWindow, Menu: electron.Menu, session: electron.session, shell: electron.shell, fs, path, tempDirectory: app.getPath('temp') });
+  registerHtmlReadingIpc({ ipcMain: trustedIpcMain, isMainFrame: isTrustedAppFrame, service, getWindow: () => mainWindow, powerMonitor: electron.powerMonitor, openPreview });
 });
 handlePluginIpc('plugins:getPage', async (_event, pluginId, pageId) => {
   return getPluginManager().getPage(pluginId, pageId);

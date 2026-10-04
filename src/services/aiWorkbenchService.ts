@@ -101,7 +101,7 @@ export const workbenchRuntime = {
     task.bind({ stop: () => controller.abort() }); task.item(sessionId, 'running');
     const generation = ++runtimeGeneration;
     runtimeController = controller;
-    publishRuntime({ sessionId, ownerId, stage: 'starting', running: true, startedAt: Date.now(), readFiles: 0 });
+    publishRuntime({ sessionId, ownerId, taskId: task.id, stage: 'starting', running: true, startedAt: Date.now(), readFiles: 0 });
 
     const stage = (nextStage: string): void => {
       if (

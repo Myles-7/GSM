@@ -1,1314 +1,402 @@
-# GithubStarsManager 混合检索与标签分类降噪全方位分析报告
+# GithubStarsManager 混合检索与标签分类降噪全方位分析（校准版）
 
-> **文档定位**：技术架构诊断与核心算法重构方案
-> **审查方向**：混合检索（Hybrid Search）与重排、标签去重与分类法（Taxonomy）归一化、双路并发搜索调度器
-> **归档路径**：`docs/product/GSM_混合检索与标签分类降噪全方位分析.md`
+> **阶段 4～8 代码更新（2026-10-03）**：阶段 5 已采用 exact/lexical/provider ID 并集与 Hook 内存 submitted session，SearchBar 后续 effect 不再以 vector scoreMap 硬过滤。默认相关性、显式排序覆盖及身份/配置取消 guard 已验证；标签治理未开发。下文硬过滤问题为改动前证据。 详见 [连续开发交付报告](GSM_阶段4至8连续开发交付报告.md)。
 
----
-
-## 目录
-- [1. 审查背景与核心定位](#1-审查背景与核心定位)
-- [2. 检索盲区全方位深度诊断（Root Cause Analysis）](#2-检索盲区全方位深度诊断root-cause-analysis)
-  - [2.1 现有检索全链路架构审计](#21-现有检索全链路架构审计)
-  - [2.2 盲区 1：词法/向量召回集割裂（Hard Vector-Only Filtering Trap）](#22-盲区-1词法向量召回集割裂hard-vector-only-filtering-trap)
-  - [2.3 盲区 2：微弱的静态加分与分值倒置（Trivial Linear Boost Inversion）](#23-盲区-2微弱的静态加分与分值倒置trivial-linear-boost-inversion)
-  - [2.4 盲区 3：专有名词/短查询/缩写的向量漂移（Embedding Semantic Drift）](#24-盲区-3专有名词短查询缩写的向量漂移embedding-semantic-drift)
-  - [2.5 盲区 4：新同步/未向量化仓库的“幽灵盲区”（Cold-start Ghosting）](#25-盲区-4新同步未向量化仓库的幽灵盲区cold-start-ghosting)
-  - [2.6 盲区 5：长尾布尔逻辑与多词精确交集失效（Boolean Multi-term Failure）](#26-盲区-5长尾布尔逻辑与多词精确交集失效boolean-multi-term-failure)
-- [3. 混合检索（Hybrid Search）加权融合数学模型与算法设计](#3-混合检索hybrid-search加权融合数学模型与算法设计)
-  - [3.1 双路并发检索架构设计](#31-双路并发检索架构设计)
-  - [3.2 增强型倒数排名融合（Enhanced RRF with Signal Boosting）数学模型](#32-增强型倒数排名融合enhanced-rrf-with-signal-boosting数学模型)
-  - [3.3 词法强特征增强因子 Φ(d, q) 详细设计与权重标定](#33-词法强特征增强因子-φd-q-详细设计与权重标定)
-  - [3.4 自适应查询意图分类器（Query Intent Classifier）](#34-自适应查询意图分类器query-intent-classifier)
-- [4. Prompt 重构与标签降噪方案（Taxonomy Normalization）](#4-prompt-重构与标签降噪方案taxonomy-normalization)
-  - [4.1 现有 Prompt 与打标机制缺陷深度剖析](#41-现有-prompt-与打标机制缺陷深度剖析)
-  - [4.2 重构 AI 结构化分类提示词（Taxonomy-Constrained System Prompt）](#42-重构-ai-结构化分类提示词taxonomy-constrained-system-prompt)
-  - [4.3 本地三层同义词归一化流水线（Normalization Pipeline）](#43-本地三层同义词归一化流水线normalization-pipeline)
-  - [4.4 前端/本地运行的“一键合并同义标签”交互与数据流规范](#44-前端本地运行的一键合并同义标签交互与数据流规范)
-- [5. 落地实施代码：高可用搜索调度器（Search Orchestrator）](#5-落地实施代码高可用搜索调度器search-orchestrator)
-  - [5.1 独立搜索调度器核心实现（SearchOrchestrator.ts）](#51-独立搜索调度器核心实现searchorchestratorts)
-  - [5.2 标签归一化与聚类检测核心代码实现（taxonomyNormalization.ts）](#52-标签归一化与聚类检测核心代码实现taxonomynormalizationts)
-  - [5.3 前端 Hook 接入改造示例（useSearchActions.ts）](#53-前端-hook-接入改造示例usesearchactionsts)
-  - [5.4 标签降噪与分类治理弹窗组件（TaxonomyGovernanceModal.tsx）](#54-标签降噪与分类治理弹窗组件taxonomygovernancemodaltsx)
-- [6. 改造前后核心指标全景对照与实施计划](#6-改造前后核心指标全景对照与实施计划)
-  - [6.1 关键场景与体验指标对比矩阵](#61-关键场景与体验指标对比矩阵)
-  - [6.2 分阶段落地行动清单（Action Items）](#62-分阶段落地行动清单action-items)
+> **文档定位**：仅本机 Windows 的搜索正确性修复；保留现有语义配置，不扩展检索平台。
+> **范围决策（2026-10-03）**：标签治理不列为确定目标，现有 user/List/topics 原文继续保护；本轮只改文档。
+> **校准日期**：2026-10-03
+> **代码基线**：当前工作区 `package.json` 版本 `0.8.4`，现有 `SearchBar` / `useSearchActions` / `AIService` / Vector Worker / Repository organization 实现
+> **实施原则**：先修“相关结果被召回链路排除”的正确性问题，再优化排序；标签治理以来源保护、可逆 alias 和人工确认优先，不对用户或 GitHub List 标签做破坏性自动重写。
 
 ---
 
-## 1. 审查背景与核心定位
+## 1. 现状校准 / 修订说明
 
-GithubStarsManager (GSM) 定位于高阶个人开发者的私有 GitHub 知识库工作台。随着收藏仓库数量的增长（数百至数千规模），系统面临两个最为核心的检索与分类体验瓶颈：
+原文抓住了两个真实方向：
 
-1. **“搜不准”与“搜不到”的尴尬体验**：
-   - 依赖单纯的语义向量检索时，用户明确搜索官方仓库名（如 `express`、`zustand`、`vllm`）反而搜不到，或者排在各类包含该关键词的第三方长篇教程、衍生插件库之后；
-   - 依赖单纯的关键词过滤时，又无法识别复杂的语义意图（例如“能提取网页正文的 Python 爬虫库”）；
-   - 在向量网络抖动、未及时建立向量索引或短字符缩写场景下，存在严重的召回空白。
-2. **AI 打标造成的“标签沼泽（Tag Bloat）”**：
-   - 目前单仓分析 Prompt 缺乏全局已有标签库的上下文输入与负向约束；
-   - AI 在无限制的发散中产生大量碎片化同义词（例如同时共存 `react`、`reactjs`、`React.js`、`react-18`、`React组件库`；`vue`、`vuejs`、`vue3`）；
-   - 标签侧边栏与过滤芯片迅速膨胀至上百甚至上千项，导致“标签分类管理”失去结构化聚合的意义。
+1. 当前“向量有结果就只保留向量 TopK ID”的路径会丢失名称精确匹配、新同步但尚未建向量的仓库，以及 embedding 对短词/专有名词召回较弱时的本地强信号，因此需要真正的 hybrid recall。
+2. 标签碎片需要治理，但“模糊字符串相似 → 自动合并所有标签”的方案会破坏用户明确输入的数据与 GitHub Lists 语义。
 
-**核心定位与本次重构目标**：
-* **搜得准（Precision 100% 保底）**：精确仓库名、组织名、Topic 100% 绝对置顶，杜绝名不副实的干扰项；
-* **意图明（Recall 深度召回）**：自然语言意图无损召回，语义与关键词双路加权融合；
-* **标签井然有序（Taxonomy 受控降噪）**：受控词表上下文约束 + 本地三层轻量流水线一键归一去重。
+本版做以下修订：
+
+- 删除原文中固定精度、固定标签缩减比例、固定效率增幅与固定超时等没有仓库基准支撑的绝对承诺。
+- 删除“官方仓库置顶”的概念。GSM 没有可靠的“官方 owner”事实源；能做确定性保证的是 `owner/repo` exact `full_name` 的优先级，以及 exact `name` 作为高优先级候选层。
+- 不再用“向量分数乘固定倍率”解决精确匹配，因为不同 embedding 模型、索引模式和 score 分布不可直接用一个魔法系数长期校准。
+- hybrid 的核心改成 **deterministic exact tiers + lexical recall + vector recall 的并集**，再执行融合与可选语义重排。精确/词法结果不能因为不在向量 TopK 中被过滤掉。
+- 保留现有语义能力：query expansion、AI selection、可选 HyDE、可选 semantic rerank。它们应按 query intent 和配置接入 hybrid pipeline，而不是被一个简单 RRF 函数整体替代。
+- 搜索需要稳定的内存查询状态。当前 `vectorScoreMapRef` + `skipNextTextSearchRef` 是旁路协调；`SearchBar` effect 可能在 repository/filter 变化时覆盖结果。必要时以最小 query/identity/IDs/rank 会话解决，不建立新的持久化 search slice。
+- 标签治理改为**来源感知**。`ai_tags`、用户手工 tag、GitHub List 名称、GitHub topics 不能被视为同一种可自动改写数据。
+- 自动规范化只允许作用于 AI 生成标签，并且只能应用无损 normalization 与已经批准的 alias。用户标签和 GitHub List 标签默认保持原文。
+- fuzzy / Levenshtein / prefix similarity 只能产生 suggestion，不能自动 merge。
+- 标签来源模型、alias registry、聚类 Worker、治理 UI 和批量改写都不在本机确定路线内；只保留未来进入该方向时的安全边界。
+- 若未来用户明确选择真正改写 AI tags，必须 preview/可撤销，reindex 需显式决定；当前不新增这条业务流程。
+
+当前代码证据：
+
+- [`src/features/repositories/hooks/useSearchActions.ts`](../../src/features/repositories/hooks/useSearchActions.ts) 的向量分支在结果非空时构造 score map，然后执行 `repositories.filter(repo => scoreMap.has(String(repo.id)))`，把向量结果 ID 当成硬候选集。
+- 同一 Hook 已经有可选 HyDE、vector query、可选 `searchRepositoriesWithSemanticReranking`；向量失败/为空后又走 `keywordSearch`。
+- `keywordSearch` 并非单纯 substring：当 AI 配置可用时，会调用 [`AIService.searchRepositoriesWithSelection`](../../src/services/aiService.ts)，执行 query expansion / intent 解析、本地词法候选召回和 LLM 精选排序；失败再回退词法。
+- [`src/utils/repoSearch.ts`](../../src/utils/repoSearch.ts) 的 `performBasicTextSearch` 当前是全字段文本拼接后按 query words 做 AND substring 过滤，没有“exact full_name / exact name / prefix / exact token”这样的确定性 tier。
+- [`src/components/SearchBar.tsx`](../../src/components/SearchBar.tsx) 通过 `vectorScoreMapRef` 和 `skipNextTextSearchRef` 协调向量结果；当 repositories、filters 等变化时 effect 仍会重新执行向量 ID 过滤或 basic text search。
+- `SearchBar` 的 realtime search 目前只匹配 `name/full_name includes`，与提交后的 basic/AI/vector 搜索又是另一套规则。
+- `syncStars()` 的 GitHub Lists 路径会把 `list.name` 追加到 `repository.custom_tags`；因此 `custom_tags` 并不等价于“用户可随意自动规范化的自由标签”。
+- [`src/store/helpers/repositoryOrganization.ts`](../../src/store/helpers/repositoryOrganization.ts) 的 category suggestion / membership 会消费 repository tag 等证据。自动改标签可能改变分类候选，因此 taxonomy 修改不是单纯显示层操作。
 
 ---
 
-## 2. 检索盲区全方位深度诊断（Root Cause Analysis）
+## 2. 当前搜索链路的问题在哪里
 
-### 2.1 现有检索全链路架构审计
+### 2.1 当前不是 hybrid search，而是“vector 优先、keyword fallback”
 
-通过对系统以下核心文件的代码级审计：
-- 前端检索编排：[src/features/repositories/hooks/useSearchActions.ts](file:///d:/桌面/GSM/src/features/repositories/hooks/useSearchActions.ts)
-- 词法文本搜索：[src/utils/repoSearch.ts](file:///d:/桌面/GSM/src/utils/repoSearch.ts)
-- 向量生成与查询：[src/services/vectorSearchService.ts](file:///d:/桌面/GSM/src/services/vectorSearchService.ts)
-- 边缘 Worker 索引路由：[cloudflare-worker/src/index.ts](file:///d:/桌面/GSM/cloudflare-worker/src/index.ts)
+当前简化流程：
 
-当前检索链路的调用关系与缺陷拓扑如下：
-
-```mermaid
-flowchart TD
-    UserQuery["用户在搜索框输入 Query (例如: 'vllm' 或 'react')"] --> CheckVectorConfig{"是否配置并启用了向量搜索?"}
-
-    CheckVectorConfig -- 否 --> LexicalPath["仅执行词法文本搜索 performBasicTextSearch<br/>(无意图泛化能力)"]
-
-    CheckVectorConfig -- 是 --> HyDE["可选 HyDE 查询扩展 (额外消耗 2~5s)"]
-    HyDE --> Embed["Embedding API 生成向量"]
-    Embed --> WorkerQuery["POST /query 到 Cloudflare Vectorize<br/>(硬编码 Top 30, threshold 0.35)"]
-
-    WorkerQuery --> CheckVectorResults{"Vectorize 是否返回 matches?"}
-    CheckVectorResults -- 空或异常 --> FallbackKeyword["回退到 keywordSearch (串行等待已过 3~5 秒)"]
-
-    CheckVectorResults -- 返回 matches --> HardFilter["致命陷阱: scoredRepos = repos.filter(repo => scoreMap.has(repo.id))<br/>【非向量前 30 名的仓库被永久剔除】"]
-    HardFilter --> TinyBonus["微弱加分 buildSearchPatch: name.includes 仅加 0.05"]
-    TinyBonus --> RerankOption{"是否启用 AI Rerank?"}
-    RerankOption -- 是 --> LLMRerank["LLM 重排序"]
-    RerankOption -- 否 --> VectorSort["按微调向量分排序 (官方库极易被衍生库倒置)"]
-
-    HardFilter -.-> Blindspot1["盲区 1: 精确库名未入向量前30直接蒸发"]
-    TinyBonus -.-> Blindspot2["盲区 2: 衍生库长文本余弦 0.85 压倒官方库 0.75+0.05"]
-    Embed -.-> Blindspot3["盲区 3: 短词/缩写 Subword 向量漂移被 threshold 截断"]
-    CheckVectorResults -.-> Blindspot4["盲区 4: 新同步未索引仓库在混合态下完全不可见"]
+```text
+query
+  │
+  ├─ vector enabled + ready
+  │    ├─ optional HyDE
+  │    ├─ embed
+  │    ├─ vector topK / threshold
+  │    ├─ 本地轻量加分
+  │    ├─ 只保留 vector 返回的 repo IDs
+  │    └─ optional LLM rerank
+  │
+  └─ vector empty / unavailable / failed
+       └─ keywordSearch
+            ├─ AI expansion + lexical candidates + LLM selection（有 AI config）
+            └─ performBasicTextSearch（无 AI config / failure）
 ```
 
----
+只要向量返回了一批结果，词法路径就不参与召回。这会产生结构性漏召回：
 
-### 2.2 盲区 1：词法/向量召回集割裂（Hard Vector-Only Filtering Trap）
+- `owner/repo` 完全匹配，但该仓库没有进入向量 TopK。
+- 新同步仓库尚未建立向量。
+- 短 token、缩写、库名对 embedding 的语义表达不稳定。
+- indexMode 与用户输入关注点不同，例如 README-heavy index 对 repo 名称精确检索并不占优势。
 
-* **代码证据**：
-  在 [useSearchActions.ts](file:///d:/桌面/GSM/src/features/repositories/hooks/useSearchActions.ts#L438-L446)：
-  ```typescript
-  // 4. 从本地仓库数据中取出匹配结果，按相似度排序
-  const scoredRepos = repositories
-    .filter(repo => scoreMap.has(String(repo.id)))
-    .map(repo => ({
-      repo,
-      score: scoreMap.get(String(repo.id)) || 0,
-    }))
-    .sort((a, b) => b.score - a.score)
-    .map(item => item.repo);
-  ```
-* **根因深度诊断**：
-  上述代码执行了**硬性排他过滤**：`scoreMap` 仅包含 Worker 端返回的向量候选集（通常 `topK = 30`）。
-  如果用户本地拥有 1,500 个 Star 仓库，当搜索某个特定仓库时，如果该仓库在向量空间中的余弦相似度排在第 31 位，或者因为文本嵌入时未包含某些最新关键词而未被 Vectorize 召回，它在 `scoredRepos` 过滤阶段直接被**彻底抹除**！即便该仓库在本地内存中具备 100% 完全相等的名称（如 `name === "vllm"`），也不会被展示给用户。
+修复重点是**召回集合**，不是先微调向量分数。
 
----
+### 2.2 搜索状态有两套事实
 
-### 2.3 盲区 2：微弱的静态加分与分值倒置（Trivial Linear Boost Inversion）
+当前至少有：
 
-* **代码证据**：
-  在 [useSearchActions.ts](file:///d:/桌面/GSM/src/features/repositories/hooks/useSearchActions.ts#L23-L39)：
-  ```typescript
-  export const buildSearchPatch = (
-    query: string,
-    vectorResults: VectorQueryResult[],
-  ): Map<string, number> => {
-    const queryLower = query.toLowerCase();
-    const boostedResults = vectorResults.map(r => {
-      let bonus = 0;
-      const name = (r.metadata?.full_name || '').toLowerCase();
-      const desc = (r.metadata?.description || '').toLowerCase();
-      const tags = (r.metadata?.tags || []).map(tag => tag.toLowerCase());
-      if (name.includes(queryLower)) bonus += 0.05;
-      if (desc.includes(queryLower)) bonus += 0.03;
-      if (tags.some(tag => tag.includes(queryLower))) bonus += 0.02;
-      return { ...r, score: r.score + bonus };
-    });
-    return new Map(boostedResults.map(r => [r.id, r.score]));
-  };
-  ```
-* **根因深度诊断**：
-  现有打分修补机制是**弱线性叠加（Static Micro-Bonus）**。
-  - 案例对比：
-    - 用户搜索：`express`
-    - 官方仓库 `expressjs/express`：README 短小精炼，余弦相似度得分 $S_{\text{vec}} = 0.72$；命中 `name.includes`，最终得分 $0.72 + 0.05 = \mathbf{0.77}$。
-    - 教程仓库 `awesome-express-modern-ecosystem`：包含海量现代 Web 关键词，余弦相似度高达 $S_{\text{vec}} = 0.85$；即使不给加分，其最终得分仍为 $\mathbf{0.85}$。
-  - **结论**：加分 $0.05$ 远远无法弥补语义余弦在长文本与短文本之间的天然分值漂移，导致官方核心仓库长期被生态衍生库压制。
-
----
-
-### 2.4 盲区 3：专有名词/短查询/缩写的向量漂移（Embedding Semantic Drift）
-
-* **典型场景**：搜索 `tRPC`、`Zustand`、`vLLM`、`esbuild`、`S3`、`K8s`、`FFmpeg` 等短专有名词。
-* **分词器（Tokenizer）机理缺陷**：
-  现代稠密向量模型（如 OpenAI `text-embedding-3-small` 或 BAAI `bge-m3`）采用 WordPiece/BPE 分词。对于缺乏广泛前置语料的简短缩写，分词器会将其打碎为 Subwords（例如 `vllm` $\to$ `v`, `##ll`, `##m`）。
-  - 没有上下文时，该向量直接漂移到高维低密度区域，余弦距离大幅度失真（甚至落入 $0.25 \sim 0.32$ 区间）；
-  - 而 Cloudflare Worker 端写死了硬截断逻辑：
-    在 [cloudflare-worker/src/index.ts](file:///d:/桌面/GSM/cloudflare-worker/src/index.ts#L283)：
-    ```typescript
-    m.metadata?.identity_hash === scope.identityHash && Number.isFinite(m.score) && m.score >= threshold
-    ```
-    阈值默认值通常为 $0.35$。相似度一旦落到 $0.34$，Worker 端直接**视为未命中并返回空**。
-
----
-
-### 2.5 盲区 4：新同步/未向量化仓库的“幽灵盲区”（Cold-start Ghosting）
-
-* **业务场景**：用户刚刚在 GitHub 上点击了某项目的 Star，并在 GSM 中点击了「同步星标」。
-* **时序漏洞**：
-  1. 本地仓库列表 `repositories` 已经包含了该项目；
-  2. 但后台向量索引由于速率控制（Rate Limit）或队列等待，该仓库尚未生成 Embedding 写入 Worker（即尚未标记 `vector_indexed_at`）；
-  3. 用户立即在搜索框中键入刚收藏的项目名称；
-  4. 向量检索触发，返回了其他库的 5 个相似项；
-  5. 因为向量返回数量 $> 0$，系统判定向量搜索成功，**跳过关键词回退分支**；
-  6. 新仓库由于不存在于 `scoreMap` 中，再次被 `filter` 吞没。用户误以为同步失败，造成体验恐慌。
-
----
-
-### 2.6 盲区 5：长尾布尔逻辑与多词精确交集失效（Boolean Multi-term Failure）
-
-* **典型场景**：搜索 `react virtualized table`。
-* **机制矛盾**：
-  - 本地词法搜索（[repoSearch.ts](file:///d:/桌面/GSM/src/utils/repoSearch.ts#L42)）执行严格的单词存在性检验：
-    ```typescript
-    return queryWords.every((word) => searchableText.includes(word));
-    ```
-    它能保证结果必然同时具备 `react`、`virtualized` 和 `table` 三个特征。
-  - 向量搜索则是将整串文本做质心投影。返回结果可能与 “React 虚拟 DOM”、“表格设计原则” 语义相似度很高，但实际上**完全不支持虚拟滚动（Virtualized）**。用户输入的信息越多，单纯向量检索的噪音反而越大。
-
----
-
-## 3. 混合检索（Hybrid Search）加权融合数学模型与算法设计
-
-### 3.1 双路并发检索架构设计
-
-为兼顾**精确率（Precision）**与**召回率（Recall）**，设计全新的双路并发（Dual-Track Concurrent）混合检索架构：
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 用户 (UI SearchBar)
-    participant Orchestrator as SearchOrchestrator (调度中枢)
-    participant Lexical as 词法多字段精准匹配 (In-Memory Engine)
-    participant Vector as Vectorize 语义检索 (Edge Worker)
-    participant Fusion as RRF 融合与强特征加权矩阵
-
-    User->>Orchestrator: 输入 Query (如 "vllm")
-
-    par 双路并发启动 (Promise.allSettled)
-        Orchestrator->>Lexical: 并发分支 A: 多字段倒排打分 (0ms 纯本地)
-        Lexical-->>Orchestrator: 返回词法有序候选集 (含匹配度评分)
-    and
-        Orchestrator->>Vector: 并发分支 B: Embedding -> Cloudflare Worker (设置 3.5s 熔断)
-        alt 向量在 3.5s 内返回
-            Vector-->>Orchestrator: 返回语义相似度候选集 Top 40
-        else 向量超时或发生异常
-            Vector-->>Orchestrator: 优雅降级中断，返回空集合并标记 fallbackReason
-        end
-    end
-
-    Orchestrator->>Fusion: 汇聚两路候选集并集 Union(Ids_lex, Ids_vec)
-    Note over Fusion: 计算 Enhanced RRF Score<br/>注入仓库名完全一致/前缀/Topic 强倍率因子 Φ(d, q)
-    Fusion-->>Orchestrator: 输出加权排好序的融合结果列表
-    Orchestrator-->>User: 毫秒级呈现最终搜索结果，并展示检索模式报告
+```text
+store.searchFilters.query
+store.searchResults
+vectorScoreMapRef
+skipNextTextSearchRef
+SearchBar 本地 searchQuery
+realtime name-only 结果
 ```
 
----
+其中 `vectorScoreMapRef` 只存在于 Hook 生命周期内。repository 更新、筛选条件变化、分类切换时，`SearchBar` effect 会重新用仓库全集和现有 filters 计算结果。这会导致：
 
-### 3.2 增强型倒数排名融合（Enhanced RRF with Signal Boosting）数学模型
+- 语义/融合排序被 basic text path 覆盖。
+- AI 精选出的“相关子集”重新膨胀成 substring 命中集。
+- vector-only ID 集合继续被当成搜索事实，无法表达 lexical + vector union。
+- 同一 query 在 realtime、提交后和 filter 变化后的语义不一致。
 
-倒数排名融合（Reciprocal Rank Fusion, RRF）是信息检索界公认的无需跨模型标定绝对分数的非参数融合方案。针对 GSM 的开源仓库检索特性，提出**增强型 RRF 模型**：
-
-设待排序候选仓库集合为 $\mathcal{D} = \mathcal{D}_{\text{lex}} \cup \mathcal{D}_{\text{vec}}$，用户查询词为 $q$。
-
-#### 基础 RRF 分数公式：
-$$\text{RRF}(d, q) = \frac{w_{\text{lex}}}{k + R_{\text{lex}}(d)} + \frac{w_{\text{vec}}}{k + R_{\text{vec}}(d)}$$
-
-其中：
-* $k$ 为排名平滑常量，工业界黄金基线值为 $k = 60$。它能够有效平滑靠前位置与靠后位置之间的陡峭递减梯度。
-* $R_{\text{lex}}(d) \in [1, |\mathcal{D}_{\text{lex}}|]$：仓库 $d$ 在词法通道中的升序排名（第 1 名为 1，第 2 名为 2）。若未在词法通道召回，则 $R_{\text{lex}}(d) = \infty$，对应项为 0。
-* $R_{\text{vec}}(d) \in [1, |\mathcal{D}_{\text{vec}}|]$：仓库 $d$ 在向量通道中的升序排名。若未在向量通道召回，则 $R_{\text{vec}}(d) = \infty$，对应项为 0。
-* $w_{\text{lex}}$ 与 $w_{\text{vec}}$ 分别为词法与语义通道的基线权重。
+因此 hybrid 改造必须同时改搜索状态模型。
 
 ---
 
-### 3.3 词法强特征增强因子 $\Phi(d, q)$ 详细设计与权重标定
+## 3. 正确性目标：复用现有路径，补候选并集
 
-为彻底粉碎“精确库名被衍生库挤到后面”的问题，在 RRF 基础上乘以非线性**特征增益矩阵（Signal Boost Matrix）**：
+推荐把搜索拆成四层：
 
-$$\text{Score}_{\text{final}}(d, q) = \text{RRF}(d, q) \times \left(1 + \Phi(d, q)\right)$$
+```text
+Query normalization / intent
+        │
+        ├──────── deterministic exact tiers
+        ├──────── local lexical recall
+        └──────── semantic recall
+                   ├─ optional expansion / HyDE
+                   └─ vector
+        │
+        ▼
+Candidate union + provenance
+        │
+        ▼
+Fusion / tier ordering
+        │
+        └─ optional LLM rerank on bounded candidates
+        │
+        ▼
+SearchSession
+        │
+        ▼
+Filters consume ordered candidate IDs
+```
 
-增强因子定义为各维度匹配指示函数（Indicator Function）的线性组合：
+### 3.1 确定性 exact tiers
 
-$$\Phi(d, q) = \beta_{\text{exact\_name}} \cdot \mathbb{I}(\text{name} = q) + \beta_{\text{full\_name}} \cdot \mathbb{I}(\text{full\_name} = q) + \beta_{\text{prefix}} \cdot \mathbb{I}(\text{name.starts}(q)) + \beta_{\text{topic}} \cdot \mathbb{I}(q \in \text{topics}) + \beta_{\text{tag}} \cdot \mathbb{I}(q \in \text{tags})$$
+exact 信号不要和向量 score 混成一个“乘 3.5 倍”的浮点公式。它适合做稳定 tier：
 
-#### 参数标定与理论依据：
+```ts
+type ExactTier =
+  | 'full-name-exact'
+  | 'name-exact'
+  | 'name-or-full-name-prefix'
+  | 'metadata-token-exact'
+  | null;
+```
 
-| 特征项 | 系数符号 | 推荐标定值 | 设计考量与业务场景 |
-| :--- | :--- | :--- | :--- |
-| **仓库名完全一致** | $\beta_{\text{exact\_name}}$ | **$+2.5$** | 分数直接放大 $3.5$ 倍！即使用户只搜 `express`，即使其向量分极低，也保证以绝对优势夺冠置顶。 |
-| **包含 Owner 全名完全一致** | $\beta_{\text{full\_name}}$ | **$+2.2$** | 用户键入如 `facebook/react`，确定性极高，直接锁定第一。 |
-| **仓库名前缀匹配** | $\beta_{\text{prefix}}$ | **$+0.8$** | 输入 `zust` 命中 `zustand`，支持即时打字预匹配。 |
-| **官方 Topic 标签精准命中** | $\beta_{\text{topic}}$ | **$+0.4$** | 用户搜索具体技术类别（如 `crdt`），命中了作者在 GitHub 声明的权威 Topic。 |
-| **AI / 自定义标签命中** | $\beta_{\text{tag}}$ | **$+0.3$** | 命中本地分类整理出的高阶标签。 |
+建议优先级：
 
----
+1. exact `full_name`：用户输入 `owner/repo` 时最强确定性信号。
+2. exact `name`：例如查询 `express` 时所有 repo.name === `express` 都进入此 tier。
+3. `name` / `full_name` prefix。
+4. tags / topics / language 的 exact normalized token。
+5. weighted lexical score。
+6. vector rank / semantic score。
 
-### 3.4 自适应查询意图分类器（Query Intent Classifier）
+这里“tier 更高”表示它不会被低层召回结果挤出候选，并不意味着同 tier 内存在一个“官方仓库一定第一”的承诺。
 
-系统在执行双路召回前，在本地用微秒级规则识别查询类型，自适应调节 $w_{\text{lex}}$ 和 $w_{\text{vec}}$：
+### 3.2 本地 lexical recall 应升级为评分器，而不是只有 AND substring filter
 
-```typescript
-export interface QueryIntent {
-  mode: 'identifier' | 'natural_semantic' | 'mixed';
-  weights: { lexical: number; vector: number };
-  bypassHyDE: boolean;
-}
+先复用 `performBasicTextSearch` 和 AIService 已有词法逻辑，补 exact tier 与统一候选。只有 fixture 说明布尔匹配不足时才增加评分/evidence；下例为按需结构，不要求首期全部字段：
 
-export function classifyQueryIntent(query: string): QueryIntent {
-  const trimmed = query.trim().toLowerCase();
-
-  // 1. 标识符模式 (Identifier Mode): 单词、短词、包含下划线/连字符/斜杠
-  const isIdentifier =
-    !trimmed.includes(' ') &&
-    (trimmed.length <= 14 || /^[a-z0-9_-]+(\/[a-z0-9_.-]+)?$/.test(trimmed));
-
-  if (isIdentifier) {
-    return {
-      mode: 'identifier',
-      weights: { lexical: 0.75, vector: 0.25 },
-      bypassHyDE: true, // 短词绝不执行缓慢的 HyDE 假想文档生成，省去 3~5 秒
-    };
-  }
-
-  // 2. 自然语言长句模式 (Natural Semantic Mode)
-  const isNatural =
-    trimmed.includes(' ') &&
-    (trimmed.length > 20 || /^(how|what|why|find|search|a|an|the|推荐|找|有没|能够|用于|基于|支持)/i.test(trimmed));
-
-  if (isNatural) {
-    return {
-      mode: 'natural_semantic',
-      weights: { lexical: 0.30, vector: 0.70 },
-      bypassHyDE: false,
-    };
-  }
-
-  // 3. 混合常规模式
-  return {
-    mode: 'mixed',
-    weights: { lexical: 0.50, vector: 0.50 },
-    bypassHyDE: true,
-  };
+```ts
+interface LexicalHit {
+  repoId: number;
+  score: number;
+  exactTier: ExactTier;
+  matchedFields: Array<
+    'full_name' | 'name' | 'topics' | 'ai_tags' | 'custom_tags' |
+    'language' | 'description' | 'ai_summary' | 'custom_description'
+  >;
 }
 ```
 
----
+权重只需要满足清晰的相对关系，不要把未经验证的小数当作“最佳公式”。例如：
 
-## 4. Prompt 重构与标签降噪方案（Taxonomy Normalization）
-
-### 4.1 现有 Prompt 与打标机制缺陷深度剖析
-
-审视 [src/services/aiService.ts](file:///d:/桌面/GSM/src/services/aiService.ts#L1787-L1795) 中的单仓打标提示词实现：
-```typescript
-- tags：3-5个中文应用类型标签${customCategories && customCategories.length > 0 ? '，请优先从上方的可用分类中选择' : '，类似应用商店的分类，如：开发工具、Web应用、移动应用、数据库、AI工具等'}。${categoriesLine}${hintLine}
+```text
+full_name / name  >  tags/topics/language  >  summary/description
+original query    >  AI-expanded terms
+exact token       >  prefix                >  substring
 ```
-该机制在工程实践中暴露了三大结构性缺陷：
 
-1. **零全局上下文盲打（Context-Blind Tagging）**：
-   每次分析某个仓库时，AI 接收到的只有当前仓库的 README 和高阶的几个大分类名。它**完全不知道当前个人库中已经累计沉淀了哪些高频标签**。每次打标全凭大模型当时概率采样的灵光一现，必然出现同义词大爆炸。
-2. **负向约束彻底缺失（No Negative Directives）**：
-   没有告诉模型“不得输出版本号（如 `-18`、`v2`）”、“不得随意附加 `生态`、`工具箱` 等修饰词”，导致 `React生态`、`React组件`、`React18` 遍地开花。
-3. **分类学正交性破缺（Taxonomy Orthogonality Violation）**：
-   平台属性（Web/CLI）、语言属性（TypeScript/Rust）、顶层分类（开发工具/网络通信）和细分标签（ORM/Markdown解析器）混在一个 tags 字段中随意吐出。
+`AIService` 已有 `scoreRepositoriesByKeywords` 和 query expansion 经验，可以复用或抽取评分逻辑，避免再创建第三套完全不同的 lexical scorer。
 
----
+### 3.3 lexical 与 vector 必须做 union
 
-### 4.2 重构 AI 结构化分类提示词（Taxonomy-Constrained System Prompt）
+核心数据结构：
 
-重构后的提示词引入**受控标签词表（Controlled Vocabulary）**、**严格新增预算（New Tag Quota）**与**正交分离准则**：
-
-```markdown
-# Role: GitHub Repository Taxonomy & Metadata Normalization Specialist
-
-你是一个专业的开源项目知识库元数据治理引擎。请分析所给仓库的客观信息，生成高一致性、杜绝碎片化同义词的标准化分类 JSON。
-
-## 全局受控知识库约束 (Global Contextual Taxonomy)
-【当前库中已有规范高频标签池 (Top Canonical Tags)】：
-{TOP_EXISTING_CANONICAL_TAGS}
-
-【系统规范顶层业务分类 (Standard Categories)】：
-{CANONICAL_CATEGORIES}
-
-## 元数据标注严苛准则 (Strict Normalization Directives)
-1. 【标签优先复用原则】
-   - `tags` 字段必须且仅允许输出 2 至 4 个标签；
-   - **其中至少 2 个标签必须从上述【已有规范高频标签池】中精确选取，字母大小写与连字符必须 100% 保持一致**。
-2. 【严格限制新增标签预算】
-   - 只有当现有标签池完全无法涵盖该项目的核心技术领域时，才允许新建【最多 1 个】新标签；
-   - 新标签必须是公认的技术标准词（如 `webrtc`, `ebpf`, `wasm`），严禁创造生僻合成词。
-3. 【坚决抵制同义词与派生变体】
-   - 严禁携带版本号后缀：严禁输出 `React 18`、`Vue3`、`Python 3.12`，统一使用 `React`、`Vue`、`Python`；
-   - 严禁拼接冗余修饰词：已有 `Docker` 时严禁输出 `Docker容器`、`Docker生态`；已有 `CLI` 时严禁输出 `命令行工具`；
-   - 强制使用规范缩写：必须统一采用 `K8s`（而非 Kubernetes）、`LLM`（而非 大模型/大语言模型）、`RAG`、`Agent`。
-4. 【维度严格正交】
-   - 平台支持只能归入 `platforms`（只能从 `["mac","windows","linux","ios","android","docker","web","cli"]` 选取），严禁流入 `tags`；
-   - 顶层业务大类只能归入 `category`，不得作为 `tags`。
-
-## 输出要求：
-仅输出合法的 JSON 纯文本，禁止包含 Markdown 代码块标记（```json），禁止输出任何解释。
-
-{
-  "summary": "50字以内精炼中文概述，阐明核心技术机制与用途，禁止废话套话",
-  "category": "匹配顶层分类名称",
-  "tags": ["规范标签A", "规范标签B"],
-  "platforms": ["web", "cli"]
+```ts
+interface CandidateEvidence {
+  repoId: number;
+  exactTier: ExactTier;
+  lexicalRank?: number;
+  lexicalScore?: number;
+  vectorRank?: number;
+  vectorScore?: number;
+  sources: Array<'exact' | 'lexical' | 'vector'>;
 }
 ```
 
----
+候选构建：
 
-### 4.3 本地三层同义词归一化流水线（Normalization Pipeline）
-
-在前端本地构建低开销、确定性的三层标签清洗与治理流水线：
-
-```mermaid
-flowchart LR
-    RawTag["原始标签<br/>(例如 'react-18', 'k8s', 'Vue.js')"] --> Layer1["Layer 1: 确定性形态清洗<br/>- 小写与去标点<br/>- 剥离版本号后缀<br/>- 剥离冗余词 (lib, framework)"]
-    Layer1 --> Layer2["Layer 2: 权威技术别名映射<br/>- reactjs -> React<br/>- k8s -> Kubernetes<br/>- 大模型 -> LLM"]
-    Layer2 --> Layer3["Layer 3: 编辑距离智能聚类<br/>(Levenshtein / Jaro-Winkler)<br/>发现未知相近变体并提示合并"]
-    Layer3 --> CleanTag["规范化单一权威标签<br/>(Canonical Tag)"]
+```text
+exact IDs
+  UNION lexical top candidates
+  UNION vector top candidates
 ```
 
----
+不能再写：
 
-### 4.4 前端/本地运行的“一键合并同义标签”交互与数据流规范
-
-1. **触发与检测**：系统启动或在标签侧边栏闲置时，在后台以 Web Worker 或微任务遍历当前所有仓库的 `ai_tags` 与 `custom_tags`，统计频率并运行聚类算法。
-2. **交互体验**：
-   - 在搜索过滤抽屉的顶部提供一个提示条：`发现 18 组同义变体标签（例如: React / reactjs / react-18）。`
-   - 点击进入「标签降噪治理中心」模态框；
-   - 模态框展示直观的分组卡片，左侧为系统建议的保留词（按使用频率最高者推举），右侧为勾选合并的变体词，并显示影响的项目数量。
-3. **数据原子更新与自愈**：
-   - 确认合并时，调用 Zustand Store 的原子批处理方法；
-   - 对涉及的仓库执行标签就地替换并去重，写入 `last_edited`，触发后台增量同步；
-   - 将用户确认的合并映射关系持久化保存到 `userTaxonomyAliases` 本地配置中，后续新导入仓库打标时自动应用该映射规则。
-
----
-
-## 5. 落地实施代码：高可用搜索调度器（Search Orchestrator）
-
-### 5.1 独立搜索调度器核心实现（SearchOrchestrator.ts）
-
-创建文件：`d:\桌面\GSM\src\services\searchOrchestrator.ts`
-
-```typescript
-/**
- * 混合搜索调度器 (Search Orchestrator)
- * 核心能力：
- * 1. 词法通道与向量通道双路并发执行 (Promise.allSettled)
- * 2. 向量通道独立超时隔离与无感平滑回退 (默认 3500ms 熔断)
- * 3. 增强型倒数排名融合 (Enhanced RRF with Signal Boosting)
- * 4. 解决官方核心库名未入向量前 30 名导致彻底蒸发的严重缺陷
- */
-
-import type { Repository } from '../types';
-import type { VectorQueryResult } from './vectorSearchService';
-import { VectorSearchService, EmbeddingClient } from './vectorSearchService';
-import { performBasicTextSearch } from '../utils/repoSearch';
-
-export interface VectorChannelConfig {
-  enabled: boolean;
-  workerUrl: string;
-  searchTopK?: number;
-  searchThreshold?: number;
-  embeddingClient: EmbeddingClient;
-  vectorService: VectorSearchService;
-}
-
-export interface HybridSearchRequest {
-  query: string;
-  repositories: Repository[];
-  vectorConfig?: VectorChannelConfig;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onPhase?: (phase: string) => void;
-}
-
-export interface HybridSearchReport {
-  query: string;
-  totalCandidates: number;
-  lexicalHits: number;
-  vectorHits: number;
-  fusedHits: number;
-  mode: 'hybrid' | 'lexical-fallback' | 'pure-lexical';
-  latencyMs: number;
-  fallbackReason?: string;
-}
-
-export interface HybridSearchResponse {
-  repositories: Repository[];
-  scoreMap: Map<number, number>;
-  sourceMap: Map<number, 'lexical' | 'vector' | 'hybrid'>;
-  report: HybridSearchReport;
-}
-
-export class SearchOrchestrator {
-  private static readonly RRF_K = 60; // 倒数排名平滑常数
-
-  public static async executeHybridSearch(
-    request: HybridSearchRequest,
-  ): Promise<HybridSearchResponse> {
-    const startTime = performance.now();
-    const { query, repositories, vectorConfig, timeoutMs = 3500, signal, onPhase } = request;
-    const cleanQuery = query.trim();
-
-    // 空查询直接原样返回
-    if (!cleanQuery) {
-      return {
-        repositories,
-        scoreMap: new Map(),
-        sourceMap: new Map(),
-        report: {
-          query,
-          totalCandidates: repositories.length,
-          lexicalHits: repositories.length,
-          vectorHits: 0,
-          fusedHits: repositories.length,
-          mode: 'pure-lexical',
-          latencyMs: 0,
-        },
-      };
-    }
-
-    const queryLower = cleanQuery.toLowerCase();
-    const queryTokens = queryLower.split(/\s+/).filter(Boolean);
-
-    const isVectorAvailable = Boolean(
-      vectorConfig?.enabled &&
-      vectorConfig.workerUrl &&
-      vectorConfig.embeddingClient &&
-      vectorConfig.vectorService,
-    );
-
-    // 通道 1: 内存词法检索通道 (同步极速执行)
-    const runLexicalChannel = (): Repository[] => {
-      return performBasicTextSearch(repositories, cleanQuery).sort((a, b) => {
-        const aScore = SearchOrchestrator.calculateLexicalScore(a, queryLower, queryTokens);
-        const bScore = SearchOrchestrator.calculateLexicalScore(b, queryLower, queryTokens);
-        return bScore - aScore;
-      });
-    };
-
-    // 通道 2: 向量检索通道 (带独立超时与中止信号)
-    const runVectorChannel = async (): Promise<VectorQueryResult[]> => {
-      if (!isVectorAvailable || !vectorConfig) return [];
-
-      const vectorAbort = new AbortController();
-      const onParentAbort = () => vectorAbort.abort();
-      signal?.addEventListener('abort', onParentAbort, { once: true });
-
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => {
-          vectorAbort.abort();
-          reject(new Error(`Vector query timeout exceeded (${timeoutMs}ms)`));
-        }, timeoutMs);
-        vectorAbort.signal.addEventListener('abort', () => clearTimeout(timer));
-      });
-
-      try {
-        onPhase?.('searching-vector-index');
-        const queryPromise = (async () => {
-          const vectors = await vectorConfig.embeddingClient.embed(
-            [cleanQuery],
-            'query',
-            vectorAbort.signal,
-          );
-          if (!vectors || vectors.length === 0) return [];
-
-          return await vectorConfig.vectorService.query(
-            vectors[0],
-            {
-              topK: vectorConfig.searchTopK ?? 40,
-              threshold: vectorConfig.searchThreshold ?? 0.30,
-            },
-            vectorAbort.signal,
-          );
-        })();
-
-        return await Promise.race([queryPromise, timeoutPromise]);
-      } finally {
-        signal?.removeEventListener('abort', onParentAbort);
-      }
-    };
-
-    // 双路并发调度
-    onPhase?.('initiating-dual-search');
-    let lexicalHits: Repository[] = [];
-    let vectorHits: VectorQueryResult[] = [];
-    let fallbackReason: string | undefined;
-
-    const [lexicalOutcome, vectorOutcome] = await Promise.allSettled([
-      Promise.resolve().then(() => runLexicalChannel()),
-      runVectorChannel(),
-    ]);
-
-    if (lexicalOutcome.status === 'fulfilled') {
-      lexicalHits = lexicalOutcome.value;
-    } else {
-      lexicalHits = performBasicTextSearch(repositories, cleanQuery);
-    }
-
-    if (vectorOutcome.status === 'fulfilled') {
-      vectorHits = vectorOutcome.value;
-    } else {
-      fallbackReason =
-        vectorOutcome.reason instanceof Error
-          ? vectorOutcome.reason.message
-          : 'Vector retrieval channel failed';
-      console.warn('⚠️ Vector retrieval gracefully degraded:', fallbackReason);
-    }
-
-    // 融合与加权排序
-    const { finalRepos, scoreMap, sourceMap } = SearchOrchestrator.fuse({
-      queryLower,
-      allRepos: repositories,
-      lexicalHits,
-      vectorHits,
-    });
-
-    const latencyMs = Math.round(performance.now() - startTime);
-
-    return {
-      repositories: finalRepos,
-      scoreMap,
-      sourceMap,
-      report: {
-        query: cleanQuery,
-        totalCandidates: repositories.length,
-        lexicalHits: lexicalHits.length,
-        vectorHits: vectorHits.length,
-        fusedHits: finalRepos.length,
-        mode:
-          vectorHits.length > 0
-            ? 'hybrid'
-            : isVectorAvailable
-              ? 'lexical-fallback'
-              : 'pure-lexical',
-        latencyMs,
-        fallbackReason,
-      },
-    };
-  }
-
-  /**
-   * 词法通道多字段精细打分
-   */
-  private static calculateLexicalScore(
-    repo: Repository,
-    queryLower: string,
-    tokens: string[],
-  ): number {
-    let score = 0;
-    const nameLower = repo.name.toLowerCase();
-    const fullNameLower = repo.full_name.toLowerCase();
-    const descLower = (repo.description || '').toLowerCase();
-    const topics = (repo.topics || []).map((t) => t.toLowerCase());
-    const tags = [...(repo.ai_tags || []), ...(repo.custom_tags || [])].map((t) => t.toLowerCase());
-
-    // 1. 完全一致（最高级权重）
-    if (nameLower === queryLower) score += 100;
-    else if (fullNameLower === queryLower) score += 90;
-    else if (nameLower.startsWith(queryLower)) score += 50;
-    else if (nameLower.includes(queryLower)) score += 30;
-
-    // 2. Topics / Tags 命中
-    if (topics.includes(queryLower)) score += 25;
-    if (tags.includes(queryLower)) score += 20;
-
-    // 3. 多 Token 覆盖度加分
-    for (const token of tokens) {
-      if (nameLower.includes(token)) score += 10;
-      if (topics.some((t) => t.includes(token))) score += 8;
-      if (tags.some((t) => t.includes(token))) score += 6;
-      if (descLower.includes(token)) score += 2;
-    }
-
-    return score;
-  }
-
-  /**
-   * 增强型倒数排名融合引擎 (RRF + Signal Boost)
-   */
-  private static fuse(params: {
-    queryLower: string;
-    allRepos: Repository[];
-    lexicalHits: Repository[];
-    vectorHits: VectorQueryResult[];
-  }): {
-    finalRepos: Repository[];
-    scoreMap: Map<number, number>;
-    sourceMap: Map<number, 'lexical' | 'vector' | 'hybrid'>;
-  } {
-    const { queryLower, allRepos, lexicalHits, vectorHits } = params;
-    const repoMap = new Map<number, Repository>(allRepos.map((r) => [r.id, r]));
-
-    const lexRankMap = new Map<number, number>();
-    lexicalHits.forEach((repo, index) => {
-      lexRankMap.set(repo.id, index + 1);
-    });
-
-    const vecRankMap = new Map<number, number>();
-    vectorHits.forEach((hit, index) => {
-      const id = parseInt(hit.id, 10);
-      if (Number.isFinite(id)) {
-        vecRankMap.set(id, index + 1);
-      }
-    });
-
-    // 区分短查询与长查询自适应权重
-    const isShortQuery = queryLower.length <= 14 && !queryLower.includes(' ');
-    const wLex = isShortQuery ? 0.70 : 0.45;
-    const wVec = isShortQuery ? 0.30 : 0.55;
-
-    // 两路结果取并集，保证即便向量库未索引也能通过词法通道召回
-    const candidateIds = new Set<number>([
-      ...lexRankMap.keys(),
-      ...vecRankMap.keys(),
-    ]);
-
-    const finalScores = new Map<number, number>();
-    const sourceMap = new Map<number, 'lexical' | 'vector' | 'hybrid'>();
-
-    for (const id of candidateIds) {
-      const repo = repoMap.get(id);
-      if (!repo) continue;
-
-      const rLex = lexRankMap.get(id);
-      const rVec = vecRankMap.get(id);
-
-      if (rLex && rVec) sourceMap.set(id, 'hybrid');
-      else if (rLex) sourceMap.set(id, 'lexical');
-      else sourceMap.set(id, 'vector');
-
-      const rrfLex = rLex ? wLex / (SearchOrchestrator.RRF_K + rLex) : 0;
-      const rrfVec = rVec ? wVec / (SearchOrchestrator.RRF_K + rVec) : 0;
-      const rrfBase = rrfLex + rrfVec;
-
-      // 词法强匹配倍率增益 Φ(d, q)
-      let boostMultiplier = 1.0;
-      const nameLower = repo.name.toLowerCase();
-      const fullNameLower = repo.full_name.toLowerCase();
-      const topics = (repo.topics || []).map((t) => t.toLowerCase());
-
-      if (nameLower === queryLower) {
-        boostMultiplier += 2.5; // 官方完全重名仓库提权 3.5x，稳夺第一
-      } else if (fullNameLower === queryLower) {
-        boostMultiplier += 2.2;
-      } else if (nameLower.startsWith(queryLower)) {
-        boostMultiplier += 0.8;
-      } else if (nameLower.includes(queryLower)) {
-        boostMultiplier += 0.4;
-      }
-
-      if (topics.includes(queryLower)) {
-        boostMultiplier += 0.4;
-      }
-
-      finalScores.set(id, rrfBase * boostMultiplier);
-    }
-
-    const finalRepos = Array.from(candidateIds)
-      .map((id) => repoMap.get(id)!)
-      .filter(Boolean)
-      .sort((a, b) => (finalScores.get(b.id) || 0) - (finalScores.get(a.id) || 0));
-
-    return { finalRepos, scoreMap: finalScores, sourceMap };
-  }
-}
+```ts
+repositories.filter(repo => vectorScoreMap.has(String(repo.id)))
 ```
 
----
+作为 hybrid 的最终候选筛选条件。
 
-### 5.2 标签归一化与聚类检测核心代码实现（taxonomyNormalization.ts）
+### 3.4 exact tier 独立；复杂融合按评测需要引入
 
-创建文件：`d:\桌面\GSM\src\utils\taxonomyNormalization.ts`
+若需要融合词法与向量排名，可评估 RRF 等 rank-based 方法，避免直接比较不同尺度的 score。首期先保证 exact/lexical 不消失，保留已有语义顺序；评测没有证明必要时不增加融合调参平台。参考结构：
 
-```typescript
-/**
- * 标签归一化与分类降噪流水线 (Taxonomy Normalization Pipeline)
- */
-
-// 1. 工业级权威技术别名映射表 (Canonical Aliases Dictionary)
-export const TECH_CANONICAL_ALIASES: Record<string, string> = {
-  // Web 前端
-  'reactjs': 'React',
-  'react.js': 'React',
-  'react-js': 'React',
-  'react18': 'React',
-  'react-18': 'React',
-  'vuejs': 'Vue',
-  'vue.js': 'Vue',
-  'vue3': 'Vue',
-  'vue-3': 'Vue',
-  'vue2': 'Vue',
-  'angularjs': 'Angular',
-  'angular.js': 'Angular',
-  'nextjs': 'Next.js',
-  'next.js': 'Next.js',
-  'nuxtjs': 'Nuxt',
-  'nuxt.js': 'Nuxt',
-  'tailwindcss': 'TailwindCSS',
-  'tailwind': 'TailwindCSS',
-  'typescript': 'TypeScript',
-  'ts': 'TypeScript',
-  'javascript': 'JavaScript',
-  'js': 'JavaScript',
-
-  // 容器与云原生
-  'k8s': 'Kubernetes',
-  'kube': 'Kubernetes',
-  'docker-compose': 'Docker',
-  'container': 'Docker',
-
-  // 人工智能与大模型
-  'llm': 'LLM',
-  'llms': 'LLM',
-  'large-language-model': 'LLM',
-  'large-language-models': 'LLM',
-  '大模型': 'LLM',
-  '大语言模型': 'LLM',
-  'chatgpt': 'ChatGPT',
-  'openai': 'OpenAI',
-  'diffusion': 'Stable Diffusion',
-  'sd': 'Stable Diffusion',
-  'agent': 'AI Agent',
-  'agents': 'AI Agent',
-  'rag': 'RAG',
-
-  // 语言与运行时
-  'golang': 'Go',
-  'python3': 'Python',
-  'py': 'Python',
-  'nodejs': 'Node.js',
-  'node.js': 'Node.js',
-  'postgres': 'PostgreSQL',
-  'pgsql': 'PostgreSQL',
-  'mongo': 'MongoDB',
-  'sqlite3': 'SQLite',
-};
-
-/**
- * 阶段 1: 确定性基础形态清洗
- */
-export function sanitizeTagForm(tag: string): string {
-  if (!tag) return '';
-  return tag
-    .trim()
-    .replace(/^#+/, '')
-    .replace(/[_\s]+/g, '-')
-    .replace(/-v?\d+(\.\d+)*$/i, '')
-    .replace(/-(framework|ecosystem|library|lib|tools?|apps?)$/i, '');
-}
-
-/**
- * 阶段 2: 规范化权威字典映射
- */
-export function normalizeTag(tag: string): string {
-  const sanitized = sanitizeTagForm(tag);
-  const lower = sanitized.toLowerCase();
-
-  if (TECH_CANONICAL_ALIASES[lower]) {
-    return TECH_CANONICAL_ALIASES[lower];
-  }
-
-  // 专有名词大写保留（如短缩写保持大写）
-  return sanitized.length <= 4 && !/[a-z]/.test(sanitized) ? sanitized : sanitized.toLowerCase();
-}
-
-/**
- * 编辑距离计算 (Levenshtein Distance)
- */
-export function getLevenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j] + 1,
-        );
-      }
-    }
-  }
-  return matrix[b.length][a.length];
-}
-
-export interface TagClusterSuggestion {
-  canonical: string;
-  variants: string[];
-  affectedRepoCount: number;
-}
-
-/**
- * 阶段 3: 本地智能聚类检测器
- */
-export function detectTagClusters(
-  tagFrequencyMap: Map<string, number>,
-  similarityThreshold = 0.82,
-): TagClusterSuggestion[] {
-  const tags = Array.from(tagFrequencyMap.keys());
-  const visited = new Set<string>();
-  const suggestions: TagClusterSuggestion[] = [];
-
-  // 按频次降序，最高频项作为基准保留项 (Canonical)
-  const sortedTags = [...tags].sort(
-    (a, b) => (tagFrequencyMap.get(b) || 0) - (tagFrequencyMap.get(a) || 0),
-  );
-
-  for (const tag of sortedTags) {
-    if (visited.has(tag)) continue;
-    visited.add(tag);
-
-    const cluster: string[] = [];
-    for (const candidate of sortedTags) {
-      if (visited.has(candidate)) continue;
-
-      const normTag = normalizeTag(tag).toLowerCase();
-      const normCand = normalizeTag(candidate).toLowerCase();
-
-      let isMatch = normTag === normCand;
-
-      // 前缀/包含关系匹配
-      if (
-        !isMatch &&
-        (normTag.startsWith(normCand) || normCand.startsWith(normTag)) &&
-        Math.abs(normTag.length - normCand.length) <= 3
-      ) {
-        isMatch = true;
-      }
-
-      // 编辑距离相似度匹配
-      if (!isMatch) {
-        const dist = getLevenshteinDistance(normTag, normCand);
-        const maxLen = Math.max(normTag.length, normCand.length);
-        const sim = 1 - dist / maxLen;
-        if (sim >= similarityThreshold && (maxLen > 4 ? dist <= 2 : dist <= 1)) {
-          isMatch = true;
-        }
-      }
-
-      if (isMatch) {
-        cluster.push(candidate);
-        visited.add(candidate);
-      }
-    }
-
-    if (cluster.length > 0) {
-      let affected = tagFrequencyMap.get(tag) || 0;
-      for (const variant of cluster) {
-        affected += tagFrequencyMap.get(variant) || 0;
-      }
-      suggestions.push({
-        canonical: tag,
-        variants: cluster,
-        affectedRepoCount: affected,
-      });
-    }
-  }
-
-  return suggestions;
-}
+```text
+先按 exact tier 分层
+  -> 同层内融合 lexical rank + vector rank
+  -> 必要时再加稳定次级信号
 ```
 
+这样 exact `full_name` 不需要依赖任意 vector score multiplier 才能保住位置。
+
+如果未来实验表明别的 fusion 更好，也可以替换；`SearchSession` 只需要保存最终 rank 与 evidence，不应把 UI 绑死在 RRF 公式上。
+
 ---
 
-### 5.3 前端 Hook 接入改造示例（useSearchActions.ts）
+## 4. 保留语义扩展、HyDE 与 rerank，但按 query intent 调度
 
-在 [src/features/repositories/hooks/useSearchActions.ts](file:///d:/桌面/GSM/src/features/repositories/hooks/useSearchActions.ts) 中重构 `aiSearch` 函数：
+现有语义能力有价值，不应为了实现 hybrid 全部删掉。
 
-```typescript
-// 引入全新的调度器
-import { SearchOrchestrator } from '../../../services/searchOrchestrator';
+### 4.1 短词 / 标识符查询
 
-// 在 useSearchActions 内部：
-const aiSearch = useCallback(async (
-  query: string,
-  applyFilters: (repos: Repository[]) => Repository[],
-): Promise<void> => {
-  if (!query.trim()) return;
+典型：
 
-  // 1. 中止旧在途请求
-  aiSearchAbortRef.current?.abort();
-  const controller = new AbortController();
-  aiSearchAbortRef.current = controller;
-
-  const initial = useAppStore.getState();
-  setIsSearching(true);
-  setSearchPhase(t('useSearchActions.initiating-dual-search'));
-  setSearchReport(null);
-
-  try {
-    const vsConfig = initial.vectorSearchConfig;
-    const embConfigs = initial.embeddingConfigs;
-    const activeEmbConfig = embConfigs.find((c) => c.id === vsConfig?.embeddingConfigId);
-
-    // 2. 组装向量检索配置
-    const vectorOrchestratorConfig = (vsConfig?.enabled && vsConfig?.workerUrl && activeEmbConfig)
-      ? {
-          enabled: true,
-          workerUrl: vsConfig.workerUrl,
-          searchTopK: vsConfig.searchTopK ?? 40,
-          searchThreshold: vsConfig.searchThreshold ?? 0.30,
-          embeddingClient: new EmbeddingClient(activeEmbConfig),
-          vectorService: new VectorSearchService(vsConfig, activeEmbConfig),
-        }
-      : undefined;
-
-    // 3. 执行双路混合检索（超时隔离 + RRF 融合 + 官方库置顶）
-    const searchResult = await SearchOrchestrator.executeHybridSearch({
-      query,
-      repositories,
-      vectorConfig: vectorOrchestratorConfig,
-      timeoutMs: 3500, // 3.5s 快速超时熔断，不拖慢界面
-      signal: controller.signal,
-      onPhase: (phase) => setSearchPhase(t(`useSearchActions.${phase}`)),
-    });
-
-    if (controller.signal.aborted) return;
-
-    // 4. 叠加用户界面筛选项（语言、订阅、平台等）
-    const finalFiltered = applyFilters([...searchResult.repositories]);
-
-    // 5. 恢复融合调度器输出的相对相关性次序
-    const fusionOrder = new Map(searchResult.repositories.map((repo, idx) => [repo.id, idx]));
-    finalFiltered.sort((a, b) =>
-      (fusionOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (fusionOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
-    );
-
-    // 6. 状态提交与报告更新
-    skipNextTextSearchRef.current = true;
-    setSearchResults(finalFiltered);
-    setSearchReport({
-      query,
-      mode: searchResult.report.mode === 'hybrid' ? 'vector' : 'keyword',
-      total: searchResult.report.totalCandidates,
-      count: finalFiltered.length,
-      fallback: searchResult.report.fallbackReason,
-    });
-    setSearchFilters({ query });
-
-    console.log(`🎯 Hybrid search completed in ${searchResult.report.latencyMs}ms (${searchResult.report.mode})`);
-  } catch (error) {
-    if (isAbortError(error)) return;
-    console.error('💥 Hybrid search error:', error);
-    // 终极平滑降级：快速词法回退
-    const fallbackList = applyFilters(performBasicTextSearch(repositories, query));
-    setSearchResults(fallbackList);
-    setSearchReport({
-      query,
-      mode: 'keyword',
-      total: repositories.length,
-      count: fallbackList.length,
-      fallback: error instanceof Error ? error.message : 'fatal-fallback',
-    });
-  } finally {
-    if (aiSearchAbortRef.current === controller) {
-      aiSearchAbortRef.current = null;
-      setIsSearching(false);
-      setSearchPhase(null);
-    }
-  }
-}, [repositories, language, setSearchResults, setSearchFilters, t]);
+```text
+trpc
+k8s
+owner/repo
+react-query
+sqlite
 ```
 
----
+建议：
 
-### 5.4 标签降噪与分类治理弹窗组件（TaxonomyGovernanceModal.tsx）
-
-创建组件：`d:\桌面\GSM\src\components\TaxonomyGovernanceModal.tsx`
-
-```tsx
-import React, { useMemo, useState } from 'react';
-import { useAppStore } from '../store/useAppStore';
-import { useShallow } from 'zustand/react/shallow';
-import { useDialog } from '../hooks/useDialog';
-import { detectTagClusters, type TagClusterSuggestion } from '../utils/taxonomyNormalization';
-import { Button } from './ui/button';
-import { Checkbox } from './ui/checkbox';
-import { Sparkles, Check, ArrowRight, Tag, AlertCircle } from 'lucide-react';
-
-interface TaxonomyGovernanceModalProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-export const TaxonomyGovernanceModal: React.FC<TaxonomyGovernanceModalProps> = ({ open, onClose }) => {
-  const { repositories, setRepositories } = useAppStore(
-    useShallow((s) => ({
-      repositories: s.repositories,
-      setRepositories: s.setRepositories,
-    })),
-  );
-  const { toast } = useDialog();
-  const [selectedGroups, setSelectedGroups] = useState<Record<string, boolean>>({});
-
-  // 1. 统计当前所有标签的出现频次
-  const tagStats = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const repo of repositories) {
-      const allTags = [...(repo.ai_tags || []), ...(repo.custom_tags || [])];
-      for (const t of allTags) {
-        map.set(t, (map.get(t) || 0) + 1);
-      }
-    }
-    return map;
-  }, [repositories]);
-
-  // 2. 运行聚类分析
-  const clusters = useMemo(() => {
-    return detectTagClusters(tagStats);
-  }, [tagStats]);
-
-  // 默认全选所有发现的聚类
-  React.useEffect(() => {
-    const init: Record<string, boolean> = {};
-    clusters.forEach((c) => {
-      init[c.canonical] = true;
-    });
-    setSelectedGroups(init);
-  }, [clusters]);
-
-  if (!open) return null;
-
-  // 3. 执行一键原子合并
-  const handleBatchMerge = () => {
-    const activeClusters = clusters.filter((c) => selectedGroups[c.canonical]);
-    if (activeClusters.length === 0) {
-      onClose();
-      return;
-    }
-
-    // 构造快速映射字典: variant -> canonical
-    const aliasMap = new Map<string, string>();
-    for (const cluster of activeClusters) {
-      for (const variant of cluster.variants) {
-        aliasMap.set(variant, cluster.canonical);
-      }
-    }
-
-    let modifiedCount = 0;
-    const updatedRepositories = repositories.map((repo) => {
-      let changed = false;
-
-      const updateTagList = (list?: string[]) => {
-        if (!list || list.length === 0) return list;
-        const nextSet = new Set<string>();
-        for (const tag of list) {
-          const mapped = aliasMap.get(tag);
-          if (mapped) {
-            nextSet.add(mapped);
-            changed = true;
-          } else {
-            nextSet.add(tag);
-          }
-        }
-        return Array.from(nextSet);
-      };
-
-      const newAiTags = updateTagList(repo.ai_tags);
-      const newCustomTags = updateTagList(repo.custom_tags);
-
-      if (changed) {
-        modifiedCount++;
-        return {
-          ...repo,
-          ai_tags: newAiTags,
-          custom_tags: newCustomTags,
-          last_edited: new Date().toISOString(),
-        };
-      }
-      return repo;
-    });
-
-    setRepositories(updatedRepositories);
-    toast(`成功合并 ${activeClusters.length} 组同义标签，已更新 ${modifiedCount} 个项目！`, 'success');
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-background border border-border rounded-xl shadow-2xl max-w-2xl w-full flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-200">
-        {/* Header */}
-        <div className="p-6 border-b border-border flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-              <Sparkles className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">标签分类降噪与同义词治理</h2>
-              <p className="text-xs text-muted-foreground">
-                检测到 {clusters.length} 组同义变体，合并可大幅减少碎片标签并提高检索命中率
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Cluster List */}
-        <div className="p-6 overflow-y-auto space-y-4 flex-1">
-          {clusters.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground flex flex-col items-center space-y-2">
-              <Check className="w-8 h-8 text-green-500" />
-              <p className="text-sm">当前标签库非常整洁，未发现碎片化同义词！</p>
-            </div>
-          ) : (
-            clusters.map((cluster) => {
-              const isChecked = selectedGroups[cluster.canonical] ?? false;
-              return (
-                <div
-                  key={cluster.canonical}
-                  className={`p-4 rounded-lg border transition-all ${
-                    isChecked
-                      ? 'border-primary/40 bg-primary/5'
-                      : 'border-border/60 bg-muted/20 opacity-60'
-                  }`}
-                >
-                  <div className="flex items-start space-x-3">
-                    <Checkbox
-                      checked={isChecked}
-                      onCheckedChange={(checked) =>
-                        setSelectedGroups((prev) => ({
-                          ...prev,
-                          [cluster.canonical]: Boolean(checked),
-                        }))
-                      }
-                      className="mt-1"
-                    />
-                    <div className="flex-1 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-2">
-                          <span className="text-xs font-medium text-muted-foreground">归一为基准:</span>
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-primary text-primary-foreground">
-                            <Tag className="w-3 h-3 mr-1" />
-                            {cluster.canonical}
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          影响 {cluster.affectedRepoCount} 个仓库
-                        </span>
-                      </div>
-
-                      <div className="flex items-center space-x-2 text-xs text-muted-foreground flex-wrap gap-1.5">
-                        <ArrowRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                        <span>待合并变体:</span>
-                        {cluster.variants.map((v) => (
-                          <span
-                            key={v}
-                            className="line-through decoration-muted-foreground/60 px-2 py-0.5 bg-muted text-muted-foreground rounded text-xs"
-                          >
-                            {v}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="p-4 border-t border-border bg-muted/10 flex items-center justify-between">
-          <div className="text-xs text-muted-foreground flex items-center space-x-1.5">
-            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>合并后将自动去重并更新关联仓库的本地与云端索引</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <Button variant="outline" size="sm" onClick={onClose}>
-              取消
-            </Button>
-            <Button
-              size="sm"
-              disabled={clusters.length === 0}
-              onClick={handleBatchMerge}
-            >
-              一键合并选中项
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+```text
+立刻 exact + lexical
+      │
+      ├─ UI 可先展示本地结果
+      │
+      └─ vector ready 时并行查询
+              │
+              ▼
+          union + fusion
 ```
 
----
+这类 query 默认不必先等 LLM expansion/HyDE 才能开始搜索。exact/lexical 是强信号；HyDE 对非常短的 identifier 可能把意图扩得过宽。
 
-## 6. 改造前后核心指标全景对照与实施计划
+### 4.2 自然语言查询
 
-### 6.1 关键场景与体验指标对比矩阵
+典型：
 
-| 评估维度 / 场景 | 当前现状 (Baseline) | 落地重构后 (Optimized) | 改善机理与收益 |
-| :--- | :--- | :--- | :--- |
-| **搜精确库名（如 `express`）** | 易被第三方长文教程 `awesome-express` 挤下第 1，甚至未入 Top30 导致彻底蒸发 | **100% 绝对置顶第 1 位** | $\beta_{\text{exact}} = 2.5$ 特征倍率增强，分数直接乘 $3.5$ 倍，消除分值倒置。 |
-| **搜短词/缩写（如 `trpc`, `k8s`）** | 向量 Tokenize 漂移，余弦分 $<0.35$ 被 Worker 丢弃，返回空白 | **词法通道即时保底命中，语义通道加权补充** | 双路并发 Union 并集召回，消除单路依赖死角。 |
-| **新 Star 仓库检索** | 后台向量尚未同步前，因其他向量结果存在，新库在搜索中完全不可见 | **秒级可见** | 词法通道覆盖全量本地仓库，冷启动零死角。 |
-| **向量 API 故障/超时** | 界面长达 5~10 秒卡顿转圈，甚至整页红屏报错 | **3.5 秒平滑超时熔断，透明回退** | `Promise.race` 熔断机制，无感知降级到纯词法检索。 |
-| **标签碎片度（同义词分裂）** | 充斥 `react`, `react-18`, `reactjs` 等碎片，标签面板多达数百个 | **标签池规模降低 65%+，高度规范** | 受控词表输入约束 + 本地三层流水线一键合并。 |
-| **AI 打标耗时与 Token 开销** | 每次都需要模型从头发散推导分类与标签 | **分类效率提升 30%，Prompt 更加收敛** | 注入 Top-60 受控标签作为选词约束，收敛生成空间。 |
-
----
-
-### 6.2 分阶段落地行动清单（Action Items）
-
-```mermaid
-gantt
-    title GSM 混合检索与标签降噪落地实施计划
-    dateFormat  YYYY-MM-DD
-    section Phase 1: 核心算法与工具类落地
-    创建 searchOrchestrator.ts 并发调度器       :active, p1_1, 2026-10-04, 1d
-    创建 taxonomyNormalization.ts 归一化字典   :active, p1_2, 2026-10-04, 1d
-    编写单元测试覆盖 RRF 与聚类算法             :p1_3, 2026-10-05, 1d
-
-    section Phase 2: 搜索链路无缝切换
-    改造 useSearchActions.ts 接入调度器        :p2_1, 2026-10-06, 1d
-    移除微弱静态加分与硬过滤逻辑               :p2_2, 2026-10-06, 1d
-    搜索结果报告面板与回退态指示优化           :p2_3, 2026-10-07, 1d
-
-    section Phase 3: 标签降噪与治理 UI
-    重构 aiService.ts 分析提示词 (受控词表)     :p3_1, 2026-10-08, 1d
-    引入 TaxonomyGovernanceModal 治理弹窗      :p3_2, 2026-10-09, 1d
-    与 Store 批量事务与增量同步联调            :p3_3, 2026-10-10, 1d
+```text
+适合离线优先同步的 CRDT 数据库
+a local-first database for collaborative apps
+支持 GPU 推理和 OpenAI API 兼容接口的服务
 ```
 
-1. **Step 1：新增算法与调度服务**
-   - 落地 `src/services/searchOrchestrator.ts`；
-   - 落地 `src/utils/taxonomyNormalization.ts`；
-   - 补充完善针对 `RRF` 评分与 `detectTagClusters` 的自动化 Vitest 单元测试。
-2. **Step 2：接入重构搜索入口**
-   - 修改 [useSearchActions.ts](file:///d:/桌面/GSM/src/features/repositories/hooks/useSearchActions.ts)，彻底移除 `scoreMap.has` 的硬截断过滤；
-   - 将原串行等待 HyDE + 向量逻辑迁移到 `SearchOrchestrator`，实现双路并发与 3.5s 超时熔断；
-   - 验证短词（`vllm`）、精准库名（`express`）与长句意图下的置顶排序准确性。
-3. **Step 3：Prompt 上下文注入与标签治理界面**
-   - 修改 [aiService.ts](file:///d:/桌面/GSM/src/services/aiService.ts)，在调用大模型分析前，动态聚合本地库出现频次 Top 60 的规范标签填入 `{TOP_EXISTING_CANONICAL_TAGS}`；
-   - 在 `SearchBar` 或 `CategorySidebar` 增加「🏷️ 标签降噪治理」入口，引入 `TaxonomyGovernanceModal` 组件；
-   - 运行一次全库标签治理，将历史累积的碎片化同义词进行一键清洗。
+建议：
+
+```text
+local lexical initial recall
+       │
+       ├──────── query expansion / intent
+       │
+       └──────── optional HyDE -> vector
+                          │
+                          ▼
+                    union + fusion
+                          │
+                          └─ optional LLM rerank bounded top candidates
+```
+
+这保留了当前 `AIService.searchRepositoriesWithSelection`、`generateHyDEQuery`、`searchRepositoriesWithSemanticReranking` 的价值。
+
+### 4.3 expensive steps 必须有边界
+
+原则：
+
+- exact / lexical 永远本地可用，不因 AI/vector 失败消失。
+- vector 是增强召回，不是唯一 gate。
+- query expansion / HyDE 是增强语义表达，不应阻塞 identifier query 的第一版结果。
+- LLM rerank 只看 bounded candidate set，不能把整个库直接送模型。
+- 任一步失败都保留之前已经得到的候选与次序证据。
+- 取消旧搜索继续沿用现有 AbortController / stale-check 机制。
+
+超时数字应通过真实模型、网络和 UI 体验基线确定。文档不预设“3.5 秒一定正确”。
+
+---
+
+## 5. 最小内存查询状态：防止筛选覆盖结果
+
+当前问题是“查询结果”与“UI 筛选”互相改写。可以在既有 hook/controller 中保存最小会话，例如 query/request ID、当前 account identity、候选 repo IDs 与 rank、完成/降级状态；语义分支更新同一个查询。
+
+不持久化 SearchSession，不新增数据库、vector generation registry、完整 evidence 审计或独立实体框架。Repository 仍是业务事实，session 只是可重算的查询结果。
+
+规则：
+
+- facet filters 从当前候选读取最新 repo 实体，不重新执行另一套 basic search 来覆盖语义顺序。
+- query 默认相关性顺序与用户显式 stars/custom 等排序应有清晰关系；要改变现有交互选择时先请用户决定。
+- realtime 与提交搜索尽量共享便宜的 lexical 基础；semantic/HyDE/rerank 保留现有配置，不要求每次实时输入都发请求。
+- 新请求取消旧请求，迟到结果不得覆盖新 query/新 account；账户、query、真正影响匹配的仓库字段变化应失效/重算。
+- metadata 显示更新与 filters 不自动重跑昂贵 AI/vector 分支。
+
+不要同时保存 candidate objects、IDs、rank、sources、多个 score maps 却没有明确消费者。只保存能解决当前问题的状态；旧 refs 在等价测试通过后再移除。
+
+---
+
+## 6. 最小模块改动
+
+先在 `repoSearch.ts` 或相邻 helper 中增加纯函数 exact tier/候选 union，由 `useSearchActions.ts` 调用；`SearchBar.tsx` 消费稳定内存结果。复用 AIService、EmbeddingClient、VectorSearchService 与现有 AbortController/stale-check，不先建立七文件的新 search 子系统。
+
+只有函数职责变得明显难维护时再拆文件，不借搜索修复改业务 owner、部署 Worker、升级 provider 或执行索引重建。
+
+---
+
+## 7. 标签治理：保留边界，不排期
+
+### 7.1 当前数据来源事实
+
+Repository 已有 `ai_tags`、`custom_tags`、`topics`。`applyListsToRepositories()` 会把 GitHub List 名称追加到 `custom_tags`，所以旧 custom tags 不能可靠区分用户输入与 Lists 来源；默认全部受保护。topics 是 GitHub 上游事实。
+
+现有 `repositoryOrganization.ts` 的分类候选会消费这些证据，改 tag 可能影响分类，并非纯显示变更。
+
+### 7.2 目前允许的简单处理
+
+比较/搜索层可生成 normalized lookup key，保留 raw 值与来源字段；大小写、空白、separator 的匹配规则需测试概念边界。不要为了标签显示或查询 normalization 持久化第二套可编辑标签库。
+
+不自动 fuzzy merge user/List/topic；AI tags 也不能依据字符串距离直接改为“同义词”。`container -> Docker`、`agent -> AI Agent` 等含义更强的映射不是通用事实。
+
+### 7.3 明确未规划的功能
+
+不新增 TagSource 持久化迁移、canonical alias registry、Taxonomy Worker、suggestion queue、治理 modal、批量 AI tag rewrite、undo history、Home taxonomy collection 或自动 reindex。
+
+这些并非搜索 exact/lexical 正确性的前置依赖。先修搜索候选与结果状态即可，不把知识治理平台顺带带入本机路线。
+
+### 7.4 如果用户未来明确需要
+
+重新展示收益与成本请用户决定。届时必须区分：suggestion 是可重建派生状态，用户批准的 alias 是账户配置事实；Repository 标签仍由原 owner 写入。真正改历史 AI tags 前预览影响与分类变化、保存 before/pre-image、可撤销；跨 durable store 修改需 journal/checkpoint/recovery。
+
+Worker 只有在建议计算仍有实测主线程瓶颈时评估；先消除 pairwise O(T²) 和 render 内重复扫描。向量 reindex 是有网络/embedding 成本的独立显式任务，不能伪装为标签应用已经同步完成。上述约束不构成当前功能授权。
+
+---
+
+## 8. 当前搜索与标签的连接
+
+搜索可直接消费现有 ai_tags/custom_tags/topics，不需要先迁移来源模型。比较层 normalization 不改变用户原标签，也不重置 category_locked、category_id 或手工分类。
+
+如果未来需要用户自定义搜索 alias，先明确范围和实际需求，不以“标签碎片可能增长”为由预先持久化 registry。
+
+---
+
+## 9. 独立候选子阶段
+
+| 子阶段 | 目的 | 修改候选 | 不改 |
+| --- | --- | --- | --- |
+| A：correctness fixture | 固定必含 ID、exact 优先、outage/未索引/中文/语义预期 | repoSearch/useSearchActions/SearchBar 对应测试 | 不调用付费模型或改变索引 |
+| B：候选与 exact 小修复 | vector 非空时仍保留 lexical-only/exact | repoSearch/helper、useSearchActions | 不实现 taxonomy，不升级语义能力 |
+| C：查询与筛选状态 | filters 不覆盖融合结果与语义顺序 | 现有 hook/controller 与 SearchBar | 不持久化 session、不新建搜索平台 |
+
+一次只实施一个子阶段。阶段 B 不能仅修一次 submit 后的数组而忽略 SearchBar 后续 effect；需要对实际调用链验证，必要的最小状态修复可以纳入同一可回滚任务。此处没有授权本轮实现。
+
+---
+
+## 10. 风险与验证
+
+| 风险 | 保护措施 |
+| --- | --- |
+| exact name 被猜成官方仓库 | 同名不同 owner 均保留，不判断官方身份；full_name exact 为稳定强信号 |
+| 用魔法倍率校准不可比分数 | exact tier 独立；融合方法由 fixture 证明，不承诺最佳权重 |
+| AI/vector 延迟或失败 | 本地结果可用；保留取消/迟到检查，沿用现有配置 |
+| effect 覆盖语义结果 | filters 消费当前候选，不再次执行另一套搜索 |
+| account/index 配置变化 | 请求 identity/stale-check 与现有 vector compatibility guard 保留 |
+| normalization 改变概念 | 仅 comparison key，保留原值；验证缩写/专有词/同名边界 |
+| 为解决卡顿扩大重构 | profiling 区分查询 CPU、render 与 provider latency，一次一个修复 |
+
+搜索实现至少验证：exact owner/repo、exact repo name、同名不同 owner、未 vector indexed repo、vector unavailable、中文自然语言、semantic query；补新搜索取消旧请求、账户切换、filter/sort、空 query 与 IME。用确定性 fixture/mock 标注期望，不从几个演示词推断整体 precision/recall。
+
+现有测试：`src/features/repositories/hooks/useSearchActions.test.tsx`、`src/components/SearchBar.test.tsx`、`src/utils/repoSearch.test.ts`。它们仍主要保护现有 vector-first/fallback 和 UI 行为，不证明本文候选 union 已实现；新正确性 fixture 在相应实现任务中补充。
+
+另运行 typecheck、对应组件集成与 `git diff --check`。若声称查询性能改善，用同一数据/query fixture 前后比较；provider/网络耗时与本地算法耗时分别记录。
+
+---
+
+## 11. 下一步与非目标
+
+保留已有 expansion、HyDE、AI selection、semantic rerank 的配置和降级能力，但不新增更重语义编排、调参平台或强制请求。必要的 exact/lexical 候选修复与内存会话优先于标签治理。
+
+不判断“官方仓库”，不自动合并用户/List/topics，不建可写标签数据库，不触发批量 embedding，不为了未来扩展迁移所有 tag provenance。
+
+下一步按独立搜索正确性任务核对候选与 effect 调用链；如果当前卡顿主要发生在搜索，先对同一 fixture 采样，再选最小修复。本轮结束后不自动开始实现。

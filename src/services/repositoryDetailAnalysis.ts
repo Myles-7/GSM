@@ -50,8 +50,11 @@ export async function analyzeRepositoryDetails(options: {
   const content = repositoryDetailContentSchema.parse(JSON.parse(fenced ? fenced[1] : response.trim()));
   // Validate against exactly the evidence sent to the model; normalize only line endings.
   const literalEvidence = readmeEvidence.replace(/\r\n?/g, '\n');
+  const evidenceLines = literalEvidence.split('\n').map(line => line.trim());
   for (const step of content.quickstart) {
-    if (step.command !== null && !literalEvidence.includes(step.command.replace(/\r\n?/g, '\n'))) {
+    const commandLines = step.command?.replace(/\r\n?/g, '\n').split('\n').map(line => line.trim());
+    if (commandLines && !evidenceLines.some((_, index) => commandLines.every((line, offset) =>
+      line === evidenceLines[index + offset] || `$ ${line}` === evidenceLines[index + offset]))) {
       // Keep useful verified fields; never expose an unsupported executable command.
       step.command = null;
     }

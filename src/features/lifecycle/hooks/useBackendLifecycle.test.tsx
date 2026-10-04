@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
     calls,
     activateDesktopHome: vi.fn(async () => false),
     stopDesktopHome: vi.fn(),
+    hasPendingRestore: vi.fn(async () => false),
     unsubscribe,
     backend: {
       init: vi.fn(async () => { calls.push('backend.init'); }),
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../../../services/backendAdapter', () => ({ backend: mocks.backend }));
 vi.mock('../../../home/desktop', () => ({ activateDesktopHome: mocks.activateDesktopHome, stopDesktopHome: mocks.stopDesktopHome }));
+vi.mock('../../../services/localBackupRecoveryGate', () => ({ hasPendingLocalBackupRestore: mocks.hasPendingRestore }));
 vi.mock('../../../services/autoSync', () => ({
   tryRestoreAuthFromBackend: mocks.tryRestoreAuthFromBackend,
   syncLocalGitHubTokenToBackend: mocks.syncLocalGitHubTokenToBackend,
@@ -47,6 +49,16 @@ describe('useBackendLifecycle', () => {
     mocks.calls.splice(0);
     mocks.backend.isAvailable = true;
     mocks.activateDesktopHome.mockResolvedValue(false);
+    mocks.hasPendingRestore.mockResolvedValue(false);
+  });
+
+  it('blocks all backend pulls and Home activation while backup recovery is pending', async () => {
+    mocks.hasPendingRestore.mockResolvedValue(true);
+    renderHook(() => useBackendLifecycle(true));
+    await waitFor(() => expect(mocks.hasPendingRestore).toHaveBeenCalled());
+    expect(mocks.backend.init).not.toHaveBeenCalled();
+    expect(mocks.activateDesktopHome).not.toHaveBeenCalled();
+    expect(mocks.syncFromBackend).not.toHaveBeenCalled();
   });
 
   it('waits for hydration and restores authentication before backend data synchronization', async () => {
