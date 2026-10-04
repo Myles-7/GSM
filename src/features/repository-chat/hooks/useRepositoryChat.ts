@@ -328,7 +328,7 @@ export const useRepositoryChat = ({
         ...assistantMessage,
         content: aborted
           ? (streamedContent || (t('useRepositoryChat.generation-stopped')))
-          : (t('useRepositoryChat.answer-generation-failed-please-retry')),
+          : (streamedContent || t('useRepositoryChat.answer-generation-failed-please-retry')),
         status: aborted ? 'aborted' : 'error',
       };
       // The visible transcript must always settle, even if the persistence backend
@@ -358,21 +358,22 @@ export const useRepositoryChat = ({
 
   const resendLastPair = useCallback(async (requireFailedStatus: boolean) => {
     if (retryInFlightRef.current || isSending) return;
+    if (unavailableReason) { setError(unavailableReason); return; }
+    if (workbenchRuntime.getSnapshot().running) { setError(t('workbench.taskBusy')); return; }
     if (messages.length < 2) return;
     const lastAssistant = messages[messages.length - 1];
     const lastUser = messages[messages.length - 2];
     if (lastAssistant.role !== 'assistant' || lastUser.role !== 'user') return;
     if (requireFailedStatus && lastAssistant.status !== 'error' && lastAssistant.status !== 'aborted') return;
-    const baseMessages = messages.slice(0, messages.length - 2);
     retryInFlightRef.current = true;
     try {
-      await repositoryChatStorage.permanentlyDeleteMessages([lastUser.id, lastAssistant.id]);
-      onMessagesChange(baseMessages);
-      await send(lastUser.content, baseMessages, true);
+      // Retain the original answer and evidence even if admission, persistence or
+      // generation fails. A new attempt is appended so both versions remain readable.
+      await send(lastUser.content, messages, true);
     } finally {
       retryInFlightRef.current = false;
     }
-  }, [isSending, messages, onMessagesChange, send]);
+  }, [isSending, unavailableReason, messages, send, t]);
 
   const retry = useCallback(() => resendLastPair(true), [resendLastPair]);
 

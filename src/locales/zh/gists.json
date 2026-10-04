@@ -71,7 +71,9 @@
     "sort-files": "按文件数",
     "category-all": "全部 gist",
     "category-starred": "星标 gist",
-    "category-mine": "我的 gist"
+    "category-mine": "我的 gist",
+    "ai-search-scope": "AI 精选基于本次召回的最多 120 个候选；默认按相关性排序，可使用排序控件调整本次结果。重新搜索可更新候选。",
+    "no-search-matches": "本次搜索或筛选没有匹配的 Gist，可调整条件或重新搜索。"
   },
   "useGistActions": {
     "github-token-not-found-please-login-again": "GitHub token 未找到，请重新登录。",
@@ -110,6 +112,7 @@
     "failed-to-load-gist-details-empty": "获取 Gist 详情失败",
     "failed-to-delete-gist": "删除 Gist 失败：{{message}}{{permissionNote}}",
     "failed-to-delete-gist-empty": "删除 Gist 失败{{permissionNote}}",
-    "github-token-not-configured": "未配置 GitHub token，无法加载文件内容"
+    "github-token-not-configured": "未配置 GitHub token，无法加载文件内容",
+    "search-fallback": "AI 搜索未完成，已切换为关键词搜索。"
   }
 }

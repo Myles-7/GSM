@@ -61,11 +61,13 @@ export const useGistActions = () => {
   const backgroundCleanup = useRef<(() => void) | null>(null);
   useEffect(() => {
     mounted.current = true;
+    const activeControllers = analysisTasks.current;
+    const detachedControllers = detachedTasks.current;
     let identity = analysisIdentity(useAppStore.getState());
     const cancel = () => {
       analysisGeneration.current++;
-      for (const controller of analysisTasks.current) controller.abort();
-      analysisTasks.current.clear();
+      for (const controller of activeControllers) controller.abort();
+      activeControllers.clear();
       batchTask.current = null;
       searchTask.current = null;
       if (mounted.current) { setIsAnalyzingAll(false); setIsSearching(false); }
@@ -79,8 +81,8 @@ export const useGistActions = () => {
     });
     return () => {
       mounted.current = false;
-      if (aiTaskJournal.hasHost() && (backgroundController.current || detachedTasks.current.size)) {
-        for (const controller of analysisTasks.current) if (controller !== backgroundController.current && !detachedTasks.current.has(controller)) controller.abort();
+      if (aiTaskJournal.hasHost() && (backgroundController.current || detachedControllers.size)) {
+        for (const controller of activeControllers) if (controller !== backgroundController.current && !detachedControllers.has(controller)) controller.abort();
         backgroundCleanup.current = unsubscribe;
         return;
       }
@@ -195,15 +197,17 @@ export const useGistActions = () => {
   const aiSearch = useCallback(async (
     query: string,
     categoryItems: Gist[],
-    onReranked: () => void,
+    onReranked: (ranked: Gist[] | null) => void,
   ) => {
     searchTask.current?.controller.abort();
     searchTask.current = null;
     setIsSearching(false);
     if (!query.trim()) return;
     const activeConfig = state.aiConfigs.find(config => config.id === state.activeAIConfig);
-    if (!activeConfig) {
+    if (!isAIConfigAvailable(activeConfig)) {
+      onReranked(null);
       state.setGistSearchFilters({ query });
+      toast(t('useGistActions.search-fallback'), 'warning');
       return;
     }
     const task = beginAnalysis();
@@ -220,13 +224,17 @@ export const useGistActions = () => {
         filterAndSortGists(categoryItems, { ...state.gistSearchFilters, query: '' }), query, signal,
       ), activeConfig.provider === 'agy-cli' ? (activeConfig.agyFeatureOverrides?.['gist-rerank']?.timeoutSeconds ?? activeConfig.agyTimeoutSeconds ?? 180) * 2000 : ANALYSIS_DEADLINE_MS, task.controller.signal);
       if (!task.isCurrent()) return;
-      onReranked();
+      onReranked(ranked);
       state.setGistSearchFilters({ query });
       state.setGistSearchResults(ranked);
       journal.item('gists', 'complete');
     } catch (error) {
       if (!task.controller.signal.aborted) journal.item('gists', 'failed', error);
-      if (task.isCurrent()) state.setGistSearchFilters({ query });
+      if (task.isCurrent()) {
+        onReranked(null);
+        state.setGistSearchFilters({ query });
+        toast(t('useGistActions.search-fallback'), 'warning');
+      }
     } finally {
       journal.finish(task.controller.signal.aborted ? 'canceled' : undefined);
       task.finish();
@@ -235,7 +243,7 @@ export const useGistActions = () => {
         if (mounted.current) setIsSearching(false);
       }
     }
-  }, [state, beginAnalysis]);
+  }, [state, beginAnalysis, t, toast]);
 
   const analyzeVisibleGists = useCallback(async (requestedIds?: string[], configId?: string, retry?: { config: AIConfig; parentId: string }) => {
     if (!state.githubToken) {

@@ -15,6 +15,7 @@ const accountListeners = new Set<(next: { user: { id: number } }, previous: { us
 vi.mock('../store/useAppStore', () => ({
   useAppStore: Object.assign(vi.fn((selector?: (state: Record<string, unknown>) => unknown) =>
     selector ? selector(storeState) : storeState), {
+    getState: () => storeState,
     subscribe: (listener: (next: { user: { id: number } }, previous: { user: { id: number } }) => void) => {
       accountListeners.add(listener);
       return () => accountListeners.delete(listener);
@@ -107,8 +108,8 @@ describe('ReleaseCard asset updated indicator', () => {
     expect(screen.getByText('app.exe')).toBeInTheDocument();
     act(() => {
       accountListeners.forEach(listener => {
-        listener({ user: { id: 2 } }, { user: { id: 1 } });
-        listener({ user: { id: 1 } }, { user: { id: 2 } });
+        listener({ ...storeState, user: { id: 2 } }, { ...storeState, user: { id: 1 } });
+        listener({ ...storeState, user: { id: 1 } }, { ...storeState, user: { id: 2 } });
       });
     });
     expect(screen.queryByText('app.exe')).not.toBeInTheDocument();

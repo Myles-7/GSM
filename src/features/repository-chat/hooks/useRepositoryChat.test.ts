@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   saveMessage: vi.fn(),
   saveToolEvent: vi.fn(),
   saveEvidence: vi.fn(),
+  permanentlyDeleteMessages: vi.fn(),
   appState: {} as Record<string, unknown>,
 }));
 
@@ -28,6 +29,7 @@ vi.mock('../../../services/repositoryChatStorage', () => ({
     saveMessage: mocks.saveMessage,
     saveToolEvent: mocks.saveToolEvent,
     saveEvidence: mocks.saveEvidence,
+    permanentlyDeleteMessages: mocks.permanentlyDeleteMessages,
     getSession: vi.fn(async () => null),
   },
 }));
@@ -115,6 +117,28 @@ describe('useRepositoryChat persistence failures', () => {
       activeAIConfig: aiConfig.id,
       repositoryChatSettings,
     };
+  });
+
+  it.each(['success', 'generation', 'persistence', 'configuration'])('retains the old answer on regeneration (%s)', async outcome => {
+    const original: RepositoryChatMessage[] = [
+      { id: 'original-question', sessionId: session.id, role: 'user', content: 'Question', status: 'complete', evidenceIds: [], createdAt: session.createdAt },
+      { id: 'original-answer', sessionId: session.id, role: 'assistant', content: 'Original verified answer', status: 'complete', evidenceIds: ['original-evidence'], createdAt: session.updatedAt },
+    ];
+    mocks.saveMessage.mockResolvedValue(undefined);
+    mocks.runRepositoryChatTurn.mockResolvedValue({ content: 'New answer', evidences: [] });
+    if (outcome === 'generation') mocks.runRepositoryChatTurn.mockRejectedValue(new Error('Offline'));
+    if (outcome === 'persistence') mocks.saveMessage.mockRejectedValue(new Error('Disk unavailable'));
+    if (outcome === 'configuration') mocks.appState.aiConfigs = [];
+    const { result } = renderHook(() => {
+      const [messages, setMessages] = useState(original);
+      const chat = useRepositoryChat({ repository, session, messages, onMessagesChange: setMessages, onSessionChange: vi.fn() });
+      return { chat, messages };
+    });
+    await act(async () => { await result.current.chat.regenerate(); });
+    expect(result.current.messages.slice(0, 2)).toEqual(original);
+    expect(mocks.permanentlyDeleteMessages).not.toHaveBeenCalled();
+    expect(result.current.messages).toHaveLength(outcome === 'configuration' ? 2 : 4);
+    if (outcome === 'success') expect(result.current.messages[3].content).toBe('New answer');
   });
 
   it('persists distinct events for repeated Agent rounds and orders the user before the assistant', async () => {

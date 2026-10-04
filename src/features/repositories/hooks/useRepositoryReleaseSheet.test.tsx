@@ -44,7 +44,7 @@ vi.mock('../../../services/aiService', () => ({
 vi.mock('../../../store/useAppStore', () => ({
   useAppStore: Object.assign(
     (selector: (state: typeof mocks.store) => unknown) => selector(mocks.store),
-    { getState: () => mocks.store },
+    { getState: () => mocks.store, subscribe: () => () => {} },
   ),
 }));
 

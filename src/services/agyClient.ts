@@ -16,12 +16,12 @@ export const agySchedulerStatus = {
   subscribe(listener: () => void) { schedulerListeners.add(listener); return () => { schedulerListeners.delete(listener); }; },
 };
 const setScheduler = (pool: AgyDeviceState['pool']) => { scheduler = pool; schedulerListeners.forEach(listener => listener()); };
-const queuePositions = new Map<string, number>();
+const queuePositions = new Map<string, { position: number; taskId?: string }>();
 const queueListeners = new Set<() => void>();
 const notifyQueue = () => queueListeners.forEach(listener => listener());
 export const agyQueueStatus = {
   subscribe(listener: () => void) { queueListeners.add(listener); return () => { queueListeners.delete(listener); }; },
-  snapshot: () => Math.min(...queuePositions.values(), Infinity),
+  snapshot: (taskId?: string) => Math.min(...[...queuePositions.values()].filter(item => !taskId || item.taskId === taskId).map(item => item.position), Infinity),
 };
 
 function bindSession(api: AgyDesktopAPI) {
@@ -92,7 +92,7 @@ export async function generateAgyText(config: AgyAIConfig, options: {
       if (event.type === 'scheduler') setScheduler(event.pool);
       if (event.type === 'queued' && Number.isInteger(event.position) && event.position! > 0) {
         taskForSignal(options.signal)?.metadata({ phase: `AGY ${useAppStore.getState().language.startsWith('zh') ? '等待位置' : 'queue position'} ${event.position}` });
-        queuePositions.set(requestId, event.position!); notifyQueue();
+        queuePositions.set(requestId, { position: event.position!, taskId: taskForSignal(options.signal)?.id }); notifyQueue();
       } else if (event.type === 'running') { queuePositions.delete(requestId); notifyQueue(); }
     }
     if (event.session === ownedSession && session === ownedSession && event.requestId === requestId &&

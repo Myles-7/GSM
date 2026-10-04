@@ -6,6 +6,7 @@
  */
 
 import type { EmbeddingConfig, VectorSearchConfig, Repository, VectorIndexMode } from '../types';
+import { withDeadline } from '../utils/requestDeadline';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
 import {
   EMBEDDING_FORMAT_VERSION, VECTOR_PROTOCOL_VERSION, hashVectorContent,
@@ -35,6 +36,10 @@ export class EmbeddingClient {
    * @param purpose 'document' 用于索引, 'query' 用于搜索查询
    */
   async embed(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<number[][]> {
+    return withDeadline(requestSignal => this.embedWithinDeadline(texts, purpose, requestSignal), purpose === 'query' ? 30_000 : 120_000, signal);
+  }
+
+  private async embedWithinDeadline(texts: string[], purpose: 'document' | 'query', signal: AbortSignal): Promise<number[][]> {
     switch (this.config.apiType) {
       case 'openai':
       case 'openai-compatible':
@@ -54,9 +59,9 @@ export class EmbeddingClient {
   /**
    * 测试连接：发送单条文本，验证返回向量维度
    */
-  async testConnection(): Promise<{ success: boolean; dimensions: number; error?: string }> {
+  async testConnection(signal?: AbortSignal): Promise<{ success: boolean; dimensions: number; error?: string }> {
     try {
-      const vectors = await this.embed(['hello']);
+      const vectors = await withDeadline(requestSignal => this.embed(['hello'], 'query', requestSignal), 10_000, signal);
       if (!vectors || vectors.length === 0 || !Array.isArray(vectors[0])) {
         return { success: false, dimensions: 0, error: 'Invalid response format' };
       }
@@ -417,6 +422,10 @@ export class VectorSearchService {
   }
 
   private async request<T>(path: string, options: RequestInit = {}, signal?: AbortSignal): Promise<T> {
+    return withDeadline(requestSignal => this.requestWithinDeadline<T>(path, options, requestSignal), 30_000, signal);
+  }
+
+  private async requestWithinDeadline<T>(path: string, options: RequestInit, signal: AbortSignal): Promise<T> {
     const url = `${this.workerUrl}${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -529,9 +538,9 @@ export class VectorSearchService {
   /**
    * 测试 Worker 连通性
    */
-  async testConnection(): Promise<{ success: boolean; vectorCount: number; dimensions: number; error?: string }> {
+  async testConnection(signal?: AbortSignal): Promise<{ success: boolean; vectorCount: number; dimensions: number; error?: string }> {
     try {
-      const status = await this.getStatus();
+      const status = await this.getStatus(signal);
       return {
         success: true,
         vectorCount: status.vectorCount,

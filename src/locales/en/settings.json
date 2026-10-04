@@ -219,7 +219,9 @@
       "layout": "Reading style",
       "mail": "Email delivery",
       "records": "Reading records"
-    }
+    },
+    "cancelTest": "Cancel test",
+    "connectionScope": "The connection test checks a text response. Tools, structured output and streaming require separate verification."
   },
   "htmlReadingUi": {
     "yes": "Yes",

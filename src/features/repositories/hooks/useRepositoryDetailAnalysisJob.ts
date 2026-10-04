@@ -1,3 +1,4 @@
+import { platformsFromDetails } from '../../../utils/platformNormalization';
 import { useEffect, useSyncExternalStore } from 'react';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import type { Repository, AIConfig } from '../../../types';
@@ -144,7 +145,7 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
             ...latest, ai_details: details,
             ai_summary: details.summary ?? details.problem ?? latest.ai_summary,
             ai_tags: details.tags?.length ? details.tags : latest.ai_tags,
-            ai_platforms: details.platforms?.length ? details.platforms : latest.ai_platforms,
+            ai_platforms: platformsFromDetails(details),
             analyzed_at: details.generated_at || new Date().toISOString(),
             analysis_failed: false, analysis_error: undefined,
           }));

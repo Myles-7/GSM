@@ -21,6 +21,9 @@ export interface ProxyRequestOptions {
   preserveRawResponse?: boolean;
   /** 放行回环/私有网段（仅用于用户自有配置来源的 URL）。 */
   allowPrivate?: boolean;
+  signal?: AbortSignal;
+  stream?: boolean;
+  maxRedirects?: number;
 }
 
 export interface ProxyResponse {
@@ -127,11 +130,14 @@ export async function proxyRequest(options: ProxyRequestOptions): Promise<ProxyR
       headers,
       timeout,
       validateStatus: () => true, // 不抛出 HTTP 错误状态码
+      signal: options.signal,
+      maxRedirects: options.maxRedirects,
     };
     if (preserveRawResponse) {
       axiosConfig.responseType = 'text';
       axiosConfig.transformResponse = [(data) => data];
     }
+    if (options.stream) axiosConfig.responseType = 'stream';
 
     if (body && method !== 'GET' && method !== 'HEAD') {
       axiosConfig.data = body;

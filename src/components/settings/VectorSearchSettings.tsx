@@ -55,7 +55,7 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
   const {
     testingEmbedding, embeddingTestResult, testingWorker, workerTestResult,
     incrementalTargetCount, unindexedRepoCount, testEmbedding, testWorker, rebuildIndex,
-    incrementalIndex, abortIndexing,
+    incrementalIndex, abortIndexing, cancelEmbeddingTest, cancelWorkerTest,
   } = useVectorSearchActions();
 
   const activeConfig = embeddingConfigs.find((config) => config.id === activeEmbeddingConfig);
@@ -342,12 +342,12 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         {/* Test & Save */}
         <div className="flex flex-wrap gap-2">
           <Button
-            onClick={handleTestEmbedding}
-            disabled={testingEmbedding || !formBaseUrl || !formModel}
+            onClick={testingEmbedding ? cancelEmbeddingTest : handleTestEmbedding}
+            disabled={!testingEmbedding && (!formBaseUrl || !formModel)}
             className="flex h-auto min-h-9 max-w-full items-center gap-2 whitespace-normal px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {testingEmbedding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            {t('vectorSearchSettings.test-embedding-connection')}
+            {testingEmbedding ? t('settingsUx.cancelTest') : t('vectorSearchSettings.test-embedding-connection')}
           </Button>
           <Button
             onClick={handleSaveEmbeddingConfig}
@@ -422,12 +422,12 @@ export const VectorSearchSettings: React.FC<VectorSearchSettingsProps> = ({ t })
         {/* Test */}
         <div className="flex flex-wrap gap-2">
           <Button
-            onClick={handleTestWorker}
-            disabled={testingWorker || !formWorkerUrl}
+            onClick={testingWorker ? cancelWorkerTest : handleTestWorker}
+            disabled={!testingWorker && !formWorkerUrl}
             className="flex h-auto min-h-9 max-w-full items-center gap-2 whitespace-normal px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {testingWorker ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            {t('vectorSearchSettings.test-worker-connection')}
+            {testingWorker ? t('settingsUx.cancelTest') : t('vectorSearchSettings.test-worker-connection')}
           </Button>
         </div>
 

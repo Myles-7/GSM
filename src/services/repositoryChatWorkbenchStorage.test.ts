@@ -3,6 +3,7 @@ import { repositoryChatStorage } from './repositoryChatStorage';
 import type { WorkbenchProject, WorkbenchProposal } from '../types/aiWorkbench';
 import type { RepositoryChatMessage, RepositoryChatSession, RepositoryChatToolEvent, ToolEvidence } from '../types/repositoryChat';
 import type { Repository } from '../types';
+import { loadResearchCheckpoint, saveResearchCheckpoint } from './workbenchResearchCheckpoint';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -120,6 +121,56 @@ const createEvidence = (id: string): ToolEvidence => ({
 });
 
 describe('repositoryChatStorage workbench fallback', () => {
+  it('round trips current stable category fields and editable proposal snapshots', async () => {
+    const session = createSession('current-fields', 'field-owner');
+    session.workbench!.selectedRepositories[0] = { ...createRepository(), category_id: 'tools', subcategory_id: null,
+      category_candidates: ['tools'], category_legacy: { custom_category: 'Old tools', category_locked: true } };
+    const proposal = createProposal('current-proposal', 'field-owner', session.id);
+    proposal.operations[0].before = { category_id: undefined, subcategory_id: undefined };
+    proposal.operations[0].after = { category_id: 'tools', subcategory_id: null };
+    await repositoryChatStorage.saveSession(session);
+    await repositoryChatStorage.saveProposal(proposal);
+    const backup = await repositoryChatStorage.exportWorkbench('field-owner');
+    await repositoryChatStorage.importWorkbench('field-owner', JSON.stringify(backup));
+    expect(backup).toHaveProperty('sessions.0.workbench.selectedRepositories.0.category_id', 'tools');
+    expect(backup).toHaveProperty('proposals.0.operations.0.after.category_id', 'tools');
+  });
+
+  it('round trips rich repository details without stripping their source and quickstart data', async () => {
+    const session = createSession('details-session', 'details-owner');
+    const details = {
+      version: 1 as const, generated_at: '2026-10-04T00:00:00.000Z', repository_pushed_at: null, model: 'fixture',
+      summary: 'Local note management', platforms: ['Linux'], software_forms: ['cli' as const], deployment_modes: ['local' as const], tags: ['notes'],
+      sources: [{ label: 'README', url: 'https://github.com/owner/repository-1#readme', retrieved_at: '2026-10-04T00:00:00.000Z' }],
+      problem: 'Organize notes', features: ['Local search'], scenarios: ['Research'], architecture: null,
+      quickstart: [{ description: 'Install', command: 'npm install' }], deployment: null, cost: null, maintenance: null,
+    };
+    session.workbench!.selectedRepositories[0].ai_details = details;
+    await repositoryChatStorage.saveSession(session);
+    const exported = await repositoryChatStorage.exportWorkbench('details-owner');
+    await repositoryChatStorage.importWorkbench('details-owner', JSON.stringify(exported));
+    expect((await repositoryChatStorage.getSession('details-session-import-1'))?.workbench?.selectedRepositories[0].ai_details).toEqual(details);
+  });
+
+  it('purges session checkpoints and drafts while preserving applied operation history and other owners', async () => {
+    const session = createSession('purge-session', 'purge-owner');
+    await repositoryChatStorage.saveSession(session);
+    const draft = createProposal('purge-draft', 'purge-owner', session.id);
+    draft.operations = draft.operations.map(operation => ({ ...operation, status: 'proposed' }));
+    const applied = createProposal('purge-applied', 'purge-owner', session.id);
+    await repositoryChatStorage.saveProposal(draft);
+    await repositoryChatStorage.saveProposal(applied);
+    const checkpoint = [{ repository: 'owner/repository-1', version: 'sha', savedAt: Date.now(), result: { content: 'Saved research', evidences: [] } }];
+    saveResearchCheckpoint('purge-owner', session.id, 'context', checkpoint);
+    saveResearchCheckpoint('other-owner', session.id, 'context', checkpoint);
+    expect(loadResearchCheckpoint('purge-owner', session.id, 'context')).toHaveLength(1);
+    await repositoryChatStorage.permanentlyDeleteSession(session.id);
+    expect(loadResearchCheckpoint('purge-owner', session.id, 'context')).toEqual([]);
+    expect(loadResearchCheckpoint('other-owner', session.id, 'context')).toHaveLength(1);
+    expect(await repositoryChatStorage.getProposal(draft.id)).toBeNull();
+    expect(await repositoryChatStorage.getProposal(applied.id)).toEqual(applied);
+    expect(await repositoryChatStorage.getSession(session.id)).toBeNull();
+  });
   const originalIndexedDb = Object.getOwnPropertyDescriptor(window, 'indexedDB');
 
   beforeEach(() => {

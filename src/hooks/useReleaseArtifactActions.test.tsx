@@ -31,7 +31,7 @@ vi.mock('../services/aiService', () => ({
 
 const createStoreState = () => ({
   user: undefined as { id: number } | undefined,
-  language: 'zh' as const,
+  language: 'zh' as 'zh' | 'en',
   backendApiSecret: 'secret-1' as string | null,
   aiConfigs: [{
     id: 'ai-config',
@@ -44,10 +44,14 @@ const createStoreState = () => ({
 });
 
 let storeState = createStoreState();
+const storeListeners = new Set<(state: typeof storeState) => void>();
 const mockUseAppStore = vi.mocked(mocks.useAppStore);
 mockUseAppStore.mockImplementation((selector?: (state: typeof storeState) => unknown) =>
   selector ? selector(storeState) : storeState);
 (mockUseAppStore as unknown as { getState: () => typeof storeState }).getState = () => storeState;
+Object.assign(mockUseAppStore, { subscribe: (listener: (state: typeof storeState) => void) => {
+  storeListeners.add(listener); return () => storeListeners.delete(listener);
+} });
 
 const release: Release = {
   id: 100,
@@ -169,6 +173,19 @@ describe('useReleaseArtifactActions.sendRpcDownload', () => {
 });
 
 describe('useReleaseArtifactActions.generateSummary', () => {
+  it('refreshes for a new language and retains the previous answer when forced refresh fails', async () => {
+    mocks.analyzeReleaseSummary.mockResolvedValue('Original summary');
+    const { result, rerender } = renderHook(() => useReleaseArtifactActions());
+    await act(async () => { await result.current.generateSummary(release); });
+    storeState.language = 'en';
+    rerender();
+    mocks.analyzeReleaseSummary.mockResolvedValue('English summary');
+    await act(async () => { await result.current.generateSummary(release); });
+    expect(mocks.analyzeReleaseSummary).toHaveBeenCalledTimes(2);
+    mocks.analyzeReleaseSummary.mockRejectedValue(new Error('Offline'));
+    await act(async () => { await result.current.generateSummary(release, { force: true }); });
+    expect(result.current.summaries[release.id]).toMatchObject({ status: 'error', content: 'English summary', error: 'Offline' });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     storeState = createStoreState();
@@ -236,7 +253,7 @@ describe('useReleaseArtifactActions.generateSummary', () => {
     mocks.analyzeReleaseSummary.mockRejectedValue(new Error('model offline'));
     const { result } = renderHook(() => useReleaseArtifactActions());
     await act(async () => { await result.current.generateSummary(release); });
-    expect(result.current.summaries[100]).toEqual({ status: 'error', error: 'model offline' });
+    expect(result.current.summaries[100]).toMatchObject({ status: 'error', error: 'model offline' });
     expect(mocks.toast).toHaveBeenCalledWith('总结生成失败：model offline', 'error');
   });
 
@@ -297,6 +314,25 @@ describe('useReleaseArtifactActions.generateSummary', () => {
     finish('# stale account'); await act(async () => { await pending; });
     expect(hook.result.current.summaries[100]).toBeUndefined();
     expect(aiTaskJournal.snapshot().filter(task => task.owner === '77702').slice(-1)[0]?.state).toBe('canceled');
+  });
+
+  it('rejects late results when accounts switch away and back before React renders', async () => {
+    storeState.user = { id: 77704 };
+    let finish!: (value: string) => void;
+    let signal!: AbortSignal;
+    mocks.analyzeReleaseSummary.mockImplementation((_body, _meta, requestSignal) => {
+      signal = requestSignal; return new Promise<string>(resolve => { finish = resolve; });
+    });
+    const hook = renderHook(() => useReleaseArtifactActions());
+    let pending!: Promise<void>;
+    act(() => { pending = hook.result.current.generateSummary(release); });
+    act(() => {
+      storeState = { ...storeState, user: { id: 77705 } }; storeListeners.forEach(listener => listener(storeState));
+      storeState = { ...storeState, user: { id: 77704 } }; storeListeners.forEach(listener => listener(storeState));
+    });
+    expect(signal.aborted).toBe(true);
+    finish('Late result'); await act(async () => { await pending; });
+    expect(hook.result.current.summaries[100]).toBeUndefined();
   });
 
   it('cancelSummaryRequests aborts in-flight requests without unmounting', async () => {

@@ -723,9 +723,9 @@ Repository information:
               <span>{t('app:aIConfigPanel.save')}</span>
             </Button>
             <Button
-              onClick={handleTestForm}
+              onClick={testingForm ? actions.cancelTest : handleTestForm}
               variant="outline"
-              disabled={testingForm || !!actions.testingId}
+              disabled={!!actions.testingId}
               className="flex items-center space-x-2 px-4 py-2 bg-primary text-primary-foreground dark:bg-primary dark:text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {testingForm ? (
@@ -733,7 +733,7 @@ Repository information:
               ) : (
                 <TestTube className="w-4 h-4" />
               )}
-              <span>{t('app:aIConfigPanel.test-connection')}</span>
+              <span>{testingForm ? ux('settingsUx.cancelTest') : t('app:aIConfigPanel.test-connection')}</span>
             </Button>
             <Button
               onClick={resetForm}

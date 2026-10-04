@@ -9,6 +9,7 @@ import { getOutputLanguageDirective } from '../i18n/aiLanguage';
 import { generateAgyText } from './agyClient';
 import { isAgyConfig } from '../utils/aiConfig';
 import { recallGists, selectAnalysisContext } from './analysisContext';
+import { withDeadline } from '../utils/requestDeadline';
 
 interface OpenAIResponseContentPart {
   text?: string;
@@ -128,6 +129,43 @@ export function isAIStreamUnsupportedError(error: unknown): boolean {
   return error instanceof AIStreamUnsupportedError;
 }
 
+/** A transport failure is different from a reviewed, complete answer. */
+export class AIStreamInterruptedError extends Error {
+  constructor(readonly partialText: string, message = 'The AI response was interrupted. Retry to obtain a complete answer.') {
+    super(message);
+    this.name = 'AIStreamInterruptedError';
+  }
+}
+
+function createStreamReader(apiType: AIApiType, extractDelta: (payload: string) => string, onChunk: (delta: string) => void) {
+  let full = '', completed = false;
+  const accept = (payload: string) => {
+    const delta = extractDelta(payload);
+    if (delta) { full += delta; onChunk(delta); }
+    if (payload.trim() === '[DONE]') { completed = true; return; }
+    let event: { type?: string; error?: unknown; delta?: { stop_reason?: string }; promptFeedback?: { blockReason?: string }; candidates?: { finishReason?: string }[]; choices?: { finish_reason?: string }[] };
+    try { event = JSON.parse(payload); } catch { return; }
+    if (event.error || ['error', 'response.failed', 'response.incomplete'].includes(event.type ?? '')) throw new AIStreamInterruptedError(full);
+    if (apiType === 'openai-responses') completed ||= event.type === 'response.completed';
+    else if (apiType === 'claude') {
+      if (['max_tokens', 'refusal'].includes(event.delta?.stop_reason ?? '')) throw new AIStreamInterruptedError(full);
+      completed ||= event.type === 'message_stop';
+    } else if (apiType === 'gemini') {
+      if (event.promptFeedback?.blockReason) throw new AIStreamInterruptedError(full);
+      for (const candidate of event.candidates ?? []) {
+        if (candidate.finishReason && candidate.finishReason !== 'STOP') throw new AIStreamInterruptedError(full);
+        completed ||= candidate.finishReason === 'STOP';
+      }
+    } else {
+      for (const choice of event.choices ?? []) {
+        if (choice.finish_reason && !['stop', 'tool_calls'].includes(choice.finish_reason)) throw new AIStreamInterruptedError(full);
+        completed ||= !!choice.finish_reason;
+      }
+    }
+  };
+  return { accept, finish() { if (!completed) throw new AIStreamInterruptedError(full); if (!full.trim()) throw new Error('No content received from AI service (stream)'); return full; } };
+}
+
 /** 判断错误是否为请求取消（AbortError）。取消不是失败：调用方应停止流程而非兜底。 */
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -220,6 +258,9 @@ export async function consumeSseStream(body: ReadableStream<Uint8Array>, onData:
       }
     }
     flush();
+  } catch (error) {
+    void reader.cancel(error).catch(() => {});
+    throw error;
   } finally {
     reader.releaseLock();
   }
@@ -273,7 +314,19 @@ export function extractGeminiDelta(payload: string): string {
 }
 
 /** 服务端未按 SSE 返回时，从整段 JSON 响应里提取文本（与 requestText 的解析保持一致）。 */
+function validateResponseCompletion(apiType: AIApiType, data: unknown): void {
+  if (!data || typeof data !== 'object') return;
+  const result = data as { status?: string; error?: unknown; stop_reason?: string; promptFeedback?: { blockReason?: string }; candidates?: { finishReason?: string }[]; choices?: { finish_reason?: string }[] };
+  if (result.error || (apiType === 'openai-responses' && ['failed', 'incomplete', 'canceled'].includes(result.status ?? ''))
+    || (apiType === 'claude' && ['max_tokens', 'refusal'].includes(result.stop_reason ?? ''))
+    || (apiType === 'gemini' && (result.promptFeedback?.blockReason || result.candidates?.some(item => item.finishReason && item.finishReason !== 'STOP')))
+    || (apiType !== 'gemini' && result.choices?.some(item => item.finish_reason && !['stop', 'tool_calls', 'function_call'].includes(item.finish_reason)))) {
+    throw new AIStreamInterruptedError('', 'AI response was incomplete or blocked. Please retry.');
+  }
+}
+
 function extractFullTextFromResponse(apiType: AIApiType, data: unknown): string {
+  validateResponseCompletion(apiType, data);
   if (apiType === 'openai-responses') {
     const typed = data as OpenAIResponse;
     if (typeof typed.output_text === 'string' && typed.output_text) return typed.output_text;
@@ -574,6 +627,7 @@ export class AIService {
         data = await response.json();
       }
 
+      validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
         url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
       } : undefined;
@@ -690,6 +744,7 @@ export class AIService {
         data = await response.json();
       }
 
+      validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
         url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
       } : undefined;
@@ -788,6 +843,7 @@ ${options.user}` : options.user;
       data = await response.json();
     }
 
+    validateResponseCompletion(apiType, data);
     const httpDetails = logger.isDebugMode() ? {
       url: maskedUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
     } : undefined;
@@ -829,12 +885,18 @@ ${options.user}` : options.user;
     signal?: AbortSignal;
     onChunk: (delta: string) => void;
   }): Promise<string> {
+    const deadline = this.config.provider === 'agy-cli'
+      ? (this.config.agyTimeoutSeconds ?? 180) * 2000 + 15000 : 600000;
+    return withDeadline(signal => this.requestTextStreamWithinDeadline({ ...options, signal }), deadline, options.signal);
+  }
+
+  private async requestTextStreamWithinDeadline(options: {
+    feature?: import('../types/agy').AgyFeature;
+    system: string; user: string; temperature: number; maxTokens: number;
+    signal?: AbortSignal; onChunk: (delta: string) => void;
+  }): Promise<string> {
     if (isAgyConfig(this.config)) return generateAgyText(this.config, options);
-    if (backend.isAvailable) {
-      // /api/proxy/ai 会整体缓冲 JSON 响应，无法转发 SSE 帧。
-      throw new AIStreamUnsupportedError();
-    }
-    this.requireSecureDirectEndpoint();
+    if (!backend.isAvailable) this.requireSecureDirectEndpoint();
     if (this.isDeepSeekReasonerModel()) {
       // deepseek-reasoner 的最终文本可能仅存在于 reasoning_content（思考链），
       // 非流式路径对此有专门处理（且思考链不得用于其他 DeepSeek 模型）。流式
@@ -926,7 +988,9 @@ ${options.user}` : options.user;
     if (debugHeaders['x-api-key']) debugHeaders['x-api-key'] = '***';
     const maskedUrl = requestUrl.replace(/([?&]key=)[^&]+/, '$1***');
 
-    const response = await fetch(requestUrl, {
+    const response = backend.isAvailable
+      ? await backend.proxyAIRequestStream(this.config.id, this.config, body as object, options.signal)
+      : await fetch(requestUrl, {
       // 直连携带 API Key（URL 或请求头），禁止跟随重定向以防凭据外泄。
       redirect: 'error',
       method: 'POST',
@@ -969,15 +1033,11 @@ ${options.user}` : options.user;
       if (ssePayloads.length > 0) {
         // 只有至少一帧解出当前 API 的有效增量才算 SSE；普通文本里恰好出现
         // "data:" 开头的行时继续走下方 JSON / 纯文本回退。
-        const deltas = ssePayloads
-          .map((payload) => extractDelta(payload))
-          .filter((delta) => delta !== '');
-        if (deltas.length > 0) {
-          let full = '';
-          for (const delta of deltas) {
-            full += delta;
-            options.onChunk(delta);
-          }
+        const isProtocolStream = ssePayloads.some(payload => extractDelta(payload) || /"(?:type|error)"\s*:\s*(?:"(?:response\.|content_block_|message_|error)|\{)/.test(payload));
+        if (isProtocolStream) {
+          const stream = createStreamReader(apiType, extractDelta, options.onChunk);
+          ssePayloads.forEach(stream.accept);
+          const full = stream.finish();
           this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: full.length }, { url: maskedUrl, streamed: true });
           return full;
         }
@@ -986,7 +1046,8 @@ ${options.user}` : options.user;
       let text = '';
       try {
         text = extractFullTextFromResponse(apiType, JSON.parse(raw));
-      } catch {
+      } catch (error) {
+        if (error instanceof AIStreamInterruptedError) throw error;
         text = raw;
       }
       if (!text) {
@@ -1005,7 +1066,8 @@ ${options.user}` : options.user;
       let text = '';
       try {
         text = extractFullTextFromResponse(apiType, JSON.parse(raw));
-      } catch {
+      } catch (error) {
+        if (error instanceof AIStreamInterruptedError) throw error;
         text = raw;
       }
       if (!text) {
@@ -1021,14 +1083,9 @@ ${options.user}` : options.user;
       this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'empty response body' }, { url: maskedUrl });
       throw new Error('No content received from AI service (empty body)');
     }
-    let full = '';
-    await consumeSseStream(response.body, (payload) => {
-      const delta = extractDelta(payload);
-      if (delta) {
-        full += delta;
-        options.onChunk(delta);
-      }
-    });
+    const stream = createStreamReader(apiType, extractDelta, options.onChunk);
+    await consumeSseStream(response.body, stream.accept);
+    const full = stream.finish();
 
     this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: full.length }, { url: maskedUrl, streamed: true });
     if (!full.trim()) {
@@ -1482,8 +1539,8 @@ AI Summary: ${gist.ai_summary || 'None'}`;
     try {
       const jsonMatch = content.match(/\[[\s\S]*?\]/);
       const ids = JSON.parse(jsonMatch ? jsonMatch[0] : content);
-      if (!Array.isArray(ids)) return gists;
-      const gistById = new Map(gists.map(gist => [gist.id, gist]));
+      if (!Array.isArray(ids)) throw new Error('Invalid AI search result');
+      const gistById = new Map(gists.slice(0, 120).map(gist => [gist.id, gist]));
       const seen = new Set<string>();
       const ranked = ids
         .map(id => String(id))
@@ -1494,11 +1551,10 @@ AI Summary: ${gist.ai_summary || 'None'}`;
         })
         .map(id => gistById.get(id))
         .filter((gist): gist is Gist => !!gist);
-      const rankedIds = new Set(ranked.map(gist => gist.id));
-      return [...ranked, ...gists.filter(gist => !rankedIds.has(gist.id))];
+      return ranked;
     } catch {
       logger.warn('ai', 'Failed to parse gist reranking result', { code: 'INVALID_RESULT' });
-      return gists;
+      throw new Error('Invalid AI search result');
     }
   }
 
@@ -1565,7 +1621,7 @@ Use the language of the plan for reasons.`,
     const ranked = this.resolveRankedRepositories(content, candidates);
     if (ranked === null) {
       logger.warn('ai', 'Failed to parse semantic reranking result');
-      return repositories;
+      throw new Error('Invalid AI reranking result');
     }
     const rankedIds = new Set(ranked.map(r => r.id));
     // 未被 LLM 排到的仓库追加到末尾（保留原始顺序）
@@ -2006,12 +2062,12 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
     }
   }
 
-  async testConnection(): Promise<ConnectionTestResult> {
+  async testConnection(signal?: AbortSignal): Promise<ConnectionTestResult> {
     if (isAgyConfig(this.config)) {
       try {
-        const text = await this.generateChatText({ system: 'Return exactly OK, without tools.', user: 'Connection test.' });
+        const text = await this.generateChatText({ system: 'Return exactly OK, without tools.', user: 'Connection test.', signal });
         return { success: text.trim() === 'OK', message: text.trim() === 'OK' ? 'AGY OK' : 'AGY_INVALID_RESULT' };
-      } catch (error) { return { success: false, message: error instanceof Error ? error.message : 'AGY_FAILED' }; }
+      } catch (error) { if (signal?.aborted) throw signal.reason; return { success: false, message: error instanceof Error ? error.message : 'AGY_FAILED' }; }
     }
     const apiType = this.getApiType();
     const timeoutMs = apiType === 'openai-responses' || apiType === 'gemini' || this.config.reasoningEffort ? 30000 : 10000;
@@ -2028,16 +2084,13 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
         };
       }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const content = await this.requestText({
+        const content = await withDeadline(requestSignal => this.requestText({
           system: 'You are a connection test assistant.',
           user: 'Reply with exactly one word: OK',
           temperature: 0,
           maxTokens: 2048,
-          signal: controller.signal,
-        });
+          signal: requestSignal,
+        }), timeoutMs, signal);
         if (content) {
           return {
             success: true,
@@ -2049,10 +2102,8 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
           errorType: 'unknown',
           message: this.language === 'zh' ? '未收到响应内容' : 'No content received',
         };
-      } finally {
-        clearTimeout(timeoutId);
-      }
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       const err = error as Error;
       const errorMessage = err.message || '';
 
@@ -2061,7 +2112,7 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
       const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : undefined;
 
       // 处理超时错误
-      if (errorMessage.includes('timeout') || errorMessage.includes('abort') || err.name === 'AbortError') {
+      if (errorMessage.includes('timeout') || errorMessage.includes('abort') || ['AbortError', 'TimeoutError'].includes(err.name)) {
         return {
           success: false,
           errorType: 'timeout',

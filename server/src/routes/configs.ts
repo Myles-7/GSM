@@ -7,6 +7,12 @@ import { logger } from '../services/logger.js';
 
 const router = Router();
 
+function validAICapabilities(body: Record<string, unknown>): boolean {
+  return (body.supportsToolCalls === undefined || typeof body.supportsToolCalls === 'boolean')
+    && (body.requestsPerMinute === undefined || (typeof body.requestsPerMinute === 'number'
+      && Number.isSafeInteger(body.requestsPerMinute) && body.requestsPerMinute >= 0));
+}
+
 type SecretStatus = 'ok' | 'empty' | 'decrypt_failed';
 
 function getMaskedSecretResult(params: {
@@ -77,12 +83,16 @@ function registerEncryptedConfigRoutes(opts: {
         res.status(400).json({ error: 'configs array required', code: 'INVALID_REQUEST' });
         return;
       }
+      if (table === 'ai_configs' && configs.some(c => !c || !validAICapabilities(c))) {
+        res.status(400).json({ error: 'Invalid AI capabilities or request limit', code: 'INVALID_REQUEST' }); return;
+      }
 
       const bulkSync = db.transaction(() => {
         const existingKeys = new Map<string, string>();
-        const existingRows = db.prepare(`SELECT id, ${secretColumn} FROM ${table}`).all() as Array<{ id: string; [key: string]: string }>;
+        const existingRows = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
+        const existingById = new Map(existingRows.map(row => [String(row.id), row]));
         for (const row of existingRows) {
-          if (row[secretColumn]) existingKeys.set(String(row.id), row[secretColumn]);
+          if (row[secretColumn]) existingKeys.set(String(row.id), String(row[secretColumn]));
         }
 
         db.prepare(`DELETE FROM ${table}`).run();
@@ -121,7 +131,13 @@ function registerEncryptedConfigRoutes(opts: {
             continue;
           }
 
-          stmt.run(...insertParams(c, encryptedKey));
+          const existing = existingById.get(String(c.id));
+          const effectiveConfig = table === 'ai_configs' ? {
+            ...c,
+            supportsToolCalls: c.supportsToolCalls ?? !!existing?.supports_tool_calls,
+            requestsPerMinute: c.requestsPerMinute ?? existing?.requests_per_minute ?? 0,
+          } : c;
+          stmt.run(...insertParams(effectiveConfig, encryptedKey));
           syncResult.inserted++;
         }
 
@@ -156,6 +172,16 @@ function registerEncryptedConfigRoutes(opts: {
       const db = getDb();
       const id = req.params.id;
       const body = req.body as Record<string, unknown>;
+      if (table === 'ai_configs' && !validAICapabilities(body)) {
+        res.status(400).json({ error: 'Invalid AI capabilities or request limit', code: 'INVALID_REQUEST' }); return;
+      }
+      // Older clients do not send the newly added fields. Preserve saved values
+      // while still allowing explicit false/0 to reset them.
+      if (table === 'ai_configs') {
+        const existing = db.prepare('SELECT supports_tool_calls, requests_per_minute FROM ai_configs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        body.supportsToolCalls ??= !!existing?.supports_tool_calls;
+        body.requestsPerMinute ??= existing?.requests_per_minute ?? 0;
+      }
       const rawKey = body.apiKey ?? body.password;
 
       let encryptedKey: string | null = null;
@@ -235,6 +261,8 @@ router.get('/api/configs/ai', (req, res) => {
         concurrency: row.concurrency ?? 1,
         reasoningEffort: row.reasoning_effort ?? null,
         mimoPlan: row.mimo_plan ?? null,
+        supportsToolCalls: !!row.supports_tool_calls,
+        requestsPerMinute: row.requests_per_minute ?? 0,
       };
     });
     res.json(configs);
@@ -246,20 +274,24 @@ router.get('/api/configs/ai', (req, res) => {
 
 // POST /api/configs/ai
 router.post('/api/configs/ai', (req, res) => {
+  if (!validAICapabilities(req.body)) {
+    res.status(400).json({ error: 'Invalid AI capabilities or request limit', code: 'INVALID_REQUEST' }); return;
+  }
   try {
     const db = getDb();
-    const { name, apiType, model, baseUrl, apiKey, isActive, customPrompt, useCustomPrompt, concurrency, reasoningEffort, mimoPlan } = req.body as Record<string, unknown>;
+    const { name, apiType, model, baseUrl, apiKey, isActive, customPrompt, useCustomPrompt, concurrency, reasoningEffort, mimoPlan, supportsToolCalls, requestsPerMinute } = req.body as Record<string, unknown>;
+    const id = typeof req.body.id === 'string' && req.body.id ? req.body.id : randomUUID();
 
     const encryptedKey = apiKey && typeof apiKey === 'string' ? encrypt(apiKey, config.encryptionKey) : null;
 
-    const result = db.prepare(
-      'INSERT INTO ai_configs (name, api_type, model, base_url, api_key_encrypted, is_active, custom_prompt, use_custom_prompt, concurrency, reasoning_effort, mimo_plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    db.prepare(
+      'INSERT INTO ai_configs (id, name, api_type, model, base_url, api_key_encrypted, is_active, custom_prompt, use_custom_prompt, concurrency, reasoning_effort, mimo_plan, supports_tool_calls, requests_per_minute) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      name ?? '', apiType ?? 'openai', model ?? '', baseUrl ?? null,
-      encryptedKey, isActive ? 1 : 0, customPrompt ?? null, useCustomPrompt ? 1 : 0, concurrency ?? 1, reasoningEffort ?? null, mimoPlan ?? null
+      id, name ?? '', apiType ?? 'openai', model ?? '', baseUrl ?? null,
+      encryptedKey, isActive ? 1 : 0, customPrompt ?? null, useCustomPrompt ? 1 : 0, concurrency ?? 1, reasoningEffort ?? null, mimoPlan ?? null, supportsToolCalls ? 1 : 0, requestsPerMinute ?? 0
     );
 
-    res.status(201).json({ id: result.lastInsertRowid, name, apiType, model, baseUrl, apiKey: maskApiKey(apiKey as string), isActive: !!isActive, reasoningEffort: reasoningEffort ?? null, mimoPlan: mimoPlan ?? null });
+    res.status(201).json({ id, name, apiType, model, baseUrl, apiKey: maskApiKey(apiKey as string), isActive: !!isActive, reasoningEffort: reasoningEffort ?? null, mimoPlan: mimoPlan ?? null, supportsToolCalls: !!supportsToolCalls, requestsPerMinute: requestsPerMinute ?? 0 });
   } catch (err) {
     logger.errorFromError('configs.createAI', 'POST /api/configs/ai error', err);
     res.status(500).json({ error: 'Failed to create AI config', code: 'CREATE_AI_CONFIG_FAILED' });
@@ -274,22 +306,23 @@ registerEncryptedConfigRoutes({
   secretColumn: 'api_key_encrypted',
   label: 'AI config',
   logPrefix: 'configs.ai',
-  insertSql: `INSERT INTO ai_configs (id, name, api_type, base_url, api_key_encrypted, model, is_active, custom_prompt, use_custom_prompt, concurrency, reasoning_effort, mimo_plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  updateSql: `UPDATE ai_configs SET name = ?, api_type = ?, model = ?, base_url = ?, api_key_encrypted = ?, is_active = ?, custom_prompt = ?, use_custom_prompt = ?, concurrency = ?, reasoning_effort = ?, mimo_plan = ? WHERE id = ?`,
+  insertSql: `INSERT INTO ai_configs (id, name, api_type, base_url, api_key_encrypted, model, is_active, custom_prompt, use_custom_prompt, concurrency, reasoning_effort, mimo_plan, supports_tool_calls, requests_per_minute) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  updateSql: `UPDATE ai_configs SET name = ?, api_type = ?, model = ?, base_url = ?, api_key_encrypted = ?, is_active = ?, custom_prompt = ?, use_custom_prompt = ?, concurrency = ?, reasoning_effort = ?, mimo_plan = ?, supports_tool_calls = ?, requests_per_minute = ? WHERE id = ?`,
   insertParams: (c, ek) => [
     c.id, c.name ?? '', c.apiType ?? 'openai', c.baseUrl ?? '',
     ek, c.model ?? '', c.isActive ? 1 : 0,
-    c.customPrompt ?? null, c.useCustomPrompt ? 1 : 0, c.concurrency ?? 1, c.reasoningEffort ?? null, c.mimoPlan ?? null,
+    c.customPrompt ?? null, c.useCustomPrompt ? 1 : 0, c.concurrency ?? 1, c.reasoningEffort ?? null, c.mimoPlan ?? null, c.supportsToolCalls ? 1 : 0, c.requestsPerMinute ?? 0,
   ],
   updateParams: (b, id, ek) => [
     b.name ?? '', b.apiType ?? 'openai', b.model ?? '', b.baseUrl ?? null,
     ek, b.isActive ? 1 : 0, b.customPrompt ?? null, b.useCustomPrompt ? 1 : 0,
-    b.concurrency ?? 1, b.reasoningEffort ?? null, b.mimoPlan ?? null, id,
+    b.concurrency ?? 1, b.reasoningEffort ?? null, b.mimoPlan ?? null, b.supportsToolCalls ? 1 : 0, b.requestsPerMinute ?? 0, id,
   ],
   shapeResponse: (c, id, maskedKey) => ({
     id, name: c.name, apiType: c.apiType, model: c.model, baseUrl: c.baseUrl,
     apiKey: maskedKey, isActive: !!c.isActive,
     reasoningEffort: c.reasoningEffort ?? null, mimoPlan: c.mimoPlan ?? null,
+    supportsToolCalls: !!c.supportsToolCalls, requestsPerMinute: c.requestsPerMinute ?? 0,
   }),
 });
 

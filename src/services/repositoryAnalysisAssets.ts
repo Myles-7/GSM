@@ -1,3 +1,4 @@
+import { platformsFromDetails } from '../utils/platformNormalization';
 import { create } from 'zustand';
 import { z } from 'zod';
 import type { AIConfig, Repository } from '../types';
@@ -276,7 +277,7 @@ export function projectRepositoryAnalysisAsset(repo: Repository, asset: Reposito
   const details = asset.details;
   const projected: RepositoryWithAnalysisAsset = {
     ...repo, ai_details: details, ai_summary: details.summary ?? details.problem ?? repo.ai_summary,
-    ai_tags: details.tags, ai_platforms: details.platforms,
+    ai_tags: details.tags, ai_platforms: platformsFromDetails(details),
     analyzed_at: details.generated_at, analysis_failed: false, analysis_error: undefined,
   };
   // Provenance is local, readonly UI metadata; do not put it into root snapshots/backups.

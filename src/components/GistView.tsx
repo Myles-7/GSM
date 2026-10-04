@@ -63,25 +63,27 @@ export const GistView: React.FC = () => {
   }), [gists, starredGists, user?.login]);
 
   const currentCategoryItems = categoryItems[selectedGistCategory];
-  // 标记最近一次是 AI 重排序结果，避免随后的 query 同步触发 effect 把它覆盖掉。
-  const aiRerankedRef = useRef(false);
+  const [submittedSearch, setSubmittedSearch] = useState<{ query: string; ids: string[]; keepRanking: boolean } | null>(null);
 
   useEffect(() => {
-    // AI 重排序结果由 aiSearch 直接写入；这里跳过紧接着的一次覆盖。
-    if (aiRerankedRef.current) {
-      aiRerankedRef.current = false;
-      return;
+    if (submittedSearch && submittedSearch.query === gistSearchFilters.query) {
+      const allowed = new Map(filterAndSortGists(currentCategoryItems, { ...gistSearchFilters, query: '' }).map(item => [item.id, item]));
+      const matches = submittedSearch.ids.flatMap(id => allowed.has(id) ? [allowed.get(id)!] : []);
+      setGistSearchResults(submittedSearch.keepRanking ? matches : filterAndSortGists(matches, { ...gistSearchFilters, query: '' }));
+    } else {
+      setGistSearchResults(filterAndSortGists(currentCategoryItems, gistSearchFilters));
     }
-    setGistSearchResults(filterAndSortGists(currentCategoryItems, gistSearchFilters));
-  }, [currentCategoryItems, gistSearchFilters, setGistSearchResults]);
+  }, [currentCategoryItems, gistSearchFilters, setGistSearchResults, submittedSearch]);
+  useEffect(() => { setSubmittedSearch(null); }, [user?.id]);
 
   const basicSearch = () => {
+    setSubmittedSearch(null);
     setGistSearchFilters({ query });
   };
 
   const aiSearch = () => {
-    void runAiSearch(query, currentCategoryItems, () => {
-      aiRerankedRef.current = true;
+    void runAiSearch(query, currentCategoryItems, ranked => {
+      setSubmittedSearch(ranked ? { query, ids: ranked.map(item => item.id), keepRanking: true } : null);
     });
   };
 
@@ -153,6 +155,7 @@ export const GistView: React.FC = () => {
       </aside>
 
       <section className="w-full min-w-0 flex-1 space-y-5 lg:self-start">
+        {submittedSearch && <p role="status" className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">{t('gistView.ai-search-scope')}</p>}
         <div className="ui-toolbar p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -175,6 +178,7 @@ export const GistView: React.FC = () => {
                     size="icon"
                     onClick={() => {
                       setQuery('');
+                      setSubmittedSearch(null);
                       setGistSearchFilters({ query: '' });
                     }}
                     aria-label={t('gistView.clear-search')}
@@ -201,6 +205,7 @@ export const GistView: React.FC = () => {
                 value={gistSearchFilters.sortBy}
                 onValueChange={(value) => {
                   if (sortOptions.some((option) => option === value)) {
+                    setSubmittedSearch(previous => previous ? { ...previous, keepRanking: false } : null);
                     setGistSearchFilters({ sortBy: value as typeof sortOptions[number] });
                   }
                 }}
@@ -219,7 +224,10 @@ export const GistView: React.FC = () => {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setGistSearchFilters({ sortOrder: gistSearchFilters.sortOrder === 'desc' ? 'asc' : 'desc' })}
+                onClick={() => {
+                  setSubmittedSearch(previous => previous ? { ...previous, keepRanking: false } : null);
+                  setGistSearchFilters({ sortOrder: gistSearchFilters.sortOrder === 'desc' ? 'asc' : 'desc' });
+                }}
                 className="ui-button px-3 py-2 text-sm"
               >
                 {gistSearchFilters.sortOrder === 'desc' ? t('gistView.desc') : t('gistView.asc')}
@@ -285,7 +293,7 @@ export const GistView: React.FC = () => {
           </div>
         ) : (
           <div className="ui-empty-state p-12 text-center">
-            {t('gistView.no-gists-yet-sync-to-fetch-data-or-create-a-new')}
+            {t(gistSearchFilters.query || submittedSearch ? 'gistView.no-search-matches' : 'gistView.no-gists-yet-sync-to-fetch-data-or-create-a-new')}
           </div>
         )}
       </section>

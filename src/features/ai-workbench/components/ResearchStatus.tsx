@@ -6,7 +6,7 @@ import { useT } from '../../../i18n/useT';
 
 export function ResearchTimer({ task }: { task: WorkbenchTaskState }) {
   const t = useT('chat');
-  const position = useSyncExternalStore(agyQueueStatus.subscribe, agyQueueStatus.snapshot);
+  const position = useSyncExternalStore(agyQueueStatus.subscribe, () => task.taskId ? agyQueueStatus.snapshot(task.taskId) : Infinity);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!task.running) return;

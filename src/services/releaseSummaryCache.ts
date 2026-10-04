@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { z } from 'zod';
 import { indexedDBStorage } from './indexedDbStorage';
 
-const entry = z.object({ content: z.string(), source: z.string(), at: z.string() });
+const entry = z.object({ content: z.string(), source: z.string(), at: z.string(), generation: z.string().optional() });
 type Entry = z.infer<typeof entry>;
 const useCache = create<{ records: Record<string, Record<number, Entry>> }>(() => ({ records: {} }));
 const loaded = new Set<string>();
@@ -19,9 +19,9 @@ export async function loadReleaseSummaryCache(owner: string) {
     useCache.setState(state => ({ records: { ...state.records, [owner]: { ...records, ...state.records[owner] } } }));
   } catch { loaded.delete(owner); }
 }
-export function saveReleaseSummaryCache(owner: string, id: number, content: string, source: string): Promise<void> {
+export function saveReleaseSummaryCache(owner: string, id: number, content: string, source: string, generation?: string): Promise<void> {
   if (!owner) return Promise.resolve();
-  useCache.setState(state => ({ records: { ...state.records, [owner]: { ...state.records[owner], [id]: { content, source, at: new Date().toISOString() } } } }));
+  useCache.setState(state => ({ records: { ...state.records, [owner]: { ...state.records[owner], [id]: { content, source, generation, at: new Date().toISOString() } } } }));
   const pending = (writes.get(owner) ?? Promise.resolve()).catch(() => {}).then(() =>
     indexedDBStorage.setItem(storageKey(owner), JSON.stringify(useCache.getState().records[owner]))).then(() => {});
   writes.set(owner, pending);

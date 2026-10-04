@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EmbeddingApiType } from '../../../types';
 import {
@@ -14,6 +14,7 @@ import { normalizeLicense } from '../../../utils/licenseFilter';
 import { countLocalVectorPending } from '../../../utils/localVectorPending';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { bindTaskSignal } from '../../../services/taskExecution';
+import { withDeadline } from '../../../utils/requestDeadline';
 
 export interface EmbeddingDraft {
   apiType: EmbeddingApiType;
@@ -45,6 +46,8 @@ export interface VectorSearchActions {
   rebuildIndex: (draft: VectorIndexDraft) => Promise<void>;
   incrementalIndex: (draft: VectorIndexDraft) => Promise<void>;
   abortIndexing: () => void;
+  cancelEmbeddingTest: () => void;
+  cancelWorkerTest: () => void;
 }
 
 /**
@@ -68,6 +71,9 @@ export const useVectorSearchActions = (): VectorSearchActions => {
   const [testingWorker, setTestingWorker] = useState(false);
   const [workerTestResult, setWorkerTestResult] = useState<{ success: boolean; vectorCount: number; dimensions: number; error?: string } | null>(null);
   const abortController = useRef<AbortController | null>(null);
+  const embeddingTest = useRef<AbortController | null>(null);
+  const workerTest = useRef<AbortController | null>(null);
+  useEffect(() => () => { embeddingTest.current?.abort(); workerTest.current?.abort(); }, []);
   const activeConfig = useMemo(
     () => state.embeddingConfigs.find((config) => config.id === state.activeEmbeddingConfig),
     [state.activeEmbeddingConfig, state.embeddingConfigs],
@@ -85,30 +91,38 @@ export const useVectorSearchActions = (): VectorSearchActions => {
   );
 
   const testEmbedding = useCallback(async (draft: EmbeddingDraft) => {
+    if (embeddingTest.current) return;
+    const controller = new AbortController(); embeddingTest.current = controller;
     setTestingEmbedding(true);
-    setEmbeddingTestResult(null);
     try {
-      const result = await new EmbeddingClient({ id: 'test', name: 'test', ...draft, isActive: true }).testConnection();
+      const result = await withDeadline(signal => new EmbeddingClient({ id: 'test', name: 'test', ...draft, isActive: true }).testConnection(signal), 11000, controller.signal);
+      if (controller.signal.aborted) return;
       setEmbeddingTestResult(result);
     } catch (reason) {
+      if (controller.signal.aborted) return;
       setEmbeddingTestResult({ success: false, dimensions: 0, error: reason instanceof Error ? reason.message : String(reason) });
     } finally {
+      embeddingTest.current = null;
       setTestingEmbedding(false);
     }
   }, []);
 
   const testWorker = useCallback(async (draft: VectorWorkerDraft) => {
+    if (workerTest.current) return;
+    const controller = new AbortController(); workerTest.current = controller;
     setTestingWorker(true);
-    setWorkerTestResult(null);
     try {
-      const result = await new VectorSearchService(draft).testConnection();
+      const result = await withDeadline(signal => new VectorSearchService(draft).testConnection(signal), 31000, controller.signal);
+      if (controller.signal.aborted) return;
       setWorkerTestResult(result);
       if (result.success) {
         state.setVectorSearchStatus({ connected: true, vectorCount: result.vectorCount, dimensions: result.dimensions });
       }
     } catch (reason) {
+      if (controller.signal.aborted) return;
       setWorkerTestResult({ success: false, vectorCount: 0, dimensions: 0, error: reason instanceof Error ? reason.message : String(reason) });
     } finally {
+      workerTest.current = null;
       setTestingWorker(false);
     }
   }, [state]);
@@ -231,6 +245,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
 
   return {
     testingEmbedding, embeddingTestResult, testingWorker, workerTestResult,
+    cancelEmbeddingTest: () => embeddingTest.current?.abort(), cancelWorkerTest: () => workerTest.current?.abort(),
     incrementalTargetCount, unindexedRepoCount, testEmbedding, testWorker, rebuildIndex, incrementalIndex, abortIndexing,
   };
 };

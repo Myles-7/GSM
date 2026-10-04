@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import { getDb } from '../db/connection.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { config } from '../config.js';
@@ -228,6 +230,11 @@ function normalizeReasoningEffort(value: unknown): string | null {
 // POST /api/proxy/ai
 // Accepts either { configId, body } (lookup from DB) or { config, body } (inline config for one-time requests)
 router.post('/api/proxy/ai', async (req, res) => {
+  const controller = new AbortController();
+  let timedOut = false;
+  const disconnect = () => { if (!res.writableEnded) controller.abort(); };
+  req.on('aborted', disconnect); res.on('close', disconnect);
+  const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, 600_000);
   try {
     const db = getDb();
     const { configId, config: inlineConfig, body: requestBody } = req.body as {
@@ -235,6 +242,7 @@ router.post('/api/proxy/ai', async (req, res) => {
       config?: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string };
       body: Record<string, unknown>;
     };
+    const streaming = req.body.stream === true || requestBody?.stream === true;
 
     let apiKey: string;
     let apiType: string;
@@ -253,13 +261,6 @@ router.post('/api/proxy/ai', async (req, res) => {
         res.status(400).json({ error: 'baseUrl, apiKey, and model are required', code: 'INVALID_REQUEST' });
         return;
       }
-      // Warn if API key is transmitted over non-HTTPS connection
-      try {
-        const parsed = new URL(baseUrl);
-        if (parsed.protocol !== 'https:' && !isPrivateOrLoopback(parsed.hostname)) {
-          logger.warn('proxy.ai', `AI API key transmitted over ${parsed.protocol} (not HTTPS). Consider using HTTPS for security.`);
-        }
-      } catch { /* invalid URL, will be caught by validateUrl later */ }
     } else if (configId) {
       // DB lookup path (for saved configs)
       const aiConfig = db.prepare('SELECT * FROM ai_configs WHERE id = ?').get(configId) as Record<string, unknown> | undefined;
@@ -272,21 +273,20 @@ router.post('/api/proxy/ai', async (req, res) => {
       baseUrl = aiConfig.base_url as string;
       model = aiConfig.model as string;
       reasoningEffort = normalizeReasoningEffort(aiConfig.reasoning_effort);
-      try {
-        const parsed = new URL(baseUrl);
-        if (parsed.protocol !== 'https:' && !isPrivateOrLoopback(parsed.hostname)) {
-          logger.warn('proxy.ai', `AI API key transmitted over ${parsed.protocol} (not HTTPS). Consider using HTTPS for security.`);
-        }
-      } catch { /* invalid URL, will be caught by validateUrl later */ }
     } else {
       res.status(400).json({ error: 'configId or config required', code: 'CONFIG_ID_REQUIRED' });
       return;
     }
 
+    const endpoint = new URL(baseUrl);
+    if (endpoint.protocol !== 'https:' && !isPrivateOrLoopback(endpoint.hostname)) {
+      res.status(400).json({ error: 'Public AI endpoints require HTTPS', code: 'AI_HTTPS_REQUIRED' }); return;
+    }
+
     let targetUrl: string;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
+      'Accept': streaming ? 'text/event-stream' : 'application/json',
     };
 
     if (apiType === 'openai' || apiType === 'openai-responses' || apiType === 'openai-compatible' || apiType === 'deepseek' || apiType === 'mimo') {
@@ -303,10 +303,11 @@ router.post('/api/proxy/ai', async (req, res) => {
       // gemini
       const rawModel = model.trim();
       const modelName = rawModel.startsWith('models/') ? rawModel.slice('models/'.length) : rawModel;
-      const path = `v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
+      const path = `v1beta/models/${encodeURIComponent(modelName)}:${streaming ? 'streamGenerateContent' : 'generateContent'}`;
       targetUrl = buildApiUrl(baseUrl, path);
       const urlObj = new URL(targetUrl);
       urlObj.searchParams.set('key', apiKey);
+      if (streaming) urlObj.searchParams.set('alt', 'sse');
       targetUrl = urlObj.toString();
     }
 
@@ -323,7 +324,7 @@ router.post('/api/proxy/ai', async (req, res) => {
       ? { ...requestBody, reasoning: { effort: reasoningEffort } }
       : requestBody;
 
-    const timeout = apiType === 'openai-responses' || !!reasoningEffort ? 600000 : 60000;
+    const timeout = 600000;
 
     // 宽松档（放行回环/私有网段）只用于「用户已保存的 AI 配置」(configId)。
     // 内联 config 路径（任意客户端均可携带目标地址）保持严格档，避免 SSRF 放宽被滥用。
@@ -338,13 +339,31 @@ router.post('/api/proxy/ai', async (req, res) => {
       timeout,
       proxyConfig,
       allowPrivate,
+      signal: controller.signal,
+      stream: streaming,
+      maxRedirects: 0,
     });
 
     relayRateLimitHeaders(res, result.headers);
-    res.status(result.status).json(result.data);
+    if (streaming && result.data instanceof Readable) {
+      res.status(result.status);
+      res.setHeader('Content-Type', String(result.headers['content-type'] || 'application/octet-stream'));
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('X-Accel-Buffering', 'no');
+      await pipeline(result.data, res, { signal: controller.signal });
+    } else res.status(result.status).json(result.data);
   } catch (err) {
+    if (res.destroyed) return;
+    if (controller.signal.aborted) {
+      if (timedOut && !res.headersSent) res.status(504).json({ error: 'AI request timed out', code: 'AI_PROXY_TIMEOUT' });
+      else res.destroy();
+      return;
+    }
     logger.errorFromError('proxy.ai', 'AI proxy error', err);
-    res.status(500).json({ error: 'AI proxy failed', code: 'AI_PROXY_FAILED' });
+    if (res.headersSent) res.destroy();
+    else res.status(500).json({ error: 'AI proxy failed', code: 'AI_PROXY_FAILED' });
+  } finally {
+    clearTimeout(deadline); req.off('aborted', disconnect); res.off('close', disconnect);
   }
 });
 

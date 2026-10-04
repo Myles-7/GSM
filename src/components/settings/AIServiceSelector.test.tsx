@@ -9,7 +9,7 @@ import { AIServiceSelector } from './AIServiceSelector';
 vi.mock('../../i18n/useT', async importOriginal => ({ ...await importOriginal<typeof import('../../i18n/useT')>(), useT: () => makeT('en', 'settings') }));
 const config: AIConfig = { id: 'paid', name: 'API fixture', baseUrl: 'https://example.invalid', apiKey: 'fixture', model: 'fixture', isActive: false };
 const agy = { available: true, probeMatches: true, state: { supported: true, enabled: true, executable: { fingerprint: 'fixture' }, prefs: { model: 'fixture' } } } as ReturnType<typeof useAgySettings>;
-const actions: AIConfigActions = { testingId: null, testingForm: false, results: {}, testConfig: vi.fn(), testDraft: vi.fn() };
+const actions: AIConfigActions = { testingId: null, testingForm: false, results: {}, testConfig: vi.fn(), testDraft: vi.fn(), cancelTest: vi.fn() };
 
 describe('Unified AI selection', () => {
   it('switches both ways with one controlled current-service value', () => {

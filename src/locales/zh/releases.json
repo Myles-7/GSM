@@ -72,7 +72,9 @@
     "failed-to-generate-summary-please-try-again": "总结生成失败，请重试。",
     "download-count": "{{count}} 次下载",
     "show-all-assets": "显示全部 {{count}} 个",
-    "show-matched-assets": "只显示命中资产"
+    "show-matched-assets": "只显示命中资产",
+    "regenerate-summary": "重新生成",
+    "previous-summary": "以下为之前生成的摘要，语言或模型配置已变化。重新生成可更新内容。"
   },
   "releasePluginRecommendations": {
     "plugin-analysis-failed": "插件分析失败",
@@ -202,7 +204,9 @@
     "this-repository-has-no-releases": "该仓库暂无 Release。",
     "v1-live-releases-loaded": "已实时获取 {{v1}} 条 Release",
     "release-pagination": "Release 分页",
-    "no-matching-releases": "没有 Release 命中所选资产过滤器。"
+    "no-matching-releases": "没有 Release 命中所选资产过滤器。",
+    "regenerate-summary": "重新生成",
+    "previous-summary": "以下为之前生成的摘要，语言或模型配置已变化。重新生成可更新内容。"
   },
   "subscriptionRepoCard": {
     "no-description": "暂无描述",
