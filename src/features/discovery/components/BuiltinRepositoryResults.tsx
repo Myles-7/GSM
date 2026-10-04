@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 import {
   Loader2,
   Pause,
@@ -50,10 +51,14 @@ export function BuiltinRepositoryResults({
   );
   const zh = language.startsWith("zh");
   const l = (cn: string, en: string) => (zh ? cn : en);
-  const data = useCustomDiscovery((s) => s.data);
-  const analysis = useCustomAnalysis();
-  useRepositoryAnalysisAssets(s => s.assets);
   const scope = { id: `builtin:${channelId}`, revision: 1 };
+  const data = useCustomDiscovery((s) => s.data);
+  const tasks = useCustomAnalysis(useShallow((s) =>
+    s.items.filter((task) => task.channelId === scope.id),
+  ));
+  const paused = useCustomAnalysis((s) => !!s.pausedChannels[scope.id]);
+  const channelIssue = useCustomAnalysis((s) => s.issuesByChannel[scope.id]);
+  useRepositoryAnalysisAssets(s => s.assets);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [activeId, setActiveId] = useState<number | null>(null);
   const [chatId, setChatId] = useState<number | null>(null);
@@ -64,11 +69,14 @@ export function BuiltinRepositoryResults({
   }));
   const index = repos.findIndex((r) => r.id === activeId);
   const chat = repos.find((r) => r.id === chatId);
-  const tasks = analysis.items.filter((task) => task.channelId === scope.id);
+  const tasksByKey = new Map<string, (typeof tasks)[number]>();
+  for (const task of tasks) {
+    // Preserve Array.find's first match when duplicate task keys exist.
+    if (!tasksByKey.has(task.key)) tasksByKey.set(task.key, task);
+  }
   const running = tasks.some((task) =>
     ["queued", "waiting", "running"].includes(task.status),
   );
-  const paused = !!analysis.pausedChannels[scope.id];
   const unanalyzed = repos.filter(
     (repo) => !repo.ai_details,
   );
@@ -86,7 +94,7 @@ export function BuiltinRepositoryResults({
     (task) =>
       task.status === "failed" && repos.some((r) => r.id === task.repo.id),
   );
-  const issue = failed[0]?.issue ?? analysis.issuesByChannel[scope.id];
+  const issue = failed[0]?.issue ?? channelIssue;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 border-b pb-3">
@@ -199,9 +207,7 @@ export function BuiltinRepositoryResults({
       >
         <div className="min-w-0 flex-1 space-y-4">
           {repos.map((repo, i) => {
-            const task = tasks.find(
-              (t) => t.key === analysisKey(repo, language, config),
-            );
+            const task = tasksByKey.get(analysisKey(repo, language, config));
             const status =
               task?.status === "running"
                 ? l("分析中", "Analyzing")

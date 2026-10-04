@@ -1036,7 +1036,10 @@ const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlRead
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock || isQuitting) return;
   const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
-  registerHtmlReadingIpc({ ipcMain: trustedIpcMain, isMainFrame: isTrustedAppFrame, service, getWindow: () => mainWindow, powerMonitor: require('electron').powerMonitor });
+  const { createReadingPreview } = require('./htmlReadingPreview');
+  const electron = require('electron');
+  const openPreview = createReadingPreview({ BrowserWindow: electron.BrowserWindow, Menu: electron.Menu, session: electron.session, shell: electron.shell, fs, path, tempDirectory: app.getPath('temp') });
+  registerHtmlReadingIpc({ ipcMain: trustedIpcMain, isMainFrame: isTrustedAppFrame, service, getWindow: () => mainWindow, powerMonitor: electron.powerMonitor, openPreview });
 });
 handlePluginIpc('plugins:getPage', async (_event, pluginId, pageId) => {
   return getPluginManager().getPage(pluginId, pageId);
