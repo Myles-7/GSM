@@ -40,6 +40,7 @@ function createPluginIpcRegistrar({ ipcMain, getWindow, getHostURL, getDevURL = 
 function registerPluginPageNavigation(webContents, getManager) {
   let navigating = false;
   function revoke(event, _url, isInPlace, isMainFrame) {
+    if (event.defaultPrevented) return;
     const sameDocument = event.isSameDocument ?? isInPlace;
     const mainFrame = event.isMainFrame ?? isMainFrame;
     if (sameDocument) return;

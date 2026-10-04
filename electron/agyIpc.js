@@ -33,7 +33,7 @@ function registerAgyIpc({ ipcMain, isMainFrame, getService }) {
     if (inFlight.has(key)) return { ok: false, code: 'DUPLICATE_REQUEST' };
     const token = { canceled: false };
     inFlight.set(key, token);
-    const isCurrent = () => !token.canceled && !event.sender.isDestroyed() && sessions.get(event.sender.id) === session;
+    const isCurrent = () => !token.canceled && isMainFrame(event) && !event.sender.isDestroyed() && sessions.get(event.sender.id) === session;
     try {
       const result = await getService().generate(event.sender.id, id, request, update => {
         if (isCurrent()) event.sender.send('agy:event', { ...update, requestId: id, session });
