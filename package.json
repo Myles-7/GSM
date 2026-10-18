@@ -31,7 +31,7 @@
     "audit:ui": "node scripts/audit-ui.mjs",
     "clean:workspace": "node scripts/clean-workspace.cjs",
     "test:coverage": "vitest run --coverage",
-    "build:desktop": "node scripts/build-desktop.js",
+    "build:desktop": "node scripts/build-desktop.cjs",
     "electron": "electron electron/main.js",
     "electron:dev": "node scripts/dev-desktop.mjs",
     "predist": "npm run sync-version",
