@@ -42,19 +42,11 @@ for (const icon of [
 }
 console.log('⚡ 使用已提交的 electron/ 源码（含 MCP 与 preload）');
 
-// 3. 安装Electron依赖
-console.log('📥 安装Electron依赖...');
-try {
-  execSync('npm install --save-dev electron electron-builder', { stdio: 'inherit' });
-} catch (error) {
-  console.error('安装依赖失败:', error.message);
-  process.exit(1);
-}
-
-// 4. 构建应用
+// 3. Build with the lockfile-pinned devDependencies. A production build must
+// never mutate package.json/package-lock.json or silently change Electron.
 console.log('🔨 构建桌面应用...');
 try {
-  execSync('npx electron-builder', { stdio: 'inherit' });
+  execSync('npx --no-install electron-builder', { stdio: 'inherit' });
   console.log('✅ 桌面应用构建完成！');
   console.log('📁 构建文件位于 release/ 目录');
 } catch (error) {
