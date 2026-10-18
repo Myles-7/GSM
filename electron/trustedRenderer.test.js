@@ -25,6 +25,17 @@ function fixture(url = APP) {
   return { wc, window, event, handlers, ipc };
 }
 
+test('trusted one-way IPC rejects child/external senders and its cleanup removes the listener', () => {
+  const f = fixture(), bus = new EventEmitter(); let effects = 0;
+  const ipc = createTrustedIpcMain({ ipcMain: bus, isTrusted: event => isTrustedMainFrame(event, f.window, APP, DEV) });
+  const detach = ipc.on('diagnostics:flush', () => { effects++; });
+  bus.emit('diagnostics:flush', { ...f.event, senderFrame: { url: APP } });
+  f.wc.mainFrame.url = 'https://evil.invalid/'; bus.emit('diagnostics:flush', f.event);
+  assert.equal(effects, 0);
+  f.wc.mainFrame.url = APP; bus.emit('diagnostics:flush', f.event); assert.equal(effects, 1);
+  detach(); assert.equal(bus.listenerCount('diagnostics:flush'), 0);
+});
+
 test('only exact app documents or configured loopback entry documents receive trust', () => {
   for (const value of [APP, `${APP}#settings`, DEV, `${DEV}/#settings`]) assert.ok(isTrustedDocument(value, APP, DEV), value);
   for (const value of [undefined, 'https://evil.invalid', `${APP}?debug=1`, 'file:///D:/GSM/dist/other.html',

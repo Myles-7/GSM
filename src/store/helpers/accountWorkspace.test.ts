@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { defaultReleaseSourceSettings } from '../../types';
 import type { Repository } from '../../types';
+import type { ExternalDiscoveryChannel } from '../../types/externalFeed';
 import {
+  ACCOUNT_WORKSPACE_PERSISTED_FIELDS,
   accountIdKey,
   applyAccountWorkspace,
   captureAccountWorkspace,
@@ -79,6 +81,40 @@ describe('workspaceHasData predicate', () => {
 
   it('returns false when only syncMode or syncModeConfigured are set', () => {
     expect(workspaceHasData({ syncMode: 'stars-and-lists' as const, syncModeConfigured: true })).toBe(false);
+    expect(workspaceHasData({ classificationSchemes: {
+      purpose: {
+        initialized: true, customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [],
+        categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], categoryListIdMap: {},
+      },
+    } })).toBe(false);
+  });
+
+  it('treats classification-only, subcategory-only, order-only, navigation-only, and external-feed workspaces as non-empty', () => {
+    const classificationScheme = {
+      initialized: true,
+      customCategories: [{ id: 'tech', name: 'Technology', icon: 'folder', keywords: [] }],
+      defaultCategoryOverrides: {},
+      hiddenDefaultCategoryIds: [],
+      categoryOrder: ['tech'],
+      subcategories: [],
+      subcategoryOrder: [],
+      repositoryOrder: [],
+      categoryListIdMap: {},
+    };
+    const feed: ExternalDiscoveryChannel = {
+      id: 'external:feed', name: 'Feed', nameEn: 'Feed', icon: 'search', description: '', enabled: true,
+      sourceUrl: 'https://example.com/feed', sourceKind: 'rss',
+    };
+    const cases = [
+      { classificationSchemes: { technology: classificationScheme } },
+      { classificationNavigation: { technology: { selected: 'tech', expanded: [] } } },
+      { subcategories: [{ id: 'group', parentId: 'custom-1', name: 'Group', icon: 'folder' }] },
+      { subcategoryOrder: ['group'] },
+      { repositoryOrder: [1] },
+      { externalDiscoveryChannels: [feed] },
+      { discoveryChannels: [feed] },
+    ];
+    for (const candidate of cases) expect(workspaceHasData(candidate)).toBe(true);
   });
 
   it('returns true when content lists hold items', () => {
@@ -177,5 +213,51 @@ describe('account workspace switching', () => {
     expect(normalized['1']?.repositories[0].id).toBe(1);
     expect(normalized['1']?.syncMode).toBe('stars-and-lists');
     expect(normalized.bad).toBeUndefined();
+  });
+
+  it('normalizes parked classification schemas and navigation before applying them', () => {
+    const rawWorkspace = {
+      repositories: [repo(1)],
+      classificationSchemes: {
+        technology: {
+          initialized: true,
+          customCategories: [{ id: 'tech', name: '  Technology  ', icon: 'folder', keywords: [] }],
+          defaultCategoryOverrides: {},
+          hiddenDefaultCategoryIds: [],
+          categoryOrder: ['tech'],
+          subcategories: [
+            { id: 'valid-group', parentId: 'tech', name: ' Valid group ', icon: 'folder' },
+            { id: 'orphan-group', parentId: 'missing', name: 'Orphan', icon: 'folder' },
+          ],
+          subcategoryOrder: ['orphan-group', 'valid-group'],
+          repositoryOrder: [999],
+          categoryListIdMap: {},
+        },
+      },
+      classificationNavigation: {
+        technology: { selected: '  tech ', expanded: ['tech', 'tech', ''], collapsedGroups: ['valid-group', 'valid-group'] },
+        unknown: { selected: 'ignored', expanded: [] },
+      },
+    };
+    const normalized = normalizeAccountWorkspaces({ '1': rawWorkspace });
+    const applied = applyAccountWorkspace(rawWorkspace as unknown as AccountWorkspace);
+    expect(applied.classificationSchemes).toEqual(normalized['1']?.classificationSchemes);
+    expect(applied.classificationNavigation).toEqual(normalized['1']?.classificationNavigation);
+    const parked = normalized['1'];
+    expect(parked?.classificationSchemes?.technology).toMatchObject({
+      initialized: true,
+      subcategories: [{ id: 'valid-group', parentId: 'tech', name: 'Valid group', icon: 'folder' }],
+      subcategoryOrder: ['valid-group'],
+      repositoryOrder: [1],
+    });
+    expect(parked?.classificationNavigation).toEqual({
+      technology: { selected: 'tech', expanded: ['tech'], collapsedGroups: ['valid-group'] },
+    });
+  });
+
+  it('keeps the dirty-field policy complete for every persisted workspace field', () => {
+    const fields = Object.keys(emptyAccountWorkspace()).sort();
+    expect([...ACCOUNT_WORKSPACE_PERSISTED_FIELDS].sort()).toEqual(fields);
+    expect(new Set(ACCOUNT_WORKSPACE_PERSISTED_FIELDS).size).toBe(fields.length);
   });
 });

@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { safeWriteText } from '../../../utils/clipboardUtils';
 import { workbenchOverviewMarkdown } from '../../../services/workbenchOverview';
 import { ResearchTimer } from './ResearchStatus';
+import { WorkbenchSelect } from './WorkbenchSelect';
 
 type Props = {
   workbench: ReturnType<typeof useAIWorkbench>; candidates: WorkbenchCandidate[];
@@ -18,7 +19,6 @@ type Props = {
   resolveLanguage: (repository: Repository) => string;
   onResearch: (repositories: Repository[]) => void; onAsk: (items: WorkbenchCandidate[]) => void;
 };
-const selectClass = 'h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs';
 const publicSource = (raw: string) => {
   try { const url = new URL(raw); return url.protocol === 'https:' && url.hostname === 'github.com' && !url.username && !url.password ? url.href : undefined; }
   catch { return undefined; }
@@ -105,11 +105,16 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
           }}><Download className="h-4 w-4" /></Button>
         </div>
       </div>
-      {tab === 'results' && w.data.searchBatches.length > 0 && <select className={`${selectClass} mt-2 w-full`} aria-label={t('workbench.searchRound')}
-        value={batchId === 'all' ? 'all' : batch?.id ?? ''} onChange={event => onBatchChange(event.target.value)}>
-        <option value="all">{t('overview.allRounds')}</option>
-        {w.data.searchBatches.map((item, i) => <option key={item.id} value={item.id}>{i + 1}. {item.requirements.purpose}</option>)}
-      </select>}
+      {tab === 'results' && w.data.searchBatches.length > 0 && <WorkbenchSelect
+        className="mt-2 w-full"
+        ariaLabel={t('workbench.searchRound')}
+        value={batchId === 'all' ? 'all' : batch?.id ?? w.data.searchBatches[0]?.id ?? 'all'}
+        onValueChange={onBatchChange}
+        items={[
+          { value: 'all', label: t('overview.allRounds') },
+          ...w.data.searchBatches.map((item, i) => ({ value: item.id, label: `${i + 1}. ${item.requirements.purpose}` })),
+        ]}
+      />}
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5 sm:py-5" data-testid="overview-scroll">
       <div className="mx-auto w-full max-w-[1100px] space-y-3">
@@ -128,15 +133,24 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-0 flex-[1_1_180px]"><Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
               <Input className="h-8 pl-8 text-xs" aria-label={t('overview.search')} placeholder={t('overview.search')} value={query} onChange={event => setQuery(event.target.value)} /></div>
-            <select className={selectClass} value={kind} aria-label={t('overview.allTypes')} onChange={event => setKind(event.target.value)}>
-              {['all', 'tool', 'library', 'resource', 'other'].map(value => <option key={value} value={value}>{t(`overview.${value === 'all' ? 'allTypes' : value}`)}</option>)}
-            </select>
-            <select className={selectClass} value={starFilter} aria-label={t('workbench.filter')} onChange={event => setStarFilter(event.target.value)}>
-              {['all', 'starred', 'unstarred'].map(value => <option key={value} value={value}>{t(`workbench.${value}`)}</option>)}
-            </select>
-            <select className={selectClass} value={sort} aria-label={t('overview.sort')} onChange={event => setSort(event.target.value)}>
-              {['original', 'stars', 'name'].map(value => <option key={value} value={value}>{t(`overview.${value}`)}</option>)}
-            </select>
+            <WorkbenchSelect
+              value={kind}
+              ariaLabel={t('overview.allTypes')}
+              onValueChange={setKind}
+              items={['all', 'tool', 'library', 'resource', 'other'].map((value) => ({ value, label: t(`overview.${value === 'all' ? 'allTypes' : value}`) }))}
+            />
+            <WorkbenchSelect
+              value={starFilter}
+              ariaLabel={t('workbench.filter')}
+              onValueChange={setStarFilter}
+              items={['all', 'starred', 'unstarred'].map((value) => ({ value, label: t(`workbench.${value}`) }))}
+            />
+            <WorkbenchSelect
+              value={sort}
+              ariaLabel={t('overview.sort')}
+              onValueChange={setSort}
+              items={['original', 'stars', 'name'].map((value) => ({ value, label: t(`overview.${value}`) }))}
+            />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <label className="flex items-center gap-2"><input type="checkbox" checked={selectAll} disabled={!visible.length} onChange={() => setSelected(previous => {

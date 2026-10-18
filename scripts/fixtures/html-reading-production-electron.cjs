@@ -2,7 +2,7 @@
 const { app, BrowserWindow, session } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
-const output = path.join(root, 'output/html-reading-loop-20261004');
+const output = path.resolve(root, process.env.GSM_READING_SMOKE_OUTPUT || 'output/html-reading-loop-20261004');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'gsm-production-smoke-'));
 app.setPath('userData', profile);
 process.env.NODE_ENV = 'production';

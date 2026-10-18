@@ -29,6 +29,11 @@ export interface Capabilities {
 }
 export interface HomeTask {
   id: string; requestId: string; kind: string; status: string; stage?: string;
+  executor?: 'server-provider'; phase?: string;
+  commitStatus?: 'not_started' | 'pending' | 'saved' | 'conflict' | 'failed';
+  providerOutcome?: 'not_started' | 'in_flight' | 'succeeded' | 'failed' | 'unknown';
+  failureCode?: string | null;
+  capabilities?: { pause: boolean; cancel: boolean; resume: 'safe' | 'new-provider-call' | 'unsupported' };
   input: Record<string, unknown>; result?: Record<string, unknown> | null;
   error?: string | null; createdAt: string; updatedAt: string; lastSeq?: number;
 }

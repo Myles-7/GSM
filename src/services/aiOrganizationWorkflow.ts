@@ -1,6 +1,6 @@
 import type { Repository } from '../types';
 import type { WorkbenchProposal } from '../types/aiWorkbench';
-import type { OrganizationMode } from '../types/aiOrganization';
+import type { OrganizationAnalysisDepth, OrganizationMode } from '../types/aiOrganization';
 import { membershipOf } from '../store/helpers/aiOrganizationTransaction';
 import { useAppStore } from '../store/useAppStore';
 import { repositoryChatStorage as storage } from './repositoryChatStorage';
@@ -8,13 +8,22 @@ import { workbenchRuntime } from './aiWorkbenchService';
 import { organizationCategorySnapshot, requireOrganizationProposal, saveOrganizationProposal } from './aiOrganizationExecution';
 import { generateOrganizationDraft } from './aiOrganizationService';
 import { organizationInstruction } from './aiOrganizationInstructions';
+import { projectClassificationRepository } from '../store/helpers/classificationSchemes';
 
 export async function runOrganizationGeneration(input: {
+  recoveryOnly?: boolean;
   sessionId: string; repositories: Repository[]; scopeName: string; configId: string; instruction: string;
   previous?: WorkbenchProposal; retryOnly?: boolean; enrichRepositoryIds?: number[];
+  deferUnderstandingIds?: number[];
   replaceManual?: boolean; maxNewSubcategories?: number; batchIndex?: number;
   mode?: OrganizationMode; rangeSource?: string;
+  dual?: boolean; requestLimit?: number;
+  analysisDepth?: OrganizationAnalysisDepth; concurrency?: number; preserveStructure?: boolean;
 }): Promise<void> {
+  if (input.dual || input.previous?.organization?.dual) {
+    const { runDualOrganizationGeneration } = await import('./aiOrganizationDualWorkflow');
+    return runDualOrganizationGeneration(input);
+  }
   if (input.previous?.organization?.purpose === 'structure') {
     const { runStructureGeneration } = await import('./aiCategoryStructure');
     return runStructureGeneration(input);
@@ -32,17 +41,19 @@ export async function runOrganizationGeneration(input: {
     const date = new Date().toISOString();
     const previousDraft = previous?.organization;
     const continuing = Boolean(input.retryOnly && previousDraft && ['ready', 'interrupted'].includes(previousDraft.status));
-    const categories = organizationCategorySnapshot();
+    const categories = organizationCategorySnapshot(previousDraft?.singleSchemeId);
+    const repositories = input.repositories.map(repo => projectClassificationRepository(repo, previousDraft?.singleSchemeId ?? 'purpose'));
     const currentIds = new Set(categories.map(c => c.id));
     const inherited = previousDraft?.categories.filter(c => c.isNew && !currentIds.has(c.id)) ?? [];
     let proposal: WorkbenchProposal = continuing ? structuredClone(previous!) : {
       id: crypto.randomUUID(), ownerId, sessionId: input.sessionId, createdAt: date, updatedAt: date, operations: [],
       organization: {
-        version: 2, purpose: 'repositories', mode: input.mode ?? previousDraft?.mode ?? (previousDraft?.version === 1 ? 'reorganize' : 'supplement'), rangeSource: input.rangeSource ?? input.scopeName, revision: (previousDraft?.revision ?? 0) + 1,
+        version: previousDraft?.singleSchemeId ? 3 : 2, ...(previousDraft?.singleSchemeId ? { singleSchemeId: previousDraft.singleSchemeId } : {}),
+        purpose: 'repositories', mode: input.mode ?? previousDraft?.mode ?? (previousDraft?.version === 1 ? 'reorganize' : 'supplement'), rangeSource: input.rangeSource ?? input.scopeName, revision: (previousDraft?.revision ?? 0) + 1,
         scope: { name: input.scopeName, repositoryIds: input.repositories.map(r => r.id) },
         instruction: organizationInstruction(previousDraft?.instruction, input.instruction, input.retryOnly), configId: input.configId, maxNewSubcategories: input.maxNewSubcategories ?? 6,
         structureReady: false, categories: [...categories, ...inherited],
-        entries: input.repositories.map(repository => {
+        entries: repositories.map(repository => {
           const before = membershipOf(repository);
           const old = previousDraft?.entries.find(e => e.repositoryId === repository.id);
           const preserveManual = old?.manual && !input.replaceManual && !['applied', 'restored', 'imported'].includes(previousDraft?.status ?? '');
@@ -79,16 +90,16 @@ export async function runOrganizationGeneration(input: {
     await saveOrganizationProposal(proposal);
     try {
       stage('organization');
-      await generateOrganizationDraft({ ...input, instruction: proposal.organization!.instruction, proposal, signal, onUpdate: async next => {
+      await generateOrganizationDraft({ ...input, repositories, instruction: proposal.organization!.instruction, proposal, signal, onUpdate: async next => {
         signal.throwIfAborted();
-        await saveOrganizationProposal(next);
+        await saveOrganizationProposal(next, proposal.updatedAt);
         proposal = next;
         stage(`organization:${next.organization!.batches.filter(b => b.status === 'complete').length}/${next.organization!.batches.length}`);
       } });
     } catch (error) {
       if (String(useAppStore.getState().user?.id ?? '') === ownerId) {
         proposal.organization!.status = 'interrupted';
-        await saveOrganizationProposal(proposal);
+        await saveOrganizationProposal(proposal, proposal.updatedAt);
       }
       throw error;
     }

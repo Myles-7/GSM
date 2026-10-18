@@ -1,11 +1,96 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
-import { HomeApi } from './api';
+import { HomeApi, HomeApiError } from './api';
 import { HomeSync } from './sync';
 import type { Capabilities, HomeOperation, HomeRecord } from './types';
 import { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } from '../services/repositoryIdentityGate';
+import { aiTaskJournal } from '../services/aiTaskJournal';
 
 describe('home synchronization recovery', () => {
+  it('aggregates a repeated deterministic rejection but never repairs a request with unknown receipt', async () => {
+    const caps: Capabilities = { protocolVersion: 2, workspace: { id: crypto.randomUUID(), githubUserId: 42 }, github: { configured: true } };
+    const request = vi.fn(async (path: string) => {
+      if (path.startsWith('/sync/v2/changes')) return { records: [], cursor: 1, hasMore: false };
+      throw new HomeApiError(400, 'PRIVATE_DATA_NOT_SYNCABLE', 'PRIVATE_DATA_NOT_SYNCABLE');
+    });
+    const sync = new HomeSync({ url: `https://${crypto.randomUUID()}.test/api`, request } as unknown as HomeApi, caps);
+    await sync.db.applyRemote([], 1, true);
+    await sync.db.edit('repositories', '1', { id: 1, description: 'C:\\private\\file' });
+    const frozen = await sync.db.nextBatch();
+    const begin = vi.spyOn(aiTaskJournal, 'begin');
+    try {
+      expect(await sync.db.repairRejectedRepositoryBatch(frozen, { status: 500, code: 'PRIVATE_DATA_NOT_SYNCABLE' })).toBe(false);
+      await sync.sync(); await sync.sync();
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(await sync.db.nextBatch()).toEqual(frozen);
+      const id = await sync.db.metadata('dataFailureTask');
+      expect(aiTaskJournal.snapshot().find(task => task.id === id)?.usage?.occurrences).toBe(2);
+    } finally { sync.stop(); begin.mockRestore(); }
+  });
+  it('repairs a definitively rejected legacy batch and retains newer local edits', async () => {
+    const sent: HomeOperation[][] = [];
+    const caps: Capabilities = { protocolVersion: 2, workspace: { id: crypto.randomUUID(), githubUserId: 42 }, github: { configured: true } };
+    const request = vi.fn(async (path: string, body?: { operations: HomeOperation[] }) => {
+      if (path.startsWith('/sync/v2/changes')) return { records: [], cursor: 1, hasMore: false };
+      sent.push(structuredClone(body!.operations));
+      if (sent.length === 1) {
+        await sync.db.edit('repositories', '1', { id: 1, name: 'newer', temp_clone_token: 'private', category_id: null });
+        throw new HomeApiError(400, 'PRIVATE_DATA_NOT_SYNCABLE', 'PRIVATE_DATA_NOT_SYNCABLE');
+      }
+      return { results: body!.operations.map(op => ({ opId: op.opId, status: 'applied', record: { collection: op.collection, id: op.id, version: 1, data: op.data } })) };
+    });
+    const sync = new HomeSync({ url: `https://${crypto.randomUUID()}.test/api`, request } as unknown as HomeApi, caps);
+    await sync.db.applyRemote([], 1, true);
+    await sync.db.edit('organization', 'default', { categoryOrder: [] });
+    await sync.db.edit('repositories', '1', { id: 1, name: 'old', temp_clone_token: 'private' });
+    const original = await sync.db.nextBatch();
+    try {
+      await sync.sync();
+      expect(sent).toHaveLength(2);
+      expect(sent[0]).toEqual(original.operations);
+      const repaired = sent[1].find(op => op.collection === 'repositories')!;
+      expect(repaired.data).toEqual({ id: 1, name: 'newer', category_id: null });
+      expect(repaired.opId).not.toBe(original.operations.find(op => op.collection === 'repositories')!.opId);
+      expect(await sync.db.pending()).toEqual([]);
+      expect(await sync.db.metadata('inFlight')).toBeUndefined();
+      expect((await sync.db.getRecord('repositories', '1'))?.data?.name).toBe('newer');
+      expect(sync.view.status).toBe('synced');
+    } finally { sync.stop(); }
+  });
+  it('aggregates no-op polls and creates tasks only for changes or failures', async () => {
+    const caps: Capabilities = { protocolVersion: 2, workspace: { id: crypto.randomUUID(), githubUserId: 42 }, github: { configured: true } };
+    const request = vi.fn().mockResolvedValue({ records: [], cursor: 1, hasMore: false });
+    const sync = new HomeSync({ url: `https://${crypto.randomUUID()}.test/api`, request } as unknown as HomeApi, caps);
+    await sync.db.applyRemote([], 1, true);
+    const begin = vi.spyOn(aiTaskJournal, 'begin'), activity = vi.spyOn(aiTaskJournal, 'noteActivity');
+    try {
+      for (let i = 0; i < 10; i++) await sync.sync();
+      expect(begin).not.toHaveBeenCalled(); expect(activity).toHaveBeenCalledTimes(10);
+      expect(activity.mock.lastCall?.[1]).toMatchObject({ noChange: true, changed: false });
+      request.mockResolvedValueOnce({ records: [{ collection: 'repositories', id: '1', version: 1, data: { name: 'changed' } }], cursor: 2, hasMore: false });
+      await sync.sync(); expect(begin).toHaveBeenCalledTimes(1);
+      // The server can repeat an acknowledged immutable version in a later feed page.
+      request.mockResolvedValueOnce({ records: [{ collection: 'repositories', id: '1', version: 1, data: { name: 'changed' } }], cursor: 3, hasMore: false });
+      await sync.sync(); expect(begin).toHaveBeenCalledTimes(1);
+      expect(activity.mock.lastCall?.[1]).toMatchObject({ noChange: true, changed: false });
+      request.mockRejectedValueOnce(Error('offline')); await sync.sync(); expect(begin).toHaveBeenCalledTimes(2);
+      expect(activity.mock.lastCall?.[1]).toMatchObject({ failed: true });
+    } finally { sync.stop(); begin.mockRestore(); activity.mockRestore(); }
+  });
+  it('preserves cache and outbox when snapshot pages cross a server boundary', async () => {
+    const caps: Capabilities = { protocolVersion: 2, workspace: { id: crypto.randomUUID(), githubUserId: 42 }, github: { configured: true } };
+    const request = vi.fn().mockResolvedValueOnce({ records: [{ collection: 'repositories', id: 'new', version: 1, data: {} }], cursor: 2, snapshotId: 'first', nextOffset: 200, hasMore: true })
+      .mockResolvedValueOnce({ records: [], cursor: 3, snapshotId: 'different', nextOffset: 200, hasMore: false });
+    const sync = new HomeSync({ url: `https://${crypto.randomUUID()}.test/api`, request } as unknown as HomeApi, caps);
+    await sync.db.applyRemote([{ collection: 'repositories', id: 'old', version: 1, data: { name: 'old' } }], 1, true);
+    await sync.db.edit('repositories', 'old', { name: 'local edit' }); await sync.db.setMetadata('initialized', false);
+    const pending = await sync.db.pending();
+    try {
+      await sync.sync(); expect(sync.view.error).toBe('HOME_SNAPSHOT_BOUNDARY_CHANGED');
+      expect((await sync.db.list()).map(record => record.id)).toEqual(['old']);
+      expect(await sync.db.pending()).toEqual(pending); expect(await sync.db.metadata('cursor')).toBe(1);
+    } finally { sync.stop(); }
+  });
   it('stops and drains an in-flight original batch without dispatching a newer edit or unfreezing writes', async () => {
     let reply!: (value: unknown) => void;
     let entered!: () => void;

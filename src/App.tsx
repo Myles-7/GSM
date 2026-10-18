@@ -16,6 +16,7 @@ import { BackToTop } from './components/BackToTop';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SyncModeChoiceModal } from './components/SyncModeChoiceModal';
 import { useAppStore } from './store/useAppStore';
+import { useClassificationStore } from './store/useClassificationStore';
 import { selectAppShellState } from './store/selectors';
 import { useShallow } from 'zustand/react/shallow';
 import { applyThemePreset } from './lib/themePresets';
@@ -49,6 +50,9 @@ const LazyGistView = React.lazy(() =>
 const LazyAIWorkbench = React.lazy(() =>
   import('./features/ai-workbench/components/AIWorkbench').then((module) => ({ default: module.AIWorkbench }))
 );
+const LazyDailyReading = React.lazy(() =>
+  import('./components/reading/DailyReadingView').then((module) => ({ default: module.DailyReadingView }))
+);
 
 const ViewLoadingFallback: React.FC = () => (
   <div className="flex min-h-[12rem] items-center justify-center bg-background text-foreground" role="status" aria-live="polite">
@@ -79,8 +83,13 @@ const RepositoriesView = React.memo(({
   selectedCategory: string;
   onCategorySelect: (category: string) => void;
 }) => {
+  const classification = useClassificationStore(useShallow(state => ({ repositories: state.repositories, searchResults: state.searchResults, selectedCategory: state.selectedCategory, select: state.setSelectedCategory })));
+  repositories = classification.repositories;
+  searchResults = classification.searchResults;
+  selectedCategory = classification.selectedCategory;
+  onCategorySelect = classification.select;
   const isActive = hasActiveSearchFilters(searchFilters);
-  const similarView = useAppStore((state) => state.similarView);
+  const similarView = useClassificationStore((state) => state.similarView);
   const exitSimilarView = useAppStore((state) => state.exitSimilarView);
 
   // 相似视图下用户发起搜索时，自动退出相似视图（搜索优先于相似浏览，避免界面歧义）
@@ -275,6 +284,8 @@ function App() {
         );
       case 'settings':
         return <SettingsView />;
+      case 'reading':
+        return <LazyViewBoundary><LazyDailyReading /></LazyViewBoundary>;
       case 'ai':
         return <LazyViewBoundary><LazyAIWorkbench /></LazyViewBoundary>;
       default:
@@ -301,7 +312,7 @@ function App() {
     <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
       <Header taskPanel={<AITaskPanel />} />
-      <main className={currentView === 'ai' ? 'w-full' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
+      <main className={currentView === 'ai' ? 'w-full' : currentView === 'reading' ? 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-3' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
         {currentViewContent}
       </main>
       <BackToTop />

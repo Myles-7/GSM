@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { RepositoryIdentityMapping } from '../../../utils/repositoryIdentity';
-import { assertRepositoryIdentityWritable } from '../../../services/repositoryIdentityGate';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../../../services/repositoryIdentityGate';
 import { anchorSchema, browseSessionSchema, defaultReadingPreferences, readingPreferencesSchema,
   type DiscoveryBrowseSession, type DiscoveryProjectRecord, type DiscoveryRankingStage,
   type DiscoveryReadingAnchor, type DiscoveryReadingPreferences, type DiscoveryWorkspaceSnapshot } from './model';
@@ -23,9 +23,10 @@ function changed(account: string) {
   window.dispatchEvent(new CustomEvent('gsm:discovery-workspace-changed', { detail: { account } }));
   broadcast?.postMessage({ account });
 }
-async function transaction<T>(account: string, mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T>, migration = false): Promise<T> {
+async function transaction<T>(account: string, mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T>, migration = false, maintenanceOwner?: string): Promise<T> {
   if (!account.trim()) throw new Error('DISCOVERY_WORKSPACE_ACCOUNT_REQUIRED');
-  if (mode === 'readwrite' && !migration) assertRepositoryIdentityWritable(account);
+  const assertWritable = () => { if (maintenanceOwner) assertRepositoryMaintenanceOwner(account, maintenanceOwner); else if (!migration) assertRepositoryIdentityWritable(account); };
+  if (mode === 'readwrite') assertWritable();
   if (typeof indexedDB === 'undefined') throw new Error('DISCOVERY_WORKSPACE_STORAGE_UNAVAILABLE');
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open('gsm-discovery-workspace', 1);
@@ -37,12 +38,13 @@ async function transaction<T>(account: string, mode: IDBTransactionMode, work: (
   });
   try {
     return await new Promise<T>((resolve, reject) => {
+      if (mode === 'readwrite') assertWritable();
       const tx = db.transaction([...STORES], mode);
       let value: T; let failure: unknown;
       const timer = setTimeout(() => tx.abort(), 15000);
       tx.oncomplete = () => { clearTimeout(timer); if (mode === 'readwrite') changed(account); resolve(value); };
       tx.onabort = tx.onerror = () => { clearTimeout(timer); reject(failure || tx.error || new Error('DISCOVERY_WORKSPACE_TRANSACTION_ABORTED')); };
-      void work(tx).then(result => { value = result; }).catch(error => { failure = error; try { tx.abort(); } catch { reject(error); } });
+      void work(tx).then(result => { if (mode === 'readwrite') assertWritable(); value = result; }).catch(error => { failure = error; try { tx.abort(); } catch { reject(error); } });
     });
   } finally { db.close(); }
 }
@@ -188,9 +190,11 @@ export function validateDiscoveryWorkspace(account: string, payload: unknown): D
   if (parsed.sessions.some(s => [...s.itemKeys, ...s.bufferKeys].some(id => !projects.has(projectKey(s.key, id))))) throw new Error('DISCOVERY_WORKSPACE_MISSING_PROJECT');
   return { ...parsed, stages: [] };
 }
-export async function importDiscoveryWorkspace(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false): Promise<void> {
+export async function importDiscoveryWorkspace(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false, maintenanceOwner?: string): Promise<void> {
   const parsed = validateDiscoveryWorkspace(account, payload);
   await transaction(account, 'readwrite', async tx => {
+    // Ranking stages are unfinished runtime work, never portable business data.
+    // Replacing a snapshot invalidates them; committed sessions/projects/anchors survive undo.
     if (mode === 'replace') for (const name of STORES) {
       const rows = await all(tx, name, account); for (const row of rows) tx.objectStore(name).delete([account, row.key]);
     }
@@ -214,7 +218,7 @@ export async function importDiscoveryWorkspace(account: string, payload: unknown
       const current = await get<DiscoveryReadingAnchor>(tx, 'anchors', account, anchor.sessionKey);
       if (!current || current.updatedAt < anchor.updatedAt) put(tx, 'anchors', account, anchor.sessionKey, anchor);
     }
-  }, migration);
+  }, migration, maintenanceOwner);
 }
 export async function migrateDiscoveryWorkspaceIdentities(account: string, mappings: readonly RepositoryIdentityMapping[]): Promise<{ changed: number }> {
   const snapshot = await exportDiscoveryWorkspace(account); let count = 0;

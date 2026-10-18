@@ -20,6 +20,21 @@ beforeAll(async () => {
   ({ useAppStore, normalizePersistedState } = await vi.importActual<typeof import('./useAppStore')>('./useAppStore'));
 });
 
+it('adds daily reading before settings without resetting customized menu visibility or order', () => {
+  const normalized = normalizePersistedState({ headerMenuConfig: [
+    { id: 'repositories', visible: true, order: 0 },
+    { id: 'ai', visible: false, order: 2 },
+    { id: 'subscription', visible: true, order: 1 },
+    { id: 'settings', visible: true, order: 3 },
+  ] }, useAppStore.getState());
+  const menus = normalized.headerMenuConfig!;
+  const sorted = [...menus].sort((a,b)=>a.order-b.order);
+  expect(menus.find(item=>item.id==='ai')?.visible).toBe(false);
+  expect(sorted.findIndex(item=>item.id==='reading')).toBe(sorted.findIndex(item=>item.id==='settings')-1);
+  const again=normalizePersistedState({headerMenuConfig:menus.map(item=>item.id==='reading'?{...item,visible:false}:item)},useAppStore.getState());
+  expect(again.headerMenuConfig?.find(item=>item.id==='reading')?.visible).toBe(false);
+});
+
 const createRepository = (id: number, overrides: Partial<Repository> = {}): Repository => ({
   id,
   name: `repo-${id}`,

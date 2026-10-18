@@ -3,7 +3,8 @@ import { createInitialState } from '../store/initialState';
 import type { AppStoreState } from '../store/types';
 import type { Repository } from '../types';
 import { planLocalBackupRestore, compatibilityBackupData } from './localBackupRestorePlan';
-import type { LocalBackup } from './localBackup';
+import { decodeLocalBackup, type LocalBackup } from './localBackup';
+import { emptyClassificationScheme } from '../store/helpers/classificationSchemes';
 
 export const fixtureRepo = (id: number): Repository => ({ id, name: `repo-${id}`, full_name: `fixture/repo-${id}`, description: '', html_url: 'https://example.invalid', stargazers_count: 1, forks_count: 0, forks: 0, language: null, created_at: '', updated_at: '', pushed_at: '', owner: { login: 'fixture', avatar_url: '' }, topics: [], category_id: null, subcategory_id: null });
 const identity = { githubUserId: '42', workspaceId: null };
@@ -41,5 +42,26 @@ describe('selected backup restore planning', () => {
   });
   it('separates the compatibility operation while retaining masked secret choices', () => {
     expect(compatibilityBackupData({ repositories: [], theme: 'dark', subcategories: [], rpcDownloadConfig: { secret: '***' } as never, releases: [] })).toEqual({ rpcDownloadConfig: { secret: '***' }, releases: [] });
+  });
+  it.each(['merge', 'replace'] as const)('roundtrips both classification trees with %s restore', mode => {
+    const technology = { ...emptyClassificationScheme(), initialized: true,
+      customCategories: [{ id: 'tech', name: 'Languages', icon: 'folder', keywords: [] }],
+      subcategories: [{ id: 'py', parentId: 'tech', name: 'Python', icon: 'folder' }],
+      categoryOrder: ['tech'], subcategoryOrder: ['py'], repositoryOrder: [2] };
+    const incoming = backup({ repositories: [{ ...fixtureRepo(2), classifications: { technology: { categoryId: 'tech', subcategoryId: 'py', locked: true } } }],
+      classificationSchemes: { technology }, repositoryOrder: [2] });
+    const before = state();
+    before.classificationSchemes = { technology: emptyClassificationScheme() };
+    const result = planLocalBackupRestore(before, decodeLocalBackup(JSON.stringify(incoming)), ['repositories', 'customCategories'], mode, identity, false);
+    expect((result.after.classificationSchemes as AppStoreState['classificationSchemes'])?.technology?.customCategories).toEqual(technology.customCategories);
+    expect((result.after.repositories as Repository[]).find(r => r.id === 2)?.classifications?.technology).toEqual({ categoryId: 'tech', subcategoryId: 'py', locked: true });
+  });
+  it('legacy replace imports preserve existing technology memberships and tree', () => {
+    const before = state();
+    before.classificationSchemes = { technology: { ...emptyClassificationScheme(), initialized: true, customCategories: [{ id: 'tech', name: 'Technology', icon: '', keywords: [] }], categoryOrder: ['tech'], repositoryOrder: [1] } };
+    before.repositories[0].classifications = { technology: { categoryId: 'tech', subcategoryId: null, locked: true } };
+    const result = planLocalBackupRestore(before, backup({ repositories: [fixtureRepo(1)], customCategories: [], subcategories: [], repositoryOrder: [1] }), ['repositories', 'customCategories'], 'replace', identity, false);
+    expect((result.after.repositories as Repository[])[0].classifications).toEqual(before.repositories[0].classifications);
+    expect((result.after.classificationSchemes as AppStoreState['classificationSchemes'] | undefined)?.technology ?? before.classificationSchemes.technology).toEqual(before.classificationSchemes.technology);
   });
 });

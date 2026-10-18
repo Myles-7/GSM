@@ -74,7 +74,8 @@
     "opened-in-browser": "ブラウザで開いた状態",
     "plugin-result-copied": "プラグインの結果がコピーされました",
     "plugin-result-saved": "プラグインの結果が保存されました",
-    "plugin-action-completed": "プラグイン操作が完了しました"
+    "plugin-action-completed": "プラグイン操作が完了しました",
+    "save-requires-host": "Save plugin output through the host save dialog."
   },
   "usePluginAI": {
     "custom-endpoint": "カスタムサービス",

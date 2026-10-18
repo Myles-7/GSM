@@ -10,6 +10,7 @@ vi.mock('./electronProxy', () => ({ isElectron: () => true }));
 vi.mock('./backendAdapter', () => ({ backend: { isAvailable: false } }));
 vi.mock('./logger', () => ({ logger: { warn: vi.fn() } }));
 vi.mock('./mcpSnapshot', () => ({ buildMcpDataSnapshot: mocks.buildSnapshot }));
+vi.mock('./mcpOrganizationService', () => ({ executeOrganizationTool: vi.fn() }));
 
 describe('MCP embedding snapshot refresh', () => {
   beforeEach(() => {
@@ -27,7 +28,7 @@ describe('MCP embedding snapshot refresh', () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
-  it.each(['embeddingConfigs', 'activeEmbeddingConfig', 'vectorSearchConfig'])('refreshes IPC after %s changes', async (field) => {
+  it.each(['embeddingConfigs', 'activeEmbeddingConfig', 'vectorSearchConfig', 'classificationSchemes', 'subcategories', 'defaultCategoryOverrides', 'user'])('refreshes IPC after %s changes', async (field) => {
     const state = {
       mcpConfig: { enabled: true, host: '127.0.0.1', port: 3927, token: 'token' },
       repositories: [], customCategories: [], releases: [],
@@ -37,7 +38,7 @@ describe('MCP embedding snapshot refresh', () => {
     startMcpElectronBridge();
     await vi.advanceTimersByTimeAsync(301);
     expect(mocks.pushSnapshot).toHaveBeenCalledOnce();
-    const next = { ...state, [field]: field === 'activeEmbeddingConfig' ? 'new' : {} };
+    const next = { ...state, [field]: field === 'activeEmbeddingConfig' ? 'new' : field === 'user' ? { id: 42 } : {} };
     mocks.getState.mockReturnValue(next);
     mocks.subscribe.mock.calls[0][0](next, state);
     await vi.advanceTimersByTimeAsync(301);

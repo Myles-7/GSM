@@ -49,6 +49,13 @@ import type { GitHubListsApiService } from '../services/githubListsApi';
 import type { ExternalFeedKind } from '../types/externalFeed';
 
 export interface AppActions {
+  applyClassificationTransactions: (transactions: OrganizationTransaction[]) => void;
+  setClassificationScheme: (id: import('../types/classification').ClassificationSchemeId) => void;
+  setClassificationLocation: (id: import('../types/classification').ClassificationSchemeId, selected: string) => void;
+  setClassificationExpanded: (id: import('../types/classification').ClassificationSchemeId, expanded: string[]) => void;
+  setClassificationCollapsedGroups: (id: import('../types/classification').ClassificationSchemeId, collapsedGroups: string[]) => void;
+  mutateClassification: (id: import('../types/classification').ClassificationSchemeId, command: import('./classificationActions').ClassificationCommand) => void;
+  updateClassificationRepository: (id: import('../types/classification').ClassificationSchemeId, repo: Repository, options?: { overrideCategoryLock?: boolean; restoreSubcategory?: boolean }) => void;
   addExternalDiscoveryChannel: (name: string, sourceUrl: string, kind?: ExternalFeedKind, expectedAccountId?: number) => boolean;
   removeExternalDiscoveryChannel: (id: DiscoveryChannelId) => void;
   // Auth actions

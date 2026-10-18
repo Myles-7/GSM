@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebDAVService } from './webdavService';
 import { backend } from './backendAdapter';
+import { decodeLocalBackup, type LocalBackup } from './localBackup';
+import { emptyClassificationScheme } from '../store/helpers/classificationSchemes';
 
 vi.mock('./logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), isDebugMode: () => false } }));
 vi.mock('./backendAdapter', () => ({ backend: { isAvailable: true, proxyWebDAV: vi.fn() } }));
@@ -37,12 +39,32 @@ describe('WebDAV desktop-only transport', () => {
     expect(backend.proxyWebDAV).not.toHaveBeenCalled();
   });
 
-  it('HEAD fallback shares its signal and deadline with PROPFIND', async () => {
+  it('PROPFIND falls back to HEAD within the same total deadline', async () => {
+    vi.useFakeTimers();
     const api = desktop();
     api.webdavRequest.mockResolvedValueOnce({ success: true, status: 405 })
       .mockResolvedValueOnce({ success: true, status: 207, body: '<xml/>' });
     expect(await new WebDAVService(config).testConnection()).toBe(true);
-    expect(api.webdavRequest.mock.calls.map(([params]) => [params.method, params.timeoutMs])).toEqual([['HEAD', 10000], ['PROPFIND', 10000]]);
+    expect(api.webdavRequest.mock.calls.map(([params]) => [params.method, params.timeoutMs])).toEqual([['PROPFIND', 10000], ['HEAD', 10000]]);
+  });
+
+  it('uses PROPFIND directly and does not retry authentication failures', async () => {
+    const api = desktop(207);
+    expect(await new WebDAVService(config).testConnection()).toBe(true);
+    expect(api.webdavRequest.mock.calls.map(([p]) => p.method)).toEqual(['PROPFIND']);
+    api.webdavRequest.mockClear(); api.webdavRequest.mockResolvedValue({ success: true, status: 401 });
+    expect(await new WebDAVService(config).testConnection()).toBe(false);
+    expect(api.webdavRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('subtracts the first probe duration from fallback IPC deadline', async () => {
+    vi.useFakeTimers();
+    const api = desktop();
+    api.webdavRequest.mockImplementationOnce(async () => { await new Promise(resolve => setTimeout(resolve, 4000)); return { success: true, status: 405 }; });
+    const result = new WebDAVService(config).testConnection();
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(await result).toBe(true);
+    expect(api.webdavRequest.mock.calls.map(([p]) => p.timeoutMs)).toEqual([10000, 6000]);
   });
 
   it('upload creates nested collections then PUTs exactly once with a dynamic deadline', async () => {
@@ -58,6 +80,16 @@ describe('WebDAV desktop-only transport', () => {
       ? { success: false, timedOut: true } : { success: true, status: 201 }));
     await expect(new WebDAVService(config).uploadFile('data.json', '{}')).rejects.toThrow();
     expect(api.webdavRequest.mock.calls.filter(([params]) => params.method === 'PUT')).toHaveLength(1);
+  });
+  it('preserves independent classification trees through desktop JSON upload/download', async () => {
+    const backup: LocalBackup = { version: '1.1', appVersion: 'test', exportDate: '', identity: { githubUserId: '42', workspaceId: null }, included: ['customCategories'],
+      data: { classificationSchemes: { purpose: { ...emptyClassificationScheme(), initialized: true }, technology: { ...emptyClassificationScheme(), initialized: true, customCategories: [{ id: 'tech', name: 'Technical tools', icon: 'folder', keywords: [] }] } } } };
+    const api = desktop(201);
+    const service = new WebDAVService(config);
+    await service.uploadFile('dual.json', JSON.stringify(backup, null, 2));
+    const put = api.webdavRequest.mock.calls.find(([params]) => params.method === 'PUT')![0];
+    api.webdavRequest.mockResolvedValue({ success: true, status: 200, body: put.body });
+    expect(decodeLocalBackup((await service.downloadFile('dual.json'))!)).toEqual(backup);
   });
 
   it('PROPFIND preserves DAV namespaces, escaped filenames and ignores non-JSON resources', async () => {

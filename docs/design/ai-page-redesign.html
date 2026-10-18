@@ -1,0 +1,1490 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GSM · AI 页面重设计方案 v2（已否决 · 归档）</title>
+<style>
+/* ==========================================================
+   设计 Token（与项目 index.css / themePresets 对齐）
+   浅色 → zinc 系中性色 + violet 强调色（ACCENT_PRESETS 之一）
+   ========================================================== */
+:root {
+  --bg: #fafafa;            /* 文档底色 zinc-50 */
+  --surface: #ffffff;       /* 卡片 */
+  --surface-2: #f4f4f5;     /* zinc-100 */
+  --fg: #18181b;            /* zinc-900 */
+  --fg-2: #3f3f46;          /* zinc-700 */
+  --muted: #71717a;         /* zinc-500 */
+  --border: #e4e4e7;         /* zinc-200 */
+  --border-2: #d4d4d8;       /* zinc-300 */
+  --primary: #7c3aed;        /* violet-600 */
+  --primary-hover: #6d28d9;
+  --primary-soft: #f5f3ff;   /* violet-50 */
+  --primary-softer: #ede9fe; /* violet-100 */
+  --ring: rgba(124, 58, 237, .30);
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --info: #2563eb;
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, .05);
+  --shadow-md: 0 4px 12px -2px rgba(24, 24, 27, .08), 0 2px 4px -1px rgba(24, 24, 27, .04);
+  --shadow-lg: 0 16px 40px -8px rgba(24, 24, 27, .16);
+  --shadow-float: 0 8px 24px -6px rgba(24, 24, 27, .14);
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font: "Inter", "Geist", -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: "JetBrains Mono", "Fira Code", ui-monospace, "Cascadia Code", Consolas, monospace;
+  color-scheme: light;
+}
+html[data-theme="dark"] {
+  --bg: #09090b;
+  --surface: #18181b;
+  --surface-2: #27272a;
+  --fg: #fafafa;
+  --fg-2: #e4e4e7;
+  --muted: #a1a1aa;
+  --border: #27272a;
+  --border-2: #3f3f46;
+  --primary: #8b5cf6;
+  --primary-hover: #7c3aed;
+  --primary-soft: rgba(139, 92, 246, .14);
+  --primary-softer: rgba(139, 92, 246, .22);
+  --ring: rgba(139, 92, 246, .45);
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, .12);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, .10);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, .10);
+  --info: #60a5fa;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, .5);
+  --shadow-lg: 0 16px 40px -8px rgba(0, 0, 0, .6);
+  --shadow-float: 0 8px 24px -6px rgba(0, 0, 0, .5);
+  color-scheme: dark;
+}
+
+/* ========================= 基础 ========================= */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+.icon { width: 1em; height: 1em; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; fill: none; flex-shrink: 0; }
+.icon-fill { fill: currentColor; stroke: none; }
+
+/* ========================= 文档头部 ========================= */
+.hero {
+  background:
+    radial-gradient(1200px 400px at 80% -10%, var(--primary-softer), transparent 60%),
+    radial-gradient(800px 300px at 10% 0%, var(--primary-soft), transparent 55%),
+    var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 56px 24px 44px;
+}
+.hero-inner { max-width: 1120px; margin: 0 auto; }
+.hero-kicker {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .06em;
+  color: var(--primary); text-transform: uppercase;
+  margin-bottom: 14px;
+}
+.hero-kicker .icon { width: 15px; height: 15px; }
+.hero h1 { font-size: clamp(26px, 4vw, 38px); font-weight: 800; letter-spacing: -.02em; line-height: 1.25; }
+.hero h1 em { font-style: normal; color: var(--primary); }
+.hero .sub { margin-top: 12px; max-width: 760px; color: var(--muted); font-size: 15.5px; }
+.hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.meta-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 13px;
+  font-size: 12.5px; color: var(--fg-2); font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+.meta-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+.meta-pill code { font-family: var(--mono); font-size: 11.5px; color: var(--primary); background: var(--primary-soft); padding: 1px 6px; border-radius: 5px; }
+
+/* ========================= 文档骨架 ========================= */
+.layout { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: 218px minmax(0, 1fr); gap: 44px; padding: 40px 24px 96px; }
+.toc { position: sticky; top: 24px; align-self: start; font-size: 13.5px; }
+.toc-title { font-weight: 700; font-size: 12px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; margin-bottom: 12px; padding-left: 12px; }
+.toc a {
+  display: flex; align-items: baseline; gap: 9px;
+  color: var(--muted); text-decoration: none;
+  padding: 7px 12px; border-radius: 8px; font-weight: 500;
+  border-left: 2px solid transparent; margin-left: -2px;
+  transition: color .15s, background .15s;
+}
+.toc a:hover { color: var(--fg); background: var(--surface-2); }
+.toc a.active { color: var(--primary); background: var(--primary-soft); }
+.toc a .num { font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 600; }
+.toc a.active .num { color: var(--primary); }
+
+.doc section { margin-bottom: 64px; }
+.doc section:last-child { margin-bottom: 0; }
+.sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; }
+.sec-num { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--primary); background: var(--primary-soft); border: 1px solid var(--primary-softer); padding: 2px 10px; border-radius: 7px; }
+.doc h2 { font-size: 23px; font-weight: 750; letter-spacing: -.015em; margin-bottom: 4px; }
+.sec-lead { color: var(--muted); font-size: 14.5px; max-width: 720px; margin-bottom: 22px; }
+.doc h3 { font-size: 16.5px; font-weight: 700; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; }
+.doc h3::before { content: ""; width: 4px; height: 16px; border-radius: 2px; background: var(--primary); flex-shrink: 0; }
+.doc p { margin-bottom: 12px; color: var(--fg-2); }
+.doc ul.plain { list-style: none; margin: 10px 0 14px; }
+.doc ul.plain li { position: relative; padding-left: 22px; margin-bottom: 7px; color: var(--fg-2); }
+.doc ul.plain li::before { content: ""; position: absolute; left: 4px; top: .62em; width: 7px; height: 7px; border-radius: 2px; background: var(--primary-softer); border: 1.5px solid var(--primary); }
+.doc strong { color: var(--fg); font-weight: 650; }
+.doc code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); color: var(--fg); padding: 1.5px 6px; border-radius: 5px; border: 1px solid var(--border); }
+
+/* 卡片与表格 */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 22px; box-shadow: var(--shadow-sm); }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm); }
+.tbl-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm); }
+.tbl-wrap table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.tbl-wrap th { text-align: left; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 11px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.tbl-wrap td { padding: 11px 16px; border-bottom: 1px solid var(--border); color: var(--fg-2); vertical-align: top; }
+.tbl-wrap tr:last-child td { border-bottom: none; }
+.tbl-wrap td:first-child { font-weight: 600; color: var(--fg); white-space: nowrap; }
+.tbl-wrap code { font-size: 12px; }
+
+/* 问题/建议条 */
+.callout { display: flex; gap: 12px; border-radius: var(--radius); padding: 14px 16px; font-size: 13.5px; margin: 14px 0; border: 1px solid; line-height: 1.65; }
+.callout .icon { width: 17px; height: 17px; margin-top: 3px; }
+.callout.warn { background: var(--warning-soft); border-color: rgba(217, 119, 6, .25); color: var(--fg-2); }
+.callout.warn .icon { color: var(--warning); }
+.callout.info { background: var(--primary-soft); border-color: var(--primary-softer); color: var(--fg-2); }
+.callout.info .icon { color: var(--primary); }
+.callout b { color: var(--fg); }
+
+/* 原则卡 */
+.principle { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 20px; box-shadow: var(--shadow-sm); transition: transform .15s, box-shadow .15s; }
+.principle:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.principle .p-icon { width: 38px; height: 38px; border-radius: 10px; background: var(--primary-soft); border: 1px solid var(--primary-softer); color: var(--primary); display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+.principle .p-icon .icon { width: 19px; height: 19px; }
+.principle h4 { font-size: 14.5px; font-weight: 700; margin-bottom: 6px; }
+.principle p { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.65; }
+.principle .p-en { font-size: 11px; color: var(--primary); font-weight: 600; letter-spacing: .03em; display: block; margin-bottom: 6px; }
+
+/* 布局示意（信息架构） */
+.ia-diagram { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px; box-shadow: var(--shadow-sm); }
+.ia-title { font-size: 12.5px; font-weight: 700; color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.ia-title .tagchip { font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; }
+.tagchip.old { background: var(--danger-soft); color: var(--danger); }
+.tagchip.new { background: var(--success-soft); color: var(--success); }
+.ia-block { border-radius: 9px; border: 1.5px solid; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; }
+.ia-block b { display: block; font-size: 12px; margin-bottom: 2px; }
+.ia-row { display: grid; gap: 8px; margin-bottom: 8px; }
+.ia-old-grid { display: grid; grid-template-columns: 200px 1fr; gap: 8px; }
+.ia-new-grid { display: grid; grid-template-columns: 250px 1fr 340px; gap: 8px; }
+
+/* ========================= 原型舞台 ========================= */
+.stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.stage-head .hint { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+.seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; gap: 2px; }
+.seg button {
+  border: none; background: transparent; font-family: var(--font);
+  font-size: 12.5px; font-weight: 600; color: var(--muted);
+  padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: all .15s;
+}
+.seg button .icon { width: 13px; height: 13px; }
+.seg button.on { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm); }
+.seg button:not(.on):hover { color: var(--fg); }
+
+.p-frame {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  max-width: 1360px;
+  margin: 0 auto;
+}
+.p-chrome {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(var(--surface), var(--surface-2));
+  font-size: 12px; color: var(--muted);
+}
+.p-chrome .dots { display: flex; gap: 6px; }
+.p-chrome .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--border-2); }
+.p-chrome .url { flex: 1; text-align: center; font-family: var(--mono); font-size: 11px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; color: var(--muted); max-width: 420px; margin: 0 auto; }
+.p-chrome .viewport-size { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* ========================= 原型本体 ========================= */
+.p-app { height: 780px; display: flex; flex-direction: column; background: var(--surface); color: var(--fg); font-size: 13.5px; position: relative; overflow: hidden; }
+
+/* —— 顶栏 —— */
+.p-top { height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--surface); position: relative; z-index: 5; }
+.p-iconbtn {
+  width: 32px; height: 32px; border-radius: 8px; border: none; cursor: pointer;
+  background: transparent; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .13s, color .13s; flex-shrink: 0;
+}
+.p-iconbtn:hover { background: var(--surface-2); color: var(--fg); }
+.p-iconbtn .icon { width: 16px; height: 16px; }
+.p-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.p-logo { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--primary), #a78bfa); color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px -2px var(--primary); }
+.p-logo .icon { width: 16px; height: 16px; }
+.p-title-wrap { min-width: 0; line-height: 1.25; }
+.p-title { font-size: 13.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 7px; }
+.p-proj-chip { font-size: 10.5px; font-weight: 600; color: var(--primary); background: var(--primary-soft); border: 1px solid var(--primary-softer); border-radius: 5px; padding: 0.5px 6px; flex-shrink: 0; }
+.p-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex-shrink: 0; box-shadow: 0 0 0 3px var(--success-soft); }
+.p-top-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+
+/* 视图分段控件 */
+.p-viewseg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 2.5px; gap: 2px; margin-right: 6px; }
+.p-viewseg button {
+  border: none; cursor: pointer; font-family: var(--font); background: transparent;
+  font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 4.5px 13px; border-radius: 6.5px;
+  display: inline-flex; align-items: center; gap: 6px; transition: all .15s;
+}
+.p-viewseg button .icon { width: 13px; height: 13px; }
+.p-viewseg button.on { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm); border: 1px solid var(--border); }
+.p-viewseg .cnt { font-size: 10.5px; font-weight: 700; background: var(--primary-soft); color: var(--primary); border-radius: 999px; padding: 0 5.5px; line-height: 1.55; }
+.p-viewseg button.on .cnt { border: none; }
+
+/* —— 主体三栏 —— */
+.p-body { flex: 1; display: flex; min-height: 0; }
+
+/* 侧栏 */
+.p-side { width: 258px; flex-shrink: 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--surface); transition: margin-left .2s ease, opacity .2s; min-height: 0; }
+.p-app[data-sidebar="closed"] .p-side { margin-left: -258px; opacity: 0; }
+.p-side-top { padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
+.p-newchat {
+  width: 100%; border: none; cursor: pointer; font-family: var(--font);
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  height: 37px; border-radius: 10px; font-size: 13.5px; font-weight: 650;
+  background: var(--primary); color: #fff;
+  box-shadow: 0 2px 10px -3px var(--primary); transition: background .15s, transform .1s;
+}
+.p-newchat:hover { background: var(--primary-hover); }
+.p-newchat .icon { width: 15px; height: 15px; }
+.p-newproj { position: absolute; right: 22px; transform: translateY(24px); }
+.p-search { position: relative; }
+.p-search .icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); }
+.p-search input {
+  width: 100%; height: 34px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface-2); font-family: var(--font); font-size: 12.5px; color: var(--fg);
+  padding: 0 52px 0 32px; outline: none; transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.p-search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--ring); background: var(--surface); }
+.p-search .kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+.p-mode { display: flex; gap: 4px; padding: 0 14px 8px; }
+.p-mode button { flex: 1; border: none; cursor: pointer; font-family: var(--font); font-size: 11.5px; font-weight: 600; color: var(--muted); background: transparent; border-radius: 6px; padding: 3.5px 0; transition: all .13s; }
+.p-mode button.on { background: var(--primary-soft); color: var(--primary); }
+
+/* 会话分组 */
+.p-sessions { flex: 1; overflow-y: auto; padding: 2px 10px 10px; min-height: 0; }
+.p-group-label { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; color: var(--muted); text-transform: uppercase; padding: 12px 8px 5px; display: flex; align-items: center; gap: 6px; }
+.p-group-label .icon { width: 11px; height: 11px; }
+.p-group-label .live { color: var(--primary); display: inline-flex; align-items: center; gap: 4px; }
+.p-spin { width: 11px; height: 11px; border: 2px solid var(--primary-softer); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.p-sess {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: none; cursor: pointer; font-family: var(--font); background: transparent;
+  border-radius: 9px; padding: 7.5px 9px; color: var(--fg-2); position: relative;
+  transition: background .13s; margin-bottom: 1px; border-left: 2.5px solid transparent;
+}
+.p-sess:hover { background: var(--surface-2); }
+.p-sess.on { background: var(--primary-soft); border-left-color: var(--primary); color: var(--fg); }
+.p-sess .s-main { flex: 1; min-width: 0; }
+.p-sess .s-title { font-size: 12.8px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.p-sess.on .s-title { color: var(--primary); }
+.p-sess .s-sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.p-sess .s-time { font-size: 10.5px; color: var(--muted); flex-shrink: 0; }
+.p-sess .s-pin { color: var(--muted); width: 11px; height: 11px; }
+.p-sess .s-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2.5px var(--warning-soft); flex-shrink: 0; }
+.p-sess .s-acts { display: none; position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: linear-gradient(90deg, transparent, var(--surface) 24%); padding-left: 18px; }
+.p-sess:hover .s-acts { display: flex; gap: 2px; }
+.p-sess:hover .s-time { visibility: hidden; }
+.p-s-act { width: 24px; height: 24px; border-radius: 6px; border: none; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.p-s-act:hover { background: var(--border); color: var(--fg); }
+.p-s-act .icon { width: 12.5px; height: 12.5px; }
+.p-proj-row { display: flex; align-items: center; gap: 8px; padding: 9px 9px 3px; color: var(--fg-2); }
+.p-proj-row .icon { width: 13px; height: 13px; color: var(--primary); }
+.p-proj-row b { font-size: 12px; font-weight: 650; }
+.p-proj-row .p-add { margin-left: auto; width: 22px; height: 22px; border-radius: 6px; border: none; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0; }
+.p-groupwrap:hover .p-add { opacity: 1; }
+.p-proj-row .p-add:hover { background: var(--border); color: var(--fg); }
+.p-proj-row .p-add .icon { width: 12px; height: 12px; color: inherit; }
+
+/* 侧栏底部 */
+.p-side-foot { border-top: 1px solid var(--border); padding: 9px 12px; display: flex; align-items: center; gap: 3px; }
+.p-side-foot .p-fbtn { width: 29px; height: 29px; border-radius: 7px; border: none; background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.p-side-foot .p-fbtn:hover { background: var(--surface-2); color: var(--fg); }
+.p-side-foot .p-fbtn .icon { width: 14.5px; height: 14.5px; }
+.p-retention { margin-left: auto; font-size: 10.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; font-weight: 500; }
+
+/* —— 中央舞台 —— */
+.p-main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; background: var(--surface); min-height: 0; }
+.p-app[data-view="work"] .p-chatwrap { display: none; }
+.p-workview { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.p-app[data-view="work"] .p-workview { display: flex; }
+
+/* 任务状态条 */
+.p-taskbar {
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--border); padding: 7px 20px;
+  font-size: 12px; color: var(--fg-2); background: var(--surface);
+  position: relative; flex-shrink: 0;
+}
+.p-taskbar::before { content: ""; position: absolute; left: 0; top: -1px; height: 2px; width: 38%; background: linear-gradient(90deg, var(--primary), #a78bfa); border-radius: 0 2px 2px 0; animation: loadbar 2.2s ease-in-out infinite; }
+@keyframes loadbar { 0% { width: 8%; } 55% { width: 58%; } 100% { width: 76%; } }
+.p-taskbar .t-chip { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.p-taskbar .t-chip .icon { width: 12.5px; height: 12.5px; color: var(--primary); }
+.p-taskbar .t-meta { color: var(--muted); font-size: 11.5px; display: inline-flex; gap: 12px; }
+.p-taskbar .t-meta span { display: inline-flex; align-items: center; gap: 5px; }
+.p-taskbar .t-meta .icon { width: 11.5px; height: 11.5px; }
+.p-taskbar .t-back { margin-left: auto; }
+.p-stopbtn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 7px; border: 1px solid var(--border-2); background: var(--surface); color: var(--fg-2); font-family: var(--font); font-size: 11.5px; font-weight: 600; cursor: pointer; transition: all .13s; }
+.p-stopbtn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.p-stopbtn .icon { width: 11px; height: 11px; }
+
+/* 消息流 */
+.p-chatwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.p-msgs { flex: 1; overflow-y: auto; padding: 26px 24px 12px; scroll-behavior: smooth; }
+.p-msgs-inner { max-width: 724px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.m-user { align-self: flex-end; max-width: 86%; background: var(--primary-soft); border: 1px solid var(--primary-softer); color: var(--fg); border-radius: 16px 16px 5px 16px; padding: 11px 15px; font-size: 13.5px; line-height: 1.7; box-shadow: var(--shadow-sm); }
+.m-user .m-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.m-user .m-tags span { font-size: 11px; font-weight: 500; color: var(--primary); background: var(--surface); border: 1px solid var(--primary-softer); border-radius: 999px; padding: 1px 9px; }
+.m-ai { }
+.m-ai-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.m-ai-avatar { width: 27px; height: 27px; border-radius: 8px; background: linear-gradient(135deg, var(--primary-soft), var(--primary-softer)); border: 1px solid var(--primary-softer); color: var(--primary); display: flex; align-items: center; justify-content: center; }
+.m-ai-avatar .icon { width: 14px; height: 14px; }
+.m-ai-name { font-size: 12.5px; font-weight: 700; }
+.m-ai-state { font-size: 11px; font-weight: 600; }
+.m-ai-state.stream { color: var(--primary); display: inline-flex; align-items: center; gap: 5px; }
+.m-ai-state.stream .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
+.m-ai-acts { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+.m-ai:hover .m-ai-acts { opacity: 1; }
+.m-body { font-size: 13.8px; line-height: 1.78; color: var(--fg-2); }
+.m-body p { margin-bottom: 10px; }
+.m-body p:last-child { margin-bottom: 0; }
+.m-body b { color: var(--fg); }
+.m-body .hl { color: var(--primary); font-weight: 650; }
+.m-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 12px 0; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.m-table th { background: var(--surface-2); text-align: left; padding: 7.5px 12px; font-weight: 650; color: var(--fg); border-bottom: 1px solid var(--border); font-size: 12px; }
+.m-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--fg-2); }
+.m-table tr:last-child td { border-bottom: none; }
+.m-verdict { display: flex; gap: 10px; border: 1px solid var(--primary-softer); background: var(--primary-soft); border-radius: 10px; padding: 11px 14px; margin-top: 12px; font-size: 12.8px; line-height: 1.65; color: var(--fg-2); }
+.m-verdict .icon { width: 15px; height: 15px; color: var(--primary); margin-top: 2.5px; }
+.m-verdict b { color: var(--fg); }
+
+/* 流式光标 */
+.cursor { display: inline-block; width: 7px; height: 15px; background: var(--primary); border-radius: 2px; margin-left: 2px; vertical-align: -2px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+
+/* 证据折叠 */
+.m-evidence { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-top: 12px; }
+.m-evidence summary {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 8.5px 12px; font-size: 12px; font-weight: 600; color: var(--fg-2);
+  background: var(--surface-2); cursor: pointer; user-select: none;
+}
+.m-evidence summary::-webkit-details-marker { display: none; }
+.m-evidence summary .icon { width: 13.5px; height: 13.5px; color: var(--primary); }
+.m-evidence summary .chev { margin-left: auto; transition: transform .18s; width: 13px; height: 13px; color: var(--muted); }
+.m-evidence[open] summary .chev { transform: rotate(180deg); }
+.m-evidence .ev-list { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 5px; background: var(--surface); }
+.ev-item { display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 8px; padding: 6.5px 10px; font-size: 11.8px; transition: border-color .13s, background .13s; }
+.ev-item.hov:hover { border-color: var(--primary-softer); background: var(--primary-soft); cursor: pointer; }
+.ev-item .icon { width: 13px; height: 13px; color: var(--muted); }
+.ev-item.local .icon { color: var(--success); }
+.ev-item b { font-weight: 650; color: var(--fg); white-space: nowrap; }
+.ev-item .path { color: var(--muted); font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev-item .ln { font-family: var(--mono); font-size: 10.5px; color: var(--muted); flex-shrink: 0; }
+.ev-fresh { margin-left: auto; flex-shrink: 0; font-size: 10px; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.ev-fresh.today { background: var(--success-soft); color: var(--success); }
+.ev-fresh.week { background: var(--warning-soft); color: var(--warning); }
+
+/* 提案胶囊（浮动） */
+.p-capsule {
+  position: absolute; bottom: 118px; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--primary-softer); color: var(--primary);
+  font-family: var(--font); font-size: 12px; font-weight: 650;
+  border-radius: 999px; padding: 6.5px 15px; box-shadow: var(--shadow-float);
+  animation: floaty 2.6s ease-in-out infinite; z-index: 20;
+}
+@keyframes floaty { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-4px); } }
+.p-capsule .icon { width: 13px; height: 13px; }
+.p-capsule .badge-n { background: var(--primary); color: #fff; font-size: 10px; border-radius: 999px; padding: 0 6px; font-weight: 700; }
+
+/* —— Composer —— */
+.p-composer { padding: 8px 24px 14px; flex-shrink: 0; position: relative; }
+.p-composer-inner { max-width: 724px; margin: 0 auto; background: var(--surface); border: 1.5px solid var(--border-2); border-radius: 15px; padding: 11px 13px 9px; box-shadow: var(--shadow-md); transition: border-color .15s, box-shadow .15s; }
+.p-composer-inner:focus-within { border-color: var(--primary); box-shadow: 0 0 0 4px var(--ring), var(--shadow-md); }
+.p-ctx { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 9px; }
+.p-ctx-label { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; color: var(--muted); flex-shrink: 0; }
+.p-ctx-label .icon { width: 12.5px; height: 12.5px; color: var(--primary); }
+.ctx-chip { display: inline-flex; align-items: center; gap: 5px; background: var(--primary-soft); border: 1px solid var(--primary-softer); color: var(--primary); font-size: 11.5px; font-weight: 550; border-radius: 999px; padding: 2px 5px 2px 10px; }
+.ctx-chip button { border: none; background: transparent; color: inherit; cursor: pointer; width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; opacity: .65; }
+.ctx-chip button:hover { opacity: 1; background: var(--primary-softer); }
+.ctx-chip button .icon { width: 10px; height: 10px; }
+.ctx-clear { border: none; background: transparent; color: var(--muted); font-family: var(--font); font-size: 11px; font-weight: 600; cursor: pointer; border-radius: 5px; padding: 2px 6px; }
+.ctx-clear:hover { color: var(--danger); background: var(--danger-soft); }
+.p-input { width: 100%; border: none; outline: none; resize: none; font-family: var(--font); font-size: 13.8px; line-height: 1.65; color: var(--fg); background: transparent; min-height: 44px; max-height: 130px; }
+.p-input::placeholder { color: var(--muted); }
+.p-com-row { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
+.p-params { display: inline-flex; align-items: center; gap: 6px; height: 31px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 0 11px; font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--fg-2); cursor: pointer; transition: all .13s; }
+.p-params:hover { border-color: var(--border-2); background: var(--border); }
+.p-params .icon { width: 13px; height: 13px; color: var(--muted); }
+.p-params .chev { width: 11px; height: 11px; color: var(--muted); }
+.p-intent { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; background: var(--surface-2); }
+.p-intent button { border: none; cursor: pointer; font-family: var(--font); font-size: 11.5px; font-weight: 600; color: var(--muted); background: transparent; border-radius: 6px; padding: 3.5px 10px; display: inline-flex; align-items: center; gap: 5px; transition: all .13s; }
+.p-intent button .icon { width: 11px; height: 11px; }
+.p-intent button.on { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm); border: 1px solid var(--border); }
+.p-send { margin-left: auto; width: 34px; height: 34px; border-radius: 10px; border: none; cursor: pointer; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 2px 10px -3px var(--primary); transition: background .15s, transform .1s; }
+.p-send:hover { background: var(--primary-hover); }
+.p-send:active { transform: scale(.94); }
+.p-send .icon { width: 15px; height: 15px; }
+.p-send.stop { background: var(--fg); box-shadow: 0 2px 10px -3px var(--fg); }
+.p-hint { max-width: 724px; margin: 7px auto 0; display: flex; align-items: center; gap: 14px; font-size: 11px; color: var(--muted); }
+.p-hint span { display: inline-flex; align-items: center; gap: 5px; }
+.p-hint kbd { font-family: var(--mono); font-size: 9.5px; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4.5px; color: var(--fg-2); font-weight: 600; }
+
+/* —— 空状态（欢迎页，工作台视图用） —— */
+.p-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center; }
+.p-empty-hero { width: 52px; height: 52px; border-radius: 16px; background: linear-gradient(135deg, var(--primary), #a78bfa); color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 28px -8px var(--primary); margin-bottom: 18px; }
+.p-empty-hero .icon { width: 26px; height: 26px; }
+.p-empty h3 { font-size: 19px; font-weight: 750; margin-bottom: 8px; }
+.p-empty p { font-size: 13px; color: var(--muted); max-width: 420px; margin-bottom: 24px; }
+.p-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; max-width: 560px; width: 100%; }
+.p-card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 14px 16px; text-align: left; cursor: pointer; transition: all .15s; display: flex; gap: 11px; }
+.p-card:hover { border-color: var(--primary-softer); background: var(--primary-soft); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.p-card .ic { width: 32px; height: 32px; border-radius: 9px; background: var(--primary-soft); border: 1px solid var(--primary-softer); color: var(--primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.p-card .ic .icon { width: 15px; height: 15px; }
+.p-card b { display: block; font-size: 12.8px; font-weight: 650; margin-bottom: 2.5px; }
+.p-card span { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+
+/* —— 工作台结果视图（主区域） —— */
+.p-worktoolbar { display: flex; align-items: center; gap: 9px; padding: 13px 22px; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+.p-worktoolbar h3 { font-size: 14.5px; font-weight: 700; margin-right: 4px; }
+.p-batch { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--fg-2); padding: 5px 11px; }
+.p-batch .icon { width: 12px; height: 12px; color: var(--muted); }
+.p-worktoolbar .spacer { flex: 1; }
+.p-worklist { flex: 1; overflow-y: auto; padding: 18px 22px 22px; }
+.p-workgrid { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+.wcard { border: 1px solid var(--border); border-radius: 13px; background: var(--surface); padding: 15px 17px; transition: border-color .15s, box-shadow .15s; }
+.wcard:hover { border-color: var(--border-2); box-shadow: var(--shadow-md); }
+.wcard-top { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; flex-wrap: wrap; }
+.wcard-top .icon { width: 15px; height: 15px; color: var(--fg-2); }
+.wcard-name { font-size: 13.8px; font-weight: 700; font-family: var(--mono); }
+.wcard-star { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); font-weight: 600; }
+.wcard-star .icon { width: 12px; height: 12px; color: var(--warning); fill: var(--warning); stroke: var(--warning); }
+.w-lang { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); font-weight: 550; }
+.w-lang i { width: 9px; height: 9px; border-radius: 50%; }
+.w-verdict { margin-left: auto; }
+.wbadge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; border-radius: 999px; padding: 2.5px 10px; }
+.wbadge .icon { width: 11px; height: 11px; }
+.wbadge.ok { background: var(--success-soft); color: var(--success); }
+.wbadge.checking { background: var(--warning-soft); color: var(--warning); }
+.wbadge.stale { background: var(--danger-soft); color: var(--danger); }
+.wcard p { font-size: 12.8px; color: var(--fg-2); line-height: 1.68; margin-bottom: 9px; }
+.wcard .why { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 11px; }
+.wcard .why span { font-size: 11px; font-weight: 600; color: var(--primary); background: var(--primary-soft); border-radius: 999px; padding: 1.5px 9px; }
+.wcard-acts { display: flex; gap: 7px; flex-wrap: wrap; }
+.p-mini { display: inline-flex; align-items: center; gap: 6px; height: 29px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg-2); font-family: var(--font); font-size: 11.8px; font-weight: 600; padding: 0 12px; cursor: pointer; transition: all .13s; }
+.p-mini:hover { border-color: var(--primary-softer); color: var(--primary); background: var(--primary-soft); }
+.p-mini .icon { width: 12.5px; height: 12.5px; }
+.p-mini.pri { background: var(--primary); border-color: var(--primary); color: #fff; }
+.p-mini.pri:hover { background: var(--primary-hover); color: #fff; }
+
+/* —— 右侧工作台 Dock —— */
+.p-dock { width: 344px; flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--surface); transition: margin-right .2s ease, opacity .2s; min-height: 0; }
+.p-app[data-dock="closed"] .p-dock { margin-right: -344px; opacity: 0; }
+.p-dock-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 0; }
+.p-dock-head b { font-size: 13.5px; font-weight: 700; }
+.p-dock-head .icon { width: 15px; height: 15px; color: var(--primary); }
+.p-docktabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); }
+.p-docktabs button { border: none; cursor: pointer; font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--muted); background: transparent; padding: 6.5px 11px; border-radius: 8px 8px 0 0; position: relative; transition: color .13s; display: inline-flex; gap: 6px; align-items: center; }
+.p-docktabs button .n { font-size: 10px; font-weight: 700; background: var(--surface-2); border-radius: 999px; padding: 0 6px; line-height: 1.5; color: var(--muted); }
+.p-docktabs button.on { color: var(--primary); }
+.p-docktabs button.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2.5px; border-radius: 3px; background: var(--primary); }
+.p-docktabs button.on .n { background: var(--primary-soft); color: var(--primary); }
+.p-dock-body { flex: 1; overflow-y: auto; padding: 13px 13px 16px; min-height: 0; }
+.p-dock-body .tabpane { display: none; flex-direction: column; gap: 11px; }
+.p-dock-body .tabpane.on { display: flex; }
+
+/* 候选卡片（dock 内） */
+.dcard { border: 1px solid var(--border); border-radius: 11px; padding: 12px 13px; background: var(--surface); transition: border-color .14s; }
+.dcard:hover { border-color: var(--primary-softer); }
+.dcard-top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.dcard-top .icon { width: 13.5px; height: 13.5px; color: var(--fg-2); }
+.dcard-name { font-family: var(--mono); font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dcard p { font-size: 12px; color: var(--fg-2); line-height: 1.62; margin-bottom: 8px; }
+.dcard .why { display: flex; flex-wrap: wrap; gap: 4px; }
+.dcard .why span { font-size: 10.5px; font-weight: 600; color: var(--primary); background: var(--primary-soft); border-radius: 999px; padding: 1px 8px; }
+.dcard-acts { display: flex; gap: 5px; margin-top: 10px; }
+.dcard-acts .p-mini { height: 26px; font-size: 11px; padding: 0 10px; }
+
+/* 提案审查卡 */
+.prop-card { border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
+.prop-head { display: flex; align-items: center; gap: 8px; padding: 10px 13px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 700; }
+.prop-head .icon { width: 13.5px; height: 13.5px; color: var(--primary); }
+.prop-head .st { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--warning); background: var(--warning-soft); border-radius: 999px; padding: 2px 9px; }
+.prop-op { display: flex; align-items: flex-start; gap: 9px; padding: 11px 13px; border-bottom: 1px solid var(--border); }
+.prop-op:last-of-type { border-bottom: none; }
+.prop-check { width: 16.5px; height: 16.5px; border-radius: 5px; border: 1.5px solid var(--border-2); flex-shrink: 0; margin-top: 2px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; background: var(--surface); transition: all .13s; }
+.prop-check .icon { width: 11px; height: 11px; color: #fff; opacity: 0; }
+.prop-check.on { background: var(--primary); border-color: var(--primary); }
+.prop-check.on .icon { opacity: 1; }
+.prop-op-main { flex: 1; min-width: 0; }
+.prop-op-name { font-family: var(--mono); font-size: 11.8px; font-weight: 700; margin-bottom: 3px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.prop-kind { font-size: 9.5px; font-weight: 700; border-radius: 4px; padding: 1px 6px; letter-spacing: .02em; }
+.prop-kind.upd { background: var(--primary-soft); color: var(--primary); }
+.prop-kind.unstar { background: var(--danger-soft); color: var(--danger); }
+.prop-reason { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.prop-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 11.3px; }
+.prop-diff-row { display: flex; align-items: center; gap: 7px; padding: 5.5px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.prop-diff-row:last-child { border-bottom: none; }
+.prop-diff-row .fld { font-weight: 650; color: var(--muted); width: 52px; flex-shrink: 0; font-size: 10.8px; }
+.prop-old { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--danger); background: var(--danger-soft); border-radius: 4px; padding: 0 5px; }
+.prop-new { color: var(--success); font-weight: 650; background: var(--success-soft); border-radius: 4px; padding: 0 5px; }
+.prop-diff-row .arrow { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+.prop-new .plus { color: var(--primary); font-weight: 700; }
+.prop-foot { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border-top: 1px solid var(--border); background: var(--surface-2); }
+.prop-foot .note { font-size: 11px; color: var(--muted); }
+.prop-exec { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 29px; border-radius: 8px; border: none; cursor: pointer; background: var(--primary); color: #fff; font-family: var(--font); font-size: 11.8px; font-weight: 650; padding: 0 14px; box-shadow: 0 2px 8px -3px var(--primary); }
+.prop-exec:hover { background: var(--primary-hover); }
+.prop-exec .icon { width: 12px; height: 12px; }
+
+/* 需求编辑 tab */
+.req-block { border: 1px solid var(--border); border-radius: 11px; padding: 12px 13px; }
+.req-block label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 7px; }
+.req-block .req-area { width: 100%; min-height: 58px; border: 1px dashed var(--border-2); border-radius: 8px; background: var(--surface-2); font-family: var(--font); font-size: 12.3px; line-height: 1.65; color: var(--fg-2); padding: 8px 11px; }
+.req-block .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.req-chip { font-size: 11.3px; font-weight: 550; border-radius: 7px; padding: 2.5px 10px; border: 1px solid; }
+.req-chip.req { color: var(--primary); border-color: var(--primary-softer); background: var(--primary-soft); }
+.req-chip.pref { color: var(--info); border-color: rgba(37, 99, 235, .2); background: rgba(37, 99, 235, .07); }
+.req-chip.excl { color: var(--danger); border-color: rgba(220, 38, 38, .2); background: var(--danger-soft); }
+.req-q { font-family: var(--mono); font-size: 11.3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 4.5px 10px; color: var(--fg-2); display: flex; align-items: center; gap: 7px; }
+.req-q .icon { width: 11px; height: 11px; color: var(--muted); }
+
+/* —— 手机模式 —— */
+.p-app[data-device="phone"] { }
+.p-app[data-device="phone"] .p-stagebox { }
+.stagebox { display: flex; justify-content: center; background: var(--surface-2); padding: 22px; }
+.p-app[data-device="phone"] .p-frame-inner { width: 392px; }
+.p-frame-inner { width: 100%; }
+.phone-hint { text-align: center; font-size: 12px; color: var(--muted); padding: 10px; display: none; }
+.p-app[data-device="phone"] .phone-hint { display: block; }
+/* 手机下：隐藏桌面侧栏与 dock */
+.p-app[data-device="phone"] .p-side { position: absolute; inset: 0 22% 0 0; z-index: 40; box-shadow: var(--shadow-lg); margin-left: 0; opacity: 0; pointer-events: none; transform: translateX(-12px); transition: all .2s ease; }
+.p-app[data-device="phone"][data-msidebar="open"] .p-side { opacity: 1; pointer-events: auto; transform: translateX(0); }
+.p-mbackdrop { display: none; }
+.p-app[data-device="phone"][data-msidebar="open"] .p-mbackdrop { display: block; position: absolute; inset: 0; background: rgba(9, 9, 11, .45); z-index: 39; }
+.p-app[data-device="phone"] .p-dock { position: absolute; left: 10px; right: 10px; bottom: 10px; top: auto; height: 62%; z-index: 45; border: 1px solid var(--border-2); border-radius: 16px; box-shadow: var(--shadow-lg); margin-right: 0; opacity: 0; pointer-events: none; transform: translateY(16px); transition: all .22s ease; }
+.p-app[data-device="phone"][data-mdock="open"] .p-dock { opacity: 1; pointer-events: auto; transform: translateY(0); }
+/* 手机：FAB + 顶栏徽标 */
+.p-fab {
+  position: absolute; right: 14px; bottom: 96px; z-index: 30;
+  display: none; align-items: center; gap: 7px; height: 40px; padding: 0 16px;
+  border-radius: 999px; border: none; cursor: pointer;
+  background: var(--primary); color: #fff; font-family: var(--font);
+  font-size: 12.5px; font-weight: 650; box-shadow: 0 8px 24px -6px var(--primary);
+}
+.p-fab .icon { width: 14px; height: 14px; }
+.p-fab .n { background: rgba(255, 255, 255, .25); border-radius: 999px; font-size: 10px; font-weight: 700; padding: 0 6.5px; }
+.p-app[data-device="phone"] .p-fab { display: inline-flex; }
+.p-app[data-device="phone"] .p-hideph { display: none !important; }
+.p-app[data-device="phone"] .p-msgs { padding: 18px 14px 10px; }
+.p-app[data-device="phone"] .m-user { max-width: 92%; }
+.p-app[data-device="phone"] .p-composer { padding: 6px 12px 10px; }
+.p-app[data-device="phone"] .p-composer-inner { padding: 9px 11px 7px; }
+.p-app[data-device="phone"] .p-hint { display: none; }
+.p-app[data-device="phone"] .p-capsule { bottom: 92px; }
+.p-app[data-device="phone"] .p-taskbar { padding: 6px 12px; }
+.p-app[data-device="phone"] .p-taskbar .t-meta span:nth-child(2) { display: none; }
+.p-app[data-device="phone"] .p-viewseg button span { display: none; }
+.p-app[data-device="phone"] .p-docktabs button span.lbl { display: none; }
+
+/* ========================= 规范小节 ========================= */
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.swatch { width: 118px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow-sm); }
+.swatch .sw-color { height: 52px; border-bottom: 1px solid var(--border); }
+.swatch .sw-info { padding: 8px 10px; font-size: 11px; line-height: 1.5; }
+.swatch .sw-info b { display: block; font-size: 11.5px; }
+.swatch .sw-info code { font-size: 10px; padding: 0 4px; }
+.type-row { display: flex; align-items: baseline; gap: 18px; padding: 11px 0; border-bottom: 1px dashed var(--border); }
+.type-row .t-demo { min-width: 320px; }
+.type-row .t-spec { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.check-item { display: flex; gap: 9px; font-size: 13px; color: var(--fg-2); background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 9px 13px; }
+.check-item .icon { width: 15px; height: 15px; color: var(--success); margin-top: 2.5px; }
+
+/* 阶段卡 */
+.phase { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: 20px 22px 18px; box-shadow: var(--shadow-sm); }
+.phase .ph-tag { position: absolute; top: 20px; right: 20px; font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--primary); background: var(--primary-soft); padding: 2px 10px; border-radius: 6px; }
+.phase h4 { font-size: 15.5px; font-weight: 750; margin-bottom: 3px; }
+.phase .ph-goal { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+.phase ol { margin: 0 0 14px 18px; }
+.phase ol li { font-size: 13.3px; color: var(--fg-2); margin-bottom: 6px; }
+.phase ol li code { font-size: 11.5px; }
+.accept { background: var(--surface-2); border-radius: 9px; padding: 10px 14px; font-size: 12.5px; color: var(--fg-2); }
+.accept b { color: var(--success); font-size: 12px; letter-spacing: .04em; }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 5px; border: 2px solid var(--surface); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 1024px) {
+  .layout { grid-template-columns: 1fr; }
+  .toc { display: none; }
+  .grid-3 { grid-template-columns: 1fr 1fr; }
+  .ia-new-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 720px) {
+  .grid-2, .grid-3, .checklist { grid-template-columns: 1fr; }
+  .p-cards { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+</style>
+</head>
+<body>
+<!--
+  已否决 · 归档（2026-10-07）
+  本文件是三栏工作台重构提案，用户已明确否决。
+  现行方向是保留原布局与设计风格的适度优化，见同目录 ai-page-polish-20261007.md。
+  本文件仅作历史对照，不再作为实现依据。
+-->
+
+<div role="note" style="position:sticky;top:0;z-index:50;background:#7f1d1d;color:#fff;padding:10px 16px;font:600 13px/1.5 system-ui,sans-serif">
+  已否决 · 归档（2026-10-07）：三栏重构方案未采用。现行方向见 <a href="./ai-page-polish-20261007.md" style="color:#fecaca">ai-page-polish-20261007.md</a>。本页仅作历史对照。
+</div>
+
+<!-- 内联图标（lucide 风格） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><path d="M16 8V4h-4"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v.01"/><path d="M9 13v.01"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V4h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect width="12" height="12" x="6" y="6" rx="2"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
+    <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+    <symbol id="i-msg" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></symbol>
+    <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+    <symbol id="i-command" viewBox="0 0 24 24"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/></symbol>
+    <symbol id="i-accessibility" viewBox="0 0 24 24"><circle cx="16" cy="4" r="1"/><path d="m18 19-1-7"/><path d="m14 15-4 6"/><path d="m13.5 8.5 4.5 3"/><path d="M5 10l4-2 3.5 2.5"/></symbol>
+  </defs>
+</svg>
+
+<!-- ======================= 文档头部 ======================= -->
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-kicker"><svg class="icon"><use href="#i-sparkle"/></svg>GSM · AI 工作台 · UI 重设计方案</div>
+    <h1>AI 页面全新界面设计<br>让对话成为舞台，让行动清晰<em>可见</em></h1>
+    <p class="sub">针对 <code style="font-size:13px">AIWorkbench</code>（约 1300 行单文件组件）的可用性重设计：以「对话优先、渐进披露、行动可见」为核心，对标主流 AI 产品心智模型，同时严格对齐项目现有 shadcn / Radix / Theme Token 技术体系与分层架构约束。</p>
+    <div class="hero-meta">
+      <span class="meta-pill"><i class="dot"></i>方案版本 v2.0</span>
+      <span class="meta-pill">设计范围 <code>src/features/ai-workbench</code></span>
+      <span class="meta-pill">日期 2026-10-07</span>
+      <span class="meta-pill">交付：诊断 · 架构 · 原型 · 规范 · 路线</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- ======================= 目录 ======================= -->
+  <nav class="toc" id="toc">
+    <div class="toc-title">目录</div>
+    <a href="#s1"><span class="num">01</span>现状与问题诊断</a>
+    <a href="#s2"><span class="num">02</span>设计原则与习惯映射</a>
+    <a href="#s3"><span class="num">03</span>信息架构</a>
+    <a href="#s4"><span class="num">04</span>高保真原型（可交互）</a>
+    <a href="#s5"><span class="num">05</span>设计规范</a>
+    <a href="#s6"><span class="num">06</span>实施路线</a>
+  </nav>
+
+  <main class="doc">
+    <!-- ======================= 01 现状诊断 ======================= -->
+    <section id="s1">
+      <div class="sec-head"><span class="sec-num">01</span><h2>现状与问题诊断</h2></div>
+      <p class="sec-lead">先理解现状，再谈设计。当前 AI 页面功能强大但界面已出现「密度过载」：单个 1300 行组件承载了会话管理、对话、研究状态、提案审查、需求编辑五类异质内容。</p>
+
+      <div class="tbl-wrap" style="margin-bottom:18px">
+        <table>
+          <thead><tr><th style="width:170px">问题</th><th>现状描述</th><th style="width:210px">影响</th></tr></thead>
+          <tbody>
+            <tr><td>顶栏认知过载</td><td>高度 44px 的 header 内并排 8+ 元素：折叠钮、图标、标题、Chat/Overview 选项卡、项目名、导出、仓库入口</td><td>高频功能互相挤压，扫视成本高</td></tr>
+            <tr><td>对话流混杂</td><td>消息、需求编辑器、操作提案、组织面板按纵向堆叠在同一滚动流中</td><td>打断阅读节奏，对话与「行动」边界模糊</td></tr>
+            <tr><td>输入区参数常驻</td><td>范围 / 模型 / 深度 3 个 Select + 管理复选框常驻输入区</td><td>视觉噪音大；移动端需折叠为胶囊二次点击</td></tr>
+            <tr><td>会话列表信息密度低</td><td>会话仅显示标题，无摘要与上下文元信息，分组仅靠项目段落</td><td>历史找回成本高，长列表难以定位</td></tr>
+            <tr><td>状态反馈弱</td><td>任务运行仅一行 12px 边框状态条；提案到达依赖脉冲徽标 + 浮动胶囊</td><td>长时间研究任务缺少可感知的进度</td></tr>
+            <tr><td>移动端补丁式</td><td>键盘弹起 hack、移动胶囊按钮等补丁逻辑内嵌于桌面布局</td><td>三端体验割裂，代码分支多</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>现状布局 vs 新布局</h3>
+      <div class="grid-2" style="margin-bottom:16px">
+        <div class="ia-diagram">
+          <div class="ia-title">现状：两栏 + 聊天流承载一切 <span class="tagchip old">AS-IS</span></div>
+          <div class="ia-old-grid">
+            <div class="ia-block" style="border-color:var(--border-2);background:var(--surface-2)"><b>历史侧栏 220px</b>标题列表，无分组无摘要</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div class="ia-block" style="border-color:var(--border-2);background:var(--surface-2)"><b>密集顶栏（8+ 元素）</b>标题/选项卡/操作全在一行</div>
+              <div class="ia-block" style="border-color:rgba(220,38,38,.35);background:var(--danger-soft)">
+                <b style="color:var(--danger)">聊天滚动流（混杂区）</b>消息 + 需求编辑器 + 提案 + 组织面板纵向堆叠；底部 Composer 常驻 3 Select
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ia-diagram">
+          <div class="ia-title">新方案：三栏工作台 + 纯净舞台 <span class="tagchip new">TO-BE</span></div>
+          <div class="ia-new-grid">
+            <div class="ia-block" style="border-color:var(--primary-softer);background:var(--primary-soft)"><b>会话侧栏 258px</b>新对话置顶 · 搜索 · 智能分组 · 摘要 + 状态</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div class="ia-block" style="border-color:var(--border);background:var(--surface-2)"><b>轻量顶栏</b>标题 + 分段控件 + 收纳操作</div>
+              <div class="ia-block" style="border-color:rgba(5,150,105,.35);background:var(--success-soft)"><b style="color:var(--success)">对话舞台（纯净）</b>任务进度条 · 消息 + 证据折叠 · Composer（参数收纳）</div>
+            </div>
+            <div class="ia-block" style="border-color:rgba(37,99,235,.3);background:rgba(37,99,235,.06)"><b>工作台 Dock 344px</b>候选仓库 · 提案审查 · 需求编辑，可折叠</div>
+          </div>
+        </div>
+      </div>
+      <div class="callout info"><svg class="icon"><use href="#i-alert"/></svg><div><b>核心洞察：</b>本项目 AI 页面与通用聊天产品的最大差异，在于「对话之外还有行动」——候选仓库、字段变更提案、需求驱动搜索。新设计的胜负手不是把聊天做漂亮，而是<b>给行动一个专门的家（右侧 Dock）</b>，让对话流回归纯粹。</div></div>
+    </section>
+
+    <!-- ======================= 02 设计原则 ======================= -->
+    <section id="s2">
+      <div class="sec-head"><span class="sec-num">02</span><h2>设计原则与习惯映射</h2></div>
+      <p class="sec-lead">六条原则指导所有界面决策；每一条都可追溯到「用户习惯」——要么延续已被主流 AI 产品教育的模式，要么延续项目自身的视觉基因。</p>
+
+      <div class="grid-3" style="margin-bottom:22px">
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-msg"/></svg></div><span class="p-en">CONVERSATION FIRST</span><h4>对话即舞台</h4><p>中央区域只做一件事：高质量的问与答。需求编辑、提案审查等非对话内容一律移出滚动流，进入专用面板。</p></div>
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-layers"/></svg></div><span class="p-en">PROGRESSIVE DISCLOSURE</span><h4>渐进披露</h4><p>高频操作一屏可达；范围 / 模型 / 深度等低频参数收进一个「参数」入口，需要时展开，不需要时不占视觉空间。</p></div>
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-user"/></svg></div><span class="p-en">FAMILIARITY</span><h4>习惯延续</h4><p>沿用 ChatGPT / Claude 教育出的「侧栏 + 舞台 + Composer」心智；沿用项目已有 shadcn 视觉语言与快捷键习惯，零学习成本迁移。</p></div>
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-target"/></svg></div><span class="p-en">ACTION VISIBILITY</span><h4>行动可见</h4><p>提案是本产品独有价值。给提案一等公民待遇：专门审查卡片、清晰 diff、批量勾选、执行进度与结果一目了然。</p></div>
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-shield"/></svg></div><span class="p-en">TRUST & EVIDENCE</span><h4>信任与证据</h4><p>答案必须可溯源：证据默认折叠为计数徽标，展开显示仓库 / 文件 / 行号 / 新鲜度，本地与远程来源视觉区分。</p></div>
+        <div class="principle"><div class="p-icon"><svg class="icon"><use href="#i-monitor"/></svg></div><span class="p-en">RESPONSIVE BY DESIGN</span><h4>全端一致</h4><p>桌面三栏 → 平板两栏 + 抽屉 → 手机单栏 + 底部工作台，一套信息架构三端适配，不再是补丁式兼容。</p></div>
+      </div>
+
+      <h3>用户习惯映射表</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:230px">用户习惯（来自）</th><th>新设计中的承接</th></tr></thead>
+          <tbody>
+            <tr><td>左侧栏找历史会话（ChatGPT / Claude）</td><td>会话侧栏：置顶 + 进行中 + 时间分组 + 项目分组，卡片含摘要与状态徽标</td></tr>
+            <tr><td>⌘K / Ctrl K 唤起搜索（IDE、Notion）</td><td>侧栏搜索框带 <code>⌘K</code> 快捷键徽标，全局可唤起会话搜索</td></tr>
+            <tr><td>Enter 发送、Shift+Enter 换行</td><td>Composer 标准行为 + 输入框下方常驻快捷键提示</td></tr>
+            <tr><td>生成中可停止（所有 AI 产品）</td><td>发送按钮变红色停止态；顶部任务条亦提供停止；Esc 亦可终止</td></tr>
+            <tr><td>对话引用可展开（Perplexity / Copilot）</td><td>证据折叠面板：计数徽标 + 展开源列表（仓库 / 文件 / 行号 / 新鲜度）</td></tr>
+            <tr><td>代码审查先看 diff（GitHub PR）</td><td>提案审查卡使用 before → after 字段 diff，删除线 + 色彩语义与 PR 惯例一致</td></tr>
+            <tr><td>工具面板可收起（VS Code）</td><td>侧栏与 Dock 均可折叠；<code>⌘B</code> 切侧栏、<code>⌘/</code> 切 Dock，布局记忆持久化</td></tr>
+            <tr><td>项目原有 zinc + violet 视觉</td><td>全部色彩走 Theme Token（--primary / --muted / --border…），主题预设与深浅色自动生效</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ======================= 03 信息架构 ======================= -->
+    <section id="s3">
+      <div class="sec-head"><span class="sec-num">03</span><h2>信息架构</h2></div>
+      <p class="sec-lead">整个页面由四层组成：轻量顶栏、会话侧栏、对话舞台、工作台 Dock。各区域职责单一、可独立折叠，移动端按断点降级为抽屉与底部面板。</p>
+
+      <div class="tbl-wrap" style="margin-bottom:18px">
+        <table>
+          <thead><tr><th style="width:150px">区域</th><th style="width:110px">尺寸</th><th>职责（内容清单）</th><th style="width:150px">折叠 / 移动端</th></tr></thead>
+          <tbody>
+            <tr><td>顶栏 Topbar</td><td>50px 高</td><td>侧栏开关 · 会话标题（可重命名）· 项目归属徽标 · 视图分段控件（对话 / 工作台）· 导出 · 更多菜单</td><td>固定；移动端隐藏文字标签</td></tr>
+            <tr><td>会话侧栏 Sidebar</td><td>258px</td><td>新对话（主按钮）· 搜索（⌘K）· 模式（活跃 / 归档 / 回收站）· 分组列表（进行中 / 置顶 / 今天 / 项目）· 底部数据工具（导出 / 导入 / 保留策略）</td><td>⌘B 折叠；移动端抽屉</td></tr>
+            <tr><td>对话舞台 Stage</td><td>自适应</td><td>任务进度条（阶段 / 计时 / 已读文件 / 停止）· 消息流（max-w-724）· 空状态欢迎页 + 灵感卡 · 提案浮动胶囊 · Composer</td><td>主体；移动端压缩间距</td></tr>
+            <tr><td>工作台 Dock</td><td>344px</td><td>Tab：候选仓库（验证状态 / 摘要 / 理由 / 操作）· 提案（diff 审查 / 批量执行）· 需求（目的 / 必需 / 偏好 / 排除 / 查询批次）</td><td>⌘/ 折叠；移动端底部抽屉 + FAB</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>关键决策：内容从聊天流迁移到 Dock</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>内容</th><th style="width:130px">现状位置</th><th style="width:130px">新位置</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr><td>需求编辑器 RequirementsEditor</td><td>聊天流内嵌</td><td>Dock · 需求 Tab</td><td>它是「搜索配置」而非「对话内容」，属于工作台心智</td></tr>
+            <tr><td>操作提案 OperationPreview</td><td>聊天流内嵌</td><td>Dock · 提案 Tab</td><td>提案需要专注审查 + 批量执行，聊天流中容易被新消息冲走</td></tr>
+            <tr><td>候选仓库列表</td><td>可分栏结果区</td><td>Dock · 候选 Tab + 工作台视图</td><td>保留原分栏精神：对话时可窄栏窥视，切工作台视图时全宽审查</td></tr>
+            <tr><td>组织预览 OrganizationPanel</td><td>聊天流内嵌 + 弹窗</td><td>保持弹窗（Sheet）</td><td>本身已是模态审查场景，无需移动</td></tr>
+            <tr><td>范围 / 模型 / 深度</td><td>Composer 常驻</td><td>Composer 参数胶囊（Popover）</td><td>低频参数收起，显示当前组合摘要，一点展开</td></tr>
+            <tr><td>证据引用</td><td>消息内常展开</td><td>消息内折叠（默认收起）</td><td>降低消息高度，需要溯源时展开</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout warn" style="margin-top:16px"><svg class="icon"><use href="#i-alert"/></svg><div><b>保留的现有资产：</b>浮动提案胶囊（体验很好）、<code>aria/testid</code> 全部语义（现有测试依赖）、<code>⌘K</code> 等已有快捷键、i18n 文案 key 体系。重构是「布局重排」，不是「推倒重来」。</div></div>
+    </section>
+
+    <!-- ======================= 04 高保真原型 ======================= -->
+    <section id="s4">
+      <div class="sec-head"><span class="sec-num">04</span><h2>高保真原型（可交互）</h2></div>
+      <p class="sec-lead">下方为可直接操作的原型：切换深浅主题、桌面 / 手机预览、对话 / 工作台视图、折叠侧栏与 Dock、展开证据与提案。数据为示意内容。</p>
+
+      <div class="stage-head">
+        <div class="seg" role="group" aria-label="主题">
+          <button id="btn-light" class="on" onclick="setTheme('light')"><svg class="icon"><use href="#i-sun"/></svg>浅色</button>
+          <button id="btn-dark" onclick="setTheme('dark')"><svg class="icon"><use href="#i-moon"/></svg>深色</button>
+        </div>
+        <div class="seg" role="group" aria-label="设备">
+          <button id="btn-desk" class="on" onclick="setDevice('desktop')"><svg class="icon"><use href="#i-monitor"/></svg>桌面</button>
+          <button id="btn-phone" onclick="setDevice('phone')"><svg class="icon"><use href="#i-phone"/></svg>手机</button>
+        </div>
+        <span class="hint">试试：折叠左栏与右栏 · 切换视图与 Tab · 展开证据与提案</span>
+      </div>
+
+      <div class="p-frame">
+        <div class="p-chrome">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <div class="url">GSM · AI 工作台 — github-stars-manager</div>
+          <div class="viewport-size" id="vp-size">1280 × 780</div>
+        </div>
+
+        <div class="stagebox" style="padding:0">
+        <div class="p-app" id="proto" data-device="desktop" data-view="chat" data-sidebar="open" data-dock="open" data-msidebar="closed" data-mdock="closed">
+
+          <!-- 顶栏 -->
+          <header class="p-top">
+            <button class="p-iconbtn" title="切换侧栏（⌘B）" aria-label="切换侧栏" onclick="toggleSidebar()"><svg class="icon"><use href="#i-panel-left"/></svg></button>
+            <div class="p-brand">
+              <div class="p-logo"><svg class="icon"><use href="#i-bot"/></svg></div>
+              <div class="p-title-wrap">
+                <div class="p-title"><span class="p-hideph" style="min-width:0">React SSR 方案调研</span><span class="p-proj-chip p-hideph">电商重构</span><span class="p-status-dot" title="同步正常"></span></div>
+              </div>
+            </div>
+            <div class="p-top-right">
+              <div class="p-viewseg" role="tablist" aria-label="视图切换">
+                <button class="on" role="tab" aria-selected="true" onclick="setView('chat', this)"><svg class="icon"><use href="#i-msg"/></svg><span>对话</span></button>
+                <button role="tab" aria-selected="false" onclick="setView('work', this)"><svg class="icon"><use href="#i-grid"/></svg><span>工作台</span><span class="cnt">6</span></button>
+              </div>
+              <button class="p-iconbtn" title="导出 Markdown" aria-label="导出"><svg class="icon"><use href="#i-download"/></svg></button>
+              <button class="p-iconbtn p-hideph" title="更多" aria-label="更多"><svg class="icon"><use href="#i-more"/></svg></button>
+            </div>
+          </header>
+
+          <div class="p-body">
+            <!-- ===== 侧栏 ===== -->
+            <aside class="p-side" aria-label="会话历史">
+              <div class="p-side-top">
+                <button class="p-newchat"><svg class="icon"><use href="#i-plus"/></svg>新对话</button>
+                <div class="p-search">
+                  <svg class="icon"><use href="#i-search"/></svg>
+                  <input type="text" placeholder="搜索会话…" aria-label="搜索会话">
+                  <span class="kbd">⌘K</span>
+                </div>
+              </div>
+              <div class="p-mode" role="tablist" aria-label="会话模式">
+                <button class="on">活跃</button><button>归档</button><button>回收站</button>
+              </div>
+              <div class="p-sessions">
+                <div class="p-group-label"><span class="live"><span class="p-spin"></span>进行中</span></div>
+                <div class="p-sess on">
+                  <span class="s-dot" title="有未确认提案"></span>
+                  <div class="s-main"><div class="s-title">整理前端监控类目</div><div class="s-sub">正在验证候选仓库 · 已读 12 个文件</div></div>
+                  <span class="s-time">now</span>
+                </div>
+                <div class="p-group-label"><svg class="icon"><use href="#i-pin"/></svg>已置顶</div>
+                <div class="p-sess">
+                  <svg class="icon s-pin"><use href="#i-pin"/></svg>
+                  <div class="s-main"><div class="s-title">React SSR 方案调研</div><div class="s-sub">6 个候选 · 2 个提案待确认</div></div>
+                  <span class="s-time">14:32</span>
+                  <div class="s-acts"><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-sess">
+                  <svg class="icon s-pin"><use href="#i-pin"/></svg>
+                  <div class="s-main"><div class="s-title">GSM 竞品功能对比</div><div class="s-sub">18 条消息 · 3 个证据源</div></div>
+                  <span class="s-time">昨天</span>
+                  <div class="s-acts"><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-group-label">今天</div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">对比 tRPC 与 GraphQL 网络层</div><div class="s-sub">12 条消息</div></div>
+                  <span class="s-time">11:08</span>
+                  <div class="s-acts"><button class="p-s-act" title="置顶"><svg class="icon"><use href="#i-pin"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">找优雅的终端 UI 库</div><div class="s-sub">4 个候选</div></div>
+                  <span class="s-time">09:41</span>
+                  <div class="s-acts"><button class="p-s-act" title="置顶"><svg class="icon"><use href="#i-pin"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-group-label"><svg class="icon"><use href="#i-folder"/></svg>项目 · 电商重构</div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">表单库选型：RHF vs Formik</div><div class="s-sub">8 条消息 · 1 个提案已执行</div></div>
+                  <span class="s-time">周二</span>
+                  <div class="s-acts"><button class="p-s-act" title="置顶"><svg class="icon"><use href="#i-pin"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">微前端方案调研</div><div class="s-sub">3 个候选 · 验证中</div></div>
+                  <span class="s-time">周一</span>
+                  <div class="s-acts"><button class="p-s-act" title="置顶"><svg class="icon"><use href="#i-pin"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-group-label"><svg class="icon"><use href="#i-folder"/></svg>项目 · 个人知识库</div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">本地优先笔记工具调研</div><div class="s-sub">5 个候选 · 2 个证据源</div></div>
+                  <span class="s-time">上周</span>
+                  <div class="s-acts"><button class="p-s-act" title="置顶"><svg class="icon"><use href="#i-pin"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+                <div class="p-group-label">更早</div>
+                <div class="p-sess">
+                  <div class="s-main"><div class="s-title">Monorepo 工具链选型</div><div class="s-sub">15 条消息</div></div>
+                  <span class="s-time">9/28</span>
+                  <div class="s-acts"><button class="p-s-act" title="归档"><svg class="icon"><use href="#i-archive"/></svg></button><button class="p-s-act" title="更多"><svg class="icon"><use href="#i-more"/></svg></button></div>
+                </div>
+              </div>
+              <div class="p-side-foot">
+                <button class="p-fbtn" title="导出备份"><svg class="icon"><use href="#i-download"/></svg></button>
+                <button class="p-fbtn" title="导入"><svg class="icon"><use href="#i-external"/></svg></button>
+                <span class="p-retention">保留 30 天</span>
+              </div>
+            </aside>
+
+            <!-- 手机遮罩 -->
+            <div class="p-mbackdrop" onclick="closeMobile()"></div>
+
+            <!-- ===== 中央舞台 ===== -->
+            <div class="p-main">
+
+              <!-- 对话视图 -->
+              <div class="p-chatwrap">
+                <!-- 任务状态条 -->
+                <div class="p-taskbar" role="status">
+                  <span class="t-chip"><span class="p-spin"></span>验证候选仓库</span>
+                  <span class="t-meta">
+                    <span><svg class="icon"><use href="#i-clock"/></svg>00:42</span>
+                    <span><svg class="icon"><use href="#i-file"/></svg>已读 12 个文件</span>
+                    <span class="p-hideph"><svg class="icon"><use href="#i-external"/></svg>tanstack/router</span>
+                  </span>
+                  <span class="t-back p-hideph"><button class="p-stopbtn"><svg class="icon"><use href="#i-stop"/></svg>停止</button></span>
+                </div>
+
+                <!-- 消息流 -->
+                <div class="p-msgs">
+                  <div class="p-msgs-inner">
+
+                    <!-- 用户消息 1 -->
+                    <div class="m-user">
+                      帮我找适合中小型项目的 React SSR 框架：需要支持流式渲染和良好的 TypeScript 支持，最好是活跃维护的开源项目。
+                      <div class="m-tags"><span>#react</span><span>#ssr</span><span>#typescript</span></div>
+                    </div>
+
+                    <!-- AI 回复 1（完成态） -->
+                    <div class="m-ai">
+                      <div class="m-ai-head">
+                        <div class="m-ai-avatar"><svg class="icon"><use href="#i-bot"/></svg></div>
+                        <span class="m-ai-name">AI 助手</span>
+                        <span class="m-ai-state" style="color:var(--muted)">已完成 · 42s</span>
+                        <div class="m-ai-acts">
+                          <button class="p-s-act" title="复制"><svg class="icon"><use href="#i-copy"/></svg></button>
+                          <button class="p-s-act" title="重新生成"><svg class="icon"><use href="#i-refresh"/></svg></button>
+                        </div>
+                      </div>
+                      <div class="m-body">
+                        <p>基于你的需求（流式渲染 + 一流 TS + 活跃维护），我验证了 6 个候选仓库，以下是匹配度最高的三个：</p>
+                        <table class="m-table">
+                          <thead><tr><th>候选</th><th>流式渲染</th><th>TS 支持</th><th>维护状态</th><th>匹配</th></tr></thead>
+                          <tbody>
+                            <tr><td><b>vercel/next.js</b></td><td>RSC + 流式 SSR</td><td>原生</td><td>非常活跃</td><td><span style="color:var(--success);font-weight:700">★★★★★</span></td></tr>
+                            <tr><td><b>remix-run/react-router</b></td><td>v7 框架模式</td><td>原生</td><td>活跃</td><td><span style="color:var(--success);font-weight:700">★★★★☆</span></td></tr>
+                            <tr><td><b>tanstack/router</b></td><td>Start SSR</td><td>类型安全路由</td><td>快速增长</td><td><span style="color:var(--warning);font-weight:700">★★★☆☆</span></td></tr>
+                          </tbody>
+                        </table>
+                        <div class="m-verdict">
+                          <svg class="icon"><use href="#i-sparkle"/></svg>
+                          <div><b>建议：</b>中小型项目优先 <b>Next.js（App Router）</b>——流式渲染与 RSC 是一等能力、TS 支持最完整、社区与文档规模最大；若你偏好「路由即数据加载」的显式模型，React Router v7 框架模式是更轻的选择。TanStack Start 值得关注但尚在快速迭代期，不建议现在作为生产主框架。</div>
+                        </div>
+                      </div>
+                      <!-- 证据折叠 -->
+                      <details class="m-evidence">
+                        <summary>
+                          <svg class="icon"><use href="#i-shield"/></svg>
+                          引用了 3 个来源
+                          <svg class="icon chev"><use href="#i-chev-d"/></svg>
+                        </summary>
+                        <div class="ev-list">
+                          <a class="ev-item hov"><svg class="icon"><use href="#i-github"/></svg><b>vercel/next.js</b><span class="path">docs/app/api-reference/file-conventions</span><span class="ln">L112-168</span><span class="ev-fresh today">今日同步</span></a>
+                          <a class="ev-item hov"><svg class="icon"><use href="#i-github"/></svg><b>remix-run/react-router</b><span class="path">docs/routing/deferred</span><span class="ln">L24-89</span><span class="ev-fresh week">本周同步</span></a>
+                          <a class="ev-item hov local"><svg class="icon"><use href="#i-folder"/></svg><b>local/电商重构</b><span class="path">docs/architecture/ssr-notes.md</span><span class="ln">L8-31</span><span class="ev-fresh today">本地</span></a>
+                        </div>
+                      </details>
+                    </div>
+
+                    <!-- 用户消息 2 -->
+                    <div class="m-user">Next.js 的 App Router 和 Pages Router 该怎么选？我们团队 5 人，希望渐进迁移。</div>
+
+                    <!-- AI 回复 2（流式中） -->
+                    <div class="m-ai">
+                      <div class="m-ai-head">
+                        <div class="m-ai-avatar"><svg class="icon"><use href="#i-bot"/></svg></div>
+                        <span class="m-ai-name">AI 助手</span>
+                        <span class="m-ai-state stream"><span class="pulse"></span>正在生成</span>
+                      </div>
+                      <div class="m-body">
+                        <p>对于 5 人团队的渐进迁移，我的建议是<b>新页面走 App Router、存量页面留在 Pages Router</b>，两者可以长期共存：</p>
+                        <p>• <b>App Router</b>：RSC 与流式渲染是一等公民，新的数据获取模式（Server Components + Suspense）适合从零开始的页面；<span class="cursor"></span></p>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+
+                <!-- 提案浮动胶囊 -->
+                <button class="p-capsule" onclick="openDockTab('prop')" title="查看新提案">
+                  <svg class="icon"><use href="#i-clipboard"/></svg>
+                  查看新提案
+                  <span class="badge-n">2</span>
+                  <svg class="icon"><use href="#i-arrow-down"/></svg>
+                </button>
+
+                <!-- Composer -->
+                <div class="p-composer">
+                  <div class="p-composer-inner">
+                    <div class="p-ctx">
+                      <span class="p-ctx-label"><svg class="icon"><use href="#i-folder-open"/></svg>上下文</span>
+                      <span class="ctx-chip">vercel/next.js<button title="移除" aria-label="移除"><svg class="icon"><use href="#i-x"/></svg></button></span>
+                      <span class="ctx-chip">remix-run/react-router<button title="移除" aria-label="移除"><svg class="icon"><use href="#i-x"/></svg></button></span>
+                      <button class="ctx-clear">清空</button>
+                    </div>
+                    <textarea class="p-input" rows="2" placeholder="描述你的需求，或让 AI 帮你找仓库…" aria-label="输入框"></textarea>
+                    <div class="p-com-row">
+                      <button class="p-params" title="范围 · 模型 · 深度">
+                        <svg class="icon"><use href="#i-sliders"/></svg>
+                        GitHub · 标准深度
+                        <svg class="icon chev"><use href="#i-chev-d"/></svg>
+                      </button>
+                      <div class="p-intent" role="group" aria-label="输入意图">
+                        <button class="on"><svg class="icon"><use href="#i-search"/></svg>新搜索</button>
+                        <button><svg class="icon"><use href="#i-msg"/></svg>询问结果</button>
+                      </div>
+                      <button class="p-send stop" title="停止生成" aria-label="停止生成"><svg class="icon"><use href="#i-stop"/></svg></button>
+                    </div>
+                  </div>
+                  <div class="p-hint p-hideph">
+                    <span><kbd>Enter</kbd> 发送</span>
+                    <span><kbd>Shift Enter</kbd> 换行</span>
+                    <span><kbd>⌘B</kbd> 侧栏</span>
+                    <span><kbd>⌘/</kbd> 工作台</span>
+                    <span><kbd>Esc</kbd> 停止生成</span>
+                  </div>
+                </div>
+
+                <!-- 手机 FAB -->
+                <button class="p-fab" onclick="toggleMDock()">
+                  <svg class="icon"><use href="#i-grid"/></svg>
+                  工作台
+                  <span class="n">6</span>
+                </button>
+              </div>
+
+              <!-- 工作台视图（全宽结果） -->
+              <div class="p-workview">
+                <div class="p-worktoolbar">
+                  <h3>候选仓库</h3>
+                  <span class="p-batch"><svg class="icon"><use href="#i-layers"/></svg>批次 2 · 6 个候选</span>
+                  <span class="p-batch"><svg class="icon"><use href="#i-clock"/></svg>今天 14:32</span>
+                  <span class="spacer"></span>
+                  <button class="p-mini"><svg class="icon"><use href="#i-download"/></svg>导出</button>
+                  <button class="p-mini pri"><svg class="icon"><use href="#i-refresh"/></svg>按需求重新搜索</button>
+                </div>
+                <div class="p-worklist">
+                  <div class="p-workgrid">
+                    <div class="wcard">
+                      <div class="wcard-top">
+                        <svg class="icon"><use href="#i-github"/></svg>
+                        <span class="wcard-name">vercel/next.js</span>
+                        <span class="wcard-star"><svg class="icon"><use href="#i-star"/></svg>131k</span>
+                        <span class="w-lang"><i style="background:#3178c6"></i>TypeScript</span>
+                        <span class="w-verdict wbadge ok"><svg class="icon"><use href="#i-check"/></svg>已验证</span>
+                      </div>
+                      <p>React 全栈框架。App Router 原生支持流式 SSR 与 React Server Components，类型支持最完整，社区与文档规模最大。对 5 人团队渐进迁移友好：新旧路由模式可共存。</p>
+                      <div class="why"><span>流式渲染</span><span>RSC</span><span>一流 TS</span><span>生态最大</span></div>
+                      <div class="wcard-acts">
+                        <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问此库</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>加入上下文</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-external"/></svg>访问</button>
+                      </div>
+                    </div>
+                    <div class="wcard">
+                      <div class="wcard-top">
+                        <svg class="icon"><use href="#i-github"/></svg>
+                        <span class="wcard-name">remix-run/react-router</span>
+                        <span class="wcard-star"><svg class="icon"><use href="#i-star"/></svg>54.3k</span>
+                        <span class="w-lang"><i style="background:#3178c6"></i>TypeScript</span>
+                        <span class="w-verdict wbadge ok"><svg class="icon"><use href="#i-check"/></svg>已验证</span>
+                      </div>
+                      <p>v7 框架模式支持 SSR 与流式渲染，「路由即数据加载」的显式模型，体积与心智负担比 Next.js 更轻，适合偏好可控性的团队。</p>
+                      <div class="why"><span>流式渲染</span><span>显式路由模型</span><span>轻量</span></div>
+                      <div class="wcard-acts">
+                        <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问此库</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>加入上下文</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-external"/></svg>访问</button>
+                      </div>
+                    </div>
+                    <div class="wcard">
+                      <div class="wcard-top">
+                        <svg class="icon"><use href="#i-github"/></svg>
+                        <span class="wcard-name">tanstack/router</span>
+                        <span class="wcard-star"><svg class="icon"><use href="#i-star"/></svg>9.8k</span>
+                        <span class="w-lang"><i style="background:#3178c6"></i>TypeScript</span>
+                        <span class="w-verdict wbadge checking"><span class="p-spin" style="width:10px;height:10px;border-width:1.5px"></span>验证中</span>
+                      </div>
+                      <p>类型安全路由 + TanStack Start 提供 SSR 基础。较新但增长快，适合作为观察对象，暂不建议生产主力。正在读取其文档验证流式支持细节…</p>
+                      <div class="why"><span>类型安全路由</span><span>Start SSR</span></div>
+                      <div class="wcard-acts">
+                        <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问此库</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>加入上下文</button>
+                        <button class="p-mini"><svg class="icon"><use href="#i-external"/></svg>访问</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===== 右侧工作台 Dock ===== -->
+            <aside class="p-dock" aria-label="工作台面板">
+              <div class="p-dock-head">
+                <svg class="icon"><use href="#i-grid"/></svg>
+                <b>工作台</b>
+                <span style="margin-left:auto"></span>
+                <button class="p-iconbtn" title="折叠工作台（⌘/）" aria-label="折叠工作台" onclick="toggleDock()"><svg class="icon"><use href="#i-panel-right"/></svg></button>
+              </div>
+              <div class="p-docktabs" role="tablist" aria-label="工作台标签页">
+                <button class="on" data-tab="cand" onclick="dockTab('cand')"><span class="lbl">候选</span><span class="n">6</span></button>
+                <button data-tab="prop" onclick="dockTab('prop')"><span class="lbl">提案</span><span class="n">2</span></button>
+                <button data-tab="req" onclick="dockTab('req')"><span class="lbl">需求</span></button>
+              </div>
+              <div class="p-dock-body">
+
+                <!-- 候选 Tab -->
+                <div class="tabpane on" data-pane="cand">
+                  <div class="dcard">
+                    <div class="dcard-top">
+                      <svg class="icon"><use href="#i-github"/></svg>
+                      <span class="dcard-name">vercel/next.js</span>
+                      <span class="wbadge ok" style="margin-left:auto"><svg class="icon"><use href="#i-check"/></svg>已验证</span>
+                    </div>
+                    <p>React 全栈框架，App Router 原生支持流式 SSR 与 RSC，TS 支持最完整。</p>
+                    <div class="why"><span>流式渲染</span><span>RSC</span><span>生态最大</span></div>
+                    <div class="dcard-acts">
+                      <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问</button>
+                      <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>上下文</button>
+                    </div>
+                  </div>
+                  <div class="dcard">
+                    <div class="dcard-top">
+                      <svg class="icon"><use href="#i-github"/></svg>
+                      <span class="dcard-name">remix-run/react-router</span>
+                      <span class="wbadge ok" style="margin-left:auto"><svg class="icon"><use href="#i-check"/></svg>已验证</span>
+                    </div>
+                    <p>v7 框架模式支持 SSR 与流式渲染，路由即数据加载，体积可控。</p>
+                    <div class="why"><span>流式渲染</span><span>显式模型</span></div>
+                    <div class="dcard-acts">
+                      <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问</button>
+                      <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>上下文</button>
+                    </div>
+                  </div>
+                  <div class="dcard">
+                    <div class="dcard-top">
+                      <svg class="icon"><use href="#i-github"/></svg>
+                      <span class="dcard-name">tanstack/router</span>
+                      <span class="wbadge checking" style="margin-left:auto"><span class="p-spin" style="width:10px;height:10px;border-width:1.5px"></span>验证中</span>
+                    </div>
+                    <p>类型安全路由 + TanStack Start SSR 基础，较新但增长快。</p>
+                    <div class="why"><span>类型安全</span><span>Start SSR</span></div>
+                    <div class="dcard-acts">
+                      <button class="p-mini pri"><svg class="icon"><use href="#i-msg"/></svg>询问</button>
+                      <button class="p-mini"><svg class="icon"><use href="#i-folder-open"/></svg>上下文</button>
+                    </div>
+                  </div>
+                  <div class="dcard" style="opacity:.68">
+                    <div class="dcard-top">
+                      <svg class="icon"><use href="#i-github"/></svg>
+                      <span class="dcard-name">stale/react-ssr-kit</span>
+                      <span class="wbadge stale" style="margin-left:auto"><svg class="icon"><use href="#i-alert"/></svg>证据不足</span>
+                    </div>
+                    <p>两年未更新，README 缺少流式渲染说明，已从候选中降级。</p>
+                    <div class="dcard-acts">
+                      <button class="p-mini"><svg class="icon"><use href="#i-refresh"/></svg>重新验证</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 提案 Tab -->
+                <div class="tabpane" data-pane="prop">
+                  <div class="prop-card">
+                    <div class="prop-head">
+                      <svg class="icon"><use href="#i-clipboard"/></svg>
+                      提案 #12 · 2 项操作
+                      <span class="st">待确认</span>
+                    </div>
+                    <div class="prop-op">
+                      <span class="prop-check on" onclick="this.classList.toggle('on')" role="checkbox" aria-checked="true" tabindex="0"><svg class="icon"><use href="#i-check"/></svg></span>
+                      <div class="prop-op-main">
+                        <div class="prop-op-name">remix-run/react-router <span class="prop-kind upd">更新分类</span></div>
+                        <div class="prop-reason">依据需求「SSR 框架调研」重新归类，与 Next.js 归入同一子类便于对比。</div>
+                        <div class="prop-diff">
+                          <div class="prop-diff-row"><span class="fld">分类</span><span class="prop-old">React 框架</span><span class="arrow">→</span><span class="prop-new">前端框架 / SSR</span></div>
+                          <div class="prop-diff-row"><span class="fld">标签</span><span class="prop-old">react</span><span class="arrow">→</span><span class="prop-new">react <span class="plus">+ssr</span> <span class="plus">+streaming</span></span></div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="prop-op">
+                      <span class="prop-check on" onclick="this.classList.toggle('on')" role="checkbox" aria-checked="true" tabindex="0"><svg class="icon"><use href="#i-check"/></svg></span>
+                      <div class="prop-op-main">
+                        <div class="prop-op-name">stale/react-ssr-kit <span class="prop-kind unstar">取消星标</span></div>
+                        <div class="prop-reason">两年未维护且与当前技术选型不符，建议移出星标库。</div>
+                      </div>
+                    </div>
+                    <div class="prop-foot">
+                      <span class="note">已选 2 / 2 · 执行后可撤销</span>
+                      <button class="prop-exec"><svg class="icon"><use href="#i-check"/></svg>执行所选</button>
+                    </div>
+                  </div>
+                  <div style="font-size:11.5px;color:var(--muted);text-align:center;padding:2px 6px">执行记录与撤销入口保留在原「历史提案」中</div>
+                </div>
+
+                <!-- 需求 Tab -->
+                <div class="tabpane" data-pane="req">
+                  <div class="req-block">
+                    <label>目的</label>
+                    <div class="req-area">为 5 人电商团队寻找支持流式渲染与一流 TypeScript 支持的 React SSR 框架，需活跃维护、可渐进迁移。</div>
+                  </div>
+                  <div class="req-block">
+                    <label>必需</label>
+                    <div class="chips"><span class="req-chip req">流式渲染</span><span class="req-chip req">SSR</span><span class="req-chip req">TypeScript</span><span class="req-chip req">活跃维护</span></div>
+                  </div>
+                  <div class="req-block">
+                    <label>偏好</label>
+                    <div class="chips"><span class="req-chip pref">文档完善</span><span class="req-chip pref">社区活跃</span><span class="req-chip pref">轻量</span></div>
+                  </div>
+                  <div class="req-block">
+                    <label>排除</label>
+                    <div class="chips"><span class="req-chip excl">已停止维护</span><span class="req-chip excl">重度企业版</span></div>
+                  </div>
+                  <div class="req-block">
+                    <label>查询批次 · 2 组</label>
+                    <div class="chips" style="flex-direction:column;align-items:flex-start;gap:5px">
+                      <span class="req-q"><svg class="icon"><use href="#i-search"/></svg>react streaming ssr framework typescript</span>
+                      <span class="req-q"><svg class="icon"><use href="#i-search"/></svg>react server components framework 2026</span>
+                    </div>
+                  </div>
+                  <button class="p-mini pri" style="width:100%;justify-content:center;height:34px"><svg class="icon"><use href="#i-refresh"/></svg>按需求重新搜索</button>
+                </div>
+
+              </div>
+            </aside>
+          </div>
+        </div>
+        </div>
+        <div class="phone-hint">手机预览：点击左上角 <b>侧栏图标</b> 打开会话抽屉 · 点击右下 <b>工作台</b> 打开底部面板</div>
+      </div>
+    </section>
+
+    <!-- ======================= 05 设计规范 ======================= -->
+    <section id="s5">
+      <div class="sec-head"><span class="sec-num">05</span><h2>设计规范</h2></div>
+      <p class="sec-lead">所有视觉值映射到项目既有 Theme Token 体系（<code>src/lib/themePresets.ts</code> + CSS 变量），不新增颜色字面量；主题预设、深浅色、圆角与动效偏好自动生效。</p>
+
+      <h3>色彩 Token</h3>
+      <div class="swatches">
+        <div class="swatch"><div class="sw-color" style="background:var(--primary)"></div><div class="sw-info"><b>Primary</b><code>--primary</code>主操作 / 激活态</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--primary-soft);border-bottom:1px solid var(--border)"></div><div class="sw-info"><b>Primary Soft</b><code>--primary/10</code>气泡 / 高亮底</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--surface);border-bottom:1px solid var(--border)"></div><div class="sw-info"><b>Surface</b><code>--background</code>卡片 / 面板</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--surface-2)"></div><div class="sw-info"><b>Subtle</b><code>--muted</code>工具条 / 分组头</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--success)"></div><div class="sw-info"><b>Success</b><code>--success</code>已验证 / 执行成功</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--warning)"></div><div class="sw-info"><b>Warning</b><code>--warning</code>验证中 / 待确认</div></div>
+        <div class="swatch"><div class="sw-color" style="background:var(--danger)"></div><div class="sw-info"><b>Danger</b><code>--destructive</code>取消星标 / 错误</div></div>
+      </div>
+      <div class="callout info"><svg class="icon"><use href="#i-eye"/></svg><div><b>深浅色双模式验证：</b>切换原型顶部「深色」可检查全部组件在两套主题下的表现——本方案未使用任何硬编码颜色，全部通过语义 token 引用，因此主题预设（15 套）与用户自定义强调色（8 色）均可直接生效。</div></div>
+
+      <h3>排版比例</h3>
+      <div class="card">
+        <div class="type-row"><div class="t-demo" style="font-size:19px;font-weight:750">页面标题 19 / 750</div><div class="t-spec">顶栏会话标题 · letter-spacing -0.01em</div></div>
+        <div class="type-row"><div class="t-demo" style="font-size:14.5px;font-weight:700">区块标题 14.5 / 700</div><div class="t-spec">Dock 标题 · 卡片标题</div></div>
+        <div class="type-row"><div class="t-demo" style="font-size:13.8px">正文 13.8 / 400 · 行高 1.78</div><div class="t-spec">消息正文 · 卡片描述（现 text-xs → 提升）</div></div>
+        <div class="type-row"><div class="t-demo" style="font-size:12.5px;color:var(--muted)">次要文字 12.5 / 500</div><div class="t-spec">会话摘要 · 时间 · 工具条</div></div>
+        <div class="type-row" style="border-bottom:none"><div class="t-demo" style="font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">分组标签 10.5 / 700 大写</div><div class="t-spec">侧栏分组 · 表头 · 徽标</div></div>
+      </div>
+
+      <h3>组件与交互规格</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:150px">组件</th><th>规格要点</th></tr></thead>
+          <tbody>
+            <tr><td>圆角体系</td><td>控件 8px · 卡片 11–13px · 气泡 16px（用户气泡右下 5px 打角）· Composer 15px；整体跟随 <code>--radius</code> token 缩放</td></tr>
+            <tr><td>间距网格</td><td>4px 基准：侧栏会话行 padding 7.5/9 · 消息间距 22px · Composer 内边距 11/13 · Dock 卡片间距 11px</td></tr>
+            <tr><td>阴影</td><td>静置 <code>shadow-xs</code>；悬浮卡片 <code>shadow-md</code>；浮动胶囊与 FAB <code>shadow-lg</code> + 主题色投影</td></tr>
+            <tr><td>焦点</td><td>所有交互元素 <code>:focus-visible</code> 显示 2px ring（<code>--ring</code>）；Composer 聚焦时边框变 Primary + 4px 外圈</td></tr>
+            <tr><td>动效</td><td>微交互 130–150ms ease-out；面板折叠 200ms；浮动胶囊 2.6s 呼吸；全部遵循 <code>prefers-reduced-motion</code> 与 Theme Token <code>animation: reduced</code> 禁用</td></tr>
+            <tr><td>触控目标</td><td>桌面 ≥ 29px；移动端 ≥ 40px（FAB / 抽屉按钮）；间距 ≥ 4px 防误触</td></tr>
+            <tr><td>空状态</td><td>欢迎页 = Logo 渐变标 + 问候 + 2×2 灵感卡片（图标 + 标题 + 描述），点击预填输入框</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>可达性清单</h3>
+      <div class="checklist">
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>正文对比度 ≥ 4.5:1；muted 文字仅用于 ≥ 11.5px 的非关键信息</div>
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>保留全部现有 <code>aria-label</code> / <code>role</code> / <code>data-testid</code>（现有测试依赖）</div>
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>键盘完整可达：Tab 顺序 = 顶栏 → 消息 → Composer；Esc 关闭抽屉 / 停止生成</div>
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>提案勾选使用 <code>role="checkbox" + aria-checked</code>，支持空格切换</div>
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>流式状态同时有文字标签（不只靠脉冲动画）</div>
+        <div class="check-item"><svg class="icon"><use href="#i-check"/></svg>颜色不再是唯一语义通道：验证状态 = 色 + 图标 + 文字三重编码</div>
+      </div>
+    </section>
+
+    <!-- ======================= 06 实施路线 ======================= -->
+    <section id="s6">
+      <div class="sec-head"><span class="sec-num">06</span><h2>实施路线</h2></div>
+      <p class="sec-lead">三个渐进阶段，每阶段独立可交付、可回滚。全程不修改 <code>useAIWorkbench</code> Hook API、persistence、autoSync——纯 View 层重组，符合项目「新 Feature 优先新增文件」的基线策略。</p>
+
+      <div class="grid-2" style="margin-bottom:14px">
+        <div class="phase">
+          <span class="ph-tag">P1 · 约 1–2 天</span>
+          <h4>阶段一：骨架重组</h4>
+          <p class="ph-goal">把 1300 行单文件拆为职责单一的组件，布局落位，不改任何业务逻辑。</p>
+          <ol>
+            <li>新建 <code>WorkbenchShell</code>（顶栏 + 三栏骨架 + 折叠状态持久化到 preference）</li>
+            <li>抽出 <code>SessionSidebar</code>（分组列表 / 搜索 / 模式切换 / 底部工具）</li>
+            <li>抽出 <code>ChatStage</code>（消息流 + 任务条）与 <code>Composer</code>（上下文 chips + 参数 Popover）</li>
+            <li>现有 <code>AIWorkbench.tsx</code> 保留为组合层，只做组件编排</li>
+          </ol>
+          <div class="accept"><b>验收</b> · check:boundaries + lint + typecheck 通过；<code>AIWorkbench.test.tsx</code> 现有断言（含 data-testid）全部通过</div>
+        </div>
+        <div class="phase">
+          <span class="ph-tag">P2 · 约 1–2 天</span>
+          <h4>阶段二：工作台 Dock 与提案</h4>
+          <p class="ph-goal">行动内容迁移出聊天流，提案审查体验升级。</p>
+          <ol>
+            <li>新建 <code>WorkbenchDock</code>（候选 / 提案 / 需求三 Tab，可折叠 <code>⌘/</code>）</li>
+            <li><code>OperationPreview</code> → <code>ProposalReviewCard</code>：diff 审查 + 批量勾选 + 执行进度</li>
+            <li><code>RequirementsEditor</code> 移入 Dock 需求 Tab；聊天流移除对应区块</li>
+            <li>新建 <code>EvidenceList</code> 折叠组件，替换消息内常展开的引用区</li>
+            <li>「对话 / 工作台」视图分段控件替代现有 Chat/Overview 选项卡</li>
+          </ol>
+          <div class="accept"><b>验收</b> · i18n check（9 语言 key 补齐）通过；提案执行 / 撤销路径手动回归</div>
+        </div>
+      </div>
+      <div class="phase">
+        <span class="ph-tag">P3 · 约 1 天</span>
+        <h4>阶段三：移动端与打磨</h4>
+        <p class="ph-goal">系统性响应式 + 微动效，移除键盘 hack 补丁。</p>
+        <ol>
+          <li>移动端：侧栏抽屉 + Dock 底部抽屉 + FAB + Composer 粘底（替换 <code>isKeyboardOpen</code> 补丁为 <code>visualViewport</code> 方案）</li>
+          <li>快捷键：<code>⌘K</code> 会话搜索 · <code>⌘B</code> 侧栏 · <code>⌘/</code> Dock · <code>Esc</code> 停止，快捷键提示常驻 Composer 下沿</li>
+          <li>动效与焦点细节打磨；深浅色 + 3 套主题预设 + reduced-motion 全量视觉回归</li>
+        </ol>
+        <div class="accept"><b>验收</b> · 390 / 768 / 1280 / 1536 四断点手动走查；reduce-motion 下无动画；Electron 桌面端窗口缩放回归</div>
+      </div>
+
+      <div class="callout warn" style="margin-top:18px"><svg class="icon"><use href="#i-alert"/></svg><div><b>约束与风险：</b>① 不动 <code>useAIWorkbench</code> / persistence / autoSync（P0 保护区）；② 全部样式走 Theme Token 与 <code>ui/</code> primitives，禁止新增颜色字面量；③ 保留组织面板 Sheet、legacy 会话、agy 本地项目等既有分支能力（原型为示意裁剪）；④ 每阶段一次 Feature Record 记录到 <code>docs/personal/features/</code>。</div></div>
+    </section>
+  </main>
+</div>
+
+<script>
+/* ======================= 原型交互 ======================= */
+const proto = document.getElementById('proto');
+
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  document.getElementById('btn-light').classList.toggle('on', t === 'light');
+  document.getElementById('btn-dark').classList.toggle('on', t === 'dark');
+}
+function setDevice(d) {
+  const app = document.getElementById('proto');
+  app.dataset.device = d;
+  document.getElementById('btn-desk').classList.toggle('on', d === 'desktop');
+  document.getElementById('btn-phone').classList.toggle('on', d === 'phone');
+  document.getElementById('vp-size').textContent = d === 'desktop' ? '1280 × 780' : '392 × 780';
+  /* 手机模式下桌面折叠态复位，避免布局错乱 */
+  if (d === 'phone') { app.dataset.sidebar = 'open'; app.dataset.dock = 'open'; }
+  if (d === 'desktop') { app.dataset.msidebar = 'closed'; app.dataset.mdock = 'closed'; }
+}
+function setView(v, btn) {
+  proto.dataset.view = v;
+  const tabs = document.querySelectorAll('.p-viewseg button');
+  tabs.forEach(b => { b.classList.toggle('on', b === btn); b.setAttribute('aria-selected', b === btn ? 'true' : 'false'); });
+}
+function toggleSidebar() {
+  const app = document.getElementById('proto');
+  if (app.dataset.device === 'phone') { app.dataset.msidebar = app.dataset.msidebar === 'open' ? 'closed' : 'open'; }
+  else { app.dataset.sidebar = app.dataset.sidebar === 'closed' ? 'open' : 'closed'; }
+}
+function toggleDock() { proto.dataset.dock = proto.dataset.dock === 'closed' ? 'open' : 'closed'; }
+function toggleMDock() { proto.dataset.mdock = proto.dataset.mdock === 'open' ? 'closed' : 'open'; }
+function closeMobile() { proto.dataset.msidebar = 'closed'; proto.dataset.mdock = 'closed'; }
+function openDockTab(tab) { toggleDockIfClosed(); dockTab(tab); }
+function toggleDockIfClosed() { if (proto.dataset.dock === 'closed') proto.dataset.dock = 'open'; }
+function dockTab(tab) {
+  document.querySelectorAll('.p-docktabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('.p-dock-body .tabpane').forEach(p => p.classList.toggle('on', p.dataset.pane === tab));
+}
+
+/* Esc 关闭手机抽屉 */
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeMobile();
+});
+
+/* TOC 高亮 */
+const links = document.querySelectorAll('.toc a');
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(en => {
+    if (en.isIntersecting) {
+      links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + en.target.id));
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px' });
+document.querySelectorAll('.doc section').forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

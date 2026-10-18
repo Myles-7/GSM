@@ -46,7 +46,11 @@ function normalizeState(input) {
   return state;
 }
 
-function createPluginStateStore(statePath) {
+function createPluginStateStore(statePath, {
+  fileSystem = fs,
+  platform = process.platform,
+  wait = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
+} = {}) {
   if (typeof statePath !== 'string' || statePath.trim() === '') {
     throw new TypeError('statePath must be a non-empty string');
   }
@@ -55,24 +59,32 @@ function createPluginStateStore(statePath) {
   return {
     load() {
       try {
-        return normalizeState(JSON.parse(fs.readFileSync(resolvedPath, 'utf8')));
+        return normalizeState(JSON.parse(fileSystem.readFileSync(resolvedPath, 'utf8')));
       } catch {
         return emptyState();
       }
     },
     save(state) {
       const normalized = normalizeState(state);
-      fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+      fileSystem.mkdirSync(path.dirname(resolvedPath), { recursive: true });
       const temporaryPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
       try {
-        fs.writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`, {
+        fileSystem.writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`, {
           encoding: 'utf8',
           mode: 0o600,
         });
-        fs.renameSync(temporaryPath, resolvedPath);
+        // Windows scanners can briefly lock the destination after a successful read.
+        // Retry only the same atomic replacement; never unlink the durable old state.
+        for (let attempt = 0; ; attempt++) {
+          try { fileSystem.renameSync(temporaryPath, resolvedPath); break; }
+          catch (error) {
+            if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
+            wait(10 * (2 ** attempt));
+          }
+        }
       } catch (error) {
         try {
-          fs.unlinkSync(temporaryPath);
+          fileSystem.unlinkSync(temporaryPath);
         } catch {
           // Ignore cleanup errors; the original save error is more useful.
         }

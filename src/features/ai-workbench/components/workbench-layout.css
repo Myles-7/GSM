@@ -4,7 +4,9 @@
 .workbench-separator { display: none; }
 .workbench-split[data-view="overview"] > .workbench-results-pane { display: flex; flex-direction: column; }
 .workbench-split[data-view="overview"] > .workbench-chat-pane { display: none; }
-@media (min-width: 1280px) {
+/* Keep in sync with the Tailwind `xl` breakpoint (1300px) so the separator and
+   the xl-gated dock/reset controls appear at the same width. */
+@media (min-width: 1300px) {
   .workbench-split[data-docked="true"][data-view="overview"] > .workbench-results-pane { flex: 0 0 clamp(420px, var(--result-ratio), calc(100% - 367px)); }
   .workbench-split[data-docked="true"][data-view="overview"] > .workbench-chat-pane { display: flex; flex: 1; }
   .workbench-split[data-docked="true"][data-view="overview"] > .workbench-separator { display: flex; }

@@ -44,6 +44,7 @@ it('dispatches two detail tasks, pauses new dispatch, resumes and preserves manu
   let running!: Promise<void>;
   act(() => { running = hook.result.current.run(repos); });
   await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(analyzeRepositoryDetails).mock.calls[0][0].aiConfig).toMatchObject({ agyPriority: 'interactive' });
   act(() => hook.result.current.pause());
   await act(async () => { releases.splice(0).forEach(resolve => resolve()); });
   expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(2);
@@ -55,6 +56,18 @@ it('dispatches two detail tasks, pauses new dispatch, resumes and preserves manu
   expect(useAppStore.getState().repositories.every(repo => repo.ai_summary === `details ${repo.id}` && repo.custom_description === 'manual')).toBe(true);
   expect(applyRepositoryAnalysisAsset('7', repos[0], 'zh').ai_summary).toBe(`details ${repos[0].id}`);
   hook.unmount();
+});
+
+it('stops new admission after a configuration failure while saving a healthy in-flight sibling', async () => {
+  vi.mocked(analyzeRepositoryDetails).mockRejectedValueOnce(new Error('AGY_DISABLED'));
+  const hook = renderHook(() => useRepositoryDetailAnalysisJob());
+  let running!: Promise<void>;
+  act(() => { running = hook.result.current.run(repos); });
+  await waitFor(() => expect(hook.result.current.errors).toHaveLength(1));
+  await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
+  expect(analyzeRepositoryDetails).toHaveBeenCalledTimes(2);
+  expect(useAppStore.getState().repositories.filter(repo => repo.ai_summary !== 'old')).toHaveLength(1);
+  expect(hook.result.current.progress.current).toBe(2); hook.unmount();
 });
 
 it('stops all active detail requests and refuses late results after account changes', async () => {

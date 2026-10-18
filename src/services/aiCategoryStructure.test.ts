@@ -79,6 +79,38 @@ describe('reviewed category structure transactions', () => {
     await restoreCategoryStructure(p.id, applied.updatedAt, op.id);
     expect(mocks.state.customCategories).toHaveLength(2);
   });
+  it('creates, renames and merges technical categories without touching purpose or legacy history', async () => {
+    const before = structuredClone(mocks.state.customCategories);
+    mocks.state.classificationSchemes = { technology: { initialized: true, customCategories: [category('tech-a', 'Technical A'), category('tech-b', 'Technical B')], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: ['tech-a', 'tech-b'], subcategories: [], subcategoryOrder: [], repositoryOrder: [1, 2], categoryListIdMap: {} } };
+    mocks.state.repositories = mocks.state.repositories.map((repo, index) => ({ ...repo, classifications: { technology: { categoryId: index ? 'tech-b' : 'tech-a', subcategoryId: null, locked: false } } }));
+    const proposeTech = (suggestions: Parameters<typeof proposeCategoryStructure>[0]['suggestions']) => proposeCategoryStructure({ sessionId: 'session', configId: 'manual', instruction: 'Technical structure', suggestions, schemeId: 'technology' });
+    let p = await proposeTech([{ kind: 'create', name: 'Empty technical domain' }]);
+    expect(p.organization).toMatchObject({ version: 3, singleSchemeId: 'technology' });
+    let op = p.organization!.structureOperations![0];
+    p = await applyCategoryStructure(p.id, p.updatedAt, op.id);
+    expect(mocks.state.classificationSchemes.technology?.customCategories.some(c => c.id === op.targetId)).toBe(true);
+    await restoreCategoryStructure(p.id, p.updatedAt, op.id);
+    p = await proposeTech([{ kind: 'rename', targetId: 'tech-a', name: 'Renamed technical domain' }]);
+    op = p.organization!.structureOperations![0];
+    p = await applyCategoryStructure(p.id, p.updatedAt, op.id);
+    expect(mocks.state.repositories[0].classifications?.technology?.categoryId).toBe('tech-a');
+    await restoreCategoryStructure(p.id, p.updatedAt, op.id);
+    p = await proposeTech([{ kind: 'merge', sourceIds: ['tech-a'], targetId: 'tech-b', name: 'Technical B' }]);
+    for (const entry of p.organization!.entries) p = await editOrganizationProposal(p.id, p.updatedAt, { repositoryId: entry.repositoryId, patch: { categoryId: 'tech-b', subcategoryId: null } });
+    op = p.organization!.structureOperations![0];
+    p = await applyCategoryStructure(p.id, p.updatedAt, op.id);
+    expect(mocks.state.repositories.every(r => r.classifications?.technology?.categoryId === 'tech-b')).toBe(true);
+    expect(mocks.state.customCategories).toEqual(before);
+    expect(mocks.state.repositories.map(r => r.category_id)).toEqual(['source', 'target']);
+    await restoreCategoryStructure(p.id, p.updatedAt, op.id);
+    expect(mocks.state.repositories.map(r => r.classifications?.technology?.categoryId)).toEqual(['tech-a', 'tech-b']);
+    mocks.state.activeClassificationScheme = 'technology';
+    const legacy = await propose([{ kind: 'rename', targetId: 'source', name: 'Legacy remains purpose' }]);
+    expect(legacy.organization?.version).toBe(2);
+    expect(legacy.organization?.singleSchemeId).toBeUndefined();
+    await applyCategoryStructure(legacy.id, legacy.updatedAt, legacy.organization!.structureOperations![0].id);
+    expect(mocks.state.customCategories[0].name).toBe('Legacy remains purpose');
+  });
   it('renames without changing stable membership, lock, description or list binding', async () => {
     mocks.state.repositories[0].category_locked = true;
     const p = await propose([{ kind: 'rename', targetId: 'source', name: 'Renamed' }]);

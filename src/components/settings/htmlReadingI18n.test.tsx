@@ -6,6 +6,7 @@ import { defaultSettings, resolveReadingProfile } from '../../lib/html-reading/m
 import type { useHtmlReading } from '../../features/settings/hooks/useHtmlReading';
 import { HtmlReadingProfile } from './HtmlReadingProfile';
 import { HtmlReadingMail } from './HtmlReadingMail';
+import { HtmlReadingCandidates } from './HtmlReadingCandidates';
 
 vi.mock('../../store/useAppStore', async () => {
   const { create } = await import('zustand');
@@ -42,4 +43,18 @@ it('keeps the unconfirmed delivery guard and retry count in English', async () =
   expect(controller.resend).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Inbox checked; resend' }));
   expect(controller.resend).toHaveBeenCalledWith('fixture', true);
+});
+
+it('updates candidate selection and confirmation labels when changing language', async () => {
+  await ensureLanguageLoaded('en');
+  render(<HtmlReadingCandidates lastImportId="this" controller={{accountLabel:'alice (42)',busy:false,error:'',batches:[],items:[{id:'7',name:'acme/tool',summary:'Saved summary',analysis:[],state:{read:false,interest:'interested',note:'Saved note',candidate:true}}],start:vi.fn(async()=>{}),resume:vi.fn(async()=>{}),dismiss:vi.fn(async()=>{}),stop:vi.fn(),refresh:vi.fn(async()=>{})}}/>);
+  expect(screen.getByRole('checkbox',{name:'选择 acme/tool'})).toBeInTheDocument();
+  act(()=>useAppStore.setState({language:'en'}));
+  fireEvent.click(screen.getByRole('checkbox',{name:'Select acme/tool'}));
+  expect(screen.getByText('1 selected across all pages')).toBeInTheDocument();
+  expect(screen.getByText('0 selected projects outside this page')).toBeInTheDocument();
+  expect(screen.getByText(/Historical candidate/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Star selected'}));
+  expect(screen.getByRole('dialog')).toHaveTextContent('GitHub account: alice (42). Confirm the complete list of 1 projects below.');
+  expect(screen.getByRole('button',{name:'Confirm GitHub Star'})).toBeInTheDocument();
 });

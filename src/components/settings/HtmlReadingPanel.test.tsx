@@ -54,3 +54,19 @@ it('never sends when actual generation fails due to size and shows the correctiv
   render(<HtmlReadingPanel/>);await screen.findByRole('tab',{name:'内容范围'});fireEvent.click(screen.getByRole('tab',{name:'内容范围'}));fireEvent.click(screen.getByRole('tab',{name:'邮件发送'}));
   fireEvent.click(screen.getByRole('button',{name:'立即生成并发送'}));await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('本次未发送'));expect(send).not.toHaveBeenCalled();
 });
+
+it('shows everyday settings first and preserves advanced overrides when expanding',async()=>{
+  await readingTransaction('42',data=>{data.settings.channelProfiles={trending:{perChannel:120,detailModes:{features:'omit'}}};});
+  render(<HtmlReadingPanel simple/>);
+  await screen.findByRole('button',{name:'高级设置'});
+  expect(screen.getByRole('combobox',{name:'阅读预设'})).toBeVisible();
+  expect(screen.getByRole('combobox',{name:'正文字号'})).toBeVisible();
+  expect(screen.queryByRole('tab',{name:'存储与清理'})).toBeNull();
+  expect(screen.queryByRole('tab',{name:'阅读记录'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'高级设置'}));
+  fireEvent.click(screen.getByRole('tab',{name:'频道配置'}));
+  expect(screen.getByRole('spinbutton',{name:'可沿用内置频道缓存的最长天数'})).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'保存设置'}));
+  await waitFor(()=>expect(screen.getByText('设置已保存；定时邮件将使用已保存配置。')).toBeVisible());
+  expect((await loadReadingData('42')).settings.channelProfiles.trending).toMatchObject({perChannel:120,detailModes:{features:'omit'}});
+});

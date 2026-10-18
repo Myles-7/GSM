@@ -7,7 +7,7 @@ const snapshot=():ReadingSnapshot=>({version:1,id:'snapshot',accountId:'42',gene
 const incoming=(field:ReadingReturn['operations'][number]['field']='read',value:string|boolean=true):ReadingReturn=>({format:'gsm-reading-changes',version:1,accountId:'42',snapshotId:'snapshot',operations:[{id:'18ee370a-f449-4c76-b7dc-1b6903dc681b',repoId:1,field,base:field==='note'?'':field==='interest'?'neutral':false,value}]});
 describe('HTML reading round trip',()=>{
   it('persists preferences by account and does not include credentials',async()=>{await saveReadingSettings('42',{...defaultSettings,fontSize:'20'});expect((await loadReadingData('42')).settings.fontSize).toBe('20');expect((await loadReadingData('43')).settings.fontSize).toBe('16');expect(JSON.stringify(await loadReadingData('42'))).not.toContain('password');});
-  it('imports operations once and preserves unrelated notes',async()=>{await rememberSnapshot('42',snapshot());await readingTransaction('42',d=>{d.states['2']={...emptyReadingState(),note:'keep'};});expect(await applyReadingReturn('42',incoming(),{})).toEqual({applied:1,duplicate:0,kept:0});expect(await applyReadingReturn('42',incoming(),{})).toEqual({applied:0,duplicate:1,kept:0});expect((await loadReadingData('42')).states['2'].note).toBe('keep');});
+  it('imports operations once and preserves unrelated notes',async()=>{await rememberSnapshot('42',snapshot());await readingTransaction('42',d=>{d.states['2']={...emptyReadingState(),note:'keep'};});expect(await applyReadingReturn('42',incoming(),{})).toEqual({applied:1,duplicate:0,kept:0,importId:expect.any(String)});expect(await applyReadingReturn('42',incoming(),{})).toEqual({applied:0,duplicate:1,kept:0});expect((await loadReadingData('42')).states['2'].note).toBe('keep');});
   it('preserves both note versions until the user resolves conflict',async()=>{await rememberSnapshot('42',snapshot());await readingTransaction('42',d=>{d.states['1']={...emptyReadingState(),note:'desktop'};});const input=incoming('note','phone');const rows=inspectReadingReturn(await loadReadingData('42'),'42',input);expect(rows[0].status).toBe('conflict');await expect(applyReadingReturn('42',input,{})).rejects.toThrow('冲突');expect((await loadReadingData('42')).states['1'].note).toBe('desktop');await applyReadingReturn('42',input,{[input.operations[0].id]:'phone'});expect((await loadReadingData('42')).states['1'].note).toBe('phone');});
   it('rejects changes made on desktop after import preview',async()=>{await rememberSnapshot('42',snapshot());const input=incoming('note','phone');const rows=inspectReadingReturn(await loadReadingData('42'),'42',input);await readingTransaction('42',d=>{d.states['1']={...emptyReadingState(),note:'later'};});await expect(applyReadingReturn('42',input,{},rows)).rejects.toThrow('预览后');});
   it('keeps desktop version and receipts that decision',async()=>{await rememberSnapshot('42',snapshot());await readingTransaction('42',d=>{d.states['1']={...emptyReadingState(),interest:'ignored'};});const input=incoming('interest','interested');await applyReadingReturn('42',input,{[input.operations[0].id]:'desktop'});expect((await loadReadingData('42')).states['1'].interest).toBe('ignored');expect((await applyReadingReturn('42',input,{})).duplicate).toBe(1);});
@@ -119,5 +119,60 @@ describe('HTML reading v2 positions and migration',()=>{
   });
   it('keeps a fallback notice even when the new view has no projects',async()=>{
     await rememberSnapshot('42',modernSnapshot());await applyReadingReturn('42',positionReturn(),{});const next=modernSnapshot('empty',[]);await rememberSnapshot('42',next);expect(next.resume).toEqual([]);expect(next.warnings?.[0]).toContain('项目未包含');
+  });
+});
+
+
+describe('Reading identity maintenance and immutable snapshots', () => {
+  const physical = async () => {
+    const { openReadingDb } = await import('./storage');
+    const db = await openReadingDb();
+    try {
+      return await new Promise<Record<string, unknown[]>>((resolve, reject) => {
+        const names = Array.from(db.objectStoreNames);
+        const tx = db.transaction(names, 'readonly');
+        const result: Record<string, unknown[]> = {};
+        for (const name of names) { const request = tx.objectStore(name).getAll(); request.onsuccess = () => { result[name] = request.result; }; }
+        tx.oncomplete = () => resolve(result); tx.onabort = tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  };
+  it('read-only callback mutations leave every physical store, revision and receipt unchanged', async () => {
+    await rememberSnapshot('42', snapshot());
+    await readingTransaction('42', data => { data.states['1'] = { ...emptyReadingState(), note: 'precious' }; data.applied.receipt = 'keep'; });
+    const before = await physical();
+    const result = await readingTransaction('42', data => { data.states['1'].note = 'must-not-persist'; data.snapshots = {}; data.applied = {}; return data; }, { readOnly: true, includeCandidates: true, includeStarBatches: true });
+    expect(result.states['1'].note).toBe('must-not-persist');
+    expect(await physical()).toEqual(before);
+  });
+  it('allows immutable snapshots under the gate and requires the exact owner for any write', async () => {
+    const { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } = await import('../../services/repositoryIdentityGate');
+    await rememberSnapshot('42', snapshot());
+    const before = await physical();
+    holdRepositoryIdentityWrites('42', 'journal');
+    try {
+      await loadReadingData('42', { readOnly: true });
+      expect(await physical()).toEqual(before);
+      await expect(readingTransaction('42', data => { data.states = {}; })).rejects.toThrow('MAINTENANCE');
+      await expect(loadReadingData('42')).rejects.toThrow('MAINTENANCE');
+      await expect(readingTransaction('42', () => {}, { identityMaintenance: { account: '42', journalId: 'wrong' } })).rejects.toThrow('OWNER_MISMATCH');
+      await expect(readingTransaction('42', () => {}, { identityMaintenance: { account: '43', journalId: 'journal' } })).rejects.toThrow('OWNER_MISMATCH');
+      await readingTransaction('42', data => { data.names['1'] = 'renamed'; }, { identityMaintenance: { account: '42', journalId: 'journal' } });
+      expect((await loadReadingData('42', { readOnly: true })).names['1']).toBe('renamed');
+    } finally { releaseRepositoryIdentityWrites('42'); }
+  });
+  it('read-only backup cannot run lazy schema migrations or write their backups', async () => {
+    const old = { settings: defaultSettings, states: {}, names: {}, applied: {}, snapshots: {} };
+    await putLegacy(old);
+    await expect(loadReadingData('42', { readOnly: true })).rejects.toThrow('READING_SCHEMA_MIGRATION_REQUIRED');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('gsm-html-reading'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    expect(db.version).toBe(1);
+    expect(Array.from(db.objectStoreNames)).toEqual(['accounts']);
+    db.close();
+    await loadReadingData('42');
+    const before = await physical();
+    await loadReadingData('42', { readOnly: true });
+    expect(await physical()).toEqual(before);
+    expect((await loadReadingMigrationBackup('42'))?.data).toEqual(old);
   });
 });

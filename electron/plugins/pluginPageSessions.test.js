@@ -2,6 +2,21 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createPageSessions } = require('./pluginPageSessions');
 
+test('network reservations retain concurrency, reject mismatched/replayed completion and revoke on reload', () => {
+  const sessions = createPageSessions();
+  const sessionToken = sessions.open('com.example.page', 'one');
+  const base = { pluginId: 'com.example.page', pageId: 'one', sessionToken, args: { host: 'api.github.com', path: '/users/a' } };
+  const requests = Array.from({ length: 8 }, (_, i) => ({ ...base, requestId: String(i) }));
+  const tickets = requests.map(r => sessions.hold(r, sessions.acquire(r)));
+  assert.throws(() => sessions.acquire({ ...base, requestId: 'next' }), { code: 'PLUGIN_PAGE_RATE_LIMITED' });
+  assert.throws(() => sessions.complete({ ...requests[1], networkTicket: tickets[0] }), { code: 'PLUGIN_PAGE_CLOSED' });
+  sessions.complete({ ...requests[0], networkTicket: tickets[0] });
+  assert.throws(() => sessions.complete({ ...requests[0], networkTicket: tickets[0] }), { code: 'PLUGIN_PAGE_CLOSED' });
+  sessions.acquire({ ...base, requestId: 'next' })();
+  sessions.open(base.pluginId, base.pageId);
+  assert.throws(() => sessions.complete({ ...requests[1], networkTicket: tickets[1] }), { code: 'PLUGIN_PAGE_CLOSED' });
+});
+
 test('binds plugin/page/token, prevents completed replay and revokes old/reopened sessions', () => {
   const sessions = createPageSessions();
   const sessionToken = sessions.open('com.example.page', 'one');

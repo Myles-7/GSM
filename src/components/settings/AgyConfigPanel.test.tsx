@@ -17,11 +17,12 @@ const initial: AgyDeviceState = {
 const detected: AgyDeviceState = { ...initial, executable: { name: 'agy.exe', fingerprint: 'abc' } };
 let api: AgyDesktopAPI;
 beforeEach(() => {
-  useAppStore.setState({ activeAIConfig: null, aiConfigs: [] });
+  useAppStore.setState({ activeAIConfig: null, aiConfigs: [], user: null });
   api = {
     chooseProject: vi.fn(), readProject: vi.fn(), revokeProject: vi.fn(),
     getState: vi.fn().mockResolvedValue(initial),
     detect: vi.fn().mockResolvedValue({ ok: true, value: detected }),
+    recover: vi.fn().mockResolvedValue({ ok: true, value: detected }),
     choose: vi.fn().mockResolvedValue({ ok: false, code: 'CANCELED' }),
     save: vi.fn().mockImplementation((_id, prefs) => Promise.resolve({ ok: true, value: { ...detected, prefs, enabled: prefs.enabled } })),
     listModels: vi.fn().mockResolvedValue({ ok: true, value: [{ id: 'synthetic-model', label: 'Synthetic model' }] }),
@@ -30,6 +31,8 @@ beforeEach(() => {
     } } }),
     cancel: vi.fn().mockResolvedValue(undefined),
     setSession: vi.fn().mockResolvedValue(undefined),
+    recoveryList: vi.fn().mockResolvedValue({ ok: true, value: { records: [], errors: [] } }),
+    recoveryRead: vi.fn(), recoveryAck: vi.fn(), recoveryStage: vi.fn(), recoveryDiscard: vi.fn(), recoveryRepair: vi.fn(),
     start: vi.fn(),
     onEvent: vi.fn().mockReturnValue(() => {}),
   };
@@ -89,14 +92,14 @@ describe('AGY device settings', () => {
     expect(api.save).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ enabled: true }));
   });
 
-  it('saves inactive preferences before retesting an already enabled configuration', async () => {
+  it('keeps enabled preferences while explicitly retesting without canceling old calls', async () => {
     api.getState = vi.fn().mockResolvedValue({ ...detected, enabled: true, prefs: { ...initial.prefs, enabled: true } });
     render(<AgyConfigPanel />);
     await screen.findByText('agy.exe');
     fireEvent.click(screen.getByText('agy.saveAndTest'));
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(2));
     expect(api.save).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ enabled: true }));
-    expect(api.save).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ enabled: false }));
+    expect(api.save).not.toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ enabled: false }));
     expect(api.probe).toHaveBeenCalledOnce();
   });
   it.each(['AUTH_REQUIRED', 'RATE_LIMIT', 'QUEUE_TIMEOUT', 'TIMEOUT', 'PERMISSION_DENIED'])(
@@ -193,5 +196,42 @@ describe('AGY device settings', () => {
     fireEvent.click(screen.getByText('agy.detect'));
     view.unmount();
     expect(api.cancel).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('offers a safe explicit repair only when a corrupt recovery record proves it was unsent', async () => {
+    useAppStore.setState({ user: { id: 7 } as never });
+    let repaired = false;
+    api.recoveryList = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, value: {
+      records: [], errors: repaired ? [] : [{ requestId: 'req-unsent', code: 'RECOVERY_RECORD_CORRUPT', certainty: 'definitely-unsent', dispatch: 'prepared', providerOutcome: 'not_started' }],
+    } }));
+    api.recoveryRepair = vi.fn().mockImplementation(async (_session, _requestId, action) => {
+      repaired = true; return { ok: true, value: { requestId: 'req-unsent', code: 'RECOVERY_RECORD_CORRUPT', certainty: 'definitely-unsent', action } };
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<AgyConfigPanel />);
+    const button = await screen.findByText('安全丢弃未发送记录');
+    fireEvent.click(button);
+    await waitFor(() => expect(api.recoveryRepair).toHaveBeenCalledWith(expect.any(String), 'req-unsent', 'discard-unsent'));
+    expect(confirm).toHaveBeenCalled();
+    await screen.findByText(/恢复记录已处理/);
+    await waitFor(() => expect(screen.queryByText('安全丢弃未发送记录')).toBeNull());
+    confirm.mockRestore();
+  });
+
+  it('keeps an unknown corrupt outcome blocked unless the user explicitly abandons it', async () => {
+    useAppStore.setState({ user: { id: 7 } as never });
+    api.recoveryList = vi.fn().mockResolvedValue({ ok: true, value: { records: [], errors: [{
+      requestId: 'req-unknown', code: 'RECOVERY_RECORD_CORRUPT', certainty: 'unknown', dispatch: 'sent', providerOutcome: 'unknown',
+    }] } });
+    api.recoveryRepair = vi.fn().mockResolvedValue({ ok: true, value: { requestId: 'req-unknown', code: 'RECOVERY_RECORD_CORRUPT', certainty: 'unknown', action: 'abandon-unknown' } });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<AgyConfigPanel />);
+    const button = await screen.findByText('放弃未知结果并解除阻断');
+    fireEvent.click(button);
+    expect(api.recoveryRepair).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    fireEvent.click(button);
+    await waitFor(() => expect(api.recoveryRepair).toHaveBeenCalledWith(expect.any(String), 'req-unknown', 'abandon-unknown'));
+    confirm.mockRestore();
   });
 });

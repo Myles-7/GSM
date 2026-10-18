@@ -89,6 +89,183 @@ export function translateIdentityData(collection: Collection, data: Record<strin
       return next;
     });
   };
+  const strictList = (value: unknown, code = 'REPOSITORY_IDENTITY_COLLISION') => {
+    if (!Array.isArray(value)) return value;
+    const seen = new Set<unknown>();
+    return value.map(item => {
+      const next = id(item);
+      if (seen.has(next)) fail(code);
+      seen.add(next);
+      return next;
+    });
+  };
+  const organizationSnapshot = (value: unknown) => {
+    if (!isObject(value) || value.repositoryOrder === undefined) return value;
+    const repositoryOrder = strictList(value.repositoryOrder);
+    return repositoryOrder === value.repositoryOrder ? value : { ...value, repositoryOrder };
+  };
+  const organizationEntries = (value: unknown, allStatuses: boolean, code = 'ORGANIZATION_IDENTITY_COLLISION') => {
+    if (!Array.isArray(value)) return value;
+    const seen = new Set<unknown>();
+    const entries = value.map(entry => {
+      if (!isObject(entry)) return entry;
+      const repositoryId = !allStatuses && entry.status !== 'pending' ? entry.repositoryId : id(entry.repositoryId);
+      if (typeof repositoryId === 'number') {
+        if (seen.has(repositoryId)) fail(code);
+        seen.add(repositoryId);
+      }
+      return repositoryId === entry.repositoryId ? entry : { ...entry, repositoryId };
+    });
+    return entries;
+  };
+  const organizationMembers = (value: unknown, code = 'ORGANIZATION_IDENTITY_COLLISION') => {
+    if (!Array.isArray(value)) return value;
+    const seen = new Set<unknown>();
+    return value.map(member => {
+      if (!isObject(member)) return member;
+      const repositoryId = id(member.repositoryId);
+      if (typeof repositoryId === 'number') {
+        if (seen.has(repositoryId)) fail(code);
+        seen.add(repositoryId);
+      }
+      return repositoryId === member.repositoryId ? member : { ...member, repositoryId };
+    });
+  };
+  const remapOrganizationDual = (value: unknown): { value: unknown; changed: boolean } => {
+    if (!isObject(value)) return { value, changed: false };
+    let changed = false;
+    const next: Record<string, unknown> = { ...value };
+    const mapUnderstanding = (rows: unknown) => {
+      if (!Array.isArray(rows)) return rows;
+      const mapped = rows.map(row => {
+        if (!isObject(row)) return row;
+        const repositoryId = id(row.repositoryId);
+        if (repositoryId !== row.repositoryId) changed = true;
+        return repositoryId === row.repositoryId ? row : { ...row, repositoryId };
+      });
+      return mapped;
+    };
+    if (value.understanding !== undefined) next.understanding = mapUnderstanding(value.understanding);
+    if (Array.isArray(next.understanding)) {
+      const seen = new Set<unknown>();
+      for (const row of next.understanding) if (isObject(row)) {
+        if (seen.has(row.repositoryId)) fail('ORGANIZATION_IDENTITY_COLLISION');
+        seen.add(row.repositoryId);
+      }
+    }
+    if (value.summaries !== undefined && Array.isArray(value.summaries)) {
+      next.summaries = value.summaries.map(summary => {
+        if (!isObject(summary)) return summary;
+        const repositoryIds = strictList(summary.repositoryIds);
+        if (JSON.stringify(repositoryIds) !== JSON.stringify(summary.repositoryIds)) changed = true;
+        return repositoryIds === summary.repositoryIds ? summary : { ...summary, repositoryIds };
+      });
+    }
+    if (value.verificationIds !== undefined) {
+      const verificationIds = strictList(value.verificationIds);
+      if (JSON.stringify(verificationIds) !== JSON.stringify(value.verificationIds)) changed = true;
+      next.verificationIds = verificationIds;
+    }
+    if (value.errors !== undefined && Array.isArray(value.errors)) {
+      next.errors = value.errors.map(error => {
+        if (!isObject(error)) return error;
+        const repositoryIds = strictList(error.repositoryIds);
+        if (JSON.stringify(repositoryIds) !== JSON.stringify(error.repositoryIds)) changed = true;
+        return repositoryIds === error.repositoryIds ? error : { ...error, repositoryIds };
+      });
+    }
+    if (isObject(value.schemes)) {
+      const schemes: Record<string, unknown> = { ...value.schemes };
+      for (const key of ['purpose', 'technology']) {
+        const scheme = value.schemes[key];
+        if (!isObject(scheme)) continue;
+        const mapped: Record<string, unknown> = { ...scheme };
+        const entries = organizationEntries(scheme.entries, true);
+        if (JSON.stringify(entries) !== JSON.stringify(scheme.entries)) changed = true;
+        if (scheme.entries !== undefined) mapped.entries = entries;
+        const before = organizationSnapshot(scheme.before);
+        if (JSON.stringify(before) !== JSON.stringify(scheme.before)) changed = true;
+        if (scheme.before !== undefined) mapped.before = before;
+        const after = organizationSnapshot(scheme.after);
+        if (JSON.stringify(after) !== JSON.stringify(scheme.after)) changed = true;
+        if (scheme.after !== undefined) mapped.after = after;
+        const members = organizationMembers(scheme.members);
+        if (JSON.stringify(members) !== JSON.stringify(scheme.members)) changed = true;
+        if (scheme.members !== undefined) mapped.members = members;
+        if (Array.isArray(scheme.structureOperations)) {
+          mapped.structureOperations = scheme.structureOperations.map(operation => {
+            if (!isObject(operation)) return operation;
+            const operationNext: Record<string, unknown> = { ...operation };
+            const entriesBefore = organizationEntries(operation.entriesBefore, true);
+            if (JSON.stringify(entriesBefore) !== JSON.stringify(operation.entriesBefore)) changed = true;
+            if (operation.entriesBefore !== undefined) operationNext.entriesBefore = entriesBefore;
+            const operationMembers = organizationMembers(operation.members);
+            if (JSON.stringify(operationMembers) !== JSON.stringify(operation.members)) changed = true;
+            if (operation.members !== undefined) operationNext.members = operationMembers;
+            return operationNext;
+          });
+        }
+        if (isObject(scheme.application)) {
+          const application: Record<string, unknown> = { ...scheme.application };
+          const repositoryIds = strictList(scheme.application.repositoryIds);
+          if (JSON.stringify(repositoryIds) !== JSON.stringify(scheme.application.repositoryIds)) changed = true;
+          if (scheme.application.repositoryIds !== undefined) application.repositoryIds = repositoryIds;
+          const applicationBefore = organizationSnapshot(scheme.application.before);
+          if (JSON.stringify(applicationBefore) !== JSON.stringify(scheme.application.before)) changed = true;
+          if (scheme.application.before !== undefined) application.before = applicationBefore;
+          const applicationAfter = organizationSnapshot(scheme.application.after);
+          if (JSON.stringify(applicationAfter) !== JSON.stringify(scheme.application.after)) changed = true;
+          if (scheme.application.after !== undefined) application.after = applicationAfter;
+          const membersAfter = organizationMembers(scheme.application.membersAfter);
+          if (JSON.stringify(membersAfter) !== JSON.stringify(scheme.application.membersAfter)) changed = true;
+          if (scheme.application.membersAfter !== undefined) application.membersAfter = membersAfter;
+          mapped.application = application;
+        }
+        schemes[key] = mapped;
+      }
+      next.schemes = schemes;
+    }
+    return { value: changed ? next : value, changed };
+  };
+  const remapOrganization = (value: Record<string, unknown>) => {
+    let changed = false;
+    const next: Record<string, unknown> = { ...value };
+    const scope = isObject(value.scope) ? value.scope : null;
+    if (scope) {
+      const repositoryIds = strictList(scope.repositoryIds, 'ORGANIZATION_IDENTITY_COLLISION');
+      if (JSON.stringify(repositoryIds) !== JSON.stringify(scope.repositoryIds)) changed = true;
+      next.scope = { ...scope, repositoryIds };
+    }
+    // Successful entries remain executable restore inputs until the draft is restored.
+    const entries = organizationEntries(value.entries, true);
+    if (JSON.stringify(entries) !== JSON.stringify(value.entries)) changed = true;
+    if (value.entries !== undefined) next.entries = entries;
+    if (Array.isArray(value.batches)) {
+      next.batches = value.batches.map(batch => {
+        if (!isObject(batch) || batch.status !== 'pending') return batch;
+        const repositoryIds = strictList(batch.repositoryIds);
+        if (JSON.stringify(repositoryIds) !== JSON.stringify(batch.repositoryIds)) changed = true;
+        return { ...batch, repositoryIds };
+      });
+    }
+    if (Array.isArray(value.structureOperations)) {
+      next.structureOperations = value.structureOperations.map(operation => {
+        if (!isObject(operation)) return operation;
+        const members = organizationMembers(operation.members);
+        const before = organizationSnapshot(operation.before), after = organizationSnapshot(operation.after);
+        const mapped = { ...operation,
+          ...(operation.members !== undefined ? { members } : {}),
+          ...(operation.before !== undefined ? { before } : {}),
+          ...(operation.after !== undefined ? { after } : {}),
+        };
+        if (JSON.stringify(mapped) !== JSON.stringify(operation)) changed = true;
+        return mapped;
+      });
+    }
+    const dual = remapOrganizationDual(value.dual);
+    if (dual.changed) { changed = true; next.dual = dual.value; }
+    return { value: changed ? next : value, changed };
+  };
   const result = { ...data };
   if (collection === 'repositories') result.id = id(data.id);
   if (collection === 'subscriptions') result.repoId = id(data.repoId);
@@ -100,6 +277,16 @@ export function translateIdentityData(collection: Collection, data: Record<strin
     }
   }
   if (collection === 'organization' && data.repositoryOrder !== undefined) result.repositoryOrder = list(data.repositoryOrder);
+  if (collection === 'organization' && isObject(data.classificationSchemes)) {
+    result.classificationSchemes = Object.fromEntries(Object.entries(data.classificationSchemes).map(([scheme, value]) => [scheme, organizationSnapshot(value)]));
+  }
+  if (collection === 'organization' && isObject(data.releaseSourceSettings)) {
+    const source = data.releaseSourceSettings;
+    result.releaseSourceSettings = { ...source,
+      ...(source.watchCustomReleaseRepos !== undefined ? { watchCustomReleaseRepos: repositories(source.watchCustomReleaseRepos) } : {}),
+      ...(source.customReleaseRepos !== undefined ? { customReleaseRepos: repositories(source.customReleaseRepos) } : {}),
+    };
+  }
   if (collection === 'sessions') {
     if (data.repoFullName !== undefined) assertName(data.repoId, data.repoFullName);
     result.repoId = id(data.repoId);
@@ -125,31 +312,13 @@ export function translateIdentityData(collection: Collection, data: Record<strin
     }
     const organization = data.organization;
     if (isObject(organization)) {
-      const scope = isObject(organization.scope) ? organization.scope : null;
+      const remappedOrganization = remapOrganization(organization);
       if (['generating', 'applying', 'restoring'].includes(String(organization.status))
-        && Array.isArray(scope?.repositoryIds) && scope.repositoryIds.some(hasOldId)) {
+        && remappedOrganization.changed) {
         fail('PAUSE_RUNNING_ORGANIZATION_DRAFT');
       }
-      if (['ready', 'interrupted', 'imported'].includes(String(organization.status))) {
-        const entryIds = new Set<unknown>();
-        const entries = Array.isArray(organization.entries) ? organization.entries.map(entry => {
-          if (!isObject(entry)) return entry;
-          const repositoryId = entry.status === 'pending' ? id(entry.repositoryId) : entry.repositoryId;
-          if (typeof repositoryId === 'number') {
-            if (entryIds.has(repositoryId)) fail('ORGANIZATION_IDENTITY_COLLISION');
-            entryIds.add(repositoryId);
-          }
-          return repositoryId === entry.repositoryId ? entry : { ...entry, repositoryId };
-        }) : organization.entries;
-        const batches = Array.isArray(organization.batches) ? organization.batches.map(batch =>
-          isObject(batch) && batch.status === 'pending' ? { ...batch, repositoryIds: list(batch.repositoryIds) } : batch,
-        ) : organization.batches;
-        result.organization = {
-          ...organization,
-          ...(scope ? { scope: { ...scope, repositoryIds: list(scope.repositoryIds) } } : {}),
-          ...(organization.entries !== undefined ? { entries } : {}),
-          ...(organization.batches !== undefined ? { batches } : {}),
-        };
+      if (['ready', 'interrupted', 'imported', 'applied'].includes(String(organization.status))) {
+        result.organization = remappedOrganization.value;
       }
     }
   }

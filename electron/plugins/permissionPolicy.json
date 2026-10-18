@@ -1,0 +1,16 @@
+{
+  "basePermissions": [
+    "repositories:read",
+    "repositories:write",
+    "privateRepositories:read",
+    "releases:read",
+    "gists:read",
+    "storage",
+    "clipboard:write",
+    "external:open",
+    "ai:invoke",
+    "web:search",
+    "downloads:create"
+  ],
+  "hostPattern": "^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+}

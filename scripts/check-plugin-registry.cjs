@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const Ajv = require('ajv');
+const { validateRegistryEntry } = require('../electron/plugins/pluginRegistrySchema');
 
 const DEFAULT_ROOT = path.resolve(__dirname, '..');
 
@@ -56,6 +57,8 @@ function collectViolations(root = DEFAULT_ROOT) {
 
   for (const [index, entry] of community.entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const runtime = validateRegistryEntry(entry);
+    if (!runtime.ok) violations.push(`community-plugins.json[${index}]: ${runtime.message}`);
     const key = `${entry.id ?? ''}\0${entry.version ?? ''}`;
     if (versions.has(key)) {
       violations.push(`community-plugins.json[${index}]: duplicate (id, version) ${entry.id}@${entry.version}`);

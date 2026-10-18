@@ -74,7 +74,8 @@
     "opened-in-browser": "Открыто в браузере",
     "plugin-result-copied": "Результаты плагина скопированы.",
     "plugin-result-saved": "Результаты плагина сохранены.",
-    "plugin-action-completed": "Операция подключения завершена"
+    "plugin-action-completed": "Операция подключения завершена",
+    "save-requires-host": "Save plugin output through the host save dialog."
   },
   "usePluginAI": {
     "custom-endpoint": "Таможенные услуги",

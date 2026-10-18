@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Repository } from '../types';
 import {
-  assertRepositoryIdentityName, remapParticipantRepositoryIds, remapParticipantRepositoryList, validateParticipantMappings,
+  assertRepositoryIdentityName, remapParticipantClassificationSchemes, remapParticipantRepositoryIds, remapParticipantRepositoryList, validateParticipantMappings,
 } from './repositoryIdentityRemap';
 
 const oldId = 1_700_000_000_001;
@@ -50,5 +50,18 @@ describe('pure participant identity remapping', () => {
     const ids = [oldId, 42, 43, oldId];
     expect(remapParticipantRepositoryIds(ids, mappings)).toEqual([42, 43]);
     expect(ids).toEqual([oldId, 42, 43, oldId]);
+  });
+
+  it('remaps repository order in both classification schemes without touching category identity', () => {
+    const schemes = {
+      purpose: { initialized: true, customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [oldId, 43], categoryListIdMap: {} },
+      technology: { initialized: true, customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [43, oldId], categoryListIdMap: {} },
+    };
+    const result = remapParticipantClassificationSchemes(schemes, mappings)!;
+    expect(result.purpose?.repositoryOrder).toEqual([42, 43]);
+    expect(result.technology?.repositoryOrder).toEqual([43, 42]);
+    expect(result.purpose?.customCategories).toBe(schemes.purpose.customCategories);
+    expect(result).not.toBe(schemes);
+    expect(remapParticipantClassificationSchemes(schemes, [])).toBe(schemes);
   });
 });

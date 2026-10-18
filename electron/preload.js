@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
+  diagnostics: {
+    append: payload => ipcRenderer.invoke('diagnostics:append', payload),
+    flush: payload => ipcRenderer.send('diagnostics:flush', payload),
+    getLogs: filters => ipcRenderer.invoke('diagnostics:getLogs', filters),
+    getSystemInfo: () => ipcRenderer.invoke('diagnostics:getSystemInfo'),
+    exportBundle: filters => ipcRenderer.invoke('diagnostics:exportBundle', filters),
+  },
   htmlReading: {
     status: () => ipcRenderer.invoke('html-reading:status'),
     saveMail: input => ipcRenderer.invoke('html-reading:saveMail', input),
@@ -22,12 +29,19 @@ if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
     revokeProject: grantId => ipcRenderer.invoke('agy:revokeProject', grantId),
     getState: () => ipcRenderer.invoke('agy:getState'),
     detect: (requestId) => ipcRenderer.invoke('agy:detect', requestId),
+    recover: (requestId) => ipcRenderer.invoke('agy:recover', requestId),
     choose: (requestId) => ipcRenderer.invoke('agy:choose', requestId),
     save: (requestId, prefs) => ipcRenderer.invoke('agy:save', requestId, prefs),
     listModels: (requestId) => ipcRenderer.invoke('agy:listModels', requestId),
     probe: (requestId, feature) => ipcRenderer.invoke('agy:probe', requestId, feature),
     cancel: (requestId) => ipcRenderer.invoke('agy:cancel', requestId),
-    setSession: (session) => ipcRenderer.invoke('agy:setSession', session),
+    setSession: (session, account) => ipcRenderer.invoke('agy:setSession', session, account),
+    recoveryList: (session, cursor, limit) => ipcRenderer.invoke('agy:recoveryList', session, cursor, limit),
+    recoveryRead: (session, requestId) => ipcRenderer.invoke('agy:recoveryRead', session, requestId),
+    recoveryAck: (session, requestId, digest) => ipcRenderer.invoke('agy:recoveryAck', session, requestId, digest),
+    recoveryStage: (session, requestId, digest, commit) => ipcRenderer.invoke('agy:recoveryStage', session, requestId, digest, commit),
+    recoveryDiscard: (session, requestId) => ipcRenderer.invoke('agy:recoveryDiscard', session, requestId),
+    recoveryRepair: (session, requestId, action) => ipcRenderer.invoke('agy:recoveryRepair', session, requestId, action),
     start: (requestId, session, request) => ipcRenderer.invoke('agy:start', requestId, session, request),
     onEvent: (listener) => {
       const handler = (_event, update) => listener(update);
@@ -56,6 +70,12 @@ if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
     show: () => ipcRenderer.invoke('desktop:show'),
   },
   mcp: {
+    onOrganizationRequest: listener => {
+      const handler = (_event, request) => listener(request);
+      ipcRenderer.on('mcp:organization-request', handler);
+      return () => ipcRenderer.removeListener('mcp:organization-request', handler);
+    },
+    replyOrganization: (requestId, result) => ipcRenderer.invoke('mcp:organization-reply', requestId, result),
     setConfig: (config) => ipcRenderer.invoke('mcp:setConfig', config),
     getConfig: () => ipcRenderer.invoke('mcp:getConfig'),
     pushSnapshot: (snapshot) => ipcRenderer.invoke('mcp:pushSnapshot', snapshot),
@@ -80,6 +100,16 @@ if (process.isMainFrame) contextBridge.exposeInMainWorld('electronAPI', {
     getSearchEndpoint: () => ipcRenderer.invoke('plugins:getSearchEndpoint'),
     configureWebSearch: (endpoint) => ipcRenderer.invoke('plugins:configureWebSearch', endpoint),
     searchWeb: (request) => ipcRenderer.invoke('plugins:searchWeb', request),
+     // Backend/control bridge is ready for Stage 3 UI; no Marketplace UI is
+     // enabled in this stage.
+     marketplace: {
+       getState: () => ipcRenderer.invoke('plugins:marketplace:getState'),
+       addSource: (input) => ipcRenderer.invoke('plugins:marketplace:addSource', input),
+       updateSource: (input) => ipcRenderer.invoke('plugins:marketplace:updateSource', input),
+       removeSource: (input) => ipcRenderer.invoke('plugins:marketplace:removeSource', input),
+       refresh: (options) => ipcRenderer.invoke('plugins:marketplace:refresh', options),
+       install: (request) => ipcRenderer.invoke('plugins:marketplace:install', request),
+     },
     // 社区插件注册表（开发守则 §17）：只读校验过的注册表，不含安装动作
     registry: {
       load: () => ipcRenderer.invoke('plugins:loadRegistry'),

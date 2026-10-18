@@ -6,11 +6,15 @@ import type { WorkbenchProposal } from '../types/aiWorkbench';
 import { repositoryChatStorage as storage } from './repositoryChatStorage';
 import { organizationDraftSchema } from './aiOrganizationSchema';
 import { forceSyncToBackend } from './autoSync';
+import { classificationProjection } from '../store/helpers/classificationSchemes';
+import type { ClassificationSchemeId } from '../types/classification';
+import { stageOrganizationResults, acknowledgeOrganizationResults } from './aiOrganizationResultRecovery';
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-export function organizationCategorySnapshot(): OrganizationCategory[] {
-  const state = useAppStore.getState();
+export function organizationCategorySnapshot(id: ClassificationSchemeId = 'purpose'): OrganizationCategory[] {
+  const state = classificationProjection(useAppStore.getState(), id);
   const main = organizationCategories(state).filter(c => c.id !== 'all' && c.id !== 'pending' && !c.mergedInto);
+  main.sort((a, b) => (state.categoryOrder.includes(a.id) ? state.categoryOrder.indexOf(a.id) : state.categoryOrder.length) - (state.categoryOrder.includes(b.id) ? state.categoryOrder.indexOf(b.id) : state.categoryOrder.length));
   return [...main.map(c => ({ id: c.id, name: c.name, icon: c.icon, parentId: null, isNew: false })),
     ...state.subcategories.filter(c => main.some(m => m.id === c.parentId)).map(c => ({ ...c, isNew: false }))];
 }
@@ -26,21 +30,39 @@ export async function requireOrganizationProposal(id: string, expectedUpdatedAt?
   if (versions.some(p => p.organization && p.organization.revision > value.organization!.revision)) throw new Error('Only the latest draft can be changed');
   return clone(value);
 }
-export async function saveOrganizationProposal(proposal: WorkbenchProposal): Promise<void> {
+export async function saveOrganizationProposal(proposal: WorkbenchProposal, expectedUpdatedAt?: string): Promise<void> {
+  if (proposal.organization?.version === 3 && proposal.organization.dual) {
+    proposal.organization.categories = proposal.organization.dual.schemes.purpose.categories;
+    proposal.organization.entries = proposal.organization.dual.schemes.purpose.entries;
+    proposal.organization.createdCategoryIds = proposal.organization.dual.schemes.purpose.createdCategoryIds;
+  }
   if (proposal.ownerId !== String(useAppStore.getState().user?.id ?? '')) throw new Error('Account changed');
   organizationDraftSchema.parse(proposal.organization);
   const existing = await storage.getProposal(proposal.id);
   if (proposal.ownerId !== String(useAppStore.getState().user?.id ?? '')) throw new Error('Account changed');
+  if (existing?.organization?.agyReceipts?.length && proposal.organization) {
+    proposal.organization.agyReceipts = [...new Map([...existing.organization.agyReceipts, ...(proposal.organization.agyReceipts ?? [])].map(receipt => [receipt.requestId, receipt])).values()];
+  }
+  const recovery = await stageOrganizationResults(proposal, existing ?? undefined);
+  const expectedRevision = expectedUpdatedAt ?? (recovery.length ? existing?.updatedAt : proposal.organization?.externalAgent && existing ? proposal.updatedAt : undefined);
   proposal.updatedAt = new Date(Math.max(Date.now(), Date.parse(existing?.updatedAt ?? proposal.updatedAt) + 1)).toISOString();
-  await storage.saveProposal(clone(proposal));
+  await storage.saveProposal(clone(proposal), expectedRevision);
+  await acknowledgeOrganizationResults(proposal, recovery);
 }
 export async function editOrganizationProposal(id: string, expectedUpdatedAt: string, edit: {
+  schemeId?: import('../types/classification').ClassificationSchemeId; schemeSelected?: boolean;
+  retireCategoryIds?: string[];
+  cleanupReplaced?: boolean;
   repositoryId?: number; patch?: Partial<Pick<OrganizationEntry, 'categoryId' | 'subcategoryId' | 'selected' | 'overrideLocked'>>;
   selection?: { repositoryIds: number[]; selected: boolean };
   categoryId?: string; name?: string;
   bulk?: { repositoryIds: number[]; categoryId?: string | null; subcategoryId?: string | null; action?: 'keep' | 'subdivide' | 'reconsider' };
 }): Promise<WorkbenchProposal> {
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
+  if (proposal.organization?.version === 3 && proposal.organization.dual) {
+    const { editDualOrganizationProposal } = await import('./aiOrganizationDualExecution');
+    return editDualOrganizationProposal(proposal, edit);
+  }
   const draft = proposal.organization!;
   if (!['ready', 'interrupted'].includes(draft.status)) throw new Error('Draft is not editable');
   if (edit.selection) {
@@ -118,18 +140,23 @@ export async function retryOrganizationSync(id: string): Promise<WorkbenchPropos
 }
 
 export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: string, signal?: AbortSignal, targetRepositoryIds?: number[]): Promise<WorkbenchProposal> {
+  const current = await storage.getProposal(id);
+  if (current?.organization?.version === 3 && current.organization.dual) {
+    const { applyDualOrganizationProposal } = await import('./aiOrganizationDualExecution');
+    return applyDualOrganizationProposal(id, expectedUpdatedAt, signal);
+  }
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   signal?.throwIfAborted();
   const draft = proposal.organization!;
-  if (draft.purpose === 'structure') throw new Error('Use the separate category structure confirmation');
+  if (draft.purpose === 'structure') throw new Error('Historical structure drafts are read-only here; continue in a new organization draft');
   if (!['ready', 'interrupted', 'generating'].includes(draft.status)) throw new Error('Generate a new draft before applying');
-  const currentCategories = organizationCategorySnapshot();
+  const currentCategories = organizationCategorySnapshot(draft.singleSchemeId);
   const currentById = new Map(currentCategories.map(c => [c.id, c]));
   const valid: OrganizationEntry[] = [];
   const targetIdSet = targetRepositoryIds && targetRepositoryIds.length > 0 ? new Set(targetRepositoryIds) : null;
   for (const entry of draft.entries.filter(e => e.selected && e.disposition === 'move' && e.status === 'pending')) {
     if (targetIdSet && !targetIdSet.has(entry.repositoryId)) continue;
-    const repository = useAppStore.getState().repositories.find(r => r.id === entry.repositoryId);
+    const repository = classificationProjection(useAppStore.getState(), draft.singleSchemeId ?? 'purpose').repositories.find(r => r.id === entry.repositoryId);
     const targets = draft.categories.filter(c => c.id === entry.categoryId || c.id === entry.subcategoryId);
     let error: string | undefined;
     if (!repository || !sameMembership(membershipOf(repository), entry.before)) error = 'Repository membership or lock changed';
@@ -152,7 +179,7 @@ export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: 
   await saveOrganizationProposal(proposal);
   try {
     signal?.throwIfAborted();
-    useAppStore.getState().applyAIOrganization({ ownerId: proposal.ownerId, categories: additions,
+    useAppStore.getState().applyAIOrganization({ schemeId: draft.singleSchemeId ?? 'purpose', ownerId: proposal.ownerId, categories: additions,
       assignments: valid.map(e => ({ repositoryId: e.repositoryId, before: e.before, after: { categoryId: e.categoryId, subcategoryId: e.subcategoryId, locked: e.before.locked }, overrideLocked: e.overrideLocked })) });
     valid.forEach(e => { e.status = 'success'; });
     draft.createdCategoryIds = Array.from(new Set([...draft.createdCategoryIds, ...additions.map(c => c.id)]));
@@ -199,14 +226,19 @@ export async function applyOrganizationProposal(id: string, expectedUpdatedAt?: 
 }
 
 export async function restoreOrganizationProposal(id: string, expectedUpdatedAt: string, signal?: AbortSignal): Promise<WorkbenchProposal> {
+  const current = await storage.getProposal(id);
+  if (current?.organization?.version === 3 && current.organization.dual) {
+    const { restoreDualOrganizationProposal } = await import('./aiOrganizationDualExecution');
+    return restoreDualOrganizationProposal(id, expectedUpdatedAt, signal);
+  }
   const proposal = await requireOrganizationProposal(id, expectedUpdatedAt);
   signal?.throwIfAborted();
   const draft = proposal.organization!;
   if (!['applied', 'restoring'].includes(draft.status)) throw new Error('No applied changes to restore');
-  const currentCategories = organizationCategorySnapshot();
+  const currentCategories = organizationCategorySnapshot(draft.singleSchemeId);
   const valid: OrganizationEntry[] = [];
   for (const entry of draft.entries.filter(e => e.status === 'success')) {
-    const repo = useAppStore.getState().repositories.find(r => r.id === entry.repositoryId);
+    const repo = classificationProjection(useAppStore.getState(), draft.singleSchemeId ?? 'purpose').repositories.find(r => r.id === entry.repositoryId);
     const after = { categoryId: entry.categoryId, subcategoryId: entry.subcategoryId, locked: entry.before.locked };
     if (!repo || !sameMembership(membershipOf(repo), after)
       || (entry.before.categoryId && !currentCategories.some(c => c.id === entry.before.categoryId && !c.parentId))
@@ -217,7 +249,7 @@ export async function restoreOrganizationProposal(id: string, expectedUpdatedAt:
   draft.status = 'restoring';
   await saveOrganizationProposal(proposal);
   signal?.throwIfAborted();
-  useAppStore.getState().applyAIOrganization({ ownerId: proposal.ownerId, categories: [],
+  useAppStore.getState().applyAIOrganization({ schemeId: draft.singleSchemeId ?? 'purpose', ownerId: proposal.ownerId, categories: [],
     assignments: valid.map(e => ({ repositoryId: e.repositoryId, before: { categoryId: e.categoryId, subcategoryId: e.subcategoryId, locked: e.before.locked }, after: e.before, overrideLocked: e.overrideLocked })),
     removeCategories: draft.categories.filter(c => draft.createdCategoryIds.includes(c.id)),
   });
@@ -231,6 +263,10 @@ export async function restoreOrganizationProposal(id: string, expectedUpdatedAt:
 export async function reconcileOrganizationProposal(proposal: WorkbenchProposal): Promise<WorkbenchProposal> {
   const draft = proposal.organization;
   if (!draft || !['generating', 'applying', 'restoring'].includes(draft.status)) return proposal;
+  if (draft.version === 3 && draft.dual) {
+    const { reconcileDualOrganizationProposal } = await import('./aiOrganizationDualExecution');
+    return reconcileDualOrganizationProposal(proposal);
+  }
   if (draft.purpose === 'structure') {
     const { reconcileCategoryStructure } = await import('./aiCategoryStructure');
     return reconcileCategoryStructure(proposal);
@@ -239,7 +275,7 @@ export async function reconcileOrganizationProposal(proposal: WorkbenchProposal)
   else {
     const restoring = draft.status === 'restoring';
     for (const e of draft.entries.filter(entry => restoring ? entry.status === 'success' : entry.selected && entry.disposition === 'move')) {
-      const repo = useAppStore.getState().repositories.find(r => r.id === e.repositoryId);
+      const repo = classificationProjection(useAppStore.getState(), draft.singleSchemeId ?? 'purpose').repositories.find(r => r.id === e.repositoryId);
       const expected = restoring ? e.before : { categoryId: e.categoryId, subcategoryId: e.subcategoryId, locked: e.before.locked };
       if (repo && sameMembership(membershipOf(repo), expected)) e.status = restoring ? 'restored' : 'success';
       else { e.status = 'conflict'; e.error = 'Interrupted operation requires review'; e.selected = false; }

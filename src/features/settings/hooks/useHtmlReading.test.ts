@@ -4,17 +4,18 @@ import { IDBFactory } from 'fake-indexeddb';
 import { readingTransaction, loadReadingData } from '../../../lib/html-reading/storage';
 import { rememberSnapshot } from '../../../lib/html-reading/storage';
 import { defaultSettings, emptyReadingState, type ReadingSnapshot } from '../../../lib/html-reading/model';
-const mocks=vi.hoisted(()=>({state:{isAuthenticated:true,user:{id:42},githubToken:'synthetic',repositories:[{id:1,ai_summary:'existing'}],discoveryRepos:{},addRepository:vi.fn()},api:{getRepository:vi.fn(),starRepository:vi.fn()}}));
+const mocks=vi.hoisted(()=>({state:{isAuthenticated:true,user:{id:42},githubToken:'synthetic',repositories:[{id:1,ai_summary:'existing'}],discoveryRepos:{},addRepository:vi.fn()},api:{getCurrentUser:vi.fn(async()=>({id:42})),getRepository:vi.fn(),isRepositoryStarred:vi.fn(async()=>false),starRepository:vi.fn()}}));
 vi.mock('../../../store/useAppStore',()=>({useAppStore:Object.assign((selector:(s:typeof mocks.state)=>unknown)=>selector(mocks.state),{getState:()=>mocks.state})}));
 vi.mock('../../../services/htmlReading',()=>({readingAccount:()=>String(mocks.state.user.id),readingCatalog:async()=>({categories:[],channels:[]}),generatePreparedReadingSnapshot:vi.fn(),prepareReadingSend:vi.fn(),downloadReadingHtml:vi.fn(),ReadingSizeError:class extends Error {diagnostic=undefined;}}));
 vi.mock('../../../services/githubApiFactory',()=>({createGitHubApiService:()=>mocks.api}));
+vi.mock('../../../services/autoSync',()=>({forceSyncToBackend:vi.fn(async()=>{})}));
 import { useHtmlReading } from './useHtmlReading';
 beforeEach(async()=>{vi.stubGlobal('indexedDB',new IDBFactory());window.electronAPI=undefined;mocks.state.user={id:42};mocks.state.addRepository.mockReset();mocks.api.getRepository.mockReset();mocks.api.getRepository.mockResolvedValue({id:1,full_name:'acme/tool'});mocks.api.starRepository.mockReset();mocks.api.starRepository.mockResolvedValue(undefined);vi.spyOn(window,'confirm').mockReturnValue(true);await readingTransaction('42',data=>{data.names['1']='acme/tool';data.states['1']={read:false,note:'keep',interest:'interested',candidate:true};});});
 async function controller(){const hook=renderHook(()=>useHtmlReading());await waitFor(()=>expect(hook.result.current.ready).toBe(true));return hook;}
 it('does not contact GitHub when explicit Star confirmation is declined',async()=>{vi.mocked(window.confirm).mockReturnValue(false);const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.getRepository).not.toHaveBeenCalled();expect(mocks.api.starRepository).not.toHaveBeenCalled();expect((await loadReadingData('42')).states['1'].candidate).toBe(true);});
-it('rejects a repository name whose GitHub numeric identity changed',async()=>{mocks.api.getRepository.mockResolvedValue({id:2});const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.starRepository).not.toHaveBeenCalled();expect(c.result.current.error).toContain('项目标识已变化');expect((await loadReadingData('42')).states['1'].candidate).toBe(true);});
+it('rejects a repository name whose GitHub numeric identity changed',async()=>{mocks.api.getRepository.mockResolvedValue({id:2});const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.starRepository).not.toHaveBeenCalled();expect(c.result.current.candidates.batches[0].rows[0].error).toContain('项目标识已变化');expect((await loadReadingData('42')).states['1'].candidate).toBe(true);});
 it('does not Star after the active account changed during lookup',async()=>{mocks.api.getRepository.mockImplementation(async()=>{mocks.state.user={id:43};return{id:1};});const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.starRepository).not.toHaveBeenCalled();expect((await loadReadingData('42')).states['1'].candidate).toBe(true);});
-it('confirms Star without replacing an existing repository analysis or reading note',async()=>{const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.starRepository).toHaveBeenCalledWith('acme','tool');expect(mocks.state.addRepository).not.toHaveBeenCalled();expect(mocks.state.repositories[0].ai_summary).toBe('existing');expect((await loadReadingData('42')).states['1']).toMatchObject({candidate:false,note:'keep'});});
+it('confirms Star without replacing an existing repository analysis or reading note',async()=>{const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.api.starRepository).toHaveBeenCalledWith('acme','tool',expect.any(AbortSignal),{autoRetry:false});expect(mocks.state.addRepository).not.toHaveBeenCalled();expect(mocks.state.repositories[0].ai_summary).toBe('existing');expect((await loadReadingData('42')).states['1']).toMatchObject({candidate:false,note:'keep'});});
 it('does not modify the new account if account changes while GitHub accepts Star',async()=>{mocks.api.starRepository.mockImplementation(async()=>{mocks.state.user={id:43};});const c=await controller();await act(()=>c.result.current.star('1'));expect(mocks.state.addRepository).not.toHaveBeenCalled();expect((await loadReadingData('42')).states['1'].candidate).toBe(true);expect((await loadReadingData('43')).states).toEqual({});});
 
 it('previews and imports reading positions without any business operations or GitHub request',async()=>{
@@ -40,10 +41,20 @@ it('rejects dirty immediate sending before preparing content or contacting mail'
 it('cancels pending preparation through its abort signal without requesting export',async()=>{
   const {generatePreparedReadingSnapshot,downloadReadingHtml}=await import('../../../services/htmlReading');vi.mocked(downloadReadingHtml).mockClear();
   vi.mocked(generatePreparedReadingSnapshot).mockImplementation((_settings,_mode,_progress,_refresh,options)=>new Promise((_resolve,reject)=>options?.signal?.addEventListener('abort',()=>reject(Error('已取消生成')),{once:true})));
-  const c=await controller();let pending:Promise<void>;act(()=>{pending=c.result.current.generate('export');});await waitFor(()=>expect(c.result.current.canCancel).toBe(true));
+  const c=await controller();let pending:Promise<boolean>;act(()=>{pending=c.result.current.generate('export');});await waitFor(()=>expect(c.result.current.canCancel).toBe(true));
   let inspected:boolean|undefined;await act(async()=>{inspected=await c.result.current.inspectFiles([{name:'new.json',text:'{}'}]);});expect(inspected).toBe(false);
   await act(async()=>{c.result.current.cancelGeneration();await pending!;});expect(c.result.current.error).toContain('取消');expect(downloadReadingHtml).not.toHaveBeenCalled();expect(c.result.current.busy).toBe(false);
 });
 it('invalid batch files prevent a valid file from being partially imported',async()=>{
   const c=await controller();await act(()=>c.result.current.inspectFiles([{name:'bad.json',text:'{}'}]));expect(c.result.current.fileErrors).toHaveLength(1);expect(c.result.current.batch).toBeNull();expect((await loadReadingData('42')).states['1'].note).toBe('keep');
+});
+it('keeps the saved configuration and disk settings when the scheduler rejects saving',async()=>{
+  const configure=vi.fn(async()=>({success:false,error:'scheduler unavailable'}));
+  window.electronAPI={htmlReading:{status:async()=>({}),configure}} as unknown as Window['electronAPI'];
+  const c=await controller();const previous=c.result.current.saved;
+  await act(()=>c.result.current.setSettings(current=>({...current,title:'Unsaved draft'})));
+  let success:boolean|undefined;await act(async()=>{success=await c.result.current.save();});
+  expect(success).toBe(false);expect(c.result.current.error).toContain('scheduler unavailable');
+  expect(c.result.current.settings.title).toBe('Unsaved draft');expect(c.result.current.saved).toEqual(previous);
+  expect((await loadReadingData('42')).settings).toEqual(previous);
 });

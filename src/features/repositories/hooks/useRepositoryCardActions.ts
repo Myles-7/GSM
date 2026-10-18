@@ -12,6 +12,7 @@ import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { logger } from '../../../services/logger';
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
+import { readRepositoryDetails } from '../../../utils/repositoryDetailsSchema';
 
 interface UseRepositoryCardActionsOptions {
   repository: Repository;
@@ -145,8 +146,9 @@ export const useRepositoryCardActions = ({
       return;
     }
 
-    if (repository.analyzed_at) {
-      const confirmMessage = t('useRepositoryCardActions.this-repository-was-analyzed-on-v1-do-you-want-t', { v1: new Date(repository.analyzed_at).toLocaleString() });
+    const analyzedAt = readRepositoryDetails(repository.ai_details)?.generated_at || repository.analyzed_at;
+    if (analyzedAt) {
+      const confirmMessage = t('useRepositoryCardActions.this-repository-was-analyzed-on-v1-do-you-want-t', { v1: new Date(analyzedAt).toLocaleString() });
 
       if (!await confirm(
         t('useRepositoryCardActions.re-analyze-confirmation'),

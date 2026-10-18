@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { DiscoveryRepo, GitHubUser, Repository } from '../types';
 import type { ExternalDiscoveryChannel, ExternalFeedKind } from '../types/externalFeed';
 import { emptyAccountWorkspace } from './helpers/accountWorkspace';
-import { flushAppStorePersistence } from './persistence/storage';
+import { flushAppStorePersistence, readFullPersistedSnapshot, removePersistedSnapshot } from './persistence/storage';
 import { remapRepositoryList } from '../utils/repositoryIdentity';
 
 // Keep the real Store, migration, JSON serialization and hydration; fake only disk I/O.
@@ -17,7 +17,23 @@ const memory = vi.hoisted(() => {
     },
   };
 });
-vi.mock('../services/indexedDbStorage', () => ({ indexedDBStorage: memory.storage }));
+vi.mock('../services/indexedDbStorage', () => ({
+  indexedDBStorage: memory.storage,
+  getStorageItemStrict: async (_name: string, key: string) => memory.storage.getItem(key),
+  getStorageEntriesStrict: async (_name: string, keys: readonly string[]) => Promise.all(keys.map(key => memory.storage.getItem(key))),
+  hasLegacySnapshot: async (name: string) => (await memory.storage.getItem(name)) !== null,
+  removeLegacySnapshot: async (name: string) => { await memory.storage.removeItem(name); },
+  setStorageEntries: async (_name: string, entries: ReadonlyArray<readonly [string, string]>) => { for (const [key, value] of entries) await memory.storage.setItem(key, value); },
+  setStorageEntriesGuarded: async (_name: string, generationKey: string, expectedGeneration: string | null, entries: ReadonlyArray<readonly [string, string]>) => {
+    const current = memory.records.get(generationKey) ?? null;
+    if (current !== expectedGeneration) throw Object.assign(new Error('generation changed'), { code: 'PERSISTENCE_GENERATION_CONFLICT' });
+    for (const [key, value] of entries) await memory.storage.setItem(key, value);
+  },
+  replaceStorageWithGeneration: async (name: string, generationKey: string, generation: string) => {
+    for (const key of [...memory.records.keys()]) if (key === name || key.startsWith(`${name}#`)) memory.records.delete(key);
+    memory.records.set(generationKey, generation);
+  },
+}));
 
 type ActualStoreModule = typeof import('./useAppStore');
 type Store = ActualStoreModule['useAppStore'];
@@ -85,15 +101,19 @@ function persistenceOptions() {
 }
 
 async function hydrateEnvelope(state: unknown, version: number) {
+  // Simulate a pre-sharding profile: no shard/meta keys exist alongside the
+  // legacy single-key envelope.
+  await removePersistedSnapshot(persistKey);
+  memory.records.clear();
   memory.records.set(persistKey, JSON.stringify({ state, version }));
   await store.persist.rehydrate();
   await flushAppStorePersistence();
 }
 
-function savedEnvelope(): { version: number; state: Record<string, unknown> } {
-  const text = memory.records.get(persistKey);
-  expect(text).toBeDefined();
-  return JSON.parse(text!);
+async function savedEnvelope(): Promise<{ version: number; state: Record<string, unknown> }> {
+  const envelope = await readFullPersistedSnapshot(persistKey);
+  expect(envelope).toBeDefined();
+  return envelope as { version: number; state: Record<string, unknown> };
 }
 
 beforeAll(async () => {
@@ -104,7 +124,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await flushAppStorePersistence();
-  memory.records.clear();
+  await removePersistedSnapshot(persistKey);
   localStorage.clear();
   sessionStorage.clear();
   vi.clearAllMocks();
@@ -323,13 +343,13 @@ describe('v16 to v17 external persistence round trip', () => {
       id: oldId, custom_description: '', custom_category: '', category_locked: true, category_id: null,
     });
     expect(store.getState()).toMatchObject({ theme: 'light', pageTranslationEnabled: true });
-    const saved = savedEnvelope();
+    const saved = await savedEnvelope();
     expect(saved.version).toBe(17);
     expect(saved.state.discoveryChannels).toEqual(store.getState().discoveryChannels);
     for (const key of runtimeKeys) expect(saved.state).not.toHaveProperty(key);
 
     await hydrateEnvelope(saved.state, saved.version);
-    expect(savedEnvelope().state).toEqual(saved.state);
+    expect((await savedEnvelope()).state).toEqual(saved.state);
     expect(store.getState().repositories[0].custom_description).toBe('');
     store.getState().setUser(bob);
     expect(externalChannels()).toEqual([feedB]);
@@ -348,7 +368,7 @@ describe('v16 to v17 external persistence round trip', () => {
     for (const key of runtimeKeys) expect(store.getState()[key]).not.toHaveProperty(feed.id);
     expect(store.getState().discoveryIsLoading.trending).toBe(false);
     expect(store.getState().discoveryScrollPositions.trending).toBe(0);
-    for (const key of runtimeKeys) expect(savedEnvelope().state).not.toHaveProperty(key);
+    for (const key of runtimeKeys) expect((await savedEnvelope()).state).not.toHaveProperty(key);
   });
 
   it('hydrates old parked workspaces without external fields as empty rather than borrowing the active account feeds', async () => {

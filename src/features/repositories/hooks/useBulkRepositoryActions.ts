@@ -7,7 +7,7 @@ import type { AppLanguage } from '../../../i18n/languages';
 import { useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Category, Repository } from '../../../types';
-import { useAppStore } from '../../../store/useAppStore';
+import { useClassificationStore as useAppStore } from '../../../store/useClassificationStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { createGitHubApiService } from '../../../services/githubApiFactory';

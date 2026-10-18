@@ -1,8 +1,10 @@
 'use strict';
 
 const { protocolError } = require('./pluginProtocol');
+const { isAllowedNetworkTarget } = require('./networkTargets');
 
 const METHODS = {
+  'network.request': { capability: 'network', operation: 'request', fields: ['host', 'path', 'query'] },
   'repositories.search': { capability: 'github', operation: 'searchRepositories', fields: ['query', 'limit'] },
   'repositories.get': { capability: 'github', operation: 'getRepository', fields: ['repositoryId'] },
   'releases.get': { capability: 'github', operation: 'getRelease', fields: ['releaseId'] },
@@ -46,7 +48,7 @@ function validateFileName(fileName) {
 
 function validatePageCapabilityRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-    Object.keys(input).some((field) => !['pluginId', 'pageId', 'method', 'args', 'sessionToken', 'requestId'].includes(field))) {
+    Object.keys(input).some((field) => !['pluginId', 'pageId', 'method', 'args', 'sessionToken', 'requestId', 'networkTicket'].includes(field))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page request is invalid');
   }
   const { pluginId, pageId, method, args = {} } = input;
@@ -55,6 +57,10 @@ function validatePageCapabilityRequest(input) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page request is invalid');
   }
   const definition = METHODS[method];
+  if ((input.networkTicket !== undefined && (method !== 'network.request' || typeof input.networkTicket !== 'string' || input.networkTicket.length > 64)) ||
+    (method === 'network.request' && !isAllowedNetworkTarget(args))) {
+    throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Network request arguments are invalid');
+  }
   if (Object.keys(args).some((field) => !definition.fields.includes(field))) {
     throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Page request has unknown arguments');
   }

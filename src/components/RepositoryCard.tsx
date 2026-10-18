@@ -54,14 +54,14 @@ const ReadmeModalLoadingFallback: React.FC<{
   <Dialog open onOpenChange={(open) => !open && onClose()}>
     <DialogContent
       aria-describedby={undefined}
-      className="w-[calc(100%_-_2rem)] max-w-[1130px] p-6"
+      className="flex h-[calc(100vh_-_2rem)] max-h-[calc(100vh_-_2rem)] w-[calc(100vw_-_2rem)] max-w-none flex-col overflow-hidden p-6"
       onCloseAutoFocus={(event) => {
         event.preventDefault();
         onCloseAutoFocus();
       }}
     >
       <DialogTitle className="sr-only">Loading README</DialogTitle>
-      <div className="flex min-h-40 flex-col items-center justify-center gap-4" role="status" aria-live="polite">
+      <div className="flex flex-1 flex-col items-center justify-center gap-4" role="status" aria-live="polite">
         <Loader2 className="h-8 w-8 animate-spin text-primary" aria-hidden="true" />
         <p className="text-muted-foreground">Loading README…</p>
       </div>
@@ -533,7 +533,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       contentSource = 'empty';
     }
 
-    if (showAISummary && repository.analysis_failed && !readRepositoryDetails(repository.ai_details)) {
+    if (showAISummary && repository.analysis_failed && !readRepositoryDetails(repository.ai_details) && !repository.ai_summary) {
       if (isExplicitlyCleared) {
         content = t('repositoryCard.no-description');
         contentSource = 'empty';
@@ -620,7 +620,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
     }
 
     // 没有自定义标签时，按AI分析状态显示
-    const isAnalyzed = !!repository.analyzed_at && !repository.analysis_failed;
+    const details = readRepositoryDetails(repository.ai_details);
+    const isAnalyzed = !!details || !!repository.ai_summary || !!repository.ai_tags?.length
+      || (!!repository.analyzed_at && !repository.analysis_failed);
     if (isAnalyzed && repository.ai_tags && repository.ai_tags.length > 0) {
       return {
         tags: repository.ai_tags.map(tag => ({ tag, source: 'ai' as const })),
@@ -637,20 +639,22 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         isExplicitlyCleared
       };
     }
-  }, [repository.custom_tags, repository.analyzed_at, repository.analysis_failed, repository.ai_tags, repository.topics]);
+  }, [repository.custom_tags, repository.analyzed_at, repository.analysis_failed, repository.ai_details, repository.ai_summary, repository.ai_tags, repository.topics]);
 
   // 使用 useMemo 缓存AI分析按钮提示文本
   const aiButtonTitle = useMemo(() => {
-    if (repository.analysis_failed) {
-      const analyzeTime = new Date(repository.analyzed_at!).toLocaleString();
+    const details = readRepositoryDetails(repository.ai_details);
+    const analyzedAt = details?.generated_at || repository.analyzed_at;
+    if (repository.analysis_failed && !details) {
+      const analyzeTime = analyzedAt ? new Date(analyzedAt).toLocaleString() : '';
       return t('repositoryCard.analysis-failed-on-analyzetime-click-to-retry', { analyzeTime: analyzeTime });
-    } else if (repository.analyzed_at) {
-      const analyzeTime = new Date(repository.analyzed_at).toLocaleString();
+    } else if (analyzedAt) {
+      const analyzeTime = new Date(analyzedAt).toLocaleString();
       return t('repositoryCard.analyzed-on-analyzetime-click-to-re-analyze', { analyzeTime: analyzeTime });
     } else {
       return t('repositoryCard.analyze-with-ai');
     }
-  }, [repository.analysis_failed, repository.analyzed_at, t]);
+  }, [repository.analysis_failed, repository.analyzed_at, repository.ai_details, t]);
 
   const dragStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const isDraggingRef = useRef(false);

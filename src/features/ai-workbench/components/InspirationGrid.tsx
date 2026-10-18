@@ -6,6 +6,7 @@ import { Badge } from '../../../components/ui/badge';
 import { useAppStore } from '../../../store/useAppStore';
 
 import type { WorkbenchScope } from '../../../types/aiWorkbench';
+import { WorkbenchSelect } from './WorkbenchSelect';
 import { DEFAULT_INSPIRATION_CARDS_ZH, DEFAULT_INSPIRATION_CARDS_EN, INSPIRATION_STORAGE_KEY, type InspirationCard } from './inspirationCards';
 
 interface InspirationGridProps {
@@ -216,18 +217,20 @@ export function InspirationGrid({ onSelectPrompt }: InspirationGridProps) {
                   <span className="text-[11px] text-muted-foreground">
                     {isZh ? '对应 Scope' : 'Target Scope'} {/* i18n-allow-literal */}
                   </span>
-                  <select
+                  <WorkbenchSelect
                     value={editScope}
-                    onChange={(e) => setEditScope(e.target.value as WorkbenchScope)}
-                    className="h-7 w-full rounded border border-input bg-background px-2 text-xs text-foreground"
-                  >
-                    <option value="github">{isZh ? 'GitHub 搜索' : 'GitHub Search'}</option> {/* i18n-allow-literal */}
-                    <option value="selected">{isZh ? '已选仓库' : 'Selected Repos'}</option> {/* i18n-allow-literal */}
-                    <option value="library">{isZh ? '我的收藏' : 'My Library'}</option> {/* i18n-allow-literal */}
-                    <option value="local">{isZh ? '本地工程' : 'Local Project'}</option> {/* i18n-allow-literal */}
-                    <option value="mixed">{isZh ? '本地 + 所选' : 'Mixed Research'}</option> {/* i18n-allow-literal */}
-                    <option value="project">{isZh ? '项目仓库' : 'Project Repos'}</option> {/* i18n-allow-literal */}
-                  </select>
+                    onValueChange={setEditScope}
+                    triggerClassName="h-7 w-full"
+                    ariaLabel={isZh ? '对应 Scope' : 'Target Scope'} /* i18n-allow-literal */
+                    items={[
+                      { value: 'github', label: isZh ? 'GitHub 搜索' : 'GitHub Search' }, /* i18n-allow-literal */
+                      { value: 'selected', label: isZh ? '已选仓库' : 'Selected Repos' }, /* i18n-allow-literal */
+                      { value: 'library', label: isZh ? '我的收藏' : 'My Library' }, /* i18n-allow-literal */
+                      { value: 'local', label: isZh ? '本地工程' : 'Local Project' }, /* i18n-allow-literal */
+                      { value: 'mixed', label: isZh ? '本地 + 所选' : 'Mixed Research' }, /* i18n-allow-literal */
+                      { value: 'project', label: isZh ? '项目仓库' : 'Project Repos' }, /* i18n-allow-literal */
+                    ]}
+                  />
                 </div>
 
                 <div className="space-y-1.5">
@@ -304,7 +307,7 @@ export function InspirationGrid({ onSelectPrompt }: InspirationGridProps) {
                   <div className="flex shrink-0 items-center gap-1">
                     <Badge
                       variant="outline"
-                      className="px-1.5 py-0 font-mono text-[10px] font-normal capitalize text-muted-foreground"
+                      className="px-1.5 py-0 font-mono text-[11px] font-normal capitalize text-muted-foreground"
                     >
                       {card.scope}
                     </Badge>

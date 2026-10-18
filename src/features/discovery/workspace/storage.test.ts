@@ -8,6 +8,18 @@ const key = workspaceSessionKey('most-popular', 'all');
 const repo = (id: number, stars = 1000) => ({ id, name: `r${id}`, full_name: `a/r${id}`, html_url: `https://github.com/a/r${id}`, stargazers_count: stars });
 beforeEach(() => { account = crypto.randomUUID(); });
 describe('persistent discovery workspace', () => {
+  it('invalidates unfinished ranking work on restore while retaining all committed data', async () => {
+    await saveBrowsePage(account, { key, channelId: 'most-popular', signature: 'all', items: [repo(1)], nextPage: 2, hasMore: true, totalCount: 100, mode: 'replace' });
+    await saveReadingAnchor(account, { sessionKey: key, itemKey: 'repo:1', offset: 12, previousKeys: [], updatedAt: Date.now() });
+    const before = await exportDiscoveryWorkspace(account);
+    await saveRankingStage(account, { key, channelId: 'most-popular', signature: 'all', baseVersion: 1,
+      mode: 'reorder', targetCount: 120, nextPage: 4, projectKeys: ['repo:2'], hasMore: true, totalCount: 100 }, [repo(2)]);
+    expect(await exportDiscoveryWorkspace(account)).toEqual(before);
+    await importDiscoveryWorkspace(account, before, 'replace');
+    expect(await loadRankingStage(account, key)).toBeUndefined();
+    expect(await exportDiscoveryWorkspace(account)).toEqual(before);
+    expect((await loadBrowseSession(account, key))?.items.map(row => row.id)).toEqual([1]);
+  });
   it('retains loaded pages and order across refresh with a durable cursor', async () => {
     await saveBrowsePage(account, { key, channelId: 'most-popular', signature: 'all', items: [repo(1), repo(2)], nextPage: 2, hasMore: true, totalCount: 100, mode: 'stable' });
     await saveBrowsePage(account, { key, channelId: 'most-popular', signature: 'all', items: [repo(3), repo(1, 2000)], nextPage: 2, hasMore: true, totalCount: 100, mode: 'stable', preserveCursor: true });

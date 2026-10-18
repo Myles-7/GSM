@@ -8,6 +8,8 @@ const ALLOWED_HEADERS = new Set([
 ]);
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_HEADER_BYTES = 16 * 1024;
+const { fetchAcrossStacks, followRedirectsManually, summarizeFetchError } = require('./mainFetch');
+const READ_ONLY = new Set(['GET', 'HEAD', 'OPTIONS', 'PROPFIND']);
 const validRequestId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id);
 const failure = (error, extra = {}) => ({ success: false, error, ...extra });
 
@@ -96,7 +98,7 @@ async function readBody(response, signal) {
   }
 }
 
-function registerWebdavIpc({ ipcMain, isMainFrame, fetchImpl, getDispatcher = () => undefined }) {
+function registerWebdavIpc({ ipcMain, isMainFrame, fetchImpl, chromiumFetch, getDispatcher = () => undefined, recordDiagnostic = () => {} }) {
   const owners = new Map();
   const watched = new WeakSet();
   function cancelOwner(sender) {
@@ -149,12 +151,18 @@ function registerWebdavIpc({ ipcMain, isMainFrame, fetchImpl, getDispatcher = ()
     try {
       dispatcher = getDispatcher();
       const result = await Promise.race([aborted, (async () => {
-        const response = await fetchImpl(request.url, {
+        const init = {
           method: request.method, headers: request.headers,
           ...(request.body !== undefined ? { body: request.body } : {}),
-          signal: controller.signal, redirect: 'error',
-          ...(dispatcher ? { dispatcher } : {}),
-        });
+          signal: controller.signal,
+        };
+        const redirectPolicy = { allowMutationRedirects: false };
+        const stacks = [{ name: 'node-undici', run: () => followRedirectsManually(fetchImpl, request.url,
+          { ...init, ...(dispatcher ? { dispatcher } : {}) }, redirectPolicy) }];
+        if (READ_ONLY.has(request.method) && chromiumFetch) stacks.push({ name: 'chromium-net',
+          run: () => followRedirectsManually(chromiumFetch, request.url, init, redirectPolicy) });
+        const { response } = await fetchAcrossStacks(stacks, { totalTimeoutMs: request.timeoutMs,
+          minStackBudgetMs: 0, signal: controller.signal });
         const body = await readBody(response, controller.signal);
         const headers = {};
         let headerBytes = 0;
@@ -170,9 +178,12 @@ function registerWebdavIpc({ ipcMain, isMainFrame, fetchImpl, getDispatcher = ()
       })()]);
       if (controller.signal.aborted || !isMainFrame(event)) return failure('DAV request canceled', { canceled: true });
       return result;
-    } catch {
+    } catch (error) {
       // Network errors can contain DAV or proxy credentials; return fixed messages only.
       if (controller.signal.aborted) return failure(timedOut ? 'DAV request timed out' : 'DAV request canceled', { timedOut, canceled: !timedOut });
+      // Only sanitized metadata reaches diagnostics; never include the DAV body.
+      try { recordDiagnostic({ level: 'warn', module: 'electron.webdav', message: 'DAV transport failed',
+        data: { method: request.method, causeCode: summarizeFetchError(error).causeCode } }); } catch { /* diagnostics is ancillary */ }
       controller.abort();
       return failure('DAV request failed');
     } finally {

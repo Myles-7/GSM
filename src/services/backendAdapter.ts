@@ -28,6 +28,7 @@ const JSON_ARRAY_SETTING_KEYS = new Set([
   'assetFilters',
 ]);
 const JSON_OBJECT_SETTING_KEYS = new Set([
+  'classificationSchemes',
   'releaseSourceSettings',
   'defaultCategoryOverrides',
 ]);
@@ -666,7 +667,7 @@ class BackendAdapter {
     const res = await this.fetchWithRetry(`${this._backendUrl}/repositories`, {
       method: 'PUT',
       headers: this.getAuthHeaders(),
-      body: JSON.stringify({ repositories: repos, isFullSync: true })
+      body: JSON.stringify({ repositories: repos, isFullSync: true, classificationSchemaVersion: 2 })
     }, 120000, 3);
     if (!res.ok) await this.throwTranslatedError(res, 'Sync repositories error');
   }

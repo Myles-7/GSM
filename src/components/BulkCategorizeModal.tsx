@@ -4,7 +4,7 @@ import React, { useId, useState, useEffect } from 'react';
 import { Check } from 'lucide-react';
 import { Modal } from './Modal';
 import { Repository } from '../types';
-import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { useShallow } from 'zustand/react/shallow';
 
 interface BulkCategorizeModalProps {
@@ -20,17 +20,18 @@ export const BulkCategorizeModal: React.FC<BulkCategorizeModalProps> = ({
   repositories,
   onCategorize
 }) => {
-  const { customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides, language } = useAppStore(useShallow((state) => ({
+  const { customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides, language, classificationContext } = useAppStore(useShallow((state) => ({
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    classificationContext: state.classificationContext,
     language: state.language,
   })));
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const categorySelectionLabelId = useId();
 
-  const allCategories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides);
+  const allCategories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext);
 
   useEffect(() => {
     if (isOpen) {

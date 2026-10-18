@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   searchRepositoriesWithSemanticReranking: vi.fn(),
   searchRepositoriesWithSelection: vi.fn(),
   getAllStarredRepositories: vi.fn(),
+  isRepositoryStarred: vi.fn(),
   getUserLists: vi.fn(),
   forceSyncToBackend: vi.fn(),
 }));
@@ -61,12 +62,14 @@ vi.mock('../../../services/aiService', () => ({
 vi.mock('../../../services/githubApi', () => ({
   GitHubApiService: class {
     getAllStarredRepositories = mocks.getAllStarredRepositories;
+    isRepositoryStarred = mocks.isRepositoryStarred;
   },
 }));
 
 vi.mock('../../../services/githubApiFactory', () => ({
   createGitHubApiService: () => ({
     getAllStarredRepositories: mocks.getAllStarredRepositories,
+    isRepositoryStarred: mocks.isRepositoryStarred,
   }),
   createGitHubListsApiService: () => ({
     getUserLists: mocks.getUserLists,
@@ -709,6 +712,26 @@ describe('useSearchActions.syncStars', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupStoreMocks();
+    mocks.isRepositoryStarred.mockResolvedValue(false);
+  });
+
+  it('reports the rate limit retry time without replacing the current repositories', async () => {
+    mocks.getAllStarredRepositories.mockRejectedValue(Object.assign(Error('rate limited'), { code: 'rate_limited', retryAt: Date.now()+60000 }));
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.syncStars('stars-only'); });
+    expect(storeState.setRepositories).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith(expect.stringContaining('GitHub'), 'info');
+    expect(storeState.setSyncingStars).toHaveBeenLastCalledWith(false);
+  });
+
+  it('verifies absent old Stars before deleting and preserves data when verification fails', async () => {
+    storeState.repositories = [baseRepo({ id: 1, full_name: 'owner/repo-one' })];
+    mocks.getAllStarredRepositories.mockResolvedValue([]);
+    mocks.isRepositoryStarred.mockRejectedValue(Error('verification offline'));
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.syncStars('stars-only'); });
+    expect(mocks.isRepositoryStarred).toHaveBeenCalled();
+    expect(storeState.setRepositories).not.toHaveBeenCalled();
   });
 
   it('keeps the setRepositories → forceSyncToBackend → setLastSync order and applies lists', async () => {

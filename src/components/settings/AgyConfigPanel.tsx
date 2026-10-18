@@ -62,6 +62,29 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
         {t('agy.lastProbe')} {new Date(probe.at).toLocaleString()} · {probe.code === 'SUCCESS'
           ? agy.probeMatches ? t('agy.success') : t('settingsUx.untested') : <>{errorText(probe.code)} ({probe.code})</>}
       </p>}
+      {state?.requiresTest && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">{zh ? '当前模型或 effort 尚未通过连接测试。请点击“保存并测试”后再发起新调用；原配置的在途任务可继续完成。' : 'Test the current model and effort before starting new calls. Requests already using a tested profile can finish.'}</p>}
+      {(pool?.degraded || pool?.suspect || pool?.quarantined) ? <div className="space-y-2">
+        <p role="status" className="text-sm text-amber-700 dark:text-amber-400">{zh ? '进程或目录清理尚未确认完成，相关容量继续隔离。确认进程退出后可重试恢复。' : 'Process or directory cleanup is unresolved. Its capacity remains isolated until exit is confirmed.'}</p>
+        <Button variant="outline" disabled={busy} onClick={agy.recover}>{zh ? '重试清理与恢复' : 'Retry cleanup and recovery'}</Button>
+      </div> : null}
+      {agy.recoveryIssues.length > 0 && <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+        <p role="alert" className="text-sm font-medium text-amber-800 dark:text-amber-300">
+          {zh ? 'AGY 恢复记录损坏，新的模型调用会保持阻断，直到显式处理。' : 'AGY recovery records are corrupt. New provider calls remain blocked until they are explicitly repaired.'}
+        </p>
+        {agy.recoveryIssues.map(issue => <div key={issue.requestId} className="space-y-2 border-t border-amber-200 pt-2 first:border-t-0 first:pt-0 dark:border-amber-900">
+          <p className="break-all text-xs text-muted-foreground">{issue.requestId} · {issue.dispatch ?? 'unknown'} · {issue.providerOutcome ?? 'unknown'}</p>
+          <p className="text-sm text-amber-800 dark:text-amber-300">{issue.certainty === 'definitely-unsent'
+            ? zh ? '记录虽损坏，但 durable 状态仍能证明请求从未发送；可以安全丢弃阻断记录。' : 'The durable state still proves this request was never sent, so the blocking record can be safely discarded.'
+            : zh ? '无法证明请求未发送；它可能已经调用并计费。默认不会自动清除或重试。' : 'The request cannot be proven unsent and may already have been billed. It will not be cleared or retried automatically.'}</p>
+          <Button variant="outline" size="sm" disabled={busy || !!agy.recoveryBusy} onClick={() => agy.repairRecovery(issue)}>
+            {agy.recoveryBusy === issue.requestId
+              ? zh ? '处理中…' : 'Repairing…'
+              : issue.certainty === 'definitely-unsent'
+                ? zh ? '安全丢弃未发送记录' : 'Safely discard unsent record'
+                : zh ? '放弃未知结果并解除阻断' : 'Abandon unknown outcome and unblock'}
+          </Button>
+        </div>)}
+      </div>}
       {draft && <fieldset disabled={busy || !supported} className="min-w-0 space-y-4">
         <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="min-w-0 space-y-1">
@@ -112,7 +135,7 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
             onCheckedChange={value => agy.update({ enabled: value === true })} />
           {t('agy.enable')}
         </label>
-        <AgyFeatureProfiles draft={draft} update={agy.update} />
+        <AgyFeatureProfiles draft={draft} update={agy.update} testFeature={agy.testFeature} />
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
         <Button variant="outline" onClick={agy.save} disabled={!valid || !dirty}><Save size={16} className="mr-2" />{t('agy.save')}</Button>
         {!state?.enabled && <Button variant="outline" className="ml-2" onClick={agy.enableAndActivate}
@@ -123,7 +146,9 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
         {dirty && <span role="status" className="text-xs text-muted-foreground">{t('settingsUx.unsaved')}</span>}
         </div>
       </fieldset>}
-      {(busy || agy.notice) && <p role="status" className="text-sm text-muted-foreground">{busy ? t('agy.working') : agy.notice === 'SAVED' ? t('agy.saved') : `${errorText(agy.notice!)} (${agy.notice})`}</p>}
+      {(busy || agy.notice) && <p role="status" className="text-sm text-muted-foreground">{busy ? t('agy.working') : agy.notice === 'SAVED' ? t('agy.saved')
+        : agy.notice === 'RECOVERY_REPAIRED' ? zh ? '恢复记录已处理；AGY 新调用已解除对应阻断。' : 'Recovery record repaired; the corresponding AGY call block is cleared.'
+        : `${errorText(agy.notice!)} (${agy.notice})`}</p>}
       <p className="text-xs leading-relaxed text-muted-foreground">{t('agy.privacy')}</p>
       {state?.enabled && <Button variant="outline" onClick={() => useAppStore.getState().setCurrentView('ai')}>
         <FolderOpen size={16} className="mr-2" />{chatT('localResearch.open')}

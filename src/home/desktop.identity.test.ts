@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppState } from '../types';
+import { createInitialState } from '../store/initialState';
 import type { Capabilities, HomeOperation, HomeRecord } from './types';
 
 const mocks = vi.hoisted(() => ({
@@ -27,15 +28,18 @@ vi.mock('../services/backendAdapter', () => ({
 vi.mock('../services/repositoryChatStorage', () => ({
   repositoryChatStorage: {
     exportWorkbench: vi.fn(async () => ({})), applyHomeProjection: vi.fn(async () => {}),
+    getProposal: vi.fn(async () => null),
   },
 }));
 
 import { useAppStore } from '../store/useAppStore';
+import { repositoryChatStorage } from '../services/repositoryChatStorage';
 import { HomeApi } from './api';
-import { activateDesktopHome, flushDesktopHome, getDesktopHomeSync, pauseDesktopHomeForIdentity, stopDesktopHome } from './desktop';
+import { activateDesktopHome, checkpointDesktopHomeRepository, flushDesktopHome, getDesktopHomeSync, pauseDesktopHomeForIdentity, stopDesktopHome } from './desktop';
 import { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } from '../services/repositoryIdentityGate';
 
 const fixture = () => ({
+  ...createInitialState(),
   user: { id: 42 }, backendApiSecret: 'fixture', repositories: [], releases: [],
   releaseSubscriptions: new Set(), readReleases: new Set(), customCategories: [],
   hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [],
@@ -56,6 +60,78 @@ afterEach(async () => {
 });
 
 describe('desktop Home identity boundary', () => {
+  it('keeps an offline v2 activation and captures local edits before deferred recovery', async () => {
+    mocks.state = fixture(); mocks.url = `https://${crypto.randomUUID()}.example/api`;
+    let offline = true; const canonical = new Map<string, HomeRecord>();
+    vi.spyOn(HomeApi.prototype, 'request').mockImplementation(async (path, body) => {
+      if (offline) throw new TypeError('offline');
+      if (path.startsWith('/sync/v2/snapshot')) return { records: [], cursor: 1, snapshotId: 'recovered', nextOffset: 0, hasMore: false } as never;
+      if (path.startsWith('/sync/v2/changes')) return { records: [...canonical.values()], cursor: 1, hasMore: false } as never;
+      if (path === '/sync/v2/operations') return { results: (body as { operations: HomeOperation[] }).operations.map(operation => {
+        const record: HomeRecord = { collection: operation.collection, id: operation.id, version: operation.baseVersion + 1, data: operation.data ?? null };
+        canonical.set(`${record.collection}:${record.id}`, record); return { opId: operation.opId, status: 'applied', record };
+      }) } as never;
+      throw Error('unexpected endpoint');
+    });
+    expect(await activateDesktopHome(capabilities())).toBe(true);
+    const sync = getDesktopHomeSync()!; expect(sync).not.toBeNull();
+    expect(mocks.state.discoveryChannels[0].enabled).toBe(true);
+    useAppStore.setState({ discoveryChannels: mocks.state.discoveryChannels.map(channel => ({ ...channel, enabled: false })) });
+    offline = false; await flushDesktopHome(); await flushDesktopHome();
+    await vi.waitFor(() => expect(mocks.state.discoveryChannels.find(channel => channel.id === 'trending')?.enabled).toBe(false));
+    expect(getDesktopHomeSync()).toBe(sync);
+    expect((await sync.db.pending()).filter(operation => operation.rejected)).toEqual([]);
+  });
+  it('captures one known proposal checkpoint without exporting all chat history', async () => {
+    const base = {id:'incremental',ownerId:'42',sessionId:'organization',operations:[],updatedAt:'2026-10-07T00:00:00.000Z',createdAt:'2026-10-07T00:00:00.000Z'};
+    vi.mocked(repositoryChatStorage.exportWorkbench).mockResolvedValue({proposals:[base]});
+    mocks.state = fixture(); mocks.url = `https://${crypto.randomUUID()}.example/api`;
+    vi.spyOn(HomeApi.prototype,'request').mockImplementation(async (path, body) => {
+      if(path.startsWith('/sync/v2/snapshot')) return {records:[],cursor:1,snapshotId:'incremental',nextOffset:0,hasMore:false} as never;
+      if(path.startsWith('/sync/v2/changes')) return {records:[],cursor:1,hasMore:false} as never;
+      return {results:(body as {operations:HomeOperation[]}).operations.map(operation=>({opId:operation.opId,status:'applied',record:{collection:operation.collection,id:operation.id,version:1,data:operation.data??null}}))} as never;
+    });
+    await activateDesktopHome(capabilities());
+    const exports = vi.mocked(repositoryChatStorage.exportWorkbench).mock.calls.length;
+    const next = {...base,updatedAt:'2026-10-07T00:00:01.000Z'};
+    vi.mocked(repositoryChatStorage.getProposal).mockResolvedValueOnce(next);
+    window.dispatchEvent(new CustomEvent('gsm:global-chat-history-changed',{detail:{proposalId:base.id,ownerId:base.ownerId,sessionId:base.sessionId}}));
+    await flushDesktopHome();
+    expect(repositoryChatStorage.exportWorkbench).toHaveBeenCalledTimes(exports);
+    expect((await getDesktopHomeSync()!.db.getRecord('proposals',base.id))?.data?.updatedAt).toBe(next.updatedAt);
+    vi.mocked(repositoryChatStorage.exportWorkbench).mockResolvedValue({});
+  });
+  const startCheckpointFixture = async () => {
+    mocks.state = fixture(); mocks.url = `https://${crypto.randomUUID()}.example/api`;
+    vi.spyOn(HomeApi.prototype,'request').mockImplementation(async (path, body) => {
+      if(path.startsWith('/sync/v2/snapshot')) return { records: [], cursor: 1, snapshotId: 'checkpoint', nextOffset: 0, hasMore: false } as never;
+      if(path.startsWith('/sync/v2/changes')) return { records: [], cursor: 1, hasMore: false } as never;
+      return {results:(body as {operations:HomeOperation[]}).operations.map(operation=>({opId:operation.opId,status:'applied',record:{collection:operation.collection,id:operation.id,version:1,data:operation.data??null}}))} as never;
+    });
+    await activateDesktopHome(capabilities());
+    useAppStore.setState({repositories:[{id:1,name:'repo',full_name:'owner/repo',custom_description:'original'}] as AppState['repositories']});
+    await checkpointDesktopHomeRepository('42',1); return getDesktopHomeSync()!;
+  };
+  it('serializes the local checkpoint with concurrent manual edits',async()=>{
+    const sync=await startCheckpointFixture(); const original=sync.db.getRecord.bind(sync.db);
+    let release!:()=>void,entered=false;
+    vi.spyOn(sync.db,'getRecord').mockImplementationOnce(async(...args)=>{entered=true;await new Promise<void>(resolve=>{release=resolve;});return original(...args);});
+    const pending=checkpointDesktopHomeRepository('42',1); await vi.waitFor(()=>expect(entered).toBe(true));
+    useAppStore.setState({repositories:[{...mocks.state.repositories[0],custom_description:'new manual note'}]});
+    release();await pending;await flushDesktopHome();
+    expect((await sync.db.getRecord('repositories','1'))?.data?.custom_description).toBe('new manual note');
+  });
+  it('propagates checkpoint failures and rejects an account switch during lookup',async()=>{
+    const sync=await startCheckpointFixture();
+    vi.spyOn(sync.db,'getRecord').mockResolvedValueOnce(undefined);
+    vi.spyOn(sync.db,'edit').mockRejectedValueOnce(Error('disk full'));
+    await expect(checkpointDesktopHomeRepository('42',1)).rejects.toThrow('disk full');
+    const original=sync.db.getRecord.bind(sync.db);let release!:()=>void,entered=false;
+    vi.spyOn(sync.db,'getRecord').mockImplementationOnce(async(...args)=>{entered=true;await new Promise<void>(resolve=>{release=resolve;});return original(...args);});
+    const pending=checkpointDesktopHomeRepository('42',1);const rejected=expect(pending).rejects.toThrow('账户已变化');await vi.waitFor(()=>expect(entered).toBe(true));
+    useAppStore.setState({user:{id:43} as AppState['user']});release();await rejected;
+    expect(sync.db.edit).toHaveBeenCalledTimes(1);
+  });
   it('captures edits against canonical unknown fields and honors an external-channel deletion', async () => {
     mocks.state = fixture();
     mocks.url = `https://${crypto.randomUUID()}.example/api`;

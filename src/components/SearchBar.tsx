@@ -14,7 +14,7 @@ import {
   getPlatformDisplayName,
   getPlatformIcon,
 } from './platformMeta';
-import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useSearchShortcuts } from '../hooks/useSearchShortcuts';
 import { useSearchActions } from '../features/repositories/hooks/useSearchActions';
@@ -27,6 +27,7 @@ import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
 import { NumberInput } from './ui/NumberInput';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Button } from './ui/button';
+import { useRepositoryAnalysisPresentation } from '../features/repositories/hooks/useRepositoryAnalysisPresentation';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -89,6 +90,7 @@ export const SearchBar: React.FC = () => {
     customCategories,
     hiddenDefaultCategoryIds,
     defaultCategoryOverrides,
+    classificationContext,
     lastSync,
     isSyncingStars,
   } = useAppStore(useShallow((state) => ({
@@ -103,9 +105,11 @@ export const SearchBar: React.FC = () => {
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    classificationContext: state.classificationContext,
     lastSync: state.lastSync,
     isSyncingStars: state.isSyncingStars,
   })));
+  const presentedRepositories = useRepositoryAnalysisPresentation(repositories);
 
   const { confirm } = useDialog();
   // 搜索动作（向量/关键词/AI 搜索、星标同步）由 hook 承担；
@@ -167,8 +171,8 @@ export const SearchBar: React.FC = () => {
   };
 
   const allCategories = useMemo(() =>
-    getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),
-    [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]
+    getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext),
+    [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext]
   );
 
   const statusStats = useMemo(() => {
@@ -184,7 +188,7 @@ export const SearchBar: React.FC = () => {
       notLocked: 0,     // 分类未锁定
     };
 
-    repositories.forEach(repo => {
+    presentedRepositories.forEach(repo => {
       // AI分析状态统计
       if (repo.analyzed_at && repo.analysis_failed) {
         stats.failed++;
@@ -218,7 +222,7 @@ export const SearchBar: React.FC = () => {
     });
 
     return stats;
-  }, [repositories, releaseSubscriptions, allCategories]);
+  }, [presentedRepositories, releaseSubscriptions, allCategories]);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [showSearchHistory, setShowSearchHistory] = useState(false);
   const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
@@ -232,28 +236,28 @@ export const SearchBar: React.FC = () => {
 
   const platformCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const repo of repositories) {
+    for (const repo of presentedRepositories) {
       const list = getCanonicalPlatforms(repo.ai_platforms);
       for (const p of list) {
         counts[p] = (counts[p] || 0) + 1;
       }
     }
     return counts;
-  }, [repositories]);
+  }, [presentedRepositories]);
 
   useEffect(() => {
     // Extract unique languages, tags, and platforms from repositories
-    const languages = [...new Set(repositories.map(r => r.language).filter(Boolean))] as string[];
+    const languages = [...new Set(presentedRepositories.map(r => r.language).filter(Boolean))] as string[];
     // 标签包含AI标签、GitHub topics和用户自定义标签
     const tags = [...new Set([
-      ...repositories.flatMap(r => r.ai_tags || []),
-      ...repositories.flatMap(r => r.topics || []),
-      ...repositories.flatMap(r => r.custom_tags || [])
+      ...presentedRepositories.flatMap(r => r.ai_tags || []),
+      ...presentedRepositories.flatMap(r => r.topics || []),
+      ...presentedRepositories.flatMap(r => r.custom_tags || [])
     ])];
-    const platformsSet = new Set(repositories.flatMap(r => getCanonicalPlatforms(r.ai_platforms)));
+    const platformsSet = new Set(presentedRepositories.flatMap(r => getCanonicalPlatforms(r.ai_platforms)));
     const platforms = CANONICAL_PLATFORMS.filter(p => platformsSet.has(p)) as string[];
     // 开源许可：归一化为 SPDX id 或 NO_LICENSE_SENTINEL，排序并把「无」项放最后
-    const licenses = [...new Set(repositories.map(r => normalizeLicense(r.license)))].sort((a, b) => {
+    const licenses = [...new Set(presentedRepositories.map(r => normalizeLicense(r.license)))].sort((a, b) => {
       if (a === NO_LICENSE_SENTINEL) return 1;
       if (b === NO_LICENSE_SENTINEL) return -1;
       return a.localeCompare(b);
@@ -282,7 +286,7 @@ export const SearchBar: React.FC = () => {
         console.warn('Failed to load search history:', error);
       }
     }
-  }, [repositories]);
+  }, [presentedRepositories]);
 
   useEffect(() => {
     const performSearch = async () => {
@@ -294,7 +298,7 @@ export const SearchBar: React.FC = () => {
       if (!searchFilters.query) {
         performBasicFilter();
       } else {
-        const textResults = performBasicTextSearch(repositories, searchFilters.query);
+        const textResults = performBasicTextSearch(presentedRepositories, searchFilters.query);
         const finalFiltered = applyFilters(textResults);
         setSearchResults(finalFiltered);
       }
@@ -304,7 +308,7 @@ export const SearchBar: React.FC = () => {
     // Search helpers are intentionally kept as local closures; the explicit deps below
     // cover the state they read without causing a search loop on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [submittedRevision, searchFilters.languages, searchFilters.tags, searchFilters.platforms, searchFilters.licenses, searchFilters.isAnalyzed, searchFilters.isSubscribed, searchFilters.isEdited, searchFilters.isCategoryLocked, searchFilters.analysisFailed, searchFilters.minStars, searchFilters.maxStars, searchFilters.sortBy, searchFilters.sortOrder, searchFilters.query, searchFilters.healthArchived, searchFilters.healthRecentActivity, searchFilters.healthHasLicense, repositories, repositoryOrder, releaseSubscriptions, allCategories]);
+  }, [submittedRevision, searchFilters.languages, searchFilters.tags, searchFilters.platforms, searchFilters.licenses, searchFilters.isAnalyzed, searchFilters.isSubscribed, searchFilters.isEdited, searchFilters.isCategoryLocked, searchFilters.analysisFailed, searchFilters.minStars, searchFilters.maxStars, searchFilters.sortBy, searchFilters.sortOrder, searchFilters.query, searchFilters.healthArchived, searchFilters.healthRecentActivity, searchFilters.healthHasLicense, presentedRepositories, repositoryOrder, releaseSubscriptions, allCategories]);
 
   // Real-time search effect for repository name matching
   useEffect(() => {
@@ -321,7 +325,7 @@ export const SearchBar: React.FC = () => {
     // Search helpers are intentionally kept as local closures; the explicit deps below
     // cover the state they read without causing a search loop on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, isRealTimeSearch, isComposing, repositories, allCategories]);
+  }, [searchQuery, isRealTimeSearch, isComposing, presentedRepositories, allCategories]);
 
   const updateRealTimeSearchState = (value: string) => {
     setIsRealTimeSearch(Boolean(value.trim()));
@@ -352,7 +356,7 @@ export const SearchBar: React.FC = () => {
 
     // Real-time search only matches repository names for fast response
     const normalizedQuery = query.toLowerCase();
-    const filtered = repositories.filter(repo => {
+    const filtered = presentedRepositories.filter(repo => {
       return repo.name.toLowerCase().includes(normalizedQuery) ||
              repo.full_name.toLowerCase().includes(normalizedQuery);
     });
@@ -366,7 +370,7 @@ export const SearchBar: React.FC = () => {
   };
 
   const performBasicFilter = () => {
-    const filtered = applyFilters(repositories);
+    const filtered = applyFilters(presentedRepositories);
     setSearchResults(filtered);
   };
 
@@ -374,7 +378,9 @@ export const SearchBar: React.FC = () => {
     basicTextSearch(repos, query);
 
   const applyFilters = (repos: typeof repositories) => {
-    const filtered = applyRepoFilters(repos, searchFilters, {
+    const currentById = new Map(presentedRepositories.map(repo => [repo.id, repo]));
+    const projected = repos.map(repo => currentById.get(repo.id) ?? repo);
+    const filtered = applyRepoFilters(projected, searchFilters, {
       releaseSubscriptions,
       allCategories,
       repositoryOrder,
@@ -383,7 +389,7 @@ export const SearchBar: React.FC = () => {
     // 如果分类锁定筛选导致结果为0，自动清除该筛选条件（UI 侧副作用保留在此）
     if (searchFilters.isCategoryLocked !== undefined && filtered.length === 0) {
       const withoutLock = applyRepoFilters(
-        repos,
+        projected,
         { ...searchFilters, isCategoryLocked: undefined },
         { releaseSubscriptions, allCategories, repositoryOrder }
       );

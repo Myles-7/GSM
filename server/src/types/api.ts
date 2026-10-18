@@ -26,6 +26,7 @@ export interface RepositoryRow {
   subcategory_id?: string | null;
   category_candidates?: string | null;
   category_legacy?: string | null;
+  classifications?: string | null;
   ai_details?: string | null;
   category_locked: number;
   last_edited: string | null;
@@ -160,6 +161,7 @@ export interface SyncSettingsRequest {
   subcategoryOrder?: string[];
   repositoryOrder?: number[];
   customCategories?: unknown[];
+  classificationSchemes?: Record<string, unknown>;
   assetFilters?: unknown[];
   collapsedSidebarCategoryCount?: number;
   github_token?: string;

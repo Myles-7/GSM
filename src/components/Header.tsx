@@ -25,6 +25,7 @@ const MENU_META: Record<HeaderMenuId, {
   forks: { icon: GitFork, labelZh: '复刻', labelEn: 'Forks' },
   subscription: { icon: Compass, labelZh: '发现', labelEn: 'Discover' },
   ai: { icon: Bot, labelZh: 'AI', labelEn: 'AI' },
+  reading: { icon: FileCode2, labelZh: 'HTML', labelEn: 'HTML' },
   settings: { icon: Settings, labelZh: '设置', labelEn: 'Settings' },
 };
 

@@ -182,6 +182,18 @@ describe('RepositoryCard view modes', () => {
     expect(screen.getByText('Repository description')).toBeInTheDocument();
     expect(screen.queryByText('Verified detailed purpose')).not.toBeInTheDocument();
   });
+  it('keeps the last successful summary visible when a later re-analysis attempt fails', () => {
+    render(<TooltipProvider><RepositoryCard repository={{
+      ...repository,
+      ai_summary: 'Last successful AI summary',
+      ai_tags: ['previous-ai-tag'],
+      analyzed_at: '2026-09-01T00:00:00Z',
+      analysis_failed: true,
+      analysis_error: 'temporary provider failure',
+    }} allCategories={[]} /></TooltipProvider>);
+    expect(screen.getByText('Last successful AI summary')).toBeInTheDocument();
+    expect(screen.getByText('previous-ai-tag')).toBeInTheDocument();
+  });
   it('shows at most two validated software forms and respects AI and tag visibility', () => {
     const repo: Repository = { ...repository, ai_details: {
       version: 1, generated_at: '2026-09-01T00:00:00Z', repository_pushed_at: null, model: 'test',

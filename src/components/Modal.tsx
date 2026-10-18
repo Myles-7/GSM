@@ -20,6 +20,7 @@ interface ModalProps {
   maxWidth?: string;
   footer?: React.ReactNode;
   scrollable?: boolean;
+  contentClassName?: string;
   onPointerDownOutside?: DialogContentPointerDownOutsideHandler;
   onOverlayPointerDown?: React.PointerEventHandler<HTMLDivElement>;
 }
@@ -32,6 +33,7 @@ export const Modal: React.FC<ModalProps> = ({
   maxWidth = 'max-w-md',
   footer,
   scrollable = false,
+  contentClassName,
   onPointerDownOutside,
   onOverlayPointerDown,
 }) => {
@@ -44,7 +46,7 @@ export const Modal: React.FC<ModalProps> = ({
       </DialogHeader>
       <div
         data-testid="modal-scroll-area"
-        className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5 scrollbar-on-scroll', isScrolling && 'scrolling')}
+        className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5 scrollbar-on-scroll', isScrolling && 'scrolling', contentClassName)}
         onScroll={handleScroll}
       >
         {children}
@@ -68,7 +70,7 @@ export const Modal: React.FC<ModalProps> = ({
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         aria-describedby={undefined}
-        className={cn(maxWidth, scrollable && 'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0')}
+        className={cn(scrollable && 'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0', maxWidth)}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
         onPointerDownOutside={onPointerDownOutside}

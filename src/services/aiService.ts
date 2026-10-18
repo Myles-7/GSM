@@ -528,14 +528,20 @@ export class AIService {
   }
 
   private async requestText(options: {
+    recovery?: import('../types/agy').AgyRecoveryOptions;
     feature?: import('../types/agy').AgyFeature;
     system: string;
     user: string;
     temperature: number;
     maxTokens: number;
     signal?: AbortSignal;
+    onRequestState?: (state: 'queued' | 'running') => void;
+    onChunk?: (delta: string) => void;
+    onLifecycle?: (event: 'initializing' | 'cleanup' | 'warning', code?: string) => void;
+    onSent?: () => void;
   }): Promise<string> {
     if (isAgyConfig(this.config)) return generateAgyText(this.config, options);
+    options.onRequestState?.('running');
     this.requireSecureDirectEndpoint();
     const startTime = Date.now();
     const apiType = this.getApiType();
@@ -885,9 +891,8 @@ ${options.user}` : options.user;
     signal?: AbortSignal;
     onChunk: (delta: string) => void;
   }): Promise<string> {
-    const deadline = this.config.provider === 'agy-cli'
-      ? (this.config.agyTimeoutSeconds ?? 180) * 2000 + 15000 : 600000;
-    return withDeadline(signal => this.requestTextStreamWithinDeadline({ ...options, signal }), deadline, options.signal);
+    if (isAgyConfig(this.config)) return generateAgyText(this.config, options);
+    return withDeadline(signal => this.requestTextStreamWithinDeadline({ ...options, signal }), 600000, options.signal);
   }
 
   private async requestTextStreamWithinDeadline(options: {
@@ -1095,18 +1100,28 @@ ${options.user}` : options.user;
   }
 
   async generateChatText(options: {
+    recovery?: import('../types/agy').AgyRecoveryOptions;
     system: string;
     user: string;
     temperature?: number;
     maxTokens?: number;
     signal?: AbortSignal;
+    onRequestState?: (state: 'queued' | 'running') => void;
+    onChunk?: (delta: string) => void;
+    onLifecycle?: (event: 'initializing' | 'cleanup' | 'warning', code?: string) => void;
+    onSent?: () => void;
   }): Promise<string> {
     return await this.requestText({
+      recovery: options.recovery,
       system: options.system,
       user: options.user,
       temperature: options.temperature ?? 0.2,
       maxTokens: options.maxTokens ?? 4000,
       signal: options.signal,
+      onRequestState: options.onRequestState,
+      onChunk: options.onChunk,
+      onLifecycle: options.onLifecycle,
+      onSent: options.onSent,
     });
   }
 

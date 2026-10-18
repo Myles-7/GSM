@@ -22,6 +22,7 @@ import { normalizeAccountWorkspaces } from '../helpers/accountWorkspace';
 import { normalizeDiscoveryChannels } from '../helpers/discoveryChannels';
 import { readAuthMirror } from '../persistence/authStorage';
 import { normalizeRepositoryOrganization, organizationCategories, recoverLocalCategorySnapshot } from '../helpers/repositoryOrganization';
+import { normalizeClassificationSchemes } from '../helpers/classificationSchemes';
 import {
   defaultDiscoveryChannels,
   defaultPresetFilters,
@@ -125,6 +126,8 @@ export const normalizePersistedState = (
       : DEFAULT_THEME_PRESET_ID,
     themeTokens: normalizeThemeTokens((safePersisted as Record<string, unknown>).themeTokens),
     ...organization,
+    ...normalizeClassificationSchemes({ ...currentState, ...safePersisted, ...organization, customCategories: recovered.customCategories } as AppStoreState),
+    activeClassificationScheme: safePersisted.activeClassificationScheme === 'technology' ? 'technology' : 'purpose',
     gists,
     starredGists,
     gistSearchResults: Array.isArray(safePersisted.gistSearchResults) ? safePersisted.gistSearchResults : gists,
@@ -341,10 +344,12 @@ export const normalizePersistedState = (
           order: typeof persistedItem.order === 'number' ? persistedItem.order : defaultItem.order,
         };
       });
-      if (!persistedMap.has('ai')) {
-        const ordered = merged.filter((item) => item.id !== 'ai').sort((a, b) => a.order - b.order);
+      const added = ['ai', 'reading'] as const;
+      const missing = added.filter(id => !persistedMap.has(id));
+      if (missing.length) {
+        const ordered = merged.filter((item) => !missing.some(id => item.id === id)).sort((a, b) => a.order - b.order);
         const settingsIndex = ordered.findIndex((item) => item.id === 'settings');
-        ordered.splice(settingsIndex < 0 ? ordered.length : settingsIndex, 0, { id: 'ai', visible: true, order: 0 });
+        ordered.splice(settingsIndex < 0 ? ordered.length : settingsIndex, 0, ...missing.map(id => ({ id, visible: true, order: 0 })));
         return ordered.map((item, order) => ({ ...item, order }));
       }
       return merged;

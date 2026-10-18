@@ -62,6 +62,7 @@ const searchFilters = {
 };
 
 const storeState = {
+  categoryOrder: [], subcategories: [], subcategoryOrder: [],
   repositories: [repository],
   githubToken: null,
   aiConfigs: [],

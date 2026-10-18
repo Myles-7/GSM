@@ -1,0 +1,6 @@
+{
+  "hosts": ["api.github.com"],
+  "repoTails": ["", "stats/commit_activity", "stats/participation", "stats/code_frequency", "contributors", "languages", "releases", "pulls", "tags", "stargazers", "stargazers/history", "community/profile", "security-advisories"],
+  "ownerPattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$",
+  "repoPattern": "^[A-Za-z0-9._-]{1,100}$"
+}

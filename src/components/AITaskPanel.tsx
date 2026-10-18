@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { ListTodo } from 'lucide-react';
 import { aiTaskJournal, taskIsTerminal, taskNeedsAttention, type AITaskRecord } from '../services/aiTaskJournal';
-import { agySchedulerStatus } from '../services/agyClient';
+import { agySchedulerStatus, discardAgyRecovery } from '../services/agyClient';
 import { useAppStore, getAllCategories } from '../store/useAppStore';
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
 import { useRepositoryAnalysisJob } from '../features/repositories/hooks/useRepositoryAnalysisJob';
@@ -36,7 +36,7 @@ export function AITaskPanel() {
   const retry = async (task: AITaskRecord, failedOnly: boolean, configId = task.configId, parameters?: TaskRetryParameters) => {
     const state = useAppStore.getState();
     if (String(state.user?.id ?? '') !== task.owner) return;
-    const ids = task.items.filter(item => failedOnly ? item.state === 'failed' : item.state !== 'complete').map(item => item.id);
+    const ids = task.items.filter(item => !item.recovery && (failedOnly ? item.state === 'failed' : item.state !== 'complete')).map(item => item.id);
     if (!ids.length) return;
     if (['summary', 'details', 'gists'].includes(task.kind) && aiTaskJournal.busy(task.owner, task.kind))
       throw new Error(chinese ? '同类任务正在执行，请完成或停止后重试。' : 'A task of this type is active. Finish or stop it before retrying.');
@@ -72,6 +72,19 @@ export function AITaskPanel() {
         enqueueAnalysis(channel, repos, { force: true, configId, retry });
       }
   };
+  const retrySave = async (task: AITaskRecord) => {
+    const state = useAppStore.getState(); if (String(state.user?.id ?? '') !== task.owner) return;
+    if (task.kind === 'details') await details.retrySave(state.repositories, task);
+    else if (task.kind === 'discovery-analysis') {
+      await (await import('../features/discovery/custom/analysis')).retryAnalysisSave(task);
+    } else if (task.kind === 'organization') await (await import('../services/aiOrganizationResultRecovery')).retryOrganizationTaskSave(task);
+    else throw new Error('AGY_SAVE_RECOVERY_UNSUPPORTED');
+  };
+  const discardResults = async (task: AITaskRecord) => {
+    for (const item of task.items.filter(item => item.recovery)) {
+      await discardAgyRecovery(task.owner, item.recovery!.requestId);
+    }
+  };
   const currentView = useAppStore(state => state.currentView);
   const title = chinese ? '任务中心' : 'Task center';
   const navigate = (task: AITaskRecord) => {
@@ -94,13 +107,13 @@ export function AITaskPanel() {
       title={title} aria-label={`${title}${active ? ` · ${active}` : ''}`}><ListTodo className="h-5 w-5" />
       {active > 0 && <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">{active}</span>}
       {attention > 0 && <span aria-label={chinese ? '任务待处理' : 'Tasks need attention'} className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-destructive" />}</Button>
-    {currentView === 'tasks' && createPortal(<div data-task-scroll className="fixed inset-x-0 bottom-0 top-14 z-40 overflow-y-auto bg-background"><div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">{scheduler && <p className="mb-4 text-xs text-muted-foreground" role="status">AGY {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}</p>}<TaskCenter tasks={owned} chinese={chinese} retry={retry} onNavigate={navigate} /></div></div>, document.body)}
+    {currentView === 'tasks' && createPortal(<div data-task-scroll className="fixed inset-x-0 bottom-0 top-14 z-40 overflow-y-auto bg-background"><div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">{scheduler && <p className="mb-4 text-xs text-muted-foreground" role="status">AGY {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}</p>}<TaskCenter tasks={owned} chinese={chinese} retry={retry} retrySave={retrySave} discardResults={discardResults} onNavigate={navigate} /></div></div>, document.body)}
     <Sheet open={open} onOpenChange={setOpen}><SheetContent className="w-full gap-0 p-0 sm:max-w-lg" closeLabel={chinese ? '关闭' : 'Close'}
       onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
       <SheetHeader className="shrink-0 border-b border-border p-5 pr-12"><SheetTitle>{title}</SheetTitle></SheetHeader>
       {scheduler && <p className="shrink-0 border-b border-border px-5 py-3 text-xs text-muted-foreground" role="status">AGY: {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}
         {scheduler.cooldownUntil > Date.now() && ` · ${chinese ? '限流冷却至' : 'Cooling down until'} ${new Date(scheduler.cooldownUntil).toLocaleTimeString()}`}</p>}
-      <div data-task-scroll className="min-h-0 flex-1 overflow-y-auto p-5"><TaskCenter tasks={owned} chinese={chinese} compact retry={retry} onNavigate={navigate}
+      <div data-task-scroll className="min-h-0 flex-1 overflow-y-auto p-5"><TaskCenter tasks={owned} chinese={chinese} compact retry={retry} retrySave={retrySave} discardResults={discardResults} onNavigate={navigate}
         onOpenCenter={() => { useAppStore.getState().setCurrentView('tasks'); setOpen(false); }} /></div>
     </SheetContent></Sheet>
   </>;

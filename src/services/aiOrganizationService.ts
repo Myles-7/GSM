@@ -4,11 +4,11 @@ import type { WorkbenchProposal } from '../types/aiWorkbench';
 import type { OrganizationDraft } from '../types/aiOrganization';
 import { useAppStore } from '../store/useAppStore';
 import { repositoryChatStorage as storage } from './repositoryChatStorage';
-import { AIService } from './aiService';
-import { forAgyFeature } from './agyProfiles';
+import { organizationRecoveryAI } from './aiOrganizationResultRecovery';
 import { getRepositoryDetailReadme } from './repositoryDetailReadme';
 import { organizationDraftSchema } from './aiOrganizationSchema';
 import { buildOrganizationOverview, organizationMetadata as metadata } from './aiOrganizationOverview';
+import { organizationFatalError } from './aiOrganizationReadiness';
 
 const reference = z.string().trim().min(1).max(160);
 const categorySuggestionsSchema = z.array(z.object({ ref: reference, name: z.string().trim().min(1).max(120), parentRef: reference.nullable() }).strict()).max(100);
@@ -47,11 +47,13 @@ export async function generateOrganizationDraft(input: {
   signal: AbortSignal; onUpdate: (proposal: WorkbenchProposal) => Promise<void>;
   retryOnly?: boolean; enrichRepositoryIds?: number[]; replaceManual?: boolean; maxNewSubcategories?: number;
   batchIndex?: number;
+  recoveryOnly?: boolean;
 }): Promise<WorkbenchProposal> {
   const proposal = structuredClone(input.proposal);
   const draft = proposal.organization!;
   const state = useAppStore.getState();
-  const config = state.aiConfigs.find(c => c.id === input.configId);
+  const config = input.recoveryOnly ? await (await import('./aiOrganizationResultRecovery')).organizationRecoveryConfig(proposal.ownerId, proposal.id, input.configId)
+    : state.aiConfigs.find(c => c.id === input.configId);
   if (!config) throw new Error('Select an AI model in settings');
   const accountId = state.user?.id;
   const check = () => {
@@ -59,7 +61,7 @@ export async function generateOrganizationDraft(input: {
     if (!accountId || String(useAppStore.getState().user?.id ?? '') !== proposal.ownerId || accountId !== useAppStore.getState().user?.id) throw new Error('Account changed');
   };
   check();
-  const ai = new AIService(forAgyFeature(config, 'organization', 'background'), state.language);
+  const ai = organizationRecoveryAI(config, state.language, proposal, { kind: 'legacy' }, input.recoveryOnly);
   const byId = new Map(input.repositories.map(r => [r.id, r]));
   const update = async () => {
     check();
@@ -103,6 +105,7 @@ export async function generateOrganizationDraft(input: {
     const { categories } = resolveCategories(draft, parsed.categories);
     draft.categories = categories;
     draft.structureReady = true;
+    ai.validated();
     await update();
   }
   const enrichIds = new Set(input.enrichRepositoryIds ?? []);
@@ -162,11 +165,13 @@ export async function generateOrganizationDraft(input: {
       draft.categories = next.categories;
       draft.entries = next.entries;
       batch.status = 'complete'; delete batch.error;
+      ai.validated();
     } catch (error) {
       check();
       batch.status = 'failed';
       const raw = error instanceof Error ? error.message : String(error);
       batch.error = [config.apiKey, state.githubToken].filter((secret): secret is string => Boolean(secret)).reduce((message, secret) => message.split(secret).join('[redacted]'), raw).slice(0, 600);
+      if (organizationFatalError(error)) { draft.status = 'interrupted'; await update(); throw error; }
     }
     await update();
   }

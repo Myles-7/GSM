@@ -1,4 +1,5 @@
 import type { Repository } from '../types';
+import type { ClassificationSchemes } from '../types/classification';
 import { validateRepositoryIdentityMappings, type RepositoryIdentityMapping } from './repositoryIdentity';
 
 export interface RepositoryIdentityParticipantResult { changed: number }
@@ -21,7 +22,7 @@ export function assertRepositoryIdentityName(id: number, name: string, mappings:
 }
 
 /** Only explicit repository fields are rewritten; counters, text and historical evidence are not. */
-export function remapParticipantRepositoryList(repositories: Repository[], mappings: ReadonlyArray<RepositoryIdentityMapping>): Repository[] {
+export function remapParticipantRepositoryList<T extends Pick<Repository, 'id' | 'full_name'>>(repositories: T[], mappings: ReadonlyArray<RepositoryIdentityMapping>): T[] {
   const ids = new Set<number>();
   let changed = false;
   const result = repositories.map(repo => {
@@ -40,4 +41,28 @@ export function remapParticipantRepositoryList(repositories: Repository[], mappi
 export function remapParticipantRepositoryIds(ids: number[], mappings: ReadonlyArray<RepositoryIdentityMapping>): number[] {
   const result = ids.map(id => mappings.find(item => item.oldId === id)?.newId ?? id);
   return result.some((id, index) => id !== ids[index]) ? [...new Set(result)] : ids;
+}
+
+/**
+ * Classification structures are account-bound identity participants. The
+ * categories themselves have stable string IDs; only the repository order in
+ * each scheme carries repository identities. Keep the original object on a
+ * no-op so callers can use reference equality when deciding whether to write.
+ */
+export function remapParticipantClassificationSchemes(
+  schemes: ClassificationSchemes | undefined,
+  mappings: ReadonlyArray<RepositoryIdentityMapping>,
+): ClassificationSchemes | undefined {
+  if (!schemes) return schemes;
+  let changed = false;
+  const result = { ...schemes };
+  for (const schemeId of ['purpose', 'technology'] as const) {
+    const scheme = schemes[schemeId];
+    if (!scheme) continue;
+    const repositoryOrder = remapParticipantRepositoryIds(scheme.repositoryOrder, mappings);
+    if (repositoryOrder === scheme.repositoryOrder) continue;
+    changed = true;
+    result[schemeId] = { ...scheme, repositoryOrder };
+  }
+  return changed ? result : schemes;
 }

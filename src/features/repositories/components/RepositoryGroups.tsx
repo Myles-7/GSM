@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from 'react';
 import { Archive, ArrowDown, ArrowUp, BookOpen, ChevronDown, ChevronRight, Code, Folder, GripVertical, MoreHorizontal, Plus, Star, Wrench } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../../store/useAppStore';
+import { useClassificationStore as useAppStore } from '../../../store/useClassificationStore';
 import { useRepositoryDragStore } from '../../../store/useRepositoryDragStore';
 import type { Repository } from '../../../types';
 import { useT } from '../../../i18n/useT';
@@ -41,6 +41,9 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
     move: s.moveRepositoryToSubcategory,
     reorderGroups: s.reorderSubcategories,
     reorderRepos: s.reorderRepositories,
+    scheme: s.activeClassificationScheme ?? 'purpose',
+    navigation: s.classificationNavigation,
+    setCollapsedGroups: s.setClassificationCollapsedGroups,
   })));
   const groups = useMemo(() => {
     const children = (state.subcategories ?? []).filter(g => g.parentId === categoryId);
@@ -48,7 +51,8 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
       .map(id => children.find(g => g.id === id)!);
   }, [categoryId, state.subcategories, state.subcategoryOrder]);
   const allCurrent = (state.allRepositories ?? repositories).filter(r => r.category_id === categoryId);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const collapsed = new Set(state.navigation?.[state.scheme]?.collapsedGroups ?? []);
+  const setCollapsed = (change: (previous: Set<string>) => Set<string>) => state.setCollapsedGroups(state.scheme, [...change(collapsed)]);
   const [active, setActive] = useState('');
   const [editing, setEditing] = useState<{ id?: string; name: string; icon: string } | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
@@ -58,7 +62,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   const root = useRef<HTMLDivElement>(null);
   const headingRefs = useRef(new Map<string, HTMLElement>());
   const canReorder = customSort && !filtered;
-  const sections = [...groups.map(g => ({ ...g, key: g.id })), { id: null, key: UNGROUPED, name: t('organization.ungrouped'), icon: '' }];
+  const sections = [...groups.map(g => ({ ...g, key: g.id })), { id: null, key: `${UNGROUPED}:${categoryId}`, name: t('organization.ungrouped'), icon: '' }];
 
   useEffect(() => {
     const updateActive = () => {

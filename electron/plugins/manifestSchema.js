@@ -20,23 +20,10 @@ const REPOSITORY_ACTION_FIELDS = new Set(['id', 'title', 'icon', 'placement', 'o
 const PROCESSOR_FIELDS = new Set(['id', 'title']);
 const EXPORTER_FIELDS = new Set(['id', 'title', 'fileExtension', 'mimeType']);
 const PAGE_FIELDS = new Set(['id', 'title', 'entry']);
-const BASE_PERMISSIONS = new Set([
-  'repositories:read',
-  'repositories:write',
-  'privateRepositories:read',
-  'releases:read',
-  'gists:read',
-  'storage',
-  'clipboard:write',
-  'external:open',
-  'downloads:create',
-  'ai:invoke',
-  'web:search',
-]);
+const { validatePermission } = require('./permissionPolicy');
 const PLUGIN_ID_RE = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
 const CONTRIBUTION_ID_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const DOMAIN_RE = /^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 
 function failure(code, message) {
@@ -61,12 +48,6 @@ function requiredString(manifest, field) {
   return null;
 }
 
-function validatePermission(permission) {
-  if (BASE_PERMISSIONS.has(permission)) return true;
-  if (!permission.startsWith('network:')) return false;
-  const domain = permission.slice('network:'.length);
-  return DOMAIN_RE.test(domain) && domain.toLowerCase() !== 'localhost';
-}
 
 function validateRepositoryActions(actions) {
   if (!Array.isArray(actions)) {

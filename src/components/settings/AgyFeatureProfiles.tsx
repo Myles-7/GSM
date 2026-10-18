@@ -5,8 +5,9 @@ import { Button } from '../ui/button';
 const AGY_BATCH_FEATURES: AgyFeature[] = ['repository-summary', 'repository-details', 'gist-summary', 'release-summary', 'discovery'];
 
 /** Keep batch limits visible; preserve old model/effort overrides until explicitly reset. */
-export function AgyFeatureProfiles({ draft, update }: {
+export function AgyFeatureProfiles({ draft, update, testFeature }: {
   draft: AgyDevicePrefs; update: (patch: Partial<AgyDevicePrefs>) => void;
+  testFeature?: (feature: AgyFeature) => unknown;
 }) {
   const t = useT('settings');
   const legacy = AGY_FEATURES.filter(feature => {
@@ -43,6 +44,7 @@ export function AgyFeatureProfiles({ draft, update }: {
       <p className="my-3 text-xs text-muted-foreground">{t('settingsUx.legacyHelp')}</p>
       {legacy.map(feature => <div key={feature} className="flex flex-wrap items-center justify-between gap-2 border-t border-border py-2 text-sm">
         <div className="min-w-0"><span>{t(`settingsUx.features.${feature}`)}</span><code className="mt-1 block break-all text-xs text-muted-foreground">{JSON.stringify(draft.featureOverrides?.[feature])}</code></div>
+        {testFeature && <Button size="sm" variant="outline" onClick={() => testFeature(feature)}>{t('agy.saveAndTest')}</Button>}
         <Button size="sm" variant="outline" onClick={() => {
           const next = { ...draft.featureOverrides };
           const concurrency = AGY_BATCH_FEATURES.includes(feature) ? next[feature]?.concurrency : undefined;

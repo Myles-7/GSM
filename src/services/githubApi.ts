@@ -35,6 +35,13 @@ interface GitHubContentResponse {
   size?: number;
   type?: string;
 }
+export interface StarSyncCheckpoint { version: 1; nextPage: number; startedAt: string; firstPageIds: number[]; repositories: Repository[] }
+export interface StarSyncProgress { fetched: number; page: number; complete: boolean; status?: 'fetching'|'rate_limited'; retryAt?: number; estimatedTotal?: number }
+export interface StarSyncOptions {
+  checkpoint?: StarSyncCheckpoint;
+  concurrency?: number;
+  onCheckpoint?(meta: Omit<StarSyncCheckpoint,'repositories'>,page:number,repositories:Repository[]):Promise<void>;
+}
 
 export interface GitHubRepositoryTreeEntry {
   path: string;
@@ -378,10 +385,10 @@ export class GitHubApiService {
     return headers;
   }
 
-  private async makeRequest<T>(endpoint: string, options: RequestInit & { operationTag?: string } = {}, signal?: AbortSignal): Promise<T> {
+  private async makeRequest<T>(endpoint: string, options: RequestInit & { operationTag?: string; autoRetry?: boolean } = {}, signal?: AbortSignal): Promise<T> {
     const startTime = Date.now();
     const method = (options.method || 'GET') as string;
-    const { operationTag, signal: optionSignal, ...fetchOptions } = options;
+    const { operationTag, autoRetry, signal: optionSignal, ...fetchOptions } = options;
     signal = signal ?? optionSignal ?? undefined;
     signal?.throwIfAborted();
     const resource = endpoint.startsWith('/search/code') ? 'code_search'
@@ -390,15 +397,15 @@ export class GitHubApiService {
     const until = Math.max(limit?.remaining === 0 ? limit.reset : 0, this.retryUntil.get(resource) || 0);
     if (until > Date.now()) {
       // Interactive discovery surfaces the cooldown instead of silently blocking its dialog.
-      if (operationTag === 'custom-discovery') {
-        throw Object.assign(new Error('GitHub rate limit exceeded'), { status: 429, retryAfterMs: until - Date.now() });
+      if (operationTag === 'custom-discovery' || operationTag === 'reading-star' || operationTag === 'star-sync') {
+        throw Object.assign(new Error('GitHub rate limit exceeded'), { code:'rate_limited',status: 429, retryAt:until,retryAfterMs: until - Date.now() });
       }
       await waitForRequest(until - Date.now(), signal);
     }
 
     // GitHub 的 gist 等端点偶发 502/503/504（网关瞬时故障），这里对 5xx 做指数退避重试，
     // 退避策略与 backendAdapter.fetchWithRetry 保持一致（1s/2s/4s，最多重试 3 次）。
-    const maxRetries = 3;
+    const maxRetries = autoRetry === false ? 0 : 3;
     let response: Response | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const viaProxy = this.backendUrl != null;
@@ -481,10 +488,10 @@ export class GitHubApiService {
           // 'UNAUTHORIZED'. Only the latter is a backend API key problem.
           const body = await response.json().catch(() => null) as { code?: string } | null;
           if (body?.code === 'UNAUTHORIZED') {
-            throw new Error(BACKEND_PROXY_UNAUTHORIZED_ERROR);
+            throw Object.assign(new Error(BACKEND_PROXY_UNAUTHORIZED_ERROR), { status: 401 });
           }
         }
-        throw new Error(GITHUB_TOKEN_INVALID_ERROR);
+        throw Object.assign(new Error(GITHUB_TOKEN_INVALID_ERROR), { status: 401 });
       }
       const retryAfter = response.headers.get('Retry-After');
       const forbiddenBody = response.status === 403
@@ -497,7 +504,7 @@ export class GitHubApiService {
           ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0;
         const retryAfterMs = Math.max(retryMs, remaining === '0' ? resetAt - Date.now() : 0, 1000);
         this.retryUntil.set(resource, Date.now() + retryAfterMs);
-        throw Object.assign(new Error('GitHub API rate limit exceeded'), { status: response.status, retryAfterMs });
+        throw Object.assign(new Error('GitHub API rate limit exceeded'), { code:'rate_limited',status: response.status,retryAt:Date.now()+retryAfterMs, retryAfterMs });
       }
 
       if (response.status === 403) {
@@ -595,37 +602,57 @@ export class GitHubApiService {
     return this.makeRequest<GitHubUser>('/user');
   }
 
-  async getStarredRepositories(page = 1, perPage = 100): Promise<Repository[]> {
+  async getStarredRepositories(page = 1, perPage = 100, signal?: AbortSignal): Promise<Repository[]> {
     const repos = await this.makeRequest<Repository[]>(
-      `/user/starred?page=${page}&per_page=${perPage}&sort=updated`,
+      `/user/starred?page=${page}&per_page=${perPage}&sort=created&direction=desc`,
       {
-        headers: {
-          'Accept': 'application/vnd.github.star+json'
-        }
-      }
+        headers: { 'Accept': 'application/vnd.github.star+json' }, operationTag: 'star-sync'
+      }, signal
     );
     return repos;
   }
 
-  async getAllStarredRepositories(): Promise<Repository[]> {
-    let allRepos: Repository[] = [];
-    let page = 1;
-    const perPage = 100;
-
+  async getAllStarredRepositories(signal?: AbortSignal, onProgress?: (progress: StarSyncProgress) => void, options:StarSyncOptions={}): Promise<Repository[]> {
+    const checkpoint=options.checkpoint;
+    const valid=checkpoint?.version===1&&checkpoint.nextPage>1&&Date.now()-Date.parse(checkpoint.startedAt)<3600000;
+    const allRepos=new Map<number,Repository>((valid?checkpoint.repositories:[]).map(repo=>[repo.id,repo]));
+    const perPage=100,window=Math.max(1,Math.min(3,options.concurrency??3));let page=valid?checkpoint.nextPage:1;
+    let firstPageIds=valid?checkpoint.firstPageIds:[];const startedAt=valid?checkpoint.startedAt:new Date().toISOString();
+    const checkAnchor=async()=>{
+      const current=await this.getStarredRepositories(1,perPage,signal);
+      if(JSON.stringify(current.map(repo=>repo.id))!==JSON.stringify(firstPageIds))throw Object.assign(Error('GitHub Star list changed during synchronization; retry a fresh snapshot'),{code:'STAR_LIST_CHANGED'});
+    };
+    if(valid)await checkAnchor();
     while (true) {
-      const repos = await this.getStarredRepositories(page, perPage);
-      if (repos.length === 0) break;
-
-      allRepos = [...allRepos, ...repos];
-
-      if (repos.length < perPage) break;
-      page++;
-
-      // Rate limiting protection
-      await new Promise(resolve => setTimeout(resolve, 100));
+      signal?.throwIfAborted();
+      const wave=new AbortController(),abort=()=>wave.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
+      const pages=Array.from({length:window},(_,index)=>this.getStarredRepositories(page+index,perPage,wave.signal).then(value=>({status:'fulfilled' as const,value}),reason=>({status:'rejected' as const,reason})));
+      let complete = false;
+      try {
+      for (let index = 0; index < pages.length; index++) {
+        signal?.throwIfAborted();
+        const result=await pages[index];
+        if(result.status==='rejected'){
+          const retryAt=(result.reason as {retryAt?:number})?.retryAt;
+          if(retryAt)onProgress?.({fetched:allRepos.size,page:page+index,complete:false,status:'rate_limited',retryAt});
+          throw result.reason;
+        }
+        const repos = result.value;
+        if(page+index===1)firstPageIds=repos.map(repo=>repo.id);
+        repos.forEach(repo=>allRepos.set(repo.id,repo));
+        await options.onCheckpoint?.({version:1,nextPage:page+index+1,startedAt,firstPageIds},page+index,repos);
+        onProgress?.({ fetched: allRepos.size, page: page + index, complete: false,status:'fetching' });
+        if (repos.length < perPage) { complete = true; break; }
+      }
+      } finally {
+        wave.abort(); signal?.removeEventListener('abort',abort);
+        // Every speculative page already handles rejection. A transport which
+        // ignores cancellation must not delay a confirmed failure or completion.
+      }
+      if (complete) { await checkAnchor();onProgress?.({ fetched: allRepos.size, page, complete: true,status:'fetching',estimatedTotal:allRepos.size }); break; }
+      page += window;
     }
-
-    return allRepos;
+    return [...allRepos.values()];
   }
 
   private mergeGistMetadata(existing: Gist | undefined, incoming: Gist, starred?: boolean): Gist {
@@ -1547,16 +1574,17 @@ export class GitHubApiService {
     });
   }
 
-  async starRepository(owner: string, repo: string, signal?: AbortSignal): Promise<void> {
+  async starRepository(owner: string, repo: string, signal?: AbortSignal, options?: { autoRetry?: boolean }): Promise<void> {
     await this.makeRequest<void>(`/user/starred/${owner}/${repo}`, {
       method: 'PUT',
+      ...(options?.autoRetry === false ? { autoRetry: false, operationTag: 'reading-star' } : {}),
     }, signal);
   }
 
   /** GitHub returns 204 for a starred repository and 404 when it is not starred. */
   async isRepositoryStarred(owner: string, repo: string, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.makeRequest<void>(`/user/starred/${owner}/${repo}`, {}, signal);
+      await this.makeRequest<void>(`/user/starred/${owner}/${repo}`, {operationTag:'star-sync'}, signal);
       return true;
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('GitHub API error: 404 ')) {

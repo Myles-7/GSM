@@ -1,5 +1,5 @@
 import { emptyData, type CustomDiscoveryData } from './model';
-import { assertRepositoryIdentityWritable } from '../../../services/repositoryIdentityGate';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../../../services/repositoryIdentityGate';
 import type { RepositoryIdentityParticipantResult } from '../../../services/repositoryIdentityParticipants';
 
 const DB_NAME = 'gsm-custom-discovery';
@@ -19,10 +19,12 @@ async function transactData<T>(
   account: string,
   change: (data: CustomDiscoveryData) => T,
   source: Source | 'identity-migration',
-  options: { requireExisting?: boolean; shouldWrite?: (result: T) => boolean; onMissing?: () => T } = {},
+  options: { requireExisting?: boolean; shouldWrite?: (result: T) => boolean; onMissing?: () => T; maintenanceOwner?: string } = {},
 ): Promise<T> {
   if (!account?.trim()) throw new Error('Account required');
-  if (source !== 'read' && source !== 'identity-migration') assertRepositoryIdentityWritable(account);
+  const assertWritable = () => options.maintenanceOwner
+    ? assertRepositoryMaintenanceOwner(account, options.maintenanceOwner) : assertRepositoryIdentityWritable(account);
+  if (source !== 'read' && source !== 'identity-migration') assertWritable();
   if (typeof indexedDB === 'undefined') {
     if (typeof window === 'undefined') throw new Error('Discovery storage unavailable');
     const raw = window.localStorage.getItem(fallbackKey(account));
@@ -34,7 +36,7 @@ async function transactData<T>(
     }
     const result = change(data);
     if (source !== 'read' && (options.shouldWrite?.(result) ?? true)) {
-      if (source !== 'identity-migration') assertRepositoryIdentityWritable(account);
+      if (source !== 'identity-migration') assertWritable();
       window.localStorage.setItem(fallbackKey(account), JSON.stringify(data));
       notifyChange(account, source);
     }
@@ -49,7 +51,7 @@ async function transactData<T>(
   });
   try {
     return await new Promise<T>((resolve, reject) => {
-      if (source !== 'read' && source !== 'identity-migration') assertRepositoryIdentityWritable(account);
+      if (source !== 'read' && source !== 'identity-migration') assertWritable();
       const tx = db.transaction('accounts', source === 'read' ? 'readonly' : 'readwrite');
       const timer = setTimeout(() => { tx.abort(); }, 15000);
       let result: T;
@@ -68,7 +70,7 @@ async function transactData<T>(
           const data: CustomDiscoveryData = request.result ?? emptyData();
           result = change(data);
           if (source !== 'read' && (options.shouldWrite?.(result) ?? true)) {
-            if (source !== 'identity-migration') assertRepositoryIdentityWritable(account);
+            if (source !== 'identity-migration') assertWritable();
             tx.objectStore('accounts').put(data, account);
             wrote = true;
           }
@@ -79,6 +81,8 @@ async function transactData<T>(
 }
 export const transact = <T>(account: string, change: (data: CustomDiscoveryData) => T, source: Source = 'local') =>
   transactData(account, change, source);
+export const transactBackupRestore = <T>(account: string, owner: string, change: (data: CustomDiscoveryData) => T) =>
+  transactData(account, change, 'local', { maintenanceOwner: owner });
 export const loadData = (account: string) => transact(account, data => data, 'read');
 export const migrateCustomRepositoryIdentityData = (
   account: string,

@@ -406,12 +406,12 @@ describe('repositoryChatStorage local fallback', () => {
     expect(await repositoryChatStorage.listProposals(ownerId)).toHaveLength(2);
   });
 
-  it('round-trips versioned structure operations as unselected inert history', async () => {
+  it.each([undefined, 'technology'] as const)('round-trips versioned structure operations as unselected inert history (%s)', async singleSchemeId => {
     const ownerId = 'structure-owner';
     const session = { ...createSession('structure-session', 0, '2026-10-04T00:00:00.000Z'), ownerId, kind: 'workbench' as const };
     const proposal = createProposal('structure-proposal', ownerId, session.id);
     proposal.operations = [];
-    proposal.organization = { version: 2, purpose: 'structure', mode: 'reorganize', revision: 1, scope: { name: 'structure', repositoryIds: [] },
+    proposal.organization = { version: singleSchemeId ? 3 : 2, ...(singleSchemeId ? { singleSchemeId } : {}), purpose: 'structure', mode: 'reorganize', revision: 1, scope: { name: 'structure', repositoryIds: [] },
       instruction: 'Create category', configId: 'manual', maxNewSubcategories: 6, structureReady: true, entries: [], batches: [], status: 'ready', createdCategoryIds: [],
       categories: [{ id: 'new-main', name: 'New', icon: 'folder', parentId: null, isNew: true }],
       structureOperations: [{ id: 'create-op', kind: 'create', sourceIds: [], targetId: 'new-main', name: 'New', icon: 'folder', keywords: [], reason: '', selected: true, status: 'pending', members: [],
@@ -421,6 +421,7 @@ describe('repositoryChatStorage local fallback', () => {
     await repositoryChatStorage.importWorkbench(ownerId, await repositoryChatStorage.exportWorkbench(ownerId));
     const imported = (await repositoryChatStorage.listProposals(ownerId)).find(p => p.id !== proposal.id)!;
     expect(imported.organization).toMatchObject({ status: 'imported', structureOperations: [{ selected: false, before: { defaultCategoryOverrides: { devtools: { mergedInto: 'target' } } } }] });
+    expect(imported.organization?.singleSchemeId).toBe(singleSchemeId);
   });
 
   it('rejects malformed and foreign backups before writing any records', async () => {
@@ -438,6 +439,38 @@ describe('repositoryChatStorage local fallback', () => {
     await expect(repositoryChatStorage.importWorkbench(ownerId, { ...backup, ownerId: 'owner-b' }))
       .rejects.toThrow('another account');
     await expect(repositoryChatStorage.listWorkbenchSessions(ownerId)).resolves.toEqual(before);
+  });
+  it('imports both v3 schemes only as inert account-owned history', async () => {
+    const ownerId = 'dual-backup-owner';
+    const session = { ...createSession('dual-backup-session', 0, '2026-10-06T00:00:00.000Z'), ownerId, kind: 'workbench' as const };
+    const proposal = createProposal('dual-backup-proposal', ownerId, session.id);
+    proposal.operations = [];
+    const scheme = (id: string): import('../types/aiOrganization').OrganizationSchemeDraft => ({
+      selected: true, ready: true, createdCategoryIds: [],
+      before: { customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [1], categoryListIdMap: {} },
+      categories: [{ id: `${id}-new`, name: `${id}-new`, parentId: null, icon: 'folder', isNew: true }],
+      entries: [{ repositoryId: 1, before: { categoryId: null, subcategoryId: null, locked: false }, categoryId: `${id}-new`, subcategoryId: null, reason: 'Fact-based', disposition: 'move', selected: true, overrideLocked: false, manual: false, status: 'pending' }],
+    });
+    const purpose = scheme('purpose');
+    proposal.organization = { version: 3, revision: 1, scope: { name: 'all', repositoryIds: [1] }, instruction: 'Organize both schemes', configId: 'model', maxNewSubcategories: 6, structureReady: true,
+      categories: purpose.categories, entries: purpose.entries, createdCategoryIds: [], batches: [{ repositoryIds: [1], status: 'complete' }], status: 'ready',
+      dual: { phase: 'review', outcome: 'complete', requests: {}, errors: [], summaries: [], schemes: { purpose, technology: scheme('technology') },
+        understanding: [{ repositoryId: 1, fingerprint: 'fixture', sourceMetadata: { name: 'fixture/tool', description: '', summary: '', language: '', tags: [], details: '' }, status: 'understood', purpose: ['Tool'], technology: ['Library'], sources: [] }] } };
+    await repositoryChatStorage.saveSession(session); await repositoryChatStorage.saveProposal(proposal);
+    const exported = await repositoryChatStorage.exportWorkbench(ownerId);
+    await repositoryChatStorage.importWorkbench(ownerId, exported);
+    const imported = (await repositoryChatStorage.listProposals(ownerId)).find(p => p.id !== proposal.id)!;
+    expect(imported.organization?.status).toBe('imported');
+    for (const scheme of Object.values(imported.organization!.dual!.schemes)) {
+      expect(scheme.selected).toBe(false);
+      expect(scheme.entries[0].selected).toBe(false);
+      expect(scheme.entries[0].categoryId).toContain('-new');
+    }
+    await expect(repositoryChatStorage.importWorkbench('another-account', exported)).rejects.toThrow('another account');
+    const invalid = structuredClone(exported) as { proposals: WorkbenchProposal[] };
+    delete invalid.proposals[0].organization!.dual;
+    await expect(repositoryChatStorage.importWorkbench(ownerId, invalid)).rejects.toThrow('Version 3');
+    expect(await repositoryChatStorage.listProposals(ownerId)).toHaveLength(2);
   });
 
   it('dispatches the global history notification after storage writes', async () => {

@@ -52,7 +52,7 @@ const REHYPE_PLUGINS_NO_HTML: never[] = [];
 
 // Matches $$display$$, \(inline\), \[display\] and $inline$ math so KaTeX is
 // only loaded for documents that actually use it.
-const MATH_PATTERN =
+export const MATH_PATTERN =
   /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?!\s)(?:\\.|[^$\\\n])*?[^\s$\\\n]\$/;
 
 interface MathPlugins {
@@ -108,10 +108,8 @@ const CodeBlock: React.FC<{
   }, [language]);
 
   const codeText = useMemo(() => {
-    if (typeof children === 'string') {
-      return children.replace(/\n$/, '');
-    }
-    return String(children).replace(/\n$/, '');
+    const raw = typeof children === 'string' ? children : String(children);
+    return raw.replace(/^\n+/, '').replace(/\n+$/, '');
   }, [children]);
 
   const highlightedCode = useMemo(() => {
@@ -134,58 +132,20 @@ const CodeBlock: React.FC<{
     }
   }, [codeText, uiLanguage]);
 
-  const displayLang = useMemo(() => {
-    if (!language) return '';
-    return normalizedLanguage ? normalizedLanguage.toUpperCase() : language.toUpperCase();
-  }, [language, normalizedLanguage]);
-
   return (
-    <div className="dark group relative my-3 overflow-hidden rounded-lg border border-border/70 bg-zinc-950/95 text-zinc-100 shadow-xs dark:border-border/60">
-      {copyError && (
-        <div
-          data-translate="false"
-          role="alert"
-          className="absolute top-10 right-2 z-20 max-w-xs rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground shadow-lg dark:bg-card"
-        >
-          {copyError}
-        </div>
-      )}
-      <div className="flex h-8 items-center justify-between border-b border-white/10 bg-zinc-900/90 px-3 text-xs select-none dark:bg-zinc-900/95">
-        <div className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f56]" />
-          <span className="h-2.5 w-2.5 rounded-full bg-[#ffbd2e]" />
-          <span className="h-2.5 w-2.5 rounded-full bg-[#27c93f]" />
-          {displayLang && (
-            <span className="ml-2 font-mono text-[11px] font-medium tracking-wider text-zinc-400">
-              {displayLang}
-            </span>
-          )}
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={handleCopy}
-          aria-label={uiLanguage === 'zh' ? '复制代码' : 'Copy code'}
-          title={copyError || (uiLanguage === 'zh' ? '复制代码' : 'Copy code')}
-          className={`h-6 px-2 text-xs text-zinc-400 transition-colors hover:bg-white/10 hover:text-white ${
-            copyError ? 'text-destructive' : copied ? 'text-emerald-400' : ''
-          }`}
-        >
-          {copied ? (
-            <span className="flex items-center gap-1 text-[11px] text-emerald-400">
-              <Check className="h-3.5 w-3.5" />
-              <span>{uiLanguage === 'zh' ? '已复制' : 'Copied'}</span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-[11px]">
-              <Copy className="h-3.5 w-3.5" />
-              <span>{uiLanguage === 'zh' ? '复制' : 'Copy'}</span>
-            </span>
-          )}
-        </Button>
-      </div>
-      <pre className="!my-0 !rounded-t-none !border-0 !bg-transparent p-3 font-mono text-[13px] leading-relaxed text-zinc-100 overflow-x-auto">
+    <div className="group relative my-0">
+      {copyError && <div data-translate="false" role="alert"
+        className="absolute top-10 right-2 z-20 max-w-xs rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground shadow-lg dark:bg-card">{copyError}</div>}
+      <Button type="button" variant="ghost" size="icon" onClick={handleCopy}
+        aria-label={uiLanguage === 'zh' ? '复制代码' : 'Copy code'}
+        title={copyError || (uiLanguage === 'zh' ? '复制代码' : 'Copy code')}
+        className={`absolute top-2 right-2 z-10 h-7 w-7 rounded-md p-0 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 ${
+          copyError ? 'text-destructive opacity-100' : copied ? 'text-success opacity-100'
+            : 'border border-border bg-background/80 text-muted-foreground backdrop-blur hover:text-foreground dark:bg-card/80 dark:text-muted-foreground'
+        }`}>
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </Button>
+      <pre>
         {highlightedCode === null ? <code>{codeText}</code>
           : <code className={`hljs language-${normalizedLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedCode }} />}
       </pre>
@@ -908,10 +868,13 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({
       return <GeneratedCode language={language} node={props.node}>{children}</GeneratedCode>;
     },
     pre: ({ children }) => {
-      // 给 code 子元素添加标记，表明它是代码块而不是行内代码
-      if (React.isValidElement(children) && children.type === 'code') {
+      const nodes = React.Children.toArray(children);
+      const onlyChild = nodes.length === 1 ? nodes[0] : null;
+      const isCodeChild = React.isValidElement(onlyChild) && (onlyChild.type === 'code'
+        || (onlyChild.props as { node?: { tagName?: string } }).node?.tagName === 'code');
+      if (onlyChild && isCodeChild) {
         type CodeBlockMarkerProps = React.ComponentPropsWithoutRef<'code'> & { 'data-code-block'?: boolean };
-        return <>{React.cloneElement(children as React.ReactElement<CodeBlockMarkerProps>, { 'data-code-block': true })}</>;
+        return <>{React.cloneElement(onlyChild as React.ReactElement<CodeBlockMarkerProps>, { 'data-code-block': true })}</>;
       }
       // 对于非 code 子元素（如 ASCII 字符画），保留 pre 标签
       return <pre>{children}</pre>;

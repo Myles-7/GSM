@@ -1,0 +1,222 @@
+{
+  "scope": "read-only task failure analysis; no provider calls; no production mutations",
+  "snapshot": {
+    "stable": true,
+    "files": 38,
+    "bytes": 48072538,
+    "at": "2026-10-17T11:51:47.472Z",
+    "timezone": "Asia/Shanghai"
+  },
+  "retentionBias": "Task stock is not a runtime failure rate; successful automatic history is pruned.",
+  "taskCounts": {
+    "total": 210,
+    "states": {
+      "failed": 127,
+      "partial": 12,
+      "canceled": 13,
+      "complete": 45,
+      "interrupted": 13
+    },
+    "today": {
+      "total": 30,
+      "states": {
+        "failed": 17,
+        "partial": 8,
+        "complete": 1,
+        "canceled": 1,
+        "interrupted": 3
+      },
+      "kinds": {
+        "sync": 9,
+        "discovery": 7,
+        "discovery-analysis": 7,
+        "details": 6,
+        "refresh": 1
+      }
+    },
+    "legacyRollbackSourceExcluded": 607
+  },
+  "home": {
+    "outboxTotal": 326,
+    "repositoryRecords": 325,
+    "repositoryWithForbiddenTempCloneToken": 325,
+    "nestedTemplateRepositoryTokenRecords": 1,
+    "inFlightOperationCount": 2,
+    "privateDataRejectionTaskCount": 83,
+    "activity": [
+      {
+        "runCount": 8,
+        "changedCount": 8,
+        "failureCount": 8,
+        "noChangeCount": 0,
+        "lastRun": "2026-10-17T11:51:15.838Z",
+        "lastError": "PRIVATE_DATA_NOT_SYNCABLE"
+      }
+    ]
+  },
+  "manualDetails": {
+    "errors": {
+      "AGY_QUEUE_TIMEOUT": 42,
+      "platforms_schema": 9,
+      "JSON_syntax": 2,
+      "features_schema": 1,
+      "AGY_PROCESS_EXIT_TIMEOUT": 1,
+      "quickstart_schema": 1
+    },
+    "batches": [
+      {
+        "taskSuffix": "ebeab9",
+        "state": "complete",
+        "createdAt": "2026-10-17T10:06:22.501Z",
+        "updatedAt": "2026-10-17T10:07:56.847Z",
+        "itemStates": {
+          "complete": 6
+        },
+        "providerOutcome": "succeeded",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 3810,
+          "phase_initializing_ms": 37426,
+          "phase_generating_ms": 302825,
+          "phase_cleanup_ms": 7462,
+          "phase_committing_ms": 46
+        }
+      },
+      {
+        "taskSuffix": "410404",
+        "state": "canceled",
+        "createdAt": "2026-10-17T10:03:08.202Z",
+        "updatedAt": "2026-10-17T10:05:17.793Z",
+        "itemStates": {
+          "complete": 6,
+          "failed": 6,
+          "canceled": 313
+        },
+        "providerOutcome": "unknown",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 283558,
+          "phase_initializing_ms": 58427,
+          "phase_generating_ms": 254797,
+          "phase_cleanup_ms": 7207,
+          "phase_committing_ms": 2
+        }
+      },
+      {
+        "taskSuffix": "474b76",
+        "state": "partial",
+        "createdAt": "2026-10-17T11:44:36.861Z",
+        "updatedAt": "2026-10-17T11:51:15.843Z",
+        "itemStates": {
+          "failed": 5,
+          "complete": 31
+        },
+        "providerOutcome": "succeeded",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 1812,
+          "phase_initializing_ms": 223119,
+          "phase_generating_ms": 1581964,
+          "phase_cleanup_ms": 60173,
+          "phase_committing_ms": 121
+        }
+      },
+      {
+        "taskSuffix": "b9747e",
+        "state": "interrupted",
+        "createdAt": "2026-10-17T10:11:45.544Z",
+        "updatedAt": "2026-10-17T10:50:06.009Z",
+        "itemStates": {
+          "complete": 177,
+          "failed": 16,
+          "pending": 119
+        },
+        "providerOutcome": "unknown",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 700809,
+          "phase_initializing_ms": 1089419,
+          "phase_generating_ms": 9143015,
+          "phase_cleanup_ms": 244790,
+          "phase_committing_ms": 130
+        }
+      },
+      {
+        "taskSuffix": "39ce21",
+        "state": "interrupted",
+        "createdAt": "2026-10-17T11:05:33.702Z",
+        "updatedAt": "2026-10-17T11:29:51.476Z",
+        "itemStates": {
+          "failed": 29,
+          "complete": 99,
+          "pending": 7
+        },
+        "providerOutcome": "unknown",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 975177,
+          "phase_initializing_ms": 651690,
+          "phase_generating_ms": 5228545,
+          "phase_cleanup_ms": 174591,
+          "phase_committing_ms": 156
+        }
+      },
+      {
+        "taskSuffix": "0846c6",
+        "state": "interrupted",
+        "createdAt": "2026-10-17T10:08:58.003Z",
+        "updatedAt": "2026-10-17T10:10:00.666Z",
+        "itemStates": {
+          "complete": 5,
+          "pending": 312
+        },
+        "providerOutcome": "unknown",
+        "commitStatus": "saved",
+        "timingMs": {
+          "phase_queue_wait_ms": 396,
+          "phase_initializing_ms": 56414,
+          "phase_generating_ms": 234371,
+          "phase_cleanup_ms": 5921,
+          "phase_committing_ms": 93
+        }
+      }
+    ]
+  },
+  "automaticDetails": {
+    "tasks": 7,
+    "items": 70,
+    "itemStates": {
+      "complete": 38,
+      "failed": 32
+    },
+    "error": "32 failed items all AGY_QUEUE_TIMEOUT"
+  },
+  "saturationFixture": {
+    "capacity": 5,
+    "requests": 10,
+    "workMs": 300,
+    "admissionMs": 80,
+    "started": 5,
+    "completed": 5,
+    "queueTimeout": 5,
+    "quarantined": false,
+    "paidCalls": 0
+  },
+  "server": {
+    "configuredRelease": "0.8.4-20261002170919345",
+    "tasks": {
+      "completed": 6,
+      "interrupted": 2
+    },
+    "newTaskColumnsMissing": true,
+    "sameForbiddenFieldValidationInCurrentSource": true
+  },
+  "cleanup": {
+    "status": "verified_removed",
+    "files": 111,
+    "directories": 42,
+    "bytes": 58995371,
+    "targetAbsent": true,
+    "scope": "Only this analysis temporary profile copy and probes"
+  }
+}

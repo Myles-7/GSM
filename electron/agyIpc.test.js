@@ -5,6 +5,7 @@ const { registerAgyIpc } = require('./agyIpc');
 test('account changes and window destruction cancel owners and suppress late events/results', async () => {
   const handlers = new Map(), canceled = [], sent = [], destroyed = new Map(), releases = [];
   const service = {
+    setAccount: () => {},
     cancel: (...args) => canceled.push(args),
     generate: (owner, id, request, emit) => new Promise(resolve => releases.push(() => { emit({ type: 'text', text: 'late' }); resolve({ ok: true, value: { text: 'late' } }); })),
   };

@@ -21,13 +21,14 @@ function classifyAgyFailure(message) {
 }
 
 class AgyProtocol {
-  constructor({ onInit = () => {}, onText = () => {}, validate, maxBytes = 4 * 1024 * 1024 } = {}) {
+  constructor({ onInit = () => {}, onText = () => {}, onActivity = () => {}, validate, maxBytes = 4 * 1024 * 1024 } = {}) {
     this.decoder = new TextDecoder('utf-8', { fatal: true });
     this.buffer = '';
     this.bytes = 0;
     this.maxBytes = maxBytes;
     this.onInit = onInit;
     this.onText = onText;
+    this.onActivity = onActivity;
     this.validate = validate;
     this.initialized = false;
     this.result = null;
@@ -62,6 +63,9 @@ class AgyProtocol {
     let event;
     try { event = JSON.parse(line); } catch { this.fail('INVALID_JSON'); }
     if (!event || typeof event !== 'object' || this.result) this.fail('INVALID_PROTOCOL');
+    this.onActivity({ event: event.event, stepType: event.step_update?.step_type,
+      deltaChars: typeof event.step_update?.text_delta === 'string' ? event.step_update.text_delta.length : 0,
+      resultStatus: event.result?.status });
     if (event.event === 'init') {
       if (this.initialized) this.fail('INVALID_PROTOCOL');
       const init = event.init;
@@ -90,8 +94,8 @@ class AgyProtocol {
       for (const key of ['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens']) {
         if (Number.isFinite(result.usage?.[key]) && result.usage[key] >= 0) usage[key] = result.usage[key];
       }
-      this.result = { text: typeof result.response === 'string' && result.response.trim()
-        ? result.response : JSON.stringify(result.structured_output), structuredOutput: result.structured_output, usage };
+      this.result = { text: structuredOnly ? JSON.stringify(result.structured_output)
+        : result.response, structuredOutput: result.structured_output, usage };
     } else {
       this.fail('INVALID_PROTOCOL');
     }

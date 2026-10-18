@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Save, X, Plus } from 'lucide-react';
 import { Modal } from './Modal';
 import { Category } from '../types';
-import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
 import { validateCategoryName } from '../utils/categoryUtils';

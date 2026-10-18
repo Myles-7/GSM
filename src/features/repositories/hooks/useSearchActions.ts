@@ -1,3 +1,4 @@
+import { readStarSyncCheckpoint, writeStarSyncCheckpoint, clearStarSyncCheckpoint } from '../../../services/starSyncCheckpoint';
 import { useT } from "../../../i18n/useT";
 import { useCallback, useEffect, useMemo, useState, type MutableRefObject, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -561,21 +562,37 @@ export const useSearchActions = (): SearchActions => {
     }
   }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t, toast, commitSubmittedSearch, clearSubmittedSearch]);
 
+  const starSyncAbort=useRef<AbortController|null>(null);
+  useEffect(()=>()=>{starSyncAbort.current?.abort();},[githubToken,user?.id]);
   const syncStars = useCallback(async (mode: 'auto' | 'stars-only' | 'stars-and-lists' = 'auto') => {
     if (!githubToken) {
       toast(t('useSearchActions.github-token-not-found-please-login-again'), 'error');
       return;
     }
 
+    if(starSyncAbort.current)return;
+    const controller=new AbortController();starSyncAbort.current=controller;
+    const owner=String(user?.id??'');
     setSyncingStars(true);
     const task = aiTaskJournal.begin(String(user?.id ?? ''), 'refresh', [{ id: 'stars', label: 'GitHub Stars' }], undefined, undefined, { title: 'GitHub Stars', target: { view: 'repositories' } });
+    task.bind({stop:()=>controller.abort()});
     task.item('stars', 'running');
     try {
       const githubApi = createGitHubApiService(githubToken);
-      const newRepositories = await githubApi.getAllStarredRepositories();
+      const checkpoint=await readStarSyncCheckpoint(owner);
+      const newRepositories = await githubApi.getAllStarredRepositories(controller.signal,progress=>{
+        task.progress(progress.fetched,progress.estimatedTotal??progress.fetched,progress.status==='rate_limited'?`rate_limited · ${new Date(progress.retryAt!).toLocaleString()}`:`GitHub · page ${progress.page} · ${progress.fetched}`);
+      },{checkpoint,onCheckpoint:(meta,page,rows)=>writeStarSyncCheckpoint(owner,meta,page,rows)});
       if (useAppStore.getState().user?.id !== user?.id || useAppStore.getState().githubToken !== githubToken) return;
 
       const storeRepos = useAppStore.getState().repositories;
+      // Offset pagination has no server snapshot. Verify every missing local
+      // repository before treating it as unstarred, including checkpoint resume.
+      const seen=new Set(newRepositories.map(repo=>repo.id));
+      const missing=storeRepos.filter(repo=>!seen.has(repo.id));let nextMissing=0;
+      await Promise.all(Array.from({length:Math.min(3,missing.length)},async()=>{while(nextMissing<missing.length){controller.signal.throwIfAborted();const repo=missing[nextMissing++];const [ownerName,repoName]=repo.full_name.split('/');if(await githubApi.isRepositoryStarred(ownerName,repoName,controller.signal))newRepositories.push(repo);}}));
+      controller.signal.throwIfAborted();
+      if(useAppStore.getState().user?.id!==user?.id||useAppStore.getState().githubToken!==githubToken)return;
       const mergedRepositories = mergeStarredRepositories(newRepositories, storeRepos);
 
       // 解析本次同步范围：
@@ -594,6 +611,7 @@ export const useSearchActions = (): SearchActions => {
             throw new Error(t('useSearchActions.failed-to-get-github-username-please-login-again'));
           }
           const lists = await listsApi.getUserLists(login);
+          controller.signal.throwIfAborted();if(useAppStore.getState().user?.id!==user?.id||useAppStore.getState().githubToken!==githubToken)return;
 
           // allCategories 与 View 的 useMemo 同源同值（getAllCategories 四参口径）
           const allCategories = getAllCategories(customCategories, language, [], defaultCategoryOverrides);
@@ -638,9 +656,12 @@ export const useSearchActions = (): SearchActions => {
       const existingRepoIds = new Set(storeRepos.map(repo => repo.id));
       const newRepoCount = newRepositories.filter(repo => !existingRepoIds.has(repo.id)).length;
 
+      controller.signal.throwIfAborted();if(useAppStore.getState().user?.id!==user?.id||useAppStore.getState().githubToken!==githubToken)return;
+      task.state('committing');
       setRepositories(finalRepositories);
       await forceSyncToBackend();
 
+      await clearStarSyncCheckpoint(owner);
       setLastSync(new Date().toISOString());
       task.item('stars', 'complete');
 
@@ -651,16 +672,23 @@ export const useSearchActions = (): SearchActions => {
       }
 
     } catch (error) {
+      const code=(error as {code?:string})?.code;
+      if(code==='STAR_LIST_CHANGED')await clearStarSyncCheckpoint(owner);
+      const retryAt=(error as {retryAt?:number})?.retryAt;
+      if(retryAt)task.metadata({failureCode:'GITHUB_RATE_LIMITED',phase:`rate_limited · ${new Date(retryAt).toLocaleString()}`});
+      if(controller.signal.aborted)return;
       task.item('stars', 'failed', error);
       console.error('Sync failed:', error);
-      if (error instanceof Error && error.message.includes('token')) {
+      if (retryAt) {
+        toast(t('useSearchActions.github-rate-limited-until', { defaultValue: 'GitHub rate limited; retry after {{time}}. Confirmed pages are saved.', time: new Date(retryAt).toLocaleString() }), 'info');
+      } else if (error instanceof Error && error.message.includes('token')) {
         toast(t('useSearchActions.github-token-has-expired-or-is-invalid-please-lo'), 'error');
       } else {
         toast(t('useSearchActions.sync-failed-please-check-your-network-connection'), 'error');
       }
     } finally {
-      task.finish(aiTaskJournal.snapshot().find(record => record.id === task.id)?.error ? 'partial' : undefined);
-      setSyncingStars(false);
+      task.finish(controller.signal.aborted?'canceled':aiTaskJournal.snapshot().find(record => record.id === task.id)?.error ? 'partial' : undefined);
+      if(starSyncAbort.current===controller){starSyncAbort.current=null;setSyncingStars(false);}
     }
   }, [githubToken, setSyncingStars, syncMode, user, t, toast, addCustomCategory, customCategories, language, defaultCategoryOverrides, setRepositories, setLastSync]);
 

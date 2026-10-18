@@ -12,6 +12,8 @@ import { AIService } from './aiService';
 import { forAgyFeature } from './agyProfiles';
 import { createGitHubApiService } from './githubApiFactory';
 import { repositoryChatStorage } from './repositoryChatStorage';
+import type { ClassificationSchemeId } from '../types/classification';
+import { classificationProjection, projectClassificationRepository } from '../store/helpers/classificationSchemes';
 
 type ProposalStorage = typeof repositoryChatStorage & {
   saveProposal: (proposal: WorkbenchProposal) => Promise<void>;
@@ -110,7 +112,7 @@ const sameEditable = (left: WorkbenchEditableFields, right: WorkbenchEditableFie
 const currentRepositoryFor = (operation: WorkbenchOperation): Repository | null => {
   const current = useAppStore.getState().repositories.find((repository) => repository.id === operation.repository.id);
   if (!current || current.full_name !== operation.repository.full_name) return null;
-  return current;
+  return projectClassificationRepository(current, operation.classificationSchemeId ?? 'purpose');
 };
 
 const checkRestoreLocalRepository = (operation: WorkbenchOperation): { existing: Repository | null; conflict?: string } => {
@@ -138,8 +140,9 @@ const repositoryParts = (repository: Repository): [string, string] => {
   return [repository.full_name.slice(0, separator), repository.full_name.slice(separator + 1)];
 };
 
-const existingCategories = () => {
-  const state = useAppStore.getState();
+const existingCategories = (id: ClassificationSchemeId = 'purpose') => {
+  const state = classificationProjection(useAppStore.getState(), id);
+  if (id === 'technology') return state.customCategories.filter(category => !category.retired && !category.mergedInto);
   return getAllCategories(
     state.customCategories,
     state.language,
@@ -148,9 +151,15 @@ const existingCategories = () => {
   ).filter((category) => category.id !== 'all');
 };
 
-const validateCategory = (value: string | undefined): boolean => (
-  value === undefined || value === '' || existingCategories().some((category) => category.name === value)
+const validateCategory = (value: string | undefined, id: ClassificationSchemeId = 'purpose'): boolean => (
+  value === undefined || value === '' || existingCategories(id).some((category) => category.name === value)
 );
+
+const writeOperationRepository = (operation: WorkbenchOperation, repository: Repository, restore = false) => {
+  const options = { overrideCategoryLock: operation.overrideLocked, ...(restore ? { restoreSubcategory: true } : {}) };
+  if (operation.classificationSchemeId === 'technology') useAppStore.getState().updateClassificationRepository('technology', repository, options);
+  else useAppStore.getState().updateRepository(repository, options);
+};
 
 const assertConfig = () => {
   const state = useAppStore.getState();
@@ -237,6 +246,7 @@ const buildUpdatePrompt = (
 
 const boundOperationPayload = (operation: WorkbenchOperation) => ({
   id: operation.id,
+  classificationSchemeId: operation.classificationSchemeId,
   repository: operation.repository,
   kind: operation.kind,
   reason: operation.reason,
@@ -352,8 +362,8 @@ const prepareOperation = async (
     return false;
   }
   if (operation.after.category_id !== undefined
-    ? operation.after.category_id !== null && !existingCategories().some(category => category.id === operation.after.category_id)
-    : !validateCategory(operation.after.custom_category)) {
+    ? operation.after.category_id !== null && !existingCategories(operation.classificationSchemeId).some(category => category.id === operation.after.category_id)
+    : !validateCategory(operation.after.custom_category, operation.classificationSchemeId)) {
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'The proposed category no longer exists' }, onUpdate);
     return false;
   }
@@ -442,7 +452,7 @@ const executeUpdate = async (
     await markOperation(proposal, operation.id, { status: 'conflict', error: 'Repository metadata changed immediately before the update was applied' }, onUpdate);
     return false;
   }
-  useAppStore.getState().updateRepository({ ...current, ...operation.after, last_edited: now() }, { overrideCategoryLock: operation.overrideLocked });
+  writeOperationRepository(operation, { ...current, ...operation.after, last_edited: now() });
   await markOperation(proposal, operation.id, { status: 'success' }, onUpdate);
   return true;
 };
@@ -578,14 +588,14 @@ const reconcileRunningRestore = async (
 
 const restoreOrganizationConflict = (operation: WorkbenchOperation): string | null => {
   const { category_id: categoryId, subcategory_id: groupId } = operation.before;
-  if (categoryId !== undefined && categoryId !== null && !existingCategories().some(category => category.id === categoryId)) {
+  if (categoryId !== undefined && categoryId !== null && !existingCategories(operation.classificationSchemeId).some(category => category.id === categoryId)) {
     return 'Original category no longer exists';
   }
-  if (categoryId === undefined && !validateCategory(operation.before.custom_category)) {
+  if (categoryId === undefined && !validateCategory(operation.before.custom_category, operation.classificationSchemeId)) {
     return 'Original legacy category no longer exists';
   }
   if (groupId) {
-    const group = useAppStore.getState().subcategories?.find(item => item.id === groupId);
+    const group = classificationProjection(useAppStore.getState(), operation.classificationSchemeId ?? 'purpose').subcategories?.find(item => item.id === groupId);
     if (!group || group.parentId !== categoryId) return 'Original group no longer exists in the original category';
   }
   return null;
@@ -619,9 +629,7 @@ const restoreUpdate = async (
     await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}Repository metadata changed immediately before restore` }, onUpdate);
     return false;
   }
-  useAppStore.getState().updateRepository({ ...latest, ...operation.before, last_edited: now() }, {
-    overrideCategoryLock: operation.overrideLocked, restoreSubcategory: true,
-  });
+  writeOperationRepository(operation, { ...latest, ...operation.before, last_edited: now() }, true);
   const restored = currentRepositoryFor(operation);
   if (!restored || !sameEditable(snapshotEditable(restored), operation.before)) {
     await markOperation(proposal, operation.id, { status: 'conflict', error: `${RESTORE_CONFLICT_PREFIX}Restored metadata did not match the original snapshot` }, onUpdate);
@@ -700,7 +708,9 @@ export async function proposeWorkbenchOperations(input: {
   question: string;
   sessionId: string;
   signal: AbortSignal;
+  classificationSchemeId?: ClassificationSchemeId;
 }): Promise<WorkbenchProposal> {
+  const schemeId = isExplicitUnstarQuestion(input.question) ? 'purpose' : input.classificationSchemeId ?? useAppStore.getState().activeClassificationScheme ?? 'purpose';
   const question = input.question.trim();
   if (!question) throw new Error('A workbench question is required');
   throwIfAborted(input.signal);
@@ -713,7 +723,7 @@ export async function proposeWorkbenchOperations(input: {
   if (state.repositories.length === 0) throw new Error('The current repository library is empty');
   const config = assertConfig();
 
-  const library = state.repositories.map((repository) => ({
+  const library = state.repositories.map(original => projectClassificationRepository(original, schemeId)).map((repository) => ({
     ...repository,
     owner: { ...repository.owner },
     topics: [...repository.topics],
@@ -742,7 +752,7 @@ export async function proposeWorkbenchOperations(input: {
       });
     }
   } else if (candidates.length > 0) {
-    const categories = existingCategories().map((category) => ({ id: category.id, name: category.name }));
+    const categories = existingCategories(schemeId).map((category) => ({ id: category.id, name: category.name }));
     const categoriesById = new Map(categories.map((category) => [category.id, category]));
     const content = await ai.generateChatText({
       system: 'You propose safe edits to personal repository metadata. Return only the requested JSON object. Repository IDs and category IDs are strict allowlists. Never propose GitHub star or unstar actions and never change category lock state.',
@@ -791,6 +801,7 @@ export async function proposeWorkbenchOperations(input: {
         id: makeId('workbench-op'),
         repository,
         kind: 'update',
+        classificationSchemeId: schemeId,
         reason: suggestion.reason,
         before,
         after,

@@ -6,7 +6,6 @@
 import { useAppStore } from '../store/useAppStore';
 import { normalizeMcpHost } from '../utils/mcpHost';
 import { isElectron } from './electronProxy';
-import { backend } from './backendAdapter';
 import { logger } from './logger';
 import { buildMcpDataSnapshot } from './mcpSnapshot';
 
@@ -15,6 +14,8 @@ let unsub: (() => void) | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 /** Serialize setConfig → pushSnapshot → start/stop so concurrent store updates don't race. */
 let chain: Promise<void> = Promise.resolve();
+let unsubscribeRequests: (() => void) | undefined;
+const requests = new Map<string, AbortController>();
 
 function clearDebounce(): void {
   if (debounceTimer) {
@@ -34,18 +35,6 @@ function enqueue(task: () => Promise<void>): void {
 async function pushLifecycle(): Promise<void> {
   if (!isElectron() || !window.electronAPI?.mcp) return;
   const api = window.electronAPI.mcp;
-
-  // When backend is available, agents should use backend /mcp; stop local server.
-  if (backend.isAvailable) {
-    try {
-      await api.stop();
-    } catch (err) {
-      logger.warn('mcp.bridge', 'Failed to stop local MCP (backend mode)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    return;
-  }
 
   const state = useAppStore.getState();
   const { mcpConfig } = state;
@@ -97,6 +86,15 @@ export function startMcpElectronBridge(): void {
   if (started || typeof window === 'undefined') return;
   if (!isElectron() || !window.electronAPI?.mcp) return;
   started = true;
+  const api = window.electronAPI!.mcp!;
+  unsubscribeRequests = api.onOrganizationRequest?.(request => {
+    const controller = new AbortController(); requests.set(request.requestId, controller);
+    const timer = setTimeout(() => controller.abort(), Math.max(0, request.deadline - Date.now()));
+    void import('./mcpOrganizationService').then(({ executeOrganizationTool }) => executeOrganizationTool(request.name, request.args, request.ownerId, controller.signal))
+      .then(result => api.replyOrganization?.(request.requestId, result))
+      .catch(() => undefined)
+      .finally(() => { clearTimeout(timer); requests.delete(request.requestId); });
+  });
 
   // Initial sync
   schedulePush();
@@ -114,14 +112,19 @@ export function startMcpElectronBridge(): void {
       state.vectorSearchConfig !== prev.vectorSearchConfig ||
       state.embeddingConfigs !== prev.embeddingConfigs ||
       state.activeEmbeddingConfig !== prev.activeEmbeddingConfig;
+    const organizationChanged = state.user?.id !== prev.user?.id || state.classificationSchemes !== prev.classificationSchemes
+      || state.subcategories !== prev.subcategories || state.defaultCategoryOverrides !== prev.defaultCategoryOverrides;
 
-    if (cfgChanged || dataChanged) {
+    if (cfgChanged || dataChanged || organizationChanged) {
+      if (state.user?.id !== prev.user?.id || !state.mcpConfig.enabled) for (const controller of requests.values()) controller.abort();
       schedulePush();
     }
   });
 }
 
 export function stopMcpElectronBridge(): void {
+  unsubscribeRequests?.(); unsubscribeRequests = undefined;
+  for (const controller of requests.values()) controller.abort(); requests.clear();
   clearDebounce();
   if (unsub) {
     unsub();

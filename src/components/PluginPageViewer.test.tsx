@@ -179,7 +179,7 @@ describe('PluginPageViewer V1.4', () => {
     const { rerender, frame, post } = await load({ readme: null, language: 'zh' });
     rerender(<PluginPageViewer {...props} initContext={{ readme: 'README', language: 'zh' }} />);
     expect(post).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: 'plugin-page:init', token: 'session-token', context: { readme: 'README', language: 'zh' },
+      type: 'plugin-page:init', token: 'session-token', context: expect.objectContaining({ readme: 'README', language: 'zh', accountTag: expect.any(String) }),
     }), origin);
     expect(mocks.getPage).toHaveBeenCalledTimes(1);
     fireEvent.load(frame);

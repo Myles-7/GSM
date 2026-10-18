@@ -11,8 +11,12 @@ import type { CustomDiscoveryChannel, CustomDiscoveryData, TaskIssue } from './m
 import { taskIssue, issueLabel } from './taskStatus';
 import { scheduleModel } from './modelScheduler';
 import { aiTaskJournal, taskError } from '../../../services/aiTaskJournal';
-import { taskConfigSnapshot, type TaskHandle, bindTaskSignal } from '../../../services/taskExecution';
+import { taskConfigSnapshot, type TaskHandle, bindTaskItemSignal } from '../../../services/taskExecution';
 import { agyFeatureConcurrency, agyFeatureTimeoutSeconds, forAgyFeature } from '../../../services/agyProfiles';
+import { confirmRepositoryDetailRecovery, stageRepositoryDetailRecovery } from '../../../services/repositoryDetailRecovery';
+import type { AgyRecoveryRecord } from '../../../types/agy';
+import { flushAppStorePersistence } from '../../../store/persistence/storage';
+import { classifyAgyError } from '../../../services/agyErrors';
 import { discoveryAnalysisIdentity } from './analysisIdentity';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 import { applyRepositoryAnalysisAsset, assertRepositoryAnalysisAssetWrite, beginRepositoryAnalysisAssetWrite, canUseLegacyRepositoryAnalysisAssets, claimRepositoryAnalysisTask, commitRepositoryAnalysisTask, findLegacyRepositoryAnalysisAsset, hasRepositoryAnalysisAsset, initializeRepositoryAnalysisAssets, projectRepositoryAnalysisAsset, saveRepositoryAnalysisAsset, type RepositoryAnalysisAssetWriteVersion } from '../../../services/repositoryAnalysisAssets';
@@ -55,6 +59,7 @@ export const useCustomAnalysis = create<{
 export const setAnalysisPaused = (channelId: string, paused: boolean) =>
   useCustomAnalysis.setState(s => ({ pausedChannels: { ...s.pausedChannels, [channelId]: paused } }));
 interface Work extends AnalysisItem {
+  recoveryRequestId?: string;
   assetWrite: Promise<{ version: RepositoryAnalysisAssetWriteVersion } | { error: unknown }>;
   projectStatus?: (status: AnalysisItem['status'], issue?: TaskIssue, stage?: string) => void;
   journal?: TaskHandle;
@@ -107,22 +112,24 @@ async function drain() {
         updateItem(work, { status: 'cancelled' }); continue;
       }
       const config = work.config;
-      if (!isAIConfigAvailable(config)) {
+      if (!work.recoveryRequestId && !isAIConfigAvailable(config)) {
         updateItem(work, { status: 'failed', issue: { kind: 'auth' } }); continue;
       }
       const controller = new AbortController();
-      if (work.journal) bindTaskSignal(controller.signal, work.journal);
+      if (work.journal) bindTaskItemSignal(controller.signal, work.journal, String(work.repo.id));
       const activeTask = { work, controller };
       active.add(activeTask);
       const owner = crypto.randomUUID();
       let claimed = false;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let source: TaskIssue['source'] = 'storage';
+      let recoveryResult: AgyRecoveryRecord | undefined;
+      let sourceConfig = config;
       const check = () => {
         controller.signal.throwIfAborted();
         if (!isIdentity(work) || !validChannel(useCustomDiscovery.getState().data, work)) throw new DOMException('Stale analysis', 'AbortError');
         const latest = useAppStore.getState().aiConfigs.find(c => c.id === work.configId);
-        if (!latest || latest.provider === 'agy-cli' && !latest.isActive || config.provider !== 'agy-cli' && analysisKey(work.repo, work.language, latest) !== work.configBaseline) throw new DOMException('Model changed', 'AbortError');
+        if (!work.recoveryRequestId && (!latest || latest.provider === 'agy-cli' && !latest.isActive || config.provider !== 'agy-cli' && analysisKey(work.repo, work.language, latest) !== work.configBaseline)) throw new DOMException('Model changed', 'AbortError');
       };
       try {
         check();
@@ -164,17 +171,21 @@ async function drain() {
         updateItem(work, { status: 'running', stage: 'readme' });
         const mergeWrite = beginRepositoryAnalysisWrite(Number(work.account), work.repo.id, true);
         source = 'github';
-        const evidence = await withDeadline(signal => getRepositoryDetailReadme({
+        const evidence = work.recoveryRequestId ? undefined : await withDeadline(signal => getRepositoryDetailReadme({
           repository: work.repo, accountId: Number(work.account), githubToken: work.token, signal,
         }), 15000, controller.signal);
         check();
         source = 'ai';
         const details = await analyzeRepositoryDetails({
           repository: work.repo, accountId: Number(work.account), githubToken: work.token,
-          aiConfig: forAgyFeature(config, 'repository-details', 'background'), language: work.language, signal: controller.signal, readmeEvidence: evidence,
+          aiConfig: forAgyFeature(config, 'repository-details', work.auto ? 'background' : 'interactive'), language: work.language, signal: controller.signal, readmeEvidence: evidence,
+          recovery: { assetVersion, source: { channelId: work.channelId, revision: work.revision }, requestId: work.recoveryRequestId, onConfig: value => { sourceConfig = value; }, onResult: record => {
+            recoveryResult = record; work.journal?.itemExecution(String(work.repo.id), { recovery: { requestId: record.requestId, digest: record.resultDigest }, providerOutcome: 'succeeded', commitStatus: 'pending' });
+          } },
           onStage: stage => { if (!controller.signal.aborted) updateItem(work, { stage }); },
           requestModel: request => scheduleModel(
-            () => withDeadline(signal => request(signal), agyFeatureTimeoutSeconds(config, 'repository-details') * 1000, controller.signal),
+            () => config.provider === 'agy-cli' ? request(controller.signal)
+              : withDeadline(signal => request(signal), agyFeatureTimeoutSeconds(config, 'repository-details') * 1000, controller.signal),
             controller.signal, config.requestsPerMinute, 0, config.provider === 'agy-cli',
           ),
         });
@@ -182,19 +193,35 @@ async function drain() {
         source = 'storage';
         await assertRepositoryAnalysisAssetWrite(assetVersion);
         check();
+        await stageRepositoryDetailRecovery(Number(work.account), recoveryResult, { ...work.repo, ai_details: details,
+          ai_summary: details.summary ?? details.problem ?? work.repo.ai_summary, ai_tags: details.tags,
+          ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at, analysis_failed: false, analysis_error: undefined });
+        check();
         const saved = await transact(work.account, data =>
           isIdentity(work) && !controller.signal.aborted && validChannel(data, work)
             && commitAnalysis(data, work.key, owner, { status: 'done', details, issue: undefined }));
         if (!saved) throw new DOMException('Analysis invalidated', 'AbortError');
-        await saveRepositoryAnalysisAsset(work.account, work.repo, work.language, config, details, assetVersion);
+        await saveRepositoryAnalysisAsset(work.account, work.repo, work.language, sourceConfig, details, assetVersion);
         await assertRepositoryAnalysisAssetWrite(assetVersion);
         check();
         const latestState = useAppStore.getState();
         const starred = latestState.repositories?.find(repo => repo.id === work.repo.id);
-        if (starred) latestState.updateRepository(mergeWrite(starred,
-          applyRepositoryAnalysisAsset(work.account, starred, work.language)));
+        if (starred) {
+          const proposed = mergeWrite(starred, applyRepositoryAnalysisAsset(work.account, starred, work.language));
+          latestState.updateRepository(proposed);
+        }
+        await flushAppStorePersistence(); check();
+        await confirmRepositoryDetailRecovery(Number(work.account), recoveryResult);
+        work.journal?.itemExecution(String(work.repo.id), { commitStatus: 'saved' });
+        work.journal?.commit('saved');
         updateItem(work, { status: 'done' });
       } catch (error) {
+        if (recoveryResult) work.journal?.commit('failed', 'LOCAL_RESULT_SAVE_FAILED');
+        if (['configuration', 'deferred'].includes(classifyAgyError(error))) {
+          const deferred = queue.filter(pending => pending.account === work.account && pending.configId === work.configId);
+          queue = queue.filter(pending => !deferred.includes(pending));
+          for (const pending of deferred) updateItem(pending, { status: 'cancelled' });
+        }
         const issue = taskIssue(error, source);
         work.failureError = `${issueLabel(issue, work.language.startsWith('zh'))} ${taskError(error)}`;
         updateItem(work, { status: issue.kind === 'cancelled' ? 'cancelled' : 'failed', issue });
@@ -216,12 +243,12 @@ async function drain() {
     useCustomAnalysis.setState({ running: false, paused: false });
   }
 }
-export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision' | 'autoAnalysisLimit'> & { id: string }, repos: Repository[], options: { auto?: boolean; autoLimit?: number; force?: boolean; configId?: string; retry?: { config: AIConfig; parentId: string } } = {}) {
+export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision' | 'autoAnalysisLimit'> & { id: string }, repos: Repository[], options: { auto?: boolean; autoLimit?: number; force?: boolean; configId?: string; retry?: { config: AIConfig; parentId: string }; recoveryRequests?: Record<string, string> } = {}) {
   const state = useAppStore.getState();
   const account = state.user && state.githubToken ? String(state.user.id) : null;
   if (!account) return;
   const config = options.retry?.config ?? state.aiConfigs.find(c => c.id === (options.configId || state.activeAIConfig));
-  if (!isAIConfigAvailable(config)) {
+  if (!config || !options.recoveryRequests && !isAIConfigAvailable(config)) {
     useCustomAnalysis.setState(s => ({ account, issue: { kind: 'auth', source: 'ai' }, issuesByChannel: { ...s.issuesByChannel, [channel.id]: { kind: 'auth', source: 'ai' } } })); return;
   }
   if (useCustomAnalysis.getState().account !== account) useCustomAnalysis.setState({ account, items: [], paused: false, pausedChannels: {} });
@@ -234,6 +261,7 @@ export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision'
   const autoLimit = Number.isFinite(configuredLimit) ? Math.min(10, Math.max(1, Math.floor(configuredLimit))) : 10;
   const force = !!options.force && !options.auto;
   const accepted: Work[] = [];
+  let completion: Promise<void> | undefined;
   const candidates = force ? unique : unique.filter(repo =>
     !hasRepositoryAnalysisAsset(account, repo, state.language) && !analyzedRepository(repo, data, state.language, config).ai_details);
   for (const repo of options.auto ? candidates.slice(0, autoLimit) : candidates) {
@@ -247,6 +275,7 @@ export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision'
       language: state.language, configId: config.id, config: { ...config },
       configBaseline: analysisKey(repo, state.language, state.aiConfigs.find(item => item.id === config.id)),
       auto: !!options.auto, force, status: 'queued',
+      recoveryRequestId: options.recoveryRequests?.[repo.id],
     };
     queue.push(work);
     accepted.push(work);
@@ -254,6 +283,7 @@ export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision'
       { repo, key, channelId: channel.id, revision: channel.revision, status: 'queued' }] }));
   }
   if (accepted.length) {
+    let complete!: () => void; completion = new Promise<void>(resolve => { complete = resolve; });
     const journal = aiTaskJournal.begin(account, 'discovery-analysis', accepted.map(work => ({ id: String(work.repo.id), label: work.repo.full_name })), config.id, channel.id);
     journal.metadata({ title: useCustomDiscovery.getState().data.channels.find(item => item.id === channel.id)?.name ?? channel.id,
       trigger: options.auto ? 'automatic' : 'manual', parentId: options.retry?.parentId, config: taskConfigSnapshot(config, 'repository-details'), target: { view: 'subscription', id: channel.id } });
@@ -271,10 +301,25 @@ export function enqueueAnalysis(channel: Pick<CustomDiscoveryChannel, 'revision'
         issue ? work.failureError ?? issueLabel(issue, work.language.startsWith('zh')) : undefined, stage ?? work.stage);
       if (stage) journal.metadata({ phase: stage });
       if (['done', 'failed', 'cancelled'].includes(status)) finished.add(work.key);
-      if (finished.size === accepted.length) { off(); journal.finish(); }
+      if (finished.size === accepted.length) { off(); journal.finish(); complete(); }
     }; });
   }
   void drain().catch(error => useCustomAnalysis.setState({ issue: taskIssue(error), running: false }));
+  return completion;
+}
+export async function retryAnalysisSave(task: import('../../../services/aiTaskJournal').AITaskRecord) {
+  const state = useAppStore.getState(); if (String(state.user?.id ?? '') !== task.owner) throw new Error('Account changed');
+  const channel = useCustomDiscovery.getState().data.channels.find(channel => channel.id === task.channelId)
+    ?? (task.channelId?.startsWith('builtin:') ? { id: task.channelId, revision: 1 } : undefined);
+  if (!channel) throw new Error('Channel changed');
+  const ids = task.items.filter(item => item.recovery).map(item => item.id);
+  const data = useCustomDiscovery.getState().data;
+  const repositories = [...state.repositories, ...Object.values(state.discoveryRepos).flat(), ...data.editions.filter(edition => edition.channelId === channel.id)
+    .flatMap(edition => [...edition.entries, ...edition.pending].map(entry => entry.repo))].filter(repo => ids.includes(String(repo.id)));
+  const config = state.aiConfigs.find(config => config.id === task.configId)
+    ?? { id: 'local-recovery', name: 'Local recovery', model: 'local-recovery', isActive: false, baseUrl: '', apiKey: '' };
+  await enqueueAnalysis(channel, repositories, { force: true, retry: { config, parentId: task.id },
+    recoveryRequests: Object.fromEntries(task.items.filter(item => item.recovery).map(item => [item.id, item.recovery!.requestId])) });
 }
 export function cancelAnalysis(channelId?: string, repoIds?: Set<number>) {
   const matches = (work: Work) => (!channelId || work.channelId === channelId) && (!repoIds || repoIds.has(work.repo.id));

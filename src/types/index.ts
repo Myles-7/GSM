@@ -71,6 +71,7 @@ export interface Repository {
   subcategory_id?: string | null;
   category_candidates?: string[];
   category_legacy?: import('./repositoryOrganization').RepositoryLegacyClassification;
+  classifications?: import('./classification').RepositoryClassifications;
   ai_details?: import('./repositoryDetails').RepositoryDetailsAnalysis;
   category_locked?: boolean;
   last_edited?: string;
@@ -451,6 +452,8 @@ export interface Category {
   isCustom?: boolean;
   isHidden?: boolean;
   mergedInto?: string;
+  retired?: boolean;
+  retirementTargets?: string[];
 }
 
 export interface AssetFilter {
@@ -479,7 +482,7 @@ export interface AssetFilter {
   icon?: string;
 }
 
-export type HeaderMenuId = 'repositories' | 'gists' | 'releases' | 'forks' | 'subscription' | 'ai' | 'settings';
+export type HeaderMenuId = 'repositories' | 'gists' | 'releases' | 'forks' | 'subscription' | 'ai' | 'reading' | 'settings';
 
 export interface HeaderMenuItem {
   id: HeaderMenuId;
@@ -494,10 +497,13 @@ export const defaultHeaderMenuConfig: HeaderMenuItem[] = [
   { id: 'forks', visible: true, order: 3 },
   { id: 'subscription', visible: true, order: 4 },
   { id: 'ai', visible: true, order: 5 },
-  { id: 'settings', visible: true, order: 6 },
+  { id: 'reading', visible: true, order: 6 },
+  { id: 'settings', visible: true, order: 7 },
 ];
 
 export interface AccountWorkspace {
+  classificationSchemes?: import('./classification').ClassificationSchemes;
+  classificationNavigation?: Partial<Record<import('./classification').ClassificationSchemeId, import('./classification').ClassificationNavigation>>;
   externalDiscoveryChannels?: ExternalDiscoveryChannel[];
   subcategories?: import('./repositoryOrganization').RepositorySubcategory[];
   subcategoryOrder?: string[];
@@ -584,6 +590,11 @@ export interface AppState {
   readReleases: Set<number>; // 新增：已读Release
   
   // Categories
+  classificationSchemes?: import('./classification').ClassificationSchemes;
+  activeClassificationScheme?: import('./classification').ClassificationSchemeId;
+  classificationNavigation?: Partial<Record<import('./classification').ClassificationSchemeId, import('./classification').ClassificationNavigation>>;
+  /** Only on read/write projections; never persisted as the active scheme. */
+  classificationContext?: import('./classification').ClassificationSchemeId;
   customCategories: Category[]; // 新增：自定义分类
   hiddenDefaultCategoryIds: string[];
   defaultCategoryOverrides: Record<string, Partial<Category>>;

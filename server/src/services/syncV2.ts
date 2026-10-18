@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { identityWriteNeedsConfirmation, identityWriteNeedsUpgrade } from './repositoryIdentity.js';
+import { assertTechnologyMembershipReferences, classificationSchemesSchema, repositoryClassificationsSchema } from './classificationValidation.js';
 
 export const COLLECTIONS = ['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions'] as const;
 export type Collection = typeof COLLECTIONS[number];
@@ -10,6 +11,7 @@ export class SyncError extends Error { constructor(public code: string, public s
 export function initializeSyncV2(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS sync_v2_workspace (id TEXT PRIMARY KEY, github_user_id INTEGER NOT NULL, initialized_at TEXT NOT NULL, floor_seq INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS sync_v2_binding (workspace_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'verified', checked_at TEXT);
     CREATE TABLE IF NOT EXISTS sync_v2_records (collection TEXT NOT NULL,id TEXT NOT NULL,data TEXT,version INTEGER NOT NULL,seq INTEGER NOT NULL,deleted INTEGER NOT NULL,PRIMARY KEY(collection,id));
     CREATE TABLE IF NOT EXISTS sync_v2_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT,record TEXT NOT NULL,created_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS sync_v2_operations (client_id TEXT NOT NULL,op_id TEXT NOT NULL,digest TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(client_id,op_id));
@@ -18,6 +20,10 @@ export function initializeSyncV2(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS sync_v2_snapshots (id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,boundary INTEGER NOT NULL,expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS sync_v2_snapshot_rows (snapshot_id TEXT NOT NULL,ordinal INTEGER NOT NULL,record TEXT NOT NULL,PRIMARY KEY(snapshot_id,ordinal));
   `);
+  const columns = db.prepare('PRAGMA table_info(sync_v2_binding)').all() as Array<{name:string}>;
+  for (const [name,type] of [['credential_hash','TEXT'],['login','TEXT'],['audit_error','TEXT'],['next_audit_at','TEXT']] as const) {
+    if(!columns.some(column=>column.name===name))db.exec(`ALTER TABLE sync_v2_binding ADD COLUMN ${name} ${type}`);
+  }
 }
 export function getWorkspace(db: Database.Database): { id: string; githubUserId: number; initializedAt: string } | null {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_v2_workspace'").get()) return null;
@@ -28,7 +34,12 @@ export function assertWorkspace(db: Database.Database, workspaceId: string, gith
   const workspace = getWorkspace(db);
   if (!workspace) throw new SyncError('WORKSPACE_UNINITIALIZED', 409);
   if (workspace.id !== workspaceId || workspace.githubUserId !== githubUserId) throw new SyncError('WORKSPACE_ACCOUNT_MISMATCH', 403);
+  const binding = db.prepare('SELECT status FROM sync_v2_binding WHERE workspace_id=?').get(workspaceId) as { status: string } | undefined;
+  if (binding?.status === 'blocked') throw new SyncError('WORKSPACE_BINDING_BLOCKED', 403);
   return workspace;
+}
+export function setWorkspaceBinding(db: Database.Database, workspaceId: string, status: 'verified' | 'blocked', checkedAt = new Date().toISOString()): void {
+  db.prepare('INSERT INTO sync_v2_binding(workspace_id,status,checked_at) VALUES(?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET status=excluded.status,checked_at=excluded.checked_at').run(workspaceId,status,checkedAt);
 }
 const secretKey = /(?:token|password|secret|api[_-]?key|authorization|credential|local[_-]?path|file[_-]?path|download[_-]?(?:path|directory)|cache[_-]?path|proxy[_-]?url|encrypted)/i;
 /** Fail closed: no silently truncated or partially accepted credential-bearing objects. */
@@ -46,6 +57,19 @@ export function validateData(value: unknown, depth = 0): void {
 }
 function identifier(value: unknown) { return typeof value === 'string' && value.length > 0 && value.length <= 200 && !Array.from(value).some(character => character.charCodeAt(0) < 32); }
 function validateOrganization(data: Record<string, unknown>) {
+  if (data.classificationSchemes !== undefined) {
+    if (!classificationSchemesSchema.safeParse(data.classificationSchemes).success) throw new SyncError('INVALID_CLASSIFICATION_SCHEMES');
+    const schemes = data.classificationSchemes as Record<string, Record<string, unknown>>;
+    if (!schemes || typeof schemes !== 'object' || Array.isArray(schemes) || Object.keys(schemes).some(key => !['purpose', 'technology'].includes(key))) throw new SyncError('INVALID_CLASSIFICATION_SCHEMES');
+    for (const [id, scheme] of Object.entries(schemes)) {
+      if (!scheme || typeof scheme.initialized !== 'boolean') throw new SyncError('INVALID_CLASSIFICATION_SCHEMES');
+      validateOrganization(scheme);
+      if (id === 'technology') {
+        const parents = new Set((scheme.customCategories as { id: string }[]).map(row => row.id));
+        if ((scheme.subcategories as { parentId: string }[]).some(group => !parents.has(group.parentId))) throw new SyncError('INVALID_CLASSIFICATION_PARENT');
+      }
+    }
+  }
   const categories = data.customCategories ?? [];
   const subs = data.subcategories ?? [];
   if (!Array.isArray(categories) || !Array.isArray(subs)) throw new SyncError('INVALID_ORGANIZATION');
@@ -85,6 +109,7 @@ export function validateOperation(op: Operation) {
     if (JSON.stringify(op.data).length > 2_000_000) throw new SyncError('RECORD_TOO_LARGE', 413);
     validateData(op.data);
     if (op.collection === 'organization') validateOrganization(op.data);
+    if (op.collection === 'repositories' && op.data.classifications !== undefined && !repositoryClassificationsSchema.safeParse(op.data.classifications).success) throw new SyncError('INVALID_CLASSIFICATION_MEMBERSHIP');
   }
 }
 export function getRecord(db: Database.Database, collection: string, id: string): SyncRecord | null {
@@ -134,7 +159,7 @@ function projectLegacy(db: Database.Database, record: SyncRecord) {
   } else if (record.collection === 'subscriptions' && tableExists('repositories')) {
     db.prepare('UPDATE repositories SET subscribed_to_releases=? WHERE id=?').run(Number(!record.deleted && !!(data.subscribed ?? data.enabled)), Number(record.id));
   } else if (record.collection === 'organization' && tableExists('settings')) {
-    const keys = ['customCategories', 'hiddenDefaultCategoryIds', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder', 'defaultCategoryOverrides', 'categoryListIdMap', 'releaseSourceSettings'];
+    const keys = ['classificationSchemes', 'customCategories', 'hiddenDefaultCategoryIds', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder', 'defaultCategoryOverrides', 'categoryListIdMap', 'releaseSourceSettings'];
     for (const key of keys) {
       if (record.deleted || data[key] === undefined) db.prepare('DELETE FROM settings WHERE key=?').run(key);
       else db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(data[key]));
@@ -155,11 +180,28 @@ export function writeCanonicalRecord(db: Database.Database, input: Pick<SyncReco
   projectLegacy(db, record);
   return record;
 }
+
+/** Validate the records that actually applied, inside the same transaction. */
+function validateFinalClassificationState(db: Database.Database): void {
+  const organization = getRecord(db, 'organization', 'default');
+  const repositories = (db.prepare("SELECT data FROM sync_v2_records WHERE collection='repositories' AND deleted=0").all() as { data: string }[])
+    .map(row => JSON.parse(row.data) as Record<string, unknown>);
+  assertTechnologyMembershipReferences(organization?.deleted ? undefined : organization?.data?.classificationSchemes, repositories);
+}
+
 export function pushOperations(db: Database.Database, input: { workspaceId: string; githubUserId: number; clientId: string; operations: Operation[] }) {
   assertWorkspace(db, input.workspaceId, input.githubUserId);
   if (!identifier(input.clientId) || !Array.isArray(input.operations) || input.operations.length > 500) throw new SyncError('INVALID_BATCH');
   input.operations.forEach(validateOperation);
   return db.transaction(() => {
+    const result = applyOperations(db, input);
+    validateFinalClassificationState(db);
+    return result;
+  }).immediate();
+}
+
+/** Private: bootstrap also uses this within its single full-snapshot transaction. */
+function applyOperations(db: Database.Database, input: { workspaceId: string; clientId: string; operations: Operation[] }) {
     const results = input.operations.map(op => {
       const hash = digest(op);
       const previous = db.prepare('SELECT digest,result FROM sync_v2_operations WHERE client_id=? AND op_id=?').get(input.clientId, op.opId) as { digest: string; result: string } | undefined;
@@ -173,19 +215,24 @@ export function pushOperations(db: Database.Database, input: { workspaceId: stri
       const identityUpgrade = identityWriteNeedsUpgrade(db, input.workspaceId, op.collection, op.id, op.data);
       const identityConfirmation = op.kind === 'put' && identityWriteNeedsConfirmation(db, op.collection, op.id, op.data);
       const configUpgrade = op.collection === 'discovery_config' && (current?.data?.schemaVersion === 2 && op.data?.schemaVersion !== 2);
-      if ((current?.version ?? 0) !== op.baseVersion || locked || identityUpgrade || identityConfirmation || configUpgrade) {
-        const conflict = { id: randomUUID(), reason: identityUpgrade ? 'REPOSITORY_IDENTITY_UPGRADE_REQUIRED' : identityConfirmation ? 'REPOSITORY_IDENTITY_CONFIRMATION_REQUIRED' : configUpgrade ? 'DISCOVERY_CONFIG_UPGRADE_REQUIRED' : locked ? 'USER_LOCKED' : 'VERSION_MISMATCH', incoming: op, current };
+      const classificationKeys = ['category_id', 'subcategory_id', 'category_locked', 'custom_category', 'customCategories', 'defaultCategoryOverrides', 'subcategories', 'categoryOrder', 'subcategoryOrder', 'repositoryOrder', 'hiddenDefaultCategoryIds'];
+      const upgraded = current?.data?.classifications || current?.data?.classificationSchemes;
+      const oldClassificationWrite = upgraded && op.kind === 'put' && !op.data?.classifications && !op.data?.classificationSchemes;
+      const classificationUpgrade = oldClassificationWrite && classificationKeys.some(key => key in (op.data ?? {}) && JSON.stringify(op.data?.[key]) !== JSON.stringify(current?.data?.[key]));
+      if ((current?.version ?? 0) !== op.baseVersion || locked || identityUpgrade || identityConfirmation || configUpgrade || classificationUpgrade) {
+        const conflict = { id: randomUUID(), reason: classificationUpgrade ? 'CLASSIFICATION_UPGRADE_REQUIRED' : identityUpgrade ? 'REPOSITORY_IDENTITY_UPGRADE_REQUIRED' : identityConfirmation ? 'REPOSITORY_IDENTITY_CONFIRMATION_REQUIRED' : configUpgrade ? 'DISCOVERY_CONFIG_UPGRADE_REQUIRED' : locked ? 'USER_LOCKED' : 'VERSION_MISMATCH', incoming: op, current };
         db.prepare('INSERT INTO sync_v2_conflicts VALUES(?,?,?,?,?,?)').run(conflict.id, op.collection, op.id, JSON.stringify(op), JSON.stringify(current), Date.now());
         result = { opId: op.opId, status: 'conflict', conflict };
       } else {
-        const record = writeCanonicalRecord(db, { collection: op.collection, id: op.id, deleted: op.kind === 'delete', data: op.kind === 'delete' ? null : op.data! });
+        const data = { ...op.data, ...(oldClassificationWrite ? Object.fromEntries(['classifications', 'classificationSchemes', ...classificationKeys].filter(key => current?.data && key in current.data).map(key => [key, current!.data![key]])) : {}) };
+        for (const key of ['classifications', 'classificationSchemes']) if (current?.data?.[key] && op.data?.[key]) data[key] = { ...current.data[key] as Record<string, unknown>, ...op.data[key] as Record<string, unknown> };
+        const record = writeCanonicalRecord(db, { collection: op.collection, id: op.id, deleted: op.kind === 'delete', data: op.kind === 'delete' ? null : data });
         result = { opId: op.opId, status: 'applied', record };
       }
       db.prepare('INSERT INTO sync_v2_operations VALUES(?,?,?,?)').run(input.clientId, op.opId, hash, JSON.stringify(result));
       return result;
     });
     return { results, cursor: currentCursor(db) };
-  }).immediate();
 }
 export function bootstrapWorkspace(db: Database.Database, input: { githubUserId: number; source: string; records: { collection: Collection; id: string; data: Record<string, unknown> }[]; confirm?: boolean; previewToken?: string }) {
   if (getWorkspace(db)) throw new SyncError('WORKSPACE_ALREADY_INITIALIZED', 409);
@@ -212,7 +259,9 @@ export function bootstrapWorkspace(db: Database.Database, input: { githubUserId:
     // The preview describes a full desktop import; discard old unbound projections atomically.
     for (const table of ['repositories', 'releases']) if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) db.prepare(`DELETE FROM ${table}`).run();
     db.prepare('INSERT INTO sync_v2_workspace(id,github_user_id,initialized_at) VALUES(?,?,?)').run(workspace.id, workspace.githubUserId, workspace.initializedAt);
-    for (let offset = 0; offset < input.records.length; offset += 500) pushOperations(db, { workspaceId: workspace.id, githubUserId: workspace.githubUserId, clientId: 'bootstrap', operations: input.records.slice(offset, offset + 500).map(r => ({ ...r, opId: `${r.collection}:${r.id}`, kind: 'put', baseVersion: 0 })) });
+    setWorkspaceBinding(db, workspace.id, 'verified');
+    for (let offset = 0; offset < input.records.length; offset += 500) applyOperations(db, { workspaceId: workspace.id, clientId: 'bootstrap', operations: input.records.slice(offset, offset + 500).map(r => ({ ...r, opId: `${r.collection}:${r.id}`, kind: 'put', baseVersion: 0 })) });
+    validateFinalClassificationState(db);
     db.prepare('DELETE FROM sync_v2_previews').run();
     return { workspace, cursor: currentCursor(db), imported: input.records.length };
   }).immediate();
@@ -247,8 +296,10 @@ export function snapshotPage(db: Database.Database, workspaceId: string, snapsho
     if (!snapshotId) {
       snapshotId = randomUUID();
       db.prepare('INSERT INTO sync_v2_snapshots VALUES(?,?,?,?)').run(snapshotId, workspaceId, currentCursor(db), Date.now() + 86400000);
-      const rows = db.prepare('SELECT collection,id FROM sync_v2_records ORDER BY collection,id').all() as { collection: string; id: string }[];
-      rows.forEach((r, index) => db.prepare('INSERT INTO sync_v2_snapshot_rows VALUES(?,?,?)').run(snapshotId, index, JSON.stringify(getRecord(db, r.collection, r.id))));
+      db.prepare(`INSERT INTO sync_v2_snapshot_rows(snapshot_id,ordinal,record)
+        SELECT ?,ROW_NUMBER() OVER(ORDER BY collection,id)-1,
+        json_object('collection',collection,'id',id,'data',json(data),'version',version,'seq',seq,'deleted',json(CASE WHEN deleted THEN 'true' ELSE 'false' END))
+        FROM sync_v2_records`).run(snapshotId);
     }
     const snapshot = db.prepare('SELECT * FROM sync_v2_snapshots WHERE id=? AND workspace_id=?').get(snapshotId, workspaceId) as { boundary: number; expires_at: number } | undefined;
     if (!snapshot || snapshot.expires_at < Date.now()) throw new SyncError('SNAPSHOT_EXPIRED', 410);

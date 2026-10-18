@@ -9,6 +9,9 @@ import { HomeSync } from './sync';
 import type { Capabilities, Collection, HomeRecord } from './types';
 import type { AppState, Release, Repository } from '../types';
 import { hasPendingLocalBackupRestore } from '../services/localBackupRecoveryGate';
+import { classificationExport } from '../store/helpers/classificationSchemes';
+import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
+import { repositoryHomeProjection } from './repositoryProjection';
 
 type Seed = { collection: Collection; id: string; data: Record<string, unknown> };
 let active: HomeSync | null = null;
@@ -25,13 +28,14 @@ const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<str
 
 export function desktopStoreRecords(state: AppState): Seed[] {
   const organization = {
+    classificationSchemes: classificationExport(state),
     customCategories: state.customCategories, hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     categoryOrder: state.categoryOrder, subcategories: state.subcategories, subcategoryOrder: state.subcategoryOrder,
     repositoryOrder: state.repositoryOrder, defaultCategoryOverrides: state.defaultCategoryOverrides,
     categoryListIdMap: state.categoryListIdMap, releaseSourceSettings: state.releaseSourceSettings,
   };
   return [
-    ...state.repositories.map(data => ({ collection: 'repositories' as const, id: String(data.id), data: json(data) })),
+    ...state.repositories.map(data => ({ collection: 'repositories' as const, id: String(data.id), data: repositoryHomeProjection(data) })),
     ...state.releases.map(data => ({ collection: 'releases' as const, id: String(data.id), data: json(data) })),
     { collection: 'organization', id: 'default', data: json(organization) },
     ...Array.from(state.releaseSubscriptions).map(id => ({ collection: 'subscriptions' as const, id: String(id), data: { repoId: id, subscribed: true } })),
@@ -54,10 +58,10 @@ async function projectNow(sync: HomeSync) {
   try {
     const live = records.filter(row => !row.deleted);
     const org = live.find(row => row.collection === 'organization' && row.id === 'default')?.data ?? {};
-    const allowed = ['customCategories','hiddenDefaultCategoryIds','categoryOrder','subcategories','subcategoryOrder','repositoryOrder','defaultCategoryOverrides','categoryListIdMap','releaseSourceSettings'];
+    const allowed = ['classificationSchemes','customCategories','hiddenDefaultCategoryIds','categoryOrder','subcategories','subcategoryOrder','repositoryOrder','defaultCategoryOverrides','categoryListIdMap','releaseSourceSettings'];
     const settings = Object.fromEntries(Object.entries(org).filter(([key]) => allowed.includes(key)));
-    useAppStore.setState({ ...settings, ...discoveryStoreProjection(useAppStore.getState(), records),
-      repositories: live.filter(row => row.collection === 'repositories').map(row => row.data as unknown as Repository),
+    const organization = incomingOrganizationSnapshot(useAppStore.getState(), settings, live.filter(row => row.collection === 'repositories').map(row => row.data as unknown as Repository));
+    useAppStore.setState({ ...organization, ...discoveryStoreProjection(useAppStore.getState(), records),
       releases: live.filter(row => row.collection === 'releases').map(row => row.data as unknown as Release),
       releaseSubscriptions: new Set(live.filter(row => row.collection === 'subscriptions' && row.data?.subscribed !== false && row.data?.enabled !== false).map(row => Number(row.id))),
       readReleases: new Set(live.filter(row => row.collection === 'release_reads' && row.data?.isRead !== false && row.data?.is_read !== false).map(row => Number(row.id))),
@@ -83,14 +87,21 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   const sync = new HomeSync(api, capabilities); active = sync; notify();
   const discoveryBeforeProjection = [...desktopDiscoveryStoreRecords(useAppStore.getState()), ...await exportCustomDiscovery(String(sync.identity.githubUserId))];
   await sync.sync();
-  if (sync.view.status === 'error' || sync.view.status === 'auth-required') throw new Error(sync.view.error ?? '家庭同步初始化失败');
+  if (sync.view.status === 'error' || sync.view.status === 'auth-required') {
+    // A transient GitHub/proxy failure must not tear down the local Home
+    // workspace or fall through to the legacy writer. HomeSync owns the
+    // bounded retry/backoff and will retry once the binding/API is reachable.
+    console.warn('[home-sync] Initial v2 sync deferred:', sync.view.error ?? 'sync unavailable');
+  }
   if (active !== sync || useAppStore.getState().user?.id !== sync.identity.githubUserId) return false;
   if (capabilities.discovery?.available && typeof window !== 'undefined' && window.electronAPI?.xAuth?.get) {
     try { await migrateDesktopXCredentials(api, sync.identity, loadEncryptedXAuthViaDesktop); }
     catch { console.warn('[home-sync] Desktop X credential migration unavailable; existing desktop login was retained.'); }
   }
+  let discoveryMigrated=false;
+  let deferredDiscovery:Promise<void>|undefined;
   if (await sync.db.metadata('initialized')) {
-    await migrateDesktopDiscovery(sync.db, discoveryBeforeProjection);
+    await migrateDesktopDiscovery(sync.db, discoveryBeforeProjection); discoveryMigrated=true;
     await project(sync);
   }
   if (active !== sync) return false;
@@ -128,15 +139,33 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   const unstore = useAppStore.subscribe((state, previous) => {
     if (state.user?.id !== sync.identity.githubUserId) { stopDesktopHome(); return; }
     if (projecting) return;
-    if (state.repositories === previous.repositories && state.releases === previous.releases && state.customCategories === previous.customCategories && state.subcategories === previous.subcategories && state.categoryOrder === previous.categoryOrder && state.repositoryOrder === previous.repositoryOrder && state.readReleases === previous.readReleases && state.releaseSubscriptions === previous.releaseSubscriptions && state.hiddenDefaultCategoryIds === previous.hiddenDefaultCategoryIds && state.defaultCategoryOverrides === previous.defaultCategoryOverrides && state.subcategoryOrder === previous.subcategoryOrder && state.categoryListIdMap === previous.categoryListIdMap && state.releaseSourceSettings === previous.releaseSourceSettings && state.discoveryChannels === previous.discoveryChannels && state.xTweetFollows === previous.xTweetFollows && state.telegramFollows === previous.telegramFollows && state.trendingSnapshots === previous.trendingSnapshots) return;
+    if (state.classificationSchemes === previous.classificationSchemes && state.repositories === previous.repositories && state.releases === previous.releases && state.customCategories === previous.customCategories && state.subcategories === previous.subcategories && state.categoryOrder === previous.categoryOrder && state.repositoryOrder === previous.repositoryOrder && state.readReleases === previous.readReleases && state.releaseSubscriptions === previous.releaseSubscriptions && state.hiddenDefaultCategoryIds === previous.hiddenDefaultCategoryIds && state.defaultCategoryOverrides === previous.defaultCategoryOverrides && state.subcategoryOrder === previous.subcategoryOrder && state.categoryListIdMap === previous.categoryListIdMap && state.releaseSourceSettings === previous.releaseSourceSettings && state.discoveryChannels === previous.discoveryChannels && state.xTweetFollows === previous.xTweetFollows && state.telegramFollows === previous.telegramFollows && state.trendingSnapshots === previous.trendingSnapshots) return;
     capture(desktopStoreRecords(state), desktopStoreRecords(previous));
   });
   const onChat = (event: Event) => {
     if (active !== sync) return;
-    const isProjection = (event as CustomEvent<{ source?: string }>).detail?.source === 'home-projection';
+    const detail = (event as CustomEvent<import('../services/repositoryChatStorage').ChatHistoryChange>).detail;
+    const isProjection = detail?.source === 'home-projection';
     // Queue the export immediately: a slow export must not be overtaken by projection.
     captureTail = captureTail.then(async () => {
       if (active !== sync) return;
+      // Existing exported records are already known to be syncable. Updating one
+      // checkpoint must not export and validate every historical draft again.
+      const beforeProposal = detail?.proposalId && detail.ownerId === String(sync.identity.githubUserId)
+        ? previousChat.find(row => row.collection === 'proposals' && row.id === detail.proposalId) : undefined;
+      if (!isProjection && beforeProposal) {
+        const changed = await repositoryChatStorage.getProposal(beforeProposal.id);
+        if (active !== sync) return;
+        if (changed && changed.ownerId === detail.ownerId && changed.sessionId === detail.sessionId) {
+          if (changed.updatedAt !== beforeProposal.data.updatedAt) {
+            const next = { collection: 'proposals' as const, id: changed.id, data: json(changed) };
+            await sync.db.edit(next.collection, next.id, next.data);
+            previousChat = previousChat.map(row => row === beforeProposal ? next : row);
+            sync.changed();
+          }
+          return;
+        }
+      }
       const next = chatRecords(await repositoryChatStorage.exportWorkbench(String(sync.identity.githubUserId)));
       if (!isProjection) {
         const before = new Map(previousChat.map(row => [recordKey(row), row]));
@@ -172,7 +201,20 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   };
   window.addEventListener('gsm:custom-discovery-changed', onDiscovery);
   window.addEventListener('gsm:global-chat-history-changed', onChat);
-  const unsubscribe = sync.subscribe(() => { notify(); if (['synced','conflict'].includes(sync.view.status)) void project(sync); });
+  const unsubscribe = sync.subscribe(() => {
+    notify();
+    if(['synced','conflict'].includes(sync.view.status)) {
+      // Deferred first activation must migrate discovery before its first
+      // projection. Local edits have already been captured in the durable outbox.
+      if(!discoveryMigrated) {
+        deferredDiscovery??=captureTail.then(async()=>{await migrateDesktopDiscovery(sync.db,discoveryBeforeProjection);discoveryMigrated=true;}).finally(()=>{deferredDiscovery=undefined;});
+        captureTail=deferredDiscovery.catch(error=>{console.error('[home-sync] Deferred discovery migration failed',error);});
+        void deferredDiscovery.then(()=>project(sync)).catch(()=>{});
+        return;
+      }
+      void project(sync);
+    }
+  });
   const stop = sync.start();
   cleanup = () => { stop(); unsubscribe(); unstore(); window.removeEventListener('gsm:global-chat-history-changed', onChat); window.removeEventListener('gsm:custom-discovery-changed', onDiscovery); };
   performance.mark?.('gsm:home-initialized');
@@ -191,4 +233,28 @@ export async function flushDesktopHome(): Promise<boolean> {
   await captureTail; await active.sync();
   if (!['synced','conflict'].includes(active.view.status)) throw new Error(active.view.error ?? '资料尚未同步');
   return true;
+}
+
+/** Local durability barrier only; remote delivery is reported separately. */
+export async function checkpointDesktopHomeRepository(account: string, repositoryId: number): Promise<void> {
+  const sync = active;
+  if (!sync) return;
+  const validate = () => {
+    if (active !== sync || String(sync.identity.githubUserId) !== account || String(useAppStore.getState().user?.id) !== account) throw new Error('账户已变化，本地仓库保存未完成。');
+  };
+  validate();
+  const checkpoint = captureTail.then(async () => {
+    validate();
+    const previous = await sync.db.getRecord('repositories', String(repositoryId)); validate();
+    // Read after the asynchronous lookup, and queue future store captures behind
+    // this checkpoint so newer manual edits cannot be overwritten by its snapshot.
+    const repo = useAppStore.getState().repositories.find(item => item.id === repositoryId);
+    if (!repo) throw new Error('待保存的仓库资料不存在。');
+    const data = repositoryHomeProjection(repo);
+    if (JSON.stringify(previous?.data) !== JSON.stringify(data)) {
+      await sync.db.edit('repositories', String(repositoryId), data); validate(); sync.changed();
+    }
+  });
+  captureTail = checkpoint.catch(() => undefined);
+  await checkpoint;
 }

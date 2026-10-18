@@ -5,6 +5,8 @@ import { pluginRegistry } from '../plugins/pluginRegistry';
 import { pluginPageArgsBudget, pluginPageArgsBytes, validatePluginPageMessage } from '../plugins/pluginPageMessages';
 import { usePluginAI } from '../plugins/usePluginPageAI';
 import { usePluginWebSearch } from '../plugins/usePluginPageWebSearch';
+import { usePluginNetwork } from '../plugins/usePluginNetwork';
+import { resolvePluginAccountTag } from '../plugins/pluginAccountTag';
 import { useAppStore } from '../store/useAppStore';
 
 interface PluginPageViewerProps {
@@ -23,6 +25,8 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
 }) => {
   const generateAI = usePluginAI();
   const searchWeb = usePluginWebSearch();
+  const requestNetwork = usePluginNetwork();
+  const accountTagRef = useRef<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const contextRef = useRef(initContext);
   contextRef.current = initContext;
@@ -65,7 +69,7 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
       if (disposed || !loadedRef.current || !tokenRef.current) return;
       frameRef.current?.contentWindow?.postMessage({
         type: 'plugin-page:init', pluginId, pageId, token: tokenRef.current,
-        ...(contextRef.current ? { context: contextRef.current } : {}),
+        context: { ...contextRef.current, accountTag: accountTagRef.current },
       }, origin);
     }
     async function getSession() {
@@ -83,6 +87,8 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
           return false;
         }
         tokenRef.current = result.sessionToken;
+        accountTagRef.current = await resolvePluginAccountTag(useAppStore.getState().githubToken ?? null);
+        if (disposed || version !== generation) { closeToken(result.sessionToken); return false; }
         seenRef.current.clear();
         pendingRef.current.clear();
         timesRef.current = [];
@@ -172,12 +178,13 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
       } catch { reject('PLUGIN_PAGE_REQUEST_INVALID'); return; }
       pendingRef.current.add(request.requestId);
       const session = { pluginId, pageId, sessionToken: token, requestId: request.requestId };
-      const controller = request.method === 'ai.generate' ? new AbortController() : null;
+      const controller = ['ai.generate', 'network.request'].includes(request.method) ? new AbortController() : null;
       if (controller) aiRef.current.add(controller);
       try {
         if (request.method === 'page.close') { lifecycle.revoke(); closeRef.current(); return; }
-        const result = controller
-          ? await generateAI(session, pluginName, request.args, isCurrent, controller.signal)
+        const result = request.method === 'network.request' && controller
+          ? await requestNetwork(session, request.args, isCurrent, controller.signal)
+          : controller ? await generateAI(session, pluginName, request.args, isCurrent, controller.signal)
           : request.method === 'web.search'
             ? await searchWeb(session, pluginName, request.args, isCurrent)
             : await pluginClient.requestPageCapability({ ...session, method: request.method, args: request.args });
@@ -191,10 +198,10 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [pluginId, pageId, pluginName, origin, generateAI, searchWeb]);
+  }, [pluginId, pageId, pluginName, origin, generateAI, searchWeb, requestNetwork]);
 
   return (
-    <section className="space-y-3" aria-label={`${pluginName}: ${pageTitle}`}>
+    <section className={variant === 'modal' ? 'flex h-full min-h-0 flex-1 flex-col gap-3' : 'space-y-3'} aria-label={`${pluginName}: ${pageTitle}`}>
       {variant === 'panel' && <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold">{pluginName} · {pageTitle}</h3>
         <button type="button" onClick={() => { lifecycleRef.current?.revoke(); onClose(); }}
@@ -205,7 +212,8 @@ export const PluginPageViewer: React.FC<PluginPageViewerProps> = ({
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> :
         url ? <iframe ref={frameRef} title={`${pluginName}: ${pageTitle}`} src={url}
           sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer"
-          className="h-[min(70vh,800px)] min-h-[320px] w-full rounded-lg border border-border bg-white"
+          className={variant === 'modal' ? 'min-h-0 w-full flex-1 rounded-lg border border-border bg-white'
+            : 'h-[min(70vh,800px)] min-h-[320px] w-full rounded-lg border border-border bg-white'}
           onLoad={() => { void lifecycleRef.current?.load(); }} />
           : <p role="status">{t('pluginPageViewer.loading-plugin-page')}</p>}
     </section>

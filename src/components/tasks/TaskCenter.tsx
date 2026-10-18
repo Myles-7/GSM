@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertCircle, Archive, ArrowLeft, ArrowUpRight, CheckCircle2, Clock3, Copy, Download, ListTodo, Pause, Play, RotateCcw, Search, Square, Trash2, X } from 'lucide-react';
 import { aiTaskJournal, TASK_KINDS, taskDisplayState, taskIsTerminal, taskNeedsAttention, type AITaskRecord } from '../../services/aiTaskJournal';
-import { taskElapsed, taskKindLabel, taskPhaseLabel, taskReport, taskStateLabel, taskTitle } from '../../services/taskPresentation';
+import { taskElapsed, taskExecutorLabel, taskKindLabel, taskOutcomeLabel, taskPhaseLabel, taskReport, taskStateLabel, taskTitle } from '../../services/taskPresentation';
 import { Button } from '../ui/button';
 import { useAppStore } from '../../store/useAppStore';
 import type { AIConfig } from '../../types';
@@ -11,9 +11,11 @@ export interface TaskCenterProps {
   tasks: AITaskRecord[]; chinese: boolean; compact?: boolean;
   retry(task: AITaskRecord, failedOnly: boolean, configId?: string, parameters?: TaskRetryParameters): Promise<void>;
   onNavigate(task: AITaskRecord): void; onOpenCenter?(): void;
+  retrySave?(task: AITaskRecord): Promise<void>;
+  discardResults?(task: AITaskRecord): Promise<void>;
 }
 const retryKinds = new Set(['summary', 'details', 'gists', 'discovery', 'discovery-analysis']);
-export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavigate, onOpenCenter }: TaskCenterProps) {
+export function TaskCenter({ tasks, chinese: zh, compact = false, retry, retrySave, discardResults, onNavigate, onOpenCenter }: TaskCenterProps) {
   const txt = (cn: string, en: string) => zh ? cn : en;
   const configs = useAppStore(state => state.aiConfigs);
   const [filter, setFilter] = useState('attention');
@@ -68,9 +70,11 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
   const attentionCount = tasks.filter(task => !task.archived && taskNeedsAttention(task)).length;
   const doneCount = tasks.filter(task => taskDisplayState(task) === 'complete').length;
   const selectedTasks = tasks.filter(task => checked.includes(task.id));
-  const control = (action: 'pause' | 'resume' | 'stop') => selectedTasks.forEach(task => aiTaskJournal.control(task.id, action));
+  const allowNewCall = (task: AITaskRecord) => confirmTaskRecovery(task, zh);
+  const controlTask = (task: AITaskRecord, action: 'pause' | 'resume' | 'stop') => { if (action !== 'resume' || allowNewCall(task)) aiTaskJournal.control(task.id, action); };
+  const control = (action: 'pause' | 'resume' | 'stop') => selectedTasks.forEach(task => controlTask(task, action));
   const runRetry = async (task: AITaskRecord, failures: boolean) => {
-    if (busy.includes(task.id)) return;
+    if (busy.includes(task.id) || !confirmTaskRecovery(task, zh, failures ? task.items.filter(item => item.state === 'failed').map(item => item.id) : undefined)) return;
     setBusy(ids => [...ids, task.id]); setError('');
     try { await retry(task, failures, retryConfig[task.id] ?? task.configId, retryParameters[task.id]); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -84,6 +88,7 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
       // Existing batch executors own their queues; run retries sequentially to avoid dropping overlapping batches.
       for (const task of selectedTasks.filter(task => task.location !== 'server' && !aiTaskJournal.live(task.id)
         && taskIsTerminal(task) && retryKinds.has(task.kind) && task.items.some(item => item.state === 'failed'))) {
+        if (!confirmTaskRecovery(task, zh, task.items.filter(item => item.state === 'failed').map(item => item.id))) continue;
         try { await retry(task, true, retryConfig[task.id] ?? task.configId, retryParameters[task.id]); }
         catch (cause) { failures.push(`${taskTitle(task, zh)}: ${cause instanceof Error ? cause.message : String(cause)}`); }
       }
@@ -102,11 +107,19 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
   };
   const actions = (task: AITaskRecord) => <div className="flex flex-wrap items-center gap-2">
     {(['pause', 'resume', 'stop'] as const).filter(action => aiTaskJournal.supports(task.id, action)
-      && (action === 'resume' ? ['paused', 'pausing', 'interrupted', 'unconfirmed'].includes(task.state) : action !== 'pause' || task.state === 'running' || task.state === 'queued')).map(action => {
+      && (action === 'resume' ? ['paused', 'pausing', 'interrupted', 'unconfirmed', 'failed', 'canceled'].includes(task.state) : action !== 'pause' || task.state === 'running' || task.state === 'queued')).map(action => {
       const Icon = action === 'pause' ? Pause : action === 'resume' ? Play : Square;
-      const label = action === 'pause' ? txt('暂停', 'Pause') : action === 'resume' ? task.state === 'unconfirmed' ? txt('核对并恢复提交', 'Verify and recover submission') : txt('继续', 'Resume') : txt('停止', 'Stop');
-      return <Button key={action} variant="outline" size="icon" title={label} aria-label={label} disabled={task.state === 'stopping'} onClick={() => aiTaskJournal.control(task.id, action)}><Icon size={16} /></Button>;
+      const label = action === 'pause' ? txt('暂停', 'Pause') : action === 'resume' ? task.state === 'unconfirmed' ? txt('核对并恢复提交', 'Verify and recover submission') : task.capabilities?.resume === 'new-provider-call' || task.providerOutcome === 'unknown' ? txt('重新调用模型', 'Start new provider call') : txt('继续', 'Resume') : txt('停止', 'Stop');
+      return <Button key={action} variant="outline" size="icon" title={label} aria-label={label} disabled={task.state === 'stopping'} onClick={() => controlTask(task, action)}><Icon size={16} /></Button>;
     })}
+    {['failed', 'conflict'].includes(task.commitStatus ?? '') && (aiTaskJournal.supports(task.id, 'commit') || task.items.some(item => item.recovery) && retrySave) && <Button variant="outline" size="sm" disabled={busy.includes(task.id)} onClick={() => {
+      if (aiTaskJournal.supports(task.id, 'commit')) aiTaskJournal.control(task.id, 'commit');
+      else if (retrySave) { setBusy(ids => [...ids, task.id]); void retrySave(task).catch(e => setError(String(e))).finally(() => setBusy(ids => ids.filter(id => id !== task.id))); }
+    }}>{txt('仅重试保存', 'Retry save only')}</Button>}
+    {!aiTaskJournal.live(task.id) && task.items.some(item => item.recovery) && discardResults && <Button variant="ghost" size="sm" disabled={busy.includes(task.id)} onClick={() => {
+      if (!window.confirm(txt('丢弃尚未保存的模型结果？此操作无法恢复结果正文。', 'Discard unsaved model results? The result bodies cannot be recovered.'))) return;
+      setBusy(ids => [...ids, task.id]); void discardResults(task).catch(e => setError(String(e))).finally(() => setBusy(ids => ids.filter(id => id !== task.id)));
+    }}>{txt('丢弃待保存结果', 'Discard unsaved results')}</Button>}
     {!aiTaskJournal.live(task.id) && taskIsTerminal(task) && task.location !== 'server' && retryKinds.has(task.kind) && task.items.some(item => item.state === 'failed') &&
       <Button variant="outline" size="sm" disabled={busy.includes(task.id)} onClick={() => void runRetry(task, true)}><RotateCcw size={14} />{txt('重试失败项', 'Retry failed')}</Button>}
     {!aiTaskJournal.live(task.id) && task.location !== 'server' && retryKinds.has(task.kind) && ['interrupted', 'canceled', 'partial'].includes(task.state) && task.items.some(item => item.state !== 'complete') &&
@@ -122,26 +135,36 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
       <div className="flex items-start gap-3">
         {!compact && <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-primary" checked={checked.includes(task.id)} aria-label={`${txt('选择', 'Select')} ${taskTitle(task, zh)}`} onChange={e => setChecked(ids => e.target.checked ? [...ids, task.id] : ids.filter(id => id !== task.id))} />}
         <div className="min-w-0 flex-1"><button type="button" className="w-full break-words text-left text-sm font-semibold hover:text-primary focus-visible:outline-primary" onClick={() => selectTask(task.id)}>{taskTitle(task, zh)}</button>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>{task.location === 'server' ? txt('服务器', 'Server') : txt('本机', 'Device')}</span><span>{task.trigger === 'automatic' ? txt('自动', 'Automatic') : txt('手动', 'Manual')}</span><span>{task.createdAt ? new Date(task.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US') : txt('时间未记录', 'Time not recorded')}</span></div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>{taskExecutorLabel(task.executor, zh)}</span><span>{task.trigger === 'automatic' ? txt('自动', 'Automatic') : txt('手动', 'Manual')}</span><span>{task.createdAt ? new Date(task.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US') : txt('时间未记录', 'Time not recorded')}</span></div>
         </div><Icon size={18} className={`shrink-0 ${taskNeedsAttention(task) ? 'text-destructive' : status === 'complete' ? 'text-emerald-600 dark:text-emerald-400' : 'text-primary'}`} />
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs"><span role="status" className="font-medium">{taskStateLabel(status, zh)}</span><span className="flex items-center gap-1 text-muted-foreground"><Clock3 size={12} />{taskElapsed(task, clock)}</span></div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs"><span role="status" className="font-medium">{taskOutcomeLabel(task, zh)}</span><span className="flex items-center gap-1 text-muted-foreground"><Clock3 size={12} />{taskElapsed(task, clock)}</span></div>
       {task.items.length > 1 && <><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={txt('子项完成比例', 'Completed items')} aria-valuenow={complete} aria-valuemin={0} aria-valuemax={task.items.length}><div className="h-full bg-primary transition-[width]" style={{ width: `${complete / task.items.length * 100}%` }} /></div><p className="mt-2 text-xs text-muted-foreground">{txt('完成', 'Complete')} {complete}/{task.items.length}{failed > 0 && ` · ${txt('失败', 'Failed')} ${failed}`}</p></>}
       {task.phase && <p className="mt-2 break-words text-xs text-muted-foreground">{taskPhaseLabel(task.phase, zh)}{task.progress && task.progress.total > 0 ? ` · ${task.progress.done}/${task.progress.total}` : ''}</p>}
       {running.length > 0 && <ul className="mt-3 space-y-1 text-xs">{running.slice(0, compact ? 2 : 3).map(item => <li key={item.id} className="truncate" title={item.label}>{item.label}</li>)}{running.length > (compact ? 2 : 3) && <li className="text-muted-foreground">+{running.length - (compact ? 2 : 3)}</li>}</ul>}
       {task.error && <p className="mt-2 line-clamp-2 break-words text-xs text-destructive">{task.error}</p>}
+      {task.failureCode && <p className="mt-2 break-words text-xs text-muted-foreground">{txt('故障码', 'Failure')}: {task.failureCode}</p>}
       {task.connectionError && <p className="mt-2 line-clamp-2 break-words text-xs text-destructive">{txt('服务器状态待核对', 'Server status needs verification')}: {task.connectionError}</p>}
       <div className="mt-4 border-t border-border pt-3">{actions(task)}</div>
     </article>;
   };
   const detail = activeTask && <aside className="min-w-0 rounded-lg border border-border bg-card p-5 text-card-foreground lg:sticky lg:top-20 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto" aria-label={txt('任务详情', 'Task details')}>
     <div className="mb-4 flex items-center justify-between gap-2"><h2 className="text-base font-semibold">{txt('任务详情', 'Task details')}</h2><Button variant="ghost" size="icon" aria-label={txt('返回列表', 'Back to list')} title={txt('返回列表', 'Back to list')} onClick={() => selectTask(null)}><X size={16} /></Button></div>
-    <h3 className="break-words text-sm font-semibold">{taskTitle(activeTask, zh)}</h3><p className="mt-2 text-xs text-muted-foreground">{taskStateLabel(taskDisplayState(activeTask), zh)} · {taskElapsed(activeTask, clock)}</p>
+    <h3 className="break-words text-sm font-semibold">{taskTitle(activeTask, zh)}</h3><p className="mt-2 text-xs text-muted-foreground">{taskExecutorLabel(activeTask.executor, zh)} · {taskOutcomeLabel(activeTask, zh)} · {taskElapsed(activeTask, clock)}</p>
+    <p className="mt-2 text-xs text-muted-foreground">{txt('完成／失败／未执行／取消', 'Complete / failed / pending / canceled')}: {['complete', 'failed', 'pending', 'canceled'].map(state => activeTask.items.filter(item => item.state === state).length).join(' / ')}</p>
+    {activeTask.stopReason && <p className="mt-2 text-xs text-muted-foreground">{txt('停止原因', 'Stop reason')}: {({ user: txt('手动停止', 'User stopped'), account_change: txt('账户变化', 'Account changed'), unmounted: txt('来源页面已关闭', 'Source unmounted'), config_changed: txt('配置变化', 'Configuration changed'), lease_lost: txt('任务租约失效', 'Lease lost') })[activeTask.stopReason]}</p>}
+    {activeTask.commitStatus === 'saved' && activeTask.location !== 'server' && <p className="mt-2 text-xs text-muted-foreground">{txt('已完成部分已在本机保存；远端同步状态请在同步设置核对。', 'Completed items are saved locally; check sync settings for remote replication.')}</p>}
     <dl className="my-5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
       <dt>{txt('模型', 'Model')}</dt><dd className="break-all">{activeTask.config?.model || txt('未记录', 'Not recorded')}</dd>
       <dt>Effort</dt><dd>{activeTask.config?.effort ?? txt('未记录', 'Not recorded')}</dd>
       <dt>{txt('超时', 'Timeout')}</dt><dd>{activeTask.config?.timeoutSeconds ? `${activeTask.config.timeoutSeconds}s` : txt('未记录', 'Not recorded')}</dd>
       <dt>{txt('阶段', 'Stage')}</dt><dd className="break-words">{taskPhaseLabel(activeTask.phase, zh)}</dd>
+      {['queue_wait', 'initializing', 'generating', 'cleanup', 'committing'].map(phase => {
+        const elapsed = activeTask.usage?.[`phase_${phase}_ms`];
+        return elapsed !== undefined && Number.isFinite(elapsed) ? <div className="contents" key={phase}>
+          <dt>{taskPhaseLabel(phase, zh)} · {txt('请求累计', 'Request total')}</dt><dd>{(elapsed / 1000).toFixed(2)}s</dd>
+        </div> : null;
+      })}
       <dt>{txt('开始', 'Started')}</dt><dd>{activeTask.startedAt ? new Date(activeTask.startedAt).toLocaleString() : txt('未记录', 'Not recorded')}</dd>
       <dt>{txt('结束', 'Ended')}</dt><dd>{activeTask.endedAt ? new Date(activeTask.endedAt).toLocaleString() : '—'}</dd>
     </dl>
@@ -163,7 +186,7 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
     {activeTask.state === 'committing' && <p className="mt-3 text-xs text-muted-foreground">{txt('正在提交已完成结果，此阶段无法取消。', 'Completed results are being committed. This stage cannot be canceled.')}</p>}
     {!taskIsTerminal(activeTask) && activeTask.state !== 'committing' && !aiTaskJournal.supports(activeTask.id, 'pause') && <p className="mt-3 text-xs text-muted-foreground">{txt('此执行器不支持暂停；可用操作以当前按钮为准。', 'This executor does not support pausing. Available controls are shown above.')}</p>}
     <div className="my-5 flex flex-wrap items-center gap-3 border-t border-border pt-4"><h4 className="text-sm font-semibold">{txt('子项', 'Items')} ({activeTask.items.length})</h4><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={failedOnly} onChange={e => setFailedOnly(e.target.checked)} />{txt('仅失败项', 'Failed only')}</label><Button variant="ghost" size="icon" title={txt('复制错误', 'Copy errors')} aria-label={txt('复制错误', 'Copy errors')} onClick={() => { void navigator.clipboard.writeText([activeTask.error, ...activeTask.items.filter(item => item.error).map(item => `${item.label}: ${item.error}`)].filter(Boolean).join('\n')).catch(() => setError(txt('复制失败', 'Copy failed'))); }}><Copy size={15} /></Button></div>
-    <ul className="max-h-96 space-y-3 overflow-y-auto text-xs">{activeTask.items.filter(item => !failedOnly || item.state === 'failed').slice(0, itemLimit).map(item => <li key={item.id} className="border-b border-border pb-3"><div className="flex items-start gap-3"><span className="min-w-0 flex-1 break-words">{item.label}</span><span className="shrink-0 text-muted-foreground">{taskStateLabel(item.state, zh)}</span><Button size="icon" variant="ghost" className="h-6 w-6 shrink-0" title={txt('定位项目／来源', 'Locate project / source')} aria-label={`${txt('定位', 'Locate')} ${item.label}`} onClick={() => locateItem(activeTask, item)}><ArrowUpRight size={14} /></Button></div>{item.phase && <p className="mt-1 text-muted-foreground">{taskPhaseLabel(item.phase, zh)}</p>}{item.error && <p className="mt-1 break-words text-destructive">{item.error}</p>}</li>)}</ul>
+    <ul className="max-h-96 space-y-3 overflow-y-auto text-xs">{activeTask.items.filter(item => !failedOnly || item.state === 'failed').slice(0, itemLimit).map(item => <li key={item.id} className="border-b border-border pb-3"><div className="flex items-start gap-3"><span className="min-w-0 flex-1 break-words">{item.label}</span><span className="shrink-0 text-muted-foreground">{taskStateLabel(item.state, zh)}</span><Button size="icon" variant="ghost" className="h-6 w-6 shrink-0" title={txt('定位项目／来源', 'Locate project / source')} aria-label={`${txt('定位', 'Locate')} ${item.label}`} onClick={() => locateItem(activeTask, item)}><ArrowUpRight size={14} /></Button></div>{item.phase && <p className="mt-1 text-muted-foreground">{taskPhaseLabel(item.phase, zh)}</p>}{item.providerOutcome && <p className="mt-1 text-muted-foreground">{txt('模型结果', 'Provider outcome')}: {item.providerOutcome} · {txt('保存', 'Save')}: {item.commitStatus ?? 'not_started'}</p>}{item.warning && <p className="mt-1 text-muted-foreground">{item.warning === 'RESOURCE_DEFERRED' ? txt('本机 AI 容量繁忙，本次已延期且尚未调用模型；可稍后重试。', 'Deferred because local AI capacity was busy; the provider was not called. Retry later.') : item.warning}</p>}{item.error && <p className="mt-1 break-words text-destructive">{item.error}</p>}</li>)}</ul>
     {activeTask.items.filter(item => !failedOnly || item.state === 'failed').length > itemLimit && <Button className="mt-3" size="sm" variant="outline" onClick={() => setItemLimit(value => value + 100)}>{txt('显示更多子项', 'Show more items')}</Button>}
   </aside>;
   return <div ref={root} className="min-w-0 space-y-5" data-testid={compact ? 'task-drawer' : 'task-center'}>
@@ -186,3 +209,4 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, onNavig
     {activeTask && <Button className="lg:hidden" variant="outline" onClick={() => selectTask(null)}><ArrowLeft size={16} />{txt('返回列表', 'Back to list')}</Button>}
   </div>;
 }
+import { confirmTaskRecovery } from '../../services/agyRecoveryPolicy';

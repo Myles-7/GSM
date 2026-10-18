@@ -1,5 +1,6 @@
 
 import { TranslateFn } from '../../i18n/useT';
+import { classificationExport } from '../../store/helpers/classificationSchemes';
 import { version } from '../../../package.json';
 import { decodeLocalBackup, assertLocalBackupIdentity, type LocalBackup } from '../../services/localBackup';
 import { getLocalBackupIdentity } from '../../services/localBackupScope';
@@ -63,7 +64,7 @@ import {
 import { useAppStore } from '../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { isThemePresetId } from '../../constants/themePresets';
-import { indexedDBStorage } from '../../services/indexedDbStorage';
+import { removePersistedSnapshot } from '../../store/persistence/storage';
 import { IncludeKeysToggle } from './IncludeKeysToggle';
 import { RepositoryIdentityMigrationPanel } from './RepositoryIdentityMigrationPanel';
 import type { DiscoveryRepo } from '../../types';
@@ -326,7 +327,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
 
     // Clear IndexedDB - only remove the specific database used by this app
     try {
-      await indexedDBStorage.removeItem('github-stars-manager');
+      await removePersistedSnapshot('github-stars-manager');
     } catch (error) {
       console.error('Failed to clear IndexedDB', error);
       throw new Error('IndexedDB clear failed');
@@ -609,6 +610,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       }
       if (selectedTypes.includes('customCategories')) {
         exportDataObj.data.customCategories = store.customCategories;
+        exportDataObj.data.classificationSchemes = classificationExport(store);
         exportDataObj.data.hiddenDefaultCategoryIds = store.hiddenDefaultCategoryIds;
         exportDataObj.data.defaultCategoryOverrides = store.defaultCategoryOverrides;
         exportDataObj.data.categoryOrder = store.categoryOrder;

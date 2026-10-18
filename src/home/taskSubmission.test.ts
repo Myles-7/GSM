@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeApi, HomeApiError } from './api';
 import { HomeDatabase } from './database';
 import type { HomeTask } from './types';
-import { lookupPendingTaskRequest, PendingTaskRequestError, readPendingTaskRequest, recoverPendingTaskRequest, submitTaskRequest, type PendingTaskRequest } from './taskSubmission';
+import { confirmPolledTaskReceipt, readPendingTaskRequests, lookupPendingTaskRequest, PendingTaskRequestError, readPendingTaskRequest, recoverPendingTaskRequest, submitTaskRequest, type PendingTaskRequest } from './taskSubmission';
 
 const identity = { workspaceId: 'home', githubUserId: 42 };
 const request = (): PendingTaskRequest => ({ requestId: 'original-request', ...identity, configId: 'model', kind: 'custom_discovery', input: { channelId: 'custom:one', prompt: 'find a tool', date: '2026-09-30', language: 'zh' } });
@@ -13,6 +13,18 @@ const context = () => ({ db: new HomeDatabase(crypto.randomUUID()), api: new Hom
 afterEach(() => vi.unstubAllGlobals());
 
 describe('durable task submission and explicit recovery', () => {
+  it('keeps failed receipt cleanup durable while allowing an unrelated submission without replay',async()=>{
+    const sync=context(),original=request();await sync.db.claimTaskRequest(original);
+    const cleanup=vi.spyOn(sync.db,'confirmTaskRequest').mockRejectedValueOnce(Error('IDB_DELETE_FAILED'));
+    await expect(confirmPolledTaskReceipt(sync,original,receipt(original))).rejects.toThrow('IDB_DELETE_FAILED');
+    expect(await readPendingTaskRequest(sync)).toEqual(original);
+    const next={...original,requestId:'next-request',input:{...original.input,prompt:'another task'}};
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(json(receipt(next))));
+    await expect(submitTaskRequest(sync,next)).resolves.toEqual(receipt(next));
+    expect(await readPendingTaskRequest(sync)).toBeNull();expect(await readPendingTaskRequests(sync)).toEqual([original]);
+    await confirmPolledTaskReceipt(sync,original,receipt(original));
+    expect(await readPendingTaskRequests(sync)).toEqual([]);expect(cleanup).toHaveBeenCalledTimes(3);
+  });
   it('recovers a lost response through authenticated lookup without another POST or losing offline work', async () => {
     const sync = context(); const original = request();
     await sync.db.edit('discovery_config', 'default', { name: 'offline channel draft' });

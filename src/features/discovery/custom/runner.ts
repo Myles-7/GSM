@@ -3,7 +3,7 @@ import { createGitHubApiService } from '../../../services/githubApiFactory';
 import { AIService } from '../../../services/aiService';
 import { selectAnalysisContext } from '../../../services/analysisContext';
 import type { AIConfig, Repository } from '../../../types';
-import { bindTaskSignal, inheritTaskSignal, type TaskHandle } from '../../../services/taskExecution';
+import { bindTaskSignal, bindTaskItemSignal, inheritTaskSignal, type TaskHandle } from '../../../services/taskExecution';
 import { withDeadline, waitForRequest } from '../../../utils/requestDeadline';
 import { taskIssue } from './taskStatus';
 import {
@@ -127,7 +127,7 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   if (channel.autoAnalyze !== false) enqueueAnalysis(channel, pool, { auto: true });
   if (channel.ai && pool.length) {
     try {
-      const ai = activeAI('background', session.config);
+      const ai = activeAI(session.config?.provider === 'agy-cli' && session.config.agyPriority === 'interactive' ? 'interactive' : 'background', session.config);
       const config = session.config;
       let nextOffset = 0, readCount = 0, screenedCount = 0;
       const screenWorker = async () => {
@@ -158,7 +158,9 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
         session.progress(channel.id, { phase: 'screen', current: screenedCount, total: pool.length });
         try {
           const response = await scheduleModel(
-            () => withDeadline(s => ai.assessDiscoverySubscription(rules.plan, batch.map(c => ({ id: c.repo.id, text: c.text })), s), config?.provider === 'agy-cli' ? (config.agyFeatureOverrides?.discovery?.timeoutSeconds ?? config.agyTimeoutSeconds ?? 180) * 2000 : 60000, signal),
+            () => config?.provider === 'agy-cli'
+              ? ai.assessDiscoverySubscription(rules.plan, batch.map(c => ({ id: c.repo.id, text: c.text })), signal)
+              : withDeadline(s => ai.assessDiscoverySubscription(rules.plan, batch.map(c => ({ id: c.repo.id, text: c.text })), s), 60000, signal),
             signal, config?.requestsPerMinute, 1, config?.provider === 'agy-cli',
           );
           check();
@@ -255,7 +257,7 @@ export function invalidateCustomRun(): void {
   }
 }
 
-export async function runChannels(ids: string[], progress: Session['progress'], onUpdated: () => Promise<void>, options: { config?: AIConfig; task?: TaskHandle } = {}): Promise<void> {
+export async function runChannels(ids: string[], progress: Session['progress'], onUpdated: () => Promise<void>, options: { config?: AIConfig; task?: TaskHandle; automatic?: boolean } = {}): Promise<void> {
   if (activeController) throw new Error('A discovery task is already running / 已有发现任务正在运行');
   const account = currentAccount();
   const token = useAppStore.getState().githubToken;
@@ -263,7 +265,8 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
   const controller = new AbortController();
   if (options.task) bindTaskSignal(controller.signal, options.task);
   const state = useAppStore.getState();
-  const config = options.config ?? state.aiConfigs.find(item => item.id === state.activeAIConfig);
+  const selected = options.config ?? state.aiConfigs.find(item => item.id === state.activeAIConfig);
+  const config = selected?.provider === 'agy-cli' ? { ...selected, agyPriority: options.automatic ? 'background' as const : 'interactive' as const } : selected;
   activeController = controller;
   const owner = crypto.randomUUID();
   activeRun = { id: owner, cancelled: new Set(), revisions: new Map() };
@@ -293,6 +296,7 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
       controller.signal.throwIfAborted();
       const channelController = new AbortController();
       inheritTaskSignal(controller.signal, channelController.signal);
+      if (options.task) bindTaskItemSignal(channelController.signal, options.task, channel.id);
       const abortChannel = () => channelController.abort(controller.signal.reason);
       controller.signal.addEventListener('abort', abortChannel, { once: true });
       if (activeRun) { activeRun.channelId = channel.id; activeRun.channelController = channelController; }
@@ -312,6 +316,8 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
         }
       });
       await onUpdated();
+      options.task?.itemExecution(channel.id, { commitStatus: 'saved' });
+      options.task?.commit('saved');
       useCustomDiscovery.setState(state => {
         const candidates = { ...state.candidates };
         delete candidates[channel.id];

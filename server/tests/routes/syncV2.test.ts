@@ -45,8 +45,8 @@ describe('sync v2 HTTP identity and capabilities', () => {
     const input = { githubUserId: 42, source: 'desktop', records: [{ collection: 'repositories' as const, id: '1', data: { name: 'one' } }] };
     const preview = bootstrapWorkspace(db, input);
     bootstrapWorkspace(db, { ...input, confirm: true, previewToken: 'previewToken' in preview ? preview.previewToken : '' });
-    const response = await request(app(43)).get('/api/sync/v2/changes').query({ workspaceId: getWorkspace(db)!.id, githubUserId: 42 });
+    const response = await request(app(43)).get('/api/sync/v2/changes').query({ workspaceId: getWorkspace(db)!.id, githubUserId: 43 });
     expect(response.status).toBe(403);
-    expect(response.body.code).toBe('BACKEND_ACCOUNT_MISMATCH');
+    expect(response.body.code).toBe('WORKSPACE_ACCOUNT_MISMATCH');
   });
 });

@@ -1,0 +1,4 @@
+origin	https://github.com/Myles-7/GSM.git (fetch)
+origin	https://github.com/Myles-7/GSM.git (push)
+upstream	https://github.com/AmintaCCCP/GithubStarsManager.git (fetch)
+upstream	https://github.com/AmintaCCCP/GithubStarsManager.git (push)

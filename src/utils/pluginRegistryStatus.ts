@@ -104,9 +104,10 @@ const findRemoval = (removed: PluginRemovalEntry[], pluginId: string, version: s
       || right.date.localeCompare(left.date)
     ))[0] ?? null
 );
+export const findPluginRemoval = findRemoval;
 
 /** 客户端支持的 Plugin API 版本；注册表里声明别的版本的条目一律不采用。 */
-const SUPPORTED_API_VERSIONS = new Set(['1']);
+export const SUPPORTED_API_VERSIONS = new Set(['1']);
 
 /** 取"客户端支持的最高版本"——不是注册表里的最新版本。 */
 export const pickInstallableEntry = (versions: PluginRegistryEntry[]): PluginRegistryEntry | null => {

@@ -4,7 +4,7 @@ import {initializeSyncV2,getRecord,pushOperations} from '../src/services/syncV2.
 import {applyTaskProposal} from '../src/services/taskProposals.js';
 import {encrypt} from '../src/services/crypto.js';
 import {config} from '../src/config.js';
-import {initializeTasks,createTask,getTask,cancelTask,resumeTask,runTask,taskEvents,pruneTaskEvents,startTaskRunner,stopTaskRunner,type CreateTask} from '../src/services/taskRunner.js';
+import {initializeTasks,createTask,getTask,cancelTask,resumeTask,runTask,taskEvents,pruneTaskEvents,startTaskRunner,stopTaskRunner,retryTaskCommit,previewTaskCommit,listTasksPage,type CreateTask} from '../src/services/taskRunner.js';
 import {readModelStream} from '../src/services/taskModel.js';
 import {bindTaskProjectPrompt} from '../src/services/taskProject.js';
 let db:Database.Database;
@@ -12,6 +12,75 @@ const base:CreateTask={requestId:'a',workspaceId:'workspace',githubUserId:42,con
 beforeEach(()=>{db=new Database(':memory:');initializeSyncV2(db);initializeTasks(db);db.exec("INSERT INTO sync_v2_workspace(id,github_user_id,initialized_at) VALUES('workspace',42,'2026-09-29');CREATE TABLE ai_configs(id TEXT,api_key_encrypted TEXT,base_url TEXT,model TEXT,reasoning_effort TEXT);INSERT INTO ai_configs VALUES('deepseek','encrypted','https://api.deepseek.com','deepseek-chat',NULL)");db.prepare('UPDATE ai_configs SET api_key_encrypted=?').run(encrypt('fake-deepseek-key',config.encryptionKey));});
 afterEach(async()=>{await stopTaskRunner();db.close();vi.restoreAllMocks();});
 describe('durable task execution',()=>{
+ it('retains a generated result on save conflict and retries only commit without another model call',async()=>{
+   const task=createTask(db,base);
+   pushOperations(db,{workspaceId:'workspace',githubUserId:42,clientId:'editor',operations:[{opId:'existing',collection:'messages',id:task.id,baseVersion:0,kind:'put',source:'user',data:{id:task.id,content:'user edit',role:'assistant'}}]});
+   const model=vi.fn(async()=> 'generated answer');await runTask(db,task,{model});
+   expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'completed',commitStatus:'conflict',providerOutcome:'succeeded',result:{content:'generated answer'}});
+   expect(getRecord(db,'messages',task.id)?.data?.content).toBe('user edit');
+   expect(()=>retryTaskCommit(db,task.id,'workspace',42)).toThrow('RESULT_SYNC_CONFLICT');
+   expect(getTask(db,task.id,'workspace',42)).toMatchObject({commitStatus:'conflict',providerOutcome:'succeeded'});
+   // Simulate explicit user conflict resolution. No overwrite is implicit.
+   db.prepare("DELETE FROM sync_v2_records WHERE collection='messages' AND id=?").run(task.id);
+   const saved=retryTaskCommit(db,task.id,'workspace',42);
+   expect(saved).toMatchObject({status:'completed',commitStatus:'saved',providerOutcome:'succeeded'});
+   expect(getRecord(db,'messages',task.id)?.data?.content).toBe('generated answer');expect(model).toHaveBeenCalledTimes(1);
+ });
+ it('retains a batch conflict and commits only its current item with immutable submission evidence',async()=>{
+   pushOperations(db,{workspaceId:'workspace',githubUserId:42,clientId:'editor',operations:[{opId:'repo',collection:'repositories',id:'1',baseVersion:0,kind:'put',data:{id:1,full_name:'owner/one'}}]});
+   const request={...base,kind:'summary' as const,input:{repositories:['owner/one','owner/two'],expectedVersions:{'1':0}}};
+   const task=createTask(db,request);
+   const evidence=vi.fn(async(_db:unknown,names:string[])=>[{repository:names[0],commit:'a'.repeat(40),retrievedAt:'2026-10-17',metadata:{id:names[0]==='owner/one'?1:2},readme:'tool',tree:[],files:[],limitations:[]}]);
+   const model=vi.fn(async()=>JSON.stringify({summary:'generated',tags:[],platforms:[]}));
+   await runTask(db,task,{evidence,model});
+   expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'interrupted',commitStatus:'conflict',providerOutcome:'succeeded',result:{pendingRepository:'owner/one'}});
+   const saved=retryTaskCommit(db,task.id,'workspace',42,{'1':1});
+   expect(saved).toMatchObject({status:'interrupted',stage:'evidence',commitStatus:'saved',failureCode:'BATCH_AWAITING_RESUME',result:{completed:1,total:2}});
+   expect(saved.input).toEqual(request.input);expect(createTask(db,request).input).toEqual(request.input);
+   expect(getRecord(db,'repositories','1')?.data?.ai_summary).toBe('generated');expect(model).toHaveBeenCalledTimes(1);
+   await runTask(db,resumeTask(db,task.id,'workspace',42),{evidence,model});
+   expect(model).toHaveBeenCalledTimes(2);expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'completed',commitStatus:'saved',failureCode:null,result:{completed:2}});
+ });
+ it('coalesces fine model deltas and prunes interrupted unknown streams with resync evidence',async()=>{
+   const task=createTask(db,base);
+   await runTask(db,task,{model:async(_task,_evidence,_signal,emit)=>{for(let i=0;i<10000;i++)emit('content',{text:'a'});throw Error('MODEL_STREAM_INTERRUPTED');}});
+   const events=taskEvents(db,task.id,0).filter(event=>event.type==='content');
+   expect(events.length).toBeLessThan(5);expect(events.map(event=>event.data.text).join('')).toHaveLength(10000);
+   db.prepare("UPDATE ai_tasks SET updated_at='2026-01-01T00:00:00.000Z'").run();db.prepare("UPDATE ai_task_events SET created_at='2026-01-01T00:00:00.000Z'").run();
+   expect(pruneTaskEvents(db,new Date('2026-10-17'))).toBeGreaterThan(0);
+   expect(taskEvents(db,task.id,0)[0]).toMatchObject({type:'resync',data:{task:{providerOutcome:'unknown'}}});
+ });
+ it('does not classify a model network failure as a safe retry',async()=>{
+   const task=createTask(db,base);const model=vi.fn(async()=>{throw TypeError('fetch failed');});
+   await runTask(db,task,{model});
+   expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'interrupted',providerOutcome:'unknown',failureCode:'unknown_provider_outcome',capabilities:{resume:'new-provider-call'}});
+   expect(model).toHaveBeenCalledOnce();
+ });
+ it('persists shutdown intent and requeues safe evidence while preserving unknown model outcomes',async()=>{
+   const safe=createTask(db,{...base,requestId:'safe',input:{repositories:['owner/repo']}});
+   const modelTask=createTask(db,{...base,requestId:'model'});
+   const pending=()=>new Promise<never>(()=>{});
+   const abortable=(_a:unknown,_b:unknown,signal:AbortSignal)=>new Promise<never>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('ABORTED')),{once:true}));
+   const safeRun=runTask(db,safe,{evidence:abortable as never,model:pending});
+   const modelRun=runTask(db,modelTask,{model:abortable as never});
+   await stopTaskRunner();await Promise.all([safeRun,modelRun]);
+   expect(getTask(db,safe.id,'workspace',42)).toMatchObject({status:'queued',failureCode:'SAFE_SHUTDOWN_REQUEUED'});
+   expect(getTask(db,modelTask.id,'workspace',42)).toMatchObject({status:'interrupted',providerOutcome:'unknown'});
+   expect(taskEvents(db,safe.id,0).some(event=>event.type==='shutdown_intent')).toBe(true);
+ });
+ it('paginates equal timestamps with a stable watermark across inserts and deletions',()=>{
+   const tasks=Array.from({length:105},(_,i)=>createTask(db,{...base,requestId:`page-${i}`}));
+   db.prepare("UPDATE ai_tasks SET created_at='2026-10-01T00:00:00.000Z'").run();
+   const first=listTasksPage(db,'workspace',42,{limit:100});expect(first.tasks).toHaveLength(100);
+   const extra=createTask(db,{...base,requestId:'later'});
+   db.prepare('DELETE FROM ai_tasks WHERE id=?').run(tasks[0].id);
+   const last=listTasksPage(db,'workspace',42,{cursor:first.nextCursor,limit:100});
+   expect(last.reconcile.watermark).toBe(first.reconcile.watermark);expect(last.reconcile.complete).toBe(true);
+   expect(last.reconcile.deletedIds).toContain(tasks[0].id);
+   const ids=[...first.tasks,...last.tasks].map(task=>task.id);expect(new Set(ids).size).toBe(104);expect(ids).not.toContain(extra.id);
+   expect(()=>listTasksPage(db,'workspace',42,{cursor:'bad'})).toThrow('INVALID_TASK_CURSOR');
+   expect(()=>listTasksPage(db,'workspace',42,{limit:NaN})).toThrow('INVALID_TASK_LIMIT');
+ });
  it('is idempotent and refuses request ID reuse with changed payload',()=>{const a=createTask(db,base);expect(createTask(db,base).id).toBe(a.id);expect(()=>createTask(db,{...base,input:{prompt:'different'}})).toThrow('REQUEST_ID_CONFLICT');});
  it('rejects wrong account for creation and retrieval',()=>{const task=createTask(db,base);expect(()=>createTask(db,{...base,githubUserId:43})).toThrow('WORKSPACE_ACCOUNT_MISMATCH');expect(()=>getTask(db,task.id,'workspace',43)).toThrow('WORKSPACE_ACCOUNT_MISMATCH');});
  it('persists final result and sync message atomically; reasoning never escapes',async()=>{const task=createTask(db,base);await runTask(db,task,{model:async(_t,_e,_s,emit)=>{emit('reasoning',{text:'private thought'});emit('content',{text:'answer'});return 'answer';}});const result=getTask(db,task.id,'workspace',42);expect(result.status).toBe('completed');expect(getRecord(db,'messages',task.id)?.data?.content).toBe('answer');expect(JSON.stringify(taskEvents(db,task.id,0))).not.toContain('private thought');const seq=taskEvents(db,task.id,0)[1].seq;expect(taskEvents(db,task.id,seq).every(e=>e.seq>seq)).toBe(true);});
@@ -108,6 +177,11 @@ describe('unified details and discovery snapshots',()=>{
    const stale=createTask(db,{...base,requestId:'stale-details',kind:'details',input:{repositories:['owner/external'],expectedVersions:{'77':1}}});
    await runTask(db,stale,{evidence,model:async()=>JSON.stringify({...details,summary:'stale summary'})});
    expect(getTask(db,stale.id,'workspace',42).result?.repositoryWrite?.status).toBe('conflict');expect(getRecord(db,'repositories','77')?.data?.ai_summary).toBe(details.summary);
+   expect(previewTaskCommit(db,stale.id,'workspace',42).targets).toEqual([expect.objectContaining({repositoryId:'77',currentVersion:2,expectedVersion:1,fields:['ai_details','ai_summary']})]);
+   expect(retryTaskCommit(db,stale.id,'workspace',42).commitStatus).toBe('conflict');
+   const saved=retryTaskCommit(db,stale.id,'workspace',42,{'77':2});
+   expect(saved.commitStatus).toBe('saved');expect(getRecord(db,'repositories','77')?.data?.ai_summary).toBe('stale summary');
+   expect(saved.input.expectedVersions).toEqual({'77':1});
  });
 });
 describe('durable project task context',()=>{

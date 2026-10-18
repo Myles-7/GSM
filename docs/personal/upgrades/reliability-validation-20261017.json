@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-17",
+  "status": "verified-local-source",
+  "scope": "local selective-source reliability maintenance; not deployed",
+  "architecture": {
+    "executors": [
+      "agy-device",
+      "server-provider"
+    ],
+    "agy": "generation supervisor with independent isolated CLI child per request; user-approved adjustment",
+    "unknownProviderOutcome": "never automatically replay",
+    "storeVersion": 17,
+    "serverSchema": 6
+  },
+  "gates": {
+    "root": {
+      "passed": true,
+      "files": 343,
+      "tests": 3707
+    },
+    "server": {
+      "passed": true,
+      "files": 44,
+      "tests": 440
+    },
+    "electron": {
+      "passed": true,
+      "tests": 492,
+      "pass": 491,
+      "platformSkipped": 1
+    },
+    "scripts": {
+      "passed": true,
+      "tests": 64
+    },
+    "typecheck": true,
+    "lint": true,
+    "rootBuild": true,
+    "serverBuild": true,
+    "boundaries": true,
+    "i18n": true,
+    "pluginRegistry": true,
+    "vectorWorker": true,
+    "htmlReading": true,
+    "bundleKiB": 2203.33,
+    "bundleLimitKiB": 3000
+  },
+  "stress": {
+    "journalTasks": 10000,
+    "singleEditTaskWrites": 1,
+    "noOpPolls": 17280,
+    "noOpTaskWrites": 0,
+    "simulatedDay": true,
+    "actualCliProcesses": 100,
+    "peakConcurrency": 5
+  },
+  "native": {
+    "agy": {
+      "nativeElectron": "44.4.5",
+      "productionSupervisor": true,
+      "actualCliFixtureProcesses": 17,
+      "peakConcurrency": 5,
+      "generationWorkers": 2,
+      "isolatedRequestDirectories": 17,
+      "requests": 12,
+      "isolated": true,
+      "cancelSiblingSurvives": true,
+      "accountSwitch": true,
+      "phases": [
+        "queued",
+        "initializing",
+        "sent",
+        "cleanup"
+      ],
+      "pool": {
+        "running": 0,
+        "queued": 0,
+        "suspect": 0,
+        "limit": 5,
+        "effective": 5,
+        "cooldownUntil": 0,
+        "features": {},
+        "quarantined": false
+      }
+    },
+    "profile": {
+      "repositories": 369,
+      "privacy": {
+        "checkedSensitiveValues": 4,
+        "entries": 4,
+        "clean": true
+      },
+      "performance": [
+        {
+          "name": "modal-open-close",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 86.59999999403954,
+          "flushMs": 86.59999999403954
+        },
+        {
+          "name": "repository-grid-list",
+          "writes": [
+            {
+              "bytes": 7336,
+              "repositoryShard": false
+            },
+            {
+              "bytes": 177,
+              "repositoryShard": false
+            }
+          ],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 104.20000000298023,
+          "flushMs": 122
+        },
+        {
+          "name": "settings-tab",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 28.599999994039536,
+          "flushMs": 28.700000002980232
+        },
+        {
+          "name": "modal-open-close",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 70.70000000298023,
+          "flushMs": 70.80000001192093
+        },
+        {
+          "name": "repository-grid-list",
+          "writes": [
+            {
+              "bytes": 7336,
+              "repositoryShard": false
+            },
+            {
+              "bytes": 177,
+              "repositoryShard": false
+            }
+          ],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 65.59999999403954,
+          "flushMs": 81.59999999403954
+        },
+        {
+          "name": "settings-tab",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 19,
+          "flushMs": 19.19999998807907
+        },
+        {
+          "name": "modal-open-close",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 73.09999999403954,
+          "flushMs": 73.20000000298023
+        },
+        {
+          "name": "repository-grid-list",
+          "writes": [
+            {
+              "bytes": 7336,
+              "repositoryShard": false
+            },
+            {
+              "bytes": 177,
+              "repositoryShard": false
+            }
+          ],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 56.1000000089407,
+          "flushMs": 61.29999999701977
+        },
+        {
+          "name": "settings-tab",
+          "writes": [],
+          "fullStoreSerializations": 0,
+          "stringifyMs": 0,
+          "paintOpportunityMs": 15.600000008940697,
+          "flushMs": 15.600000008940697
+        }
+      ],
+      "accountEditReadingRoundtrips": true,
+      "marketplace": {
+        "reachable": true,
+        "plugins": 2,
+        "fixture": true
+      },
+      "plugins": [
+        {
+          "installed": true,
+          "enabled": true,
+          "page": true,
+          "disabled": true,
+          "uninstalled": true
+        },
+        {
+          "installed": true,
+          "enabled": true,
+          "page": true,
+          "disabled": true,
+          "uninstalled": true
+        }
+      ]
+    },
+    "sqlite": [
+      {
+        "label": "repository",
+        "fromVersion": 3,
+        "toVersion": 6,
+        "integrity": "ok",
+        "businessTablesPreserved": 5,
+        "decryptableProviderKeys": 1,
+        "idempotent": true
+      },
+      {
+        "label": "service",
+        "fromVersion": 4,
+        "toVersion": 6,
+        "integrity": "ok",
+        "businessTablesPreserved": 5,
+        "decryptableProviderKeys": 1,
+        "idempotent": true
+      }
+    ],
+    "packaged": {
+      "packaged": true,
+      "platform": "win32-x64",
+      "containedTestEntry": true,
+      "productionMain": true,
+      "productionPreload": true,
+      "rendererFromAsar": true,
+      "profileIsolated": true,
+      "iframeBridgeDenied": true,
+      "paidCalls": 0,
+      "appVersion": "0.8.4"
+    }
+  },
+  "originalProfile": {
+    "originalProfile": true,
+    "checked": 14248,
+    "bytes": 322238923,
+    "errors": 0
+  },
+  "audits": {
+    "root-audit": {
+      "info": 0,
+      "low": 5,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 5
+    },
+    "root-audit-full": {
+      "info": 0,
+      "low": 5,
+      "moderate": 3,
+      "high": 5,
+      "critical": 0,
+      "total": 13
+    },
+    "server-audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "worker-audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    }
+  },
+  "limitations": [
+    "Independent CLI startup and initialization costs remain.",
+    "No paid AI, live Star write, unknown WebDAV mutation or external production latency E2E.",
+    "Accelerated no-op sync simulation, not a 24-hour real runtime.",
+    "Unsigned unpacked contained test entry; not installer/signature/upgrade acceptance.",
+    "Existing development dependency advisories and whole-tree whitespace debt remain."
+  ],
+  "cleanup": {
+    "mode": "applied",
+    "targets": [
+      "output/reliability",
+      "../GSM-recovery/reliability-20261017-1719"
+    ],
+    "files": 61407,
+    "bytes": 1799683462,
+    "verifiedAbsent": true,
+    "completedAt": "2026-10-17T10:00:58.336Z",
+    "recoveryTagRemoved": true
+  },
+  "verifiedAt": "2026-10-17T10:00:24.718Z",
+  "validatedSourceSha256": {
+    "src/services/taskJournalStorage.ts": "80b97ae6162e348e63b19094072258e55cea9b0a4aa38383873f1ce21e2029d8",
+    "src/services/aiTaskJournal.ts": "1419a21a9725e97a620fd6ad7d42dfd40be756bb19fafc2b1be01ee323260cce",
+    "src/services/agyClient.ts": "9877082705f9cfc89217b8840a7f38c121f499d6ef95db87b7d89ae092dac078",
+    "src/services/taskExecution.ts": "19ddc39661c1b76450212eb0faa8019b66f1ef7b91009f22df07dcb242749a71",
+    "src/components/tasks/TaskCenter.tsx": "196e6ef2fba55679e30eb8d0028afb26350c610f9704036948cf3e98c888c5e5",
+    "electron/agyRuntime.js": "df11823598dc5f53bad00c3c56f204a531417f9ad8d14816b5a1294e64a541a3",
+    "electron/agyQueue.js": "edc3923dce1cec672af4399330a6d82d1f2fd7f93554c607bd6a7735259ea3e3",
+    "server/src/services/taskRunner.ts": "9782b0acac1358284ecc0857dcbf491dcd67ea52f01a3b8cb10ded7b39f4cd78",
+    "server/src/services/homeBinding.ts": "31df75704edb248cccebd2297a3a7d2d768a3aee5273a8e69be8ad956da8937f",
+    "src/services/taskRemoteAdapter.ts": "d55cc512aa4a86a872296ab7ed5ac65874c4cc63e36eafcda6dc1795a173887b",
+    "src/services/githubApi.ts": "297d2ae2be90fc5763fabaa23d6862d878b5b57df3497b6ba4a274026aac1a53"
+  }
+}

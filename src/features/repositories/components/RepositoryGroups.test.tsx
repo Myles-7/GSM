@@ -24,6 +24,10 @@ const state = {
   repositories: [repo(1), repo(2), repo(3, 'b'), repo(4, null), repo(5, 'other', 'elsewhere')],
   addSubcategory: vi.fn(), updateSubcategory: vi.fn(), deleteSubcategory: vi.fn(),
   moveRepositoryToSubcategory: vi.fn(), reorderSubcategories: vi.fn(), reorderRepositories: vi.fn(),
+  classificationNavigation: {} as Record<string, { selected: string; expanded: string[]; collapsedGroups: string[] }>,
+  setClassificationCollapsedGroups: vi.fn((id: string, collapsedGroups: string[]) => {
+    state.classificationNavigation[id] = { selected: 'all', expanded: [], collapsedGroups };
+  }),
 };
 const renderGroups = (props: Partial<React.ComponentProps<typeof RepositoryGroups>> = {}) =>
   render(<RepositoryGroups categoryId="main" repositories={state.repositories.filter(r => r.category_id === 'main')} filtered={false}
@@ -35,6 +39,7 @@ const transfer = (id: string, type = 'application/x-gsm-repository-id') => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.classificationNavigation = {};
   mocks.confirm.mockResolvedValue(true);
   vi.mocked(useAppStore).mockImplementation(((selector: (s: typeof state) => unknown) => selector(state)) as typeof useAppStore);
 });
@@ -52,13 +57,15 @@ describe('RepositoryGroups', () => {
     expect(within(screen.getByRole('navigation')).getByRole('button', { name: 'Beta' })).toHaveAttribute('aria-current', 'location');
   });
   it('keeps every heading mounted, puts ungrouped last, and honors group and repository orders', () => {
-    renderGroups();
+    const view = renderGroups();
     expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(['Beta 1', 'Alpha 2', 'organization.ungrouped 1']);
     expect(within(section('Alpha')).getAllByTestId(/repo-/).map(node => node.textContent)).toEqual(['repo-2', 'repo-1']);
     fireEvent.click(within(section('Alpha')).getByRole('button', { name: 'organization.collapse' }));
+    view.rerender(<RepositoryGroups categoryId="main" repositories={state.repositories.filter(r => r.category_id === 'main')} filtered={false} customSort viewMode="grid" renderRepository={r => <div data-testid={`repo-${r.id}`}>{r.name}</div>} />);
     expect(screen.queryByTestId('repo-1')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Alpha 2' })).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Alpha' }));
+    view.rerender(<RepositoryGroups categoryId="main" repositories={state.repositories.filter(r => r.category_id === 'main')} filtered={false} customSort viewMode="grid" renderRepository={r => <div data-testid={`repo-${r.id}`}>{r.name}</div>} />);
     expect(screen.getByTestId('repo-1')).toBeInTheDocument();
   });
 

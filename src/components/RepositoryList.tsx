@@ -14,7 +14,7 @@ import { BulkRestoreModal, RestoreConfig } from './BulkRestoreModal';
 import { ErrorBoundary } from './ErrorBoundary';
 
 import { Repository } from '../types';
-import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { repositoryChatStorage } from '../services/repositoryChatStorage';
 import { matchesCategory } from '../utils/categoryUtils';
 import { sortRepositories } from '../utils/repoSearch';
@@ -30,6 +30,7 @@ import { RepositoryToolbarPortal } from '../features/repositories/components/Rep
 import { orderedIds } from '../features/repositories/components/repositoryGroupOrder';
 import { assignConfirmedCategory } from '../features/repositories/components/repositoryCategoryAssignment';
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
+import { useRepositoryAnalysisPresentation } from '../features/repositories/hooks/useRepositoryAnalysisPresentation';
 
 const LazyRepositoryDetailsPanel = React.lazy(() =>
   import('./RepositoryDetailsPanel').then(module => ({ default: module.RepositoryDetailsPanel }))
@@ -48,11 +49,13 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   repositories,
   selectedCategory
 }) => {
+  const presentedRepositories = useRepositoryAnalysisPresentation(repositories);
   const {
     language,
     customCategories,
     hiddenDefaultCategoryIds,
     defaultCategoryOverrides,
+    classificationContext,
     categoryMatchMode,
     searchFilters,
     setSearchFilters,
@@ -68,6 +71,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    classificationContext: state.classificationContext,
     categoryMatchMode: state.categoryMatchMode,
     searchFilters: state.searchFilters,
     setSearchFilters: state.setSearchFilters,
@@ -168,8 +172,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   }, [repositories]);
 
   const allCategories = useMemo(
-    () => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides),
-    [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]
+    () => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext),
+    [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext]
   );
   const analysisJob = useRepositoryDetailAnalysisJob();
   const [analysisRequest, setAnalysisRequest] = useState<{ repositories: Repository[]; accountId?: number }>();
@@ -184,22 +188,24 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     try {
       const pending = JSON.parse(sessionStorage.getItem('gsm:repository-chat-return') || 'null') as { repoId?: unknown } | null;
       if (typeof pending?.repoId !== 'number') return;
-      const targetRepository = repositories.find((repository) => repository.id === pending.repoId);
+      const targetRepository = presentedRepositories.find((repository) => repository.id === pending.repoId);
       if (targetRepository) setActiveChatRepository(targetRepository);
     } catch {
       sessionStorage.removeItem('gsm:repository-chat-return');
     }
-  }, [repositories]);
+  }, [presentedRepositories]);
 
   const filteredRepositories = useMemo(() => {
     const categoryRepositories = selectedCategory === 'pending'
-      ? repositories.filter(repo => repo.category_id == null)
+      ? presentedRepositories.filter(repo => repo.category_id == null)
       : selectedCategory === 'all' || similarView?.active || !!searchFilters.query?.trim()
-      ? repositories
+      ? presentedRepositories
       : (() => {
+        const subgroup = subcategories.find(group => group.id === selectedCategory);
+        if (subgroup) return presentedRepositories.filter(repo => repo.subcategory_id === subgroup.id && repo.category_id === subgroup.parentId);
         const selectedCategoryObj = allCategories.find(cat => cat.id === selectedCategory);
         return selectedCategoryObj
-          ? repositories.filter(repo => matchesCategory(repo, selectedCategoryObj, categoryMatchMode))
+          ? presentedRepositories.filter(repo => matchesCategory(repo, selectedCategoryObj, categoryMatchMode))
           : [];
       })();
     // Similar results arrive pre-ranked by the vector worker's cosine score.
@@ -211,7 +217,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       return orderedIds(repositoryOrder ?? [], [...byId.keys()]).map(id => byId.get(id)!);
     }
     return sortRepositories(categoryRepositories, searchFilters.sortBy, searchFilters.sortOrder);
-  }, [repositories, selectedCategory, allCategories, categoryMatchMode, searchFilters.query, searchFilters.sortBy, searchFilters.sortOrder, similarView?.active, repositoryOrder]);
+  }, [presentedRepositories, selectedCategory, allCategories, categoryMatchMode, searchFilters.query, searchFilters.sortBy, searchFilters.sortOrder, similarView?.active, repositoryOrder, subcategories]);
   const grouped = selectedCategory !== 'all' && selectedCategory !== 'pending' &&
     !similarView?.active && !searchFilters.query?.trim() &&
     allCategories.some(category => category.id === selectedCategory);
@@ -250,6 +256,18 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   );
   const [organizationOpen, setOrganizationOpen] = useState(false);
   const organization = useAIOrganization({ filteredRepositories, selectedRepositoryIds: [...selectedRepoIds], categoryId: selectedCategory });
+  useEffect(() => {
+    const openAgent = () => {
+      const raw = sessionStorage.getItem('gsm:pending-agent-organization');
+      if (!raw) return;
+      try {
+        const target = JSON.parse(raw) as { ownerId: string };
+        if (target.ownerId === String(useAppStore.getState().user?.id ?? '')) setOrganizationOpen(true);
+      } catch { /* Invalid navigation targets do not open a dialog. */ }
+    };
+    openAgent(); window.addEventListener('gsm:agent-organization-open', openAgent);
+    return () => window.removeEventListener('gsm:agent-organization-open', openAgent);
+  }, []);
 
   // 使用 useMemo 缓存统计计数，避免每次渲染重新计算
   const repositoryStats = useMemo(() => {
@@ -546,7 +564,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     if (!category) return;
     if (selectedRepositories.some(repo => repo.category_locked && repo.category_id !== category.id) &&
       !await confirm(t('organization.lockedTitle'), t('organization.lockedConfirm'), { type: 'warning' })) return;
-    selectedRepositories.forEach(repo => assignConfirmedCategory(repo.id, category.id));
+    const schemeId = useAppStore.getState().activeClassificationScheme ?? 'purpose';
+    selectedRepositories.forEach(repo => assignConfirmedCategory(repo.id, category.id, schemeId));
     handleDeselectAll();
   };
 

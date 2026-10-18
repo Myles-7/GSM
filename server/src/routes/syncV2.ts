@@ -1,6 +1,5 @@
 import { Router, type RequestHandler } from 'express';
 import type Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { config } from '../config.js';
 import { decrypt } from '../services/crypto.js';
@@ -9,25 +8,9 @@ import { taskKinds } from '../services/taskModel.js';
 import { assertWorkspace, bootstrapWorkspace, COLLECTIONS, getWorkspace, getRecord, pullChanges, pushOperations, snapshotPage, SyncError } from '../services/syncV2.js';
 import { applyIdentityMigration, IdentityMigrationError, previewIdentityMigration, restoreIdentityMigration } from '../services/repositoryIdentity.js';
 
-export interface GithubIdentity { id: number; login: string }
-const verificationCache = new WeakMap<Database.Database, { hash: string; expiresAt: number; identity: GithubIdentity }>();
-export async function verifyServerGithubAccount(db: Database.Database, force = false): Promise<GithubIdentity> {
-  const row = db.prepare("SELECT value FROM settings WHERE key='github_token'").get() as { value: string } | undefined;
-  if (!row?.value) throw new SyncError('BACKEND_GITHUB_CREDENTIAL_REQUIRED', 409);
-  let token: string;
-  try { token = decrypt(row.value, config.encryptionKey); } catch { throw new SyncError('BACKEND_GITHUB_CREDENTIAL_INVALID', 409); }
-  const hash = createHash('sha256').update(token).digest('hex');
-  const cached = verificationCache.get(db);
-  if (!force && cached?.hash === hash && cached.expiresAt > Date.now()) return cached.identity;
-  verificationCache.delete(db);
-  const response = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new SyncError('BACKEND_GITHUB_VERIFICATION_FAILED', 502);
-  const user = await response.json() as GithubIdentity;
-  if (!Number.isSafeInteger(user.id) || user.id < 1 || typeof user.login !== 'string') throw new SyncError('BACKEND_GITHUB_VERIFICATION_FAILED', 502);
-  const identity = { id: user.id, login: user.login };
-  verificationCache.set(db, { hash, identity, expiresAt: Date.now() + 300000 });
-  return identity;
-}
+export { verifyServerGithubAccount } from '../services/homeBinding.js';
+export type { GithubIdentity } from '../services/homeBinding.js';
+import { verifyServerGithubAccount, auditWorkspaceBinding, recordVerifiedBinding, bindingStatus, type GithubIdentity } from '../services/homeBinding.js';
 /** Mount after API authentication and before legacy routers. Canonical data lives in v2. */
 export const legacySyncV2Guard: RequestHandler = async (req, res, next) => {
   const protectedData = (req.method !== 'GET' && /^\/api\/(?:repositories|releases|categories)(?:\/|$)/.test(req.path)) || /^\/api\/sync\/import$/.test(req.path) || (req.method !== 'GET' && req.path === '/api/settings');
@@ -41,6 +24,7 @@ export const legacySyncV2Guard: RequestHandler = async (req, res, next) => {
         if (!response.ok) { res.status(400).json({ code: 'GITHUB_CREDENTIAL_INVALID', error: 'GitHub credential could not be verified' }); return; }
         const identity = await response.json() as { id?: number };
         if (identity.id !== workspace.githubUserId) { res.status(403).json({ code: 'BACKEND_ACCOUNT_MISMATCH', error: 'Credential belongs to another GitHub account' }); return; }
+        res.locals.verifiedGithubIdentity={id:identity.id,login:(identity as {login?:string}).login??''};
         next(); return;
       } catch { res.status(502).json({ code: 'GITHUB_VERIFICATION_UNAVAILABLE', error: 'Unable to verify replacement credential' }); return; }
     }
@@ -65,14 +49,25 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
     const userId = typeof githubUserId === 'string' && /^\d+$/.test(githubUserId) ? Number(githubUserId) : githubUserId;
     if (typeof workspaceId !== 'string' || typeof userId !== 'number') throw new SyncError('WORKSPACE_IDENTITY_REQUIRED');
     const workspace = assertWorkspace(db, workspaceId, userId);
-    const actual = await verify(db);
-    if (actual.id !== workspace.githubUserId) throw new SyncError('BACKEND_ACCOUNT_MISMATCH', 403);
+    // Normal sync trusts the account-bound workspace/session. GitHub is checked
+    // during login, token rotation and the periodic audit in capabilities.
     return workspace;
   };
   router.get('/api/capabilities', handle(async (_req, res, db) => {
     let github: { configured: boolean; verified: boolean; id?: number; login?: string; error?: string };
     const configured = !!(db.prepare("SELECT value FROM settings WHERE key='github_token'").get() as { value?: string } | undefined)?.value;
-    try { github = { configured, verified: true, ...await verify(db) }; } catch (err) { github = { configured, verified: false, error: err instanceof SyncError ? err.code : 'BACKEND_GITHUB_VERIFICATION_FAILED' }; }
+    try {
+      const workspace=getWorkspace(db);
+      if(workspace&&!options.verifyAccount){
+        void auditWorkspaceBinding(db).catch(()=>{});
+        const binding=bindingStatus(db);
+        github={configured,verified:binding?.status==='verified'&&!!binding.checkedAt,id:workspace.githubUserId,login:binding?.login,error:binding?.error};
+      }else{
+      const identity = await verify(db);
+      if(!options.verifyAccount)recordVerifiedBinding(db,identity);
+      github = { configured, verified: true, ...identity };
+      }
+    } catch (err) { github = { configured, verified: false, error: err instanceof SyncError ? err.code : 'BACKEND_GITHUB_VERIFICATION_FAILED' }; }
     const aiConfigs = (db.prepare('SELECT id,name,api_type,base_url,model,is_active,api_key_encrypted FROM ai_configs').all() as Record<string, unknown>[]).map(row => {
       let available = false;
       try { available = !!decrypt(String(row.api_key_encrypted ?? ''), config.encryptionKey).trim(); } catch { /* Unreadable credentials are unavailable. */ }
@@ -82,7 +77,7 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
     });
     const workspace = getWorkspace(db);
     const lastCheckedAt = getRecord(db,'organization','default')?.data?.githubStarsLastCheckedAt;
-    res.json({ protocolVersion: 2, discovery: discoveryAvailability(db), workspace, github, ai: { configured: aiConfigs.some(c => c.available) }, aiConfigs, tasks: { kinds: taskKinds, refreshStars: {available:!!workspace && github.verified && github.id===workspace.githubUserId,...(typeof lastCheckedAt==='string'?{lastCheckedAt}:{})}, maxConcurrentRequests: 2, eventRetentionDays: 30 }, sync: { enabled: true, collections: COLLECTIONS, tombstoneRetentionDays: 90, maxBatchSize: 500, canonical: true } });
+    res.json({ protocolVersion: 2, discovery: discoveryAvailability(db), workspace, github, binding:bindingStatus(db), ai: { configured: aiConfigs.some(c => c.available) }, aiConfigs, tasks: { kinds: taskKinds, refreshStars: {available:!!workspace && github.verified && github.id===workspace.githubUserId,...(typeof lastCheckedAt==='string'?{lastCheckedAt}:{})}, maxConcurrentRequests: 2, eventRetentionDays: 30 }, sync: { enabled: true, collections: COLLECTIONS, tombstoneRetentionDays: 90, maxBatchSize: 500, canonical: true } });
   }));
   router.get('/api/diagnostics', handle((_req, res, db) => {
     const hasTable = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
@@ -98,7 +93,9 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
   router.post('/api/sync/v2/bootstrap', handle(async (req, res, db) => {
     const actual = options.verifyAccount ? await verify(db) : await verifyServerGithubAccount(db, true);
     if (actual.id !== req.body?.githubUserId) throw new SyncError('BACKEND_ACCOUNT_MISMATCH', 403);
-    res.json(bootstrapWorkspace(db, req.body));
+    const result=bootstrapWorkspace(db, req.body);
+    if(!options.verifyAccount&&getWorkspace(db))recordVerifiedBinding(db,actual);
+    res.json(result);
   }));
   router.post(['/api/sync/v2/operations', '/api/sync/v2/push'], handle(async (req, res, db) => {
     await identity(db, req.body?.workspaceId, req.body?.githubUserId);
@@ -106,6 +103,10 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
   }));
   router.post('/api/sync/v2/identity', handle(async (req, res, db) => {
     await identity(db, req.body?.workspaceId, req.body?.githubUserId);
+    // Identity migration/restore is an explicit security-sensitive operation,
+    // not background replication; preserve its stronger live identity proof.
+    const actual=await verify(db);
+    if(actual.id!==req.body?.githubUserId)throw new SyncError('BACKEND_ACCOUNT_MISMATCH',403);
     if (req.body?.phase === 'preview') res.json(previewIdentityMigration(db, req.body));
     else if (req.body?.phase === 'apply') res.json(applyIdentityMigration(db, req.body));
     else if (req.body?.phase === 'restore') res.json(restoreIdentityMigration(db, req.body));

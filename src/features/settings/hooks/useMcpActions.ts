@@ -16,6 +16,8 @@ const generateLocalToken = (): string => {
 };
 
 export interface McpActions {
+  backendConfig: { enabled: boolean; token: string } | null;
+  backendUrl: string;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -40,6 +42,7 @@ export const useMcpActions = (): McpActions => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendMode, setBackendMode] = useState(false);
+  const [backendConfig, setBackendConfig] = useState<{ enabled: boolean; token: string } | null>(null);
   const [vectorAvailable, setVectorAvailable] = useState<boolean | null>(null);
   const [endpoints, setEndpoints] = useState({ streamableHttp: '/mcp', sse: '/sse', messages: '/messages' });
 
@@ -49,11 +52,12 @@ export const useMcpActions = (): McpActions => {
       return;
     }
     setLoading(true);
+    setBackendMode(true);
     setError(null);
     try {
       const status = await backend.getMcpStatus();
       setBackendMode(true);
-      setMcpConfig({ enabled: status.enabled, token: status.token });
+      setBackendConfig({ enabled: status.enabled, token: status.token });
       setEndpoints(status.endpoints);
       setVectorAvailable(status.vectorAvailable);
     } catch (reason) {
@@ -61,7 +65,7 @@ export const useMcpActions = (): McpActions => {
     } finally {
       setLoading(false);
     }
-  }, [setMcpConfig]);
+  }, []);
 
   useEffect(() => { void refreshFromBackend(); }, [refreshFromBackend]);
 
@@ -77,7 +81,7 @@ export const useMcpActions = (): McpActions => {
     try {
       if (backendMode && backend.isAvailable) {
         const result = await backend.updateMcpConfig({ enabled });
-        setMcpConfig({ enabled: result.enabled, token: result.token });
+        setBackendConfig({ enabled: result.enabled, token: result.token });
         setEndpoints(result.endpoints);
         toast(enabled ? t('useMcpActions.mcp-server-enabled') : t('useMcpActions.mcp-server-disabled'), 'success');
       } else if (isElectron()) {
@@ -96,7 +100,7 @@ export const useMcpActions = (): McpActions => {
   }, [backendMode, mcpConfig.token, setMcpConfig, t, toast]);
 
   const resetToken = useCallback(async () => {
-    if (!mcpConfig.enabled) {
+    if (!(backendMode ? backendConfig?.enabled : mcpConfig.enabled)) {
       toast(t('useMcpActions.enable-mcp-before-resetting-the-token'), 'error');
       return;
     }
@@ -109,7 +113,7 @@ export const useMcpActions = (): McpActions => {
     try {
       if (backendMode && backend.isAvailable) {
         const result = await backend.updateMcpConfig({ resetToken: true, enabled: true });
-        setMcpConfig({ token: result.token, enabled: result.enabled });
+        setBackendConfig({ token: result.token, enabled: result.enabled });
       } else {
         setMcpConfig({ token: generateLocalToken() });
       }
@@ -120,9 +124,11 @@ export const useMcpActions = (): McpActions => {
     } finally {
       setSaving(false);
     }
-  }, [backendMode, confirm, mcpConfig.enabled, setMcpConfig, t, toast]);
+  }, [backendMode, backendConfig, confirm, mcpConfig.enabled, setMcpConfig, t, toast]);
 
   return {
+    backendConfig,
+    backendUrl: backend.backendUrl ?? '',
     loading,
     saving,
     error,

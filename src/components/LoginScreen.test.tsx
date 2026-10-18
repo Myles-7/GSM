@@ -196,6 +196,39 @@ describe('LoginScreen 后端登录', () => {
     expect(mocks.syncBackendData).toHaveBeenCalledOnce();
     expect(mocks.store.setGitHubToken).toHaveBeenCalledWith('ghp_restored');
   });
+
+  it('当本地只有归档的双分类结构时也弹出冲突确认对话框', async () => {
+    mocks.store.accountWorkspaces = {
+      '1': {
+        repositories: [],
+        classificationSchemes: {
+          technology: {
+            initialized: true,
+            customCategories: [{ id: 'tech', name: 'Technology', icon: 'folder', keywords: [] }],
+            defaultCategoryOverrides: {},
+            hiddenDefaultCategoryIds: [],
+            categoryOrder: ['tech'],
+            subcategories: [],
+            subcategoryOrder: [],
+            repositoryOrder: [],
+            categoryListIdMap: {},
+          },
+        },
+      },
+    };
+    mocks.restoreBackendSession.mockResolvedValue({
+      status: 'connected',
+      githubToken: 'ghp_restored',
+      user: { id: 1, login: 'octocat' },
+    });
+    const { urlInput, apiKeyInput } = await enterBackendMode();
+
+    fireEvent.change(urlInput, { target: { value: 'https://backend.example.com' } });
+    fireEvent.change(apiKeyInput, { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '连接并恢复数据' }));
+
+    expect(await screen.findByText('本地数据冲突')).toBeInTheDocument();
+  });
 });
 
 describe('LoginScreen 后端 URL 预填', () => {

@@ -3,9 +3,38 @@ import { aiTaskJournal, type AITaskKind, type TaskMetadata } from './aiTaskJourn
 import { agyProfileIdentity } from './agyProfiles';
 import type { AgyFeature } from '../types/agy';
 import { bindTaskSignal, taskForSignal } from '../utils/taskSignals';
-export { bindTaskSignal, taskForSignal, inheritTaskSignal } from '../utils/taskSignals';
+import { flushAppStorePersistence } from '../store/persistence/storage';
+export { bindTaskSignal, taskForSignal, inheritTaskSignal, bindTaskItemSignal, taskItemForSignal } from '../utils/taskSignals';
 
 export type TaskHandle = ReturnType<typeof aiTaskJournal.begin>;
+export interface LocalTaskCommitOptions {
+  /** Additional local durability barrier that must finish before the task is marked saved. */
+  durabilityBarrier?: () => Promise<void>;
+  failureCode?: string;
+}
+/** Confirm local writes once per batch, independently of any later server sync. */
+export async function confirmLocalTaskCommit(task: TaskHandle | null, options: LocalTaskCommitOptions = {}): Promise<boolean> {
+  const started = performance.now();
+  try {
+    task?.phase('committing');
+    await flushAppStorePersistence();
+    await options.durabilityBarrier?.();
+    task?.commit('saved');
+    const record = aiTaskJournal.snapshot().find(item => item.id === task?.id);
+    record?.items.filter(item => item.state === 'complete').forEach(item => task?.itemExecution(item.id, { commitStatus: 'saved' }));
+    return true;
+  } catch (error) {
+    task?.commit('failed', options.failureCode ?? 'LOCAL_PERSISTENCE_FAILED');
+    task?.error(error);
+    return false;
+  } finally {
+    if (task) {
+      const usage = { ...aiTaskJournal.snapshot().find(record => record.id === task.id)?.usage };
+      usage.phase_committing_ms = (usage.phase_committing_ms ?? 0) + Math.max(0, performance.now() - started);
+      task.metadata({ usage });
+    }
+  }
+}
 export function taskConfigSnapshot(config: AIConfig, feature?: AgyFeature) {
   if (config.provider === 'agy-cli' && config.agyRequestProfile) return { ...config.agyRequestProfile, provider: 'agy-cli' };
   const resolvedFeature = feature ?? (config.provider === 'agy-cli' ? config.agyFeature : undefined);
@@ -33,7 +62,7 @@ export async function runTrackedTask<T>(input: {
   if (parent && input.signal) return action(input.signal, parent);
   const controller = new AbortController();
   const task = aiTaskJournal.begin(input.owner, input.kind, [{ id: 'operation', label: input.label }], input.config?.id, undefined,
-    { ...input.metadata, ...(input.config ? { config: taskConfigSnapshot(input.config) } : {}) });
+    { ...input.metadata, ...(input.config ? { config: taskConfigSnapshot(input.config), ...(input.config.provider === 'agy-cli' ? {executor:'agy-device' as const} : {}) } : {}) });
   bindTaskSignal(controller.signal, task);
   const abort = () => controller.abort(input.signal?.reason);
   input.signal?.addEventListener('abort', abort, { once: true });

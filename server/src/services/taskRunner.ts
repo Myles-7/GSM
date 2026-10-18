@@ -19,18 +19,22 @@ interface ConfigSnapshot {model:string;baseUrl:string;configId:string;reasoningE
 interface TaskOutput extends Record<string,unknown> {content?:string;repositoryWrite?:RepositoryWrite}
 type RepositoryWrite=ReturnType<typeof pushOperations>['results'][number] | {status:'proposal'|'snapshot';reason:string};
 interface ValidatedCheckpoint {evidence?:TaskEvidence[];validated?:boolean;content?:string;value?:Record<string,unknown>}
-interface BatchItem extends ValidatedCheckpoint {repository:string;evidence:TaskEvidence[]}
+interface BatchItem extends ValidatedCheckpoint {repository:string;evidence:TaskEvidence[];commitAt?:string}
 interface BatchCheckpoint {completed:Array<{repository:string;repositoryId:string;messageId:string;status:string}>;current:BatchItem|null}
-interface TaskCheckpoint extends ValidatedCheckpoint {compiledPlan?:unknown;discovery?:DiscoverySearch;research?:ResearchCheckpoint;batch?:BatchCheckpoint;stars?:StarsCheckpoint}
-interface TaskRow {id:string;workspace_id:string;github_user_id:number;request_id:string;request_hash:string;kind:TaskKind;config_id:string;config_snapshot:string;input:string;status:string;stage:string;checkpoint:string|null;result:string|null;error:string|null;created_at:string;updated_at:string}
-export interface TaskRecord extends CreateTask {id:string;status:string;stage:string;configSnapshot:ConfigSnapshot;result:TaskOutput|null;error:string|null;createdAt:string;updatedAt:string;lastSeq:number;checkpoint:TaskCheckpoint|null}
+interface TaskCheckpoint extends ValidatedCheckpoint {compiledPlan?:unknown;discovery?:DiscoverySearch;research?:ResearchCheckpoint;batch?:BatchCheckpoint;stars?:StarsCheckpoint;commitAt?:string;commitAttempt?:number;commitVersions?:Record<string,number>}
+interface TaskRow {id:string;workspace_id:string;github_user_id:number;request_id:string;request_hash:string;kind:TaskKind;config_id:string;config_snapshot:string;input:string;status:string;stage:string;phase?:string;executor?:string;commit_status?:string;provider_outcome?:string;failure_code?:string|null;checkpoint:string|null;result:string|null;error:string|null;created_at:string;updated_at:string}
+export interface TaskRecord extends CreateTask {id:string;status:string;stage:string;phase:string;executor:'server-provider';commitStatus:'not_started'|'pending'|'saved'|'conflict'|'failed';providerOutcome:'not_started'|'in_flight'|'succeeded'|'failed'|'unknown';capabilities:{pause:boolean;cancel:boolean;resume:'safe'|'new-provider-call'|'unsupported'};failureCode:string|null;configSnapshot:ConfigSnapshot;result:TaskOutput|null;error:string|null;createdAt:string;updatedAt:string;lastSeq:number;checkpoint:TaskCheckpoint|null}
 export function publicTask(task:TaskRecord):Omit<TaskRecord,'checkpoint'> {const output:Partial<TaskRecord>={...task};delete output.checkpoint;return output as Omit<TaskRecord,'checkpoint'>;}
 type DB=Database.Database;
 const controllers=new Map<string,AbortController>();
 const activePromises=new Set<Promise<void>>();
+const executionContexts=new Map<string,{db:DB;shutdown:boolean}>();
+const safeCheckpoint=(task:Pick<TaskRecord,'kind'|'stage'|'checkpoint'>)=>task.kind==='refresh_stars'||['queued','evidence','search'].includes(task.stage)||!!task.checkpoint?.validated||!!task.checkpoint?.batch?.current?.validated||(task.stage==='saving'&&task.checkpoint?.batch?.current===null);
+const providerStage=(stage:string)=>['model','compiling','planning','drafting','reviewing'].includes(stage);
 let runner:ReturnType<typeof setInterval>|undefined;
 let running=false, interactiveStreak=0;
 const now=()=>new Date().toISOString();
+const phaseForStage=(stage:string):string => ({queued:'queue_wait',evidence:'generating',search:'generating',model:'generating',saving:'committing',completed:'committing',cleanup:'cleanup',reconciling:'reconciling'} as Record<string,string>)[stage] ?? stage;
 const inputSchema=z.object({date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),channelId:z.string().min(1).max(150).optional(),prompt:z.string().max(16000).optional(),repositories:z.array(z.string().regex(/^[\w.-]+\/[\w.-]+$/)).max(100).optional(),sessionId:z.string().min(1).max(150).optional(),userMessageId:z.string().min(1).max(200).optional(),projectId:z.string().min(1).max(150).optional(),language:z.string().max(40).optional(),expectedVersions:z.record(z.string(),z.number().int().min(0)).optional()}).strict();
 function stableJson(value:unknown):string {if(Array.isArray(value))return `[${value.map(stableJson).join(',')}]`;if(value&&typeof value==='object')return `{${Object.keys(value).sort().filter(k=>(value as Record<string,unknown>)[k]!==undefined).map(k=>`${JSON.stringify(k)}:${stableJson((value as Record<string,unknown>)[k])}`).join(',')}}`;return JSON.stringify(value);}
 function taskRequestHash(request:CreateTask):string {return createHash('sha256').update(stableJson({requestId:request.requestId,workspaceId:request.workspaceId,githubUserId:request.githubUserId,configId:request.configId,kind:request.kind,input:request.input})).digest('hex');}
@@ -55,8 +59,17 @@ export function recordTaskCreationRejection(db:DB,request:CreateTask,code:string
 export function initializeTasks(db:DB):void {
   initializeTaskProposals(db);
   initializeStarsRefresh(db);
-  db.exec(`CREATE TABLE IF NOT EXISTS ai_tasks (id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,kind TEXT NOT NULL,config_id TEXT NOT NULL,config_snapshot TEXT NOT NULL,input TEXT NOT NULL,status TEXT NOT NULL,stage TEXT NOT NULL,checkpoint TEXT,result TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(workspace_id,request_id)); CREATE TABLE IF NOT EXISTS ai_task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL,type TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ai_task_events_task ON ai_task_events(task_id,seq); CREATE TABLE IF NOT EXISTS ai_task_event_watermarks (task_id TEXT PRIMARY KEY,pruned_seq INTEGER NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS ai_tasks (id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,kind TEXT NOT NULL,config_id TEXT NOT NULL,config_snapshot TEXT NOT NULL,input TEXT NOT NULL,status TEXT NOT NULL,stage TEXT NOT NULL,phase TEXT NOT NULL DEFAULT 'queue_wait',executor TEXT NOT NULL DEFAULT 'server-provider',commit_status TEXT NOT NULL DEFAULT 'not_started',provider_outcome TEXT NOT NULL DEFAULT 'not_started',failure_code TEXT,checkpoint TEXT,result TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(workspace_id,request_id)); CREATE TABLE IF NOT EXISTS ai_task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL,type TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ai_task_events_task ON ai_task_events(task_id,seq); CREATE TABLE IF NOT EXISTS ai_task_event_watermarks (task_id TEXT PRIMARY KEY,pruned_seq INTEGER NOT NULL);`);
+  for (const [column, definition] of [['phase', "TEXT NOT NULL DEFAULT 'queue_wait'"], ['executor', "TEXT NOT NULL DEFAULT 'server-provider'"], ['commit_status', "TEXT NOT NULL DEFAULT 'not_started'"], ['provider_outcome', "TEXT NOT NULL DEFAULT 'not_started'"], ['failure_code', 'TEXT']] as const) {
+    const columns = db.prepare('PRAGMA table_info(ai_tasks)').all() as Array<{ name: string }>;
+    if (!columns.some(item => item.name === column)) db.exec(`ALTER TABLE ai_tasks ADD COLUMN ${column} ${definition}`);
+  }
   db.exec('CREATE TABLE IF NOT EXISTS ai_task_request_rejections(workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,error_code TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(workspace_id,request_id))');
+  db.exec(`CREATE TABLE IF NOT EXISTS ai_task_lineage(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL UNIQUE,workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,deleted_at TEXT);
+    INSERT OR IGNORE INTO ai_task_lineage(task_id,workspace_id,github_user_id) SELECT id,workspace_id,github_user_id FROM ai_tasks ORDER BY created_at,id;
+    CREATE INDEX IF NOT EXISTS ai_task_lineage_owner ON ai_task_lineage(workspace_id,github_user_id,seq);
+    CREATE TRIGGER IF NOT EXISTS ai_task_lineage_insert AFTER INSERT ON ai_tasks BEGIN INSERT INTO ai_task_lineage(task_id,workspace_id,github_user_id) VALUES(NEW.id,NEW.workspace_id,NEW.github_user_id); END;
+    CREATE TRIGGER IF NOT EXISTS ai_task_lineage_delete AFTER DELETE ON ai_tasks BEGIN UPDATE ai_task_lineage SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE task_id=OLD.id; END;`);
   pruneTaskEvents(db);
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS ai_tasks_active_stars ON ai_tasks(workspace_id) WHERE kind='refresh_stars' AND status IN ('queued','running')");
   for(const row of db.prepare("SELECT id,kind,stage,checkpoint FROM ai_tasks WHERE status='running'").all() as {id:string;kind:TaskKind;stage:string;checkpoint:string|null}[]) {
@@ -69,13 +82,14 @@ export function initializeTasks(db:DB):void {
       || (['model','saving'].includes(row.stage) && (validated(checkpoint) || validated(checkpoint?.batch?.current)))
       || (row.stage==='saving' && checkpoint?.batch?.current===null && Array.isArray(checkpoint.batch.completed) && checkpoint.batch.completed.length>0);
     db.transaction(()=>{
-      db.prepare('UPDATE ai_tasks SET status=?,error=?,updated_at=? WHERE id=?').run(safe?'queued':'interrupted',safe?null:'SERVER_RESTART_UNKNOWN_CALL',now(),row.id);
-      taskEvent(db,row.id,'state',{status:safe?'queued':'interrupted',stage:row.stage,reason:safe?'Server restarted; safe checkpoint automatically requeued.':'Server restarted; explicit resume required. The previous provider call may have been charged.'});
+      const unknown = !safe && (providerStage(row.stage)||row.stage==='saving');
+      db.prepare('UPDATE ai_tasks SET status=?,phase=?,provider_outcome=?,failure_code=?,error=?,updated_at=? WHERE id=?').run(safe?'queued':'interrupted',safe?'queue_wait':phaseForStage(row.stage),safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',safe?null:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',safe?null:'SERVER_RESTART_UNKNOWN_CALL',now(),row.id);
+      taskEvent(db,row.id,'state',{status:safe?'queued':'interrupted',stage:row.stage,phase:safe?'queue_wait':phaseForStage(row.stage),providerOutcome:safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',failureCode:safe?undefined:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',reason:safe?'Server restarted; safe checkpoint automatically requeued.':'Server restarted; explicit resume required. The previous provider call may have been charged.'});
     })();
   }
 }
 export function taskEvent(db:DB,id:string,type:string,data:unknown):void {db.prepare('INSERT INTO ai_task_events(task_id,type,data,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(data),now());}
-function shape(db:DB,raw:unknown):TaskRecord {const row=raw as TaskRow;return {id:row.id,workspaceId:row.workspace_id,githubUserId:row.github_user_id,requestId:row.request_id,configId:row.config_id,kind:row.kind,input:JSON.parse(row.input),status:row.status,stage:row.stage,configSnapshot:JSON.parse(row.config_snapshot),checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null,result:row.result?JSON.parse(row.result):null,error:row.error,createdAt:row.created_at,updatedAt:row.updated_at,lastSeq:(db.prepare('SELECT MAX(COALESCE((SELECT MAX(seq) FROM ai_task_events WHERE task_id=?),0),COALESCE((SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=?),0)) seq').get(row.id,row.id) as {seq:number}).seq};}
+function shape(db:DB,raw:unknown):TaskRecord {const row=raw as TaskRow;return {id:row.id,workspaceId:row.workspace_id,githubUserId:row.github_user_id,requestId:row.request_id,configId:row.config_id,kind:row.kind,input:JSON.parse(row.input),status:row.status,stage:row.stage,phase:row.phase || row.stage,executor:'server-provider',commitStatus:(row.commit_status as TaskRecord['commitStatus']) || 'not_started',providerOutcome:(row.provider_outcome as TaskRecord['providerOutcome']) || 'not_started',failureCode:row.failure_code ?? null,capabilities:{pause:false,cancel:['queued','running'].includes(row.status),resume:['interrupted','failed','cancelled'].includes(row.status)?safeCheckpoint({kind:row.kind,stage:row.stage,checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null})?'safe':'new-provider-call':'unsupported'},configSnapshot:JSON.parse(row.config_snapshot),checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null,result:row.result?JSON.parse(row.result):null,error:row.error,createdAt:row.created_at,updatedAt:row.updated_at,lastSeq:(db.prepare('SELECT MAX(COALESCE((SELECT MAX(seq) FROM ai_task_events WHERE task_id=?),0),COALESCE((SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=?),0)) seq').get(row.id,row.id) as {seq:number}).seq};}
 export function getTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
   assertWorkspace(db,workspaceId,githubUserId); const row=db.prepare('SELECT * FROM ai_tasks WHERE id=? AND workspace_id=? AND github_user_id=?').get(id,workspaceId,githubUserId);
   if(!row) throw new Error('TASK_NOT_FOUND'); return shape(db,row);
@@ -89,13 +103,28 @@ export function getTaskByRequest(db:DB,requestId:string,workspaceId:string,githu
   return shape(db,row);
 }
 export function listTasks(db:DB,workspaceId:string,githubUserId:number):TaskRecord[] {assertWorkspace(db,workspaceId,githubUserId);return db.prepare('SELECT * FROM ai_tasks WHERE workspace_id=? AND github_user_id=? ORDER BY created_at DESC LIMIT 100').all(workspaceId,githubUserId).map(r=>shape(db,r));}
+export function listTasksPage(db:DB,workspaceId:string,githubUserId:number,options:{cursor?:string;limit?:number} = {}) {
+  assertWorkspace(db,workspaceId,githubUserId);
+  if(options.limit!==undefined&&(!Number.isSafeInteger(options.limit)||options.limit<1||options.limit>100))throw new Error('INVALID_TASK_LIMIT');
+  const limit=options.limit??100;
+  const cursorSchema=z.object({v:z.literal(1),workspaceId:z.string(),githubUserId:z.number().int(),boundary:z.number().int().nonnegative(),before:z.number().int().positive(),asOf:z.string().datetime()}).strict();
+  const boundary=(db.prepare('SELECT COALESCE(MAX(seq),0) value FROM ai_task_lineage WHERE workspace_id=? AND github_user_id=?').get(workspaceId,githubUserId) as {value:number}).value;
+  let cursor={v:1 as const,workspaceId,githubUserId,boundary,before:boundary+1,asOf:now()};
+  if(options.cursor){try{if(options.cursor.length>1500)throw Error();cursor=cursorSchema.parse(JSON.parse(Buffer.from(options.cursor,'base64url').toString('utf8')));if(cursor.workspaceId!==workspaceId||cursor.githubUserId!==githubUserId||cursor.before>cursor.boundary+1||Date.now()-Date.parse(cursor.asOf)>86400000)throw Error();}catch{throw new Error('INVALID_TASK_CURSOR');}}
+  const rows=db.prepare('SELECT t.*,l.seq list_seq FROM ai_task_lineage l JOIN ai_tasks t ON t.id=l.task_id WHERE l.workspace_id=? AND l.github_user_id=? AND l.seq<=? AND l.seq<? ORDER BY l.seq DESC LIMIT ?').all(workspaceId,githubUserId,cursor.boundary,cursor.before,limit+1) as Array<TaskRow&{list_seq:number}>;
+  const selected=rows.slice(0,limit),page=selected.map(r=>shape(db,r));
+  const last=selected.at(-1);
+  const nextCursor=rows.length>limit&&last?Buffer.from(JSON.stringify({...cursor,before:last.list_seq}),'utf8').toString('base64url'):undefined;
+  const deletedIds=(db.prepare('SELECT task_id FROM ai_task_lineage WHERE workspace_id=? AND github_user_id=? AND seq<=? AND deleted_at IS NOT NULL').all(workspaceId,githubUserId,cursor.boundary) as Array<{task_id:string}>).map(row=>row.task_id);
+  return {tasks:page,nextCursor,reconcile:{watermark:`${cursor.boundary}:${cursor.asOf}`,asOf:cursor.asOf,complete:!nextCursor,deletedIds}};
+}
 /** Expire terminal task streams after 30 days; durable task results remain intact. */
 export function pruneTaskEvents(db:DB, at=new Date()):number {
   const cutoff=new Date(at.getTime()-30*24*60*60*1000).toISOString();
   return db.transaction(()=>{
-    db.prepare(`INSERT INTO ai_task_event_watermarks(task_id,pruned_seq)
+  db.prepare(`INSERT INTO ai_task_event_watermarks(task_id,pruned_seq)
       SELECT e.task_id,MAX(e.seq) FROM ai_task_events e JOIN ai_tasks t ON t.id=e.task_id
-      WHERE t.status IN ('completed','cancelled','failed') AND t.updated_at<? AND e.created_at<? GROUP BY e.task_id
+      WHERE t.status IN ('completed','cancelled','failed','interrupted') AND t.updated_at<? AND e.created_at<? GROUP BY e.task_id
       ON CONFLICT(task_id) DO UPDATE SET pruned_seq=MAX(pruned_seq,excluded.pruned_seq)`).run(cutoff,cutoff);
     return db.prepare('DELETE FROM ai_task_events WHERE seq <= (SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=ai_task_events.task_id)').run().changes;
   })();
@@ -173,7 +202,94 @@ export function resumeTask(db:DB,id:string,workspaceId:string,githubUserId:numbe
   if(controllers.has(id))throw new Error('TASK_STILL_STOPPING');
   if(task.kind==='refresh_stars' && db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND kind='refresh_stars' AND status IN ('queued','running')").get(id,workspaceId))throw new Error('REFRESH_STARS_TASK_ACTIVE');
   if(task.input.sessionId && db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running')").get(id,workspaceId,task.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
-  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='queued',error=NULL,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'queued',stage:'resume',warning:task.stage==='model'?'Explicit resume starts a new provider call; previous call outcome was unknown':null});})();return getTask(db,id,workspaceId,githubUserId);
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='queued',error=NULL,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'queued',stage:'resume',warning:task.providerOutcome==='unknown'?'Explicit resume starts a new provider call; previous call outcome was unknown':null});})();return getTask(db,id,workspaceId,githubUserId);
+}
+/** Re-commit a generated result without invoking the provider again. */
+export function previewTaskCommit(db:DB,id:string,workspaceId:string,githubUserId:number) {
+  const task=getTask(db,id,workspaceId,githubUserId);
+  if(task.commitStatus!=='conflict'||!task.result)throw new Error('TASK_COMMIT_NOT_RETRYABLE');
+  const evidence=task.checkpoint?.batch?.current?.evidence??task.checkpoint?.evidence;
+  const source=evidence?.[0];
+  const repositoryId=source?String(source.metadata.id):undefined;
+  const record=repositoryId?getRecord(db,'repositories',repositoryId):null;
+  const expected={...task.input.expectedVersions,...task.checkpoint?.commitVersions};
+  const fields=task.kind==='details'?['ai_details','ai_summary']:task.kind==='classification'?['ai_tags','ai_category']:['ai_summary','ai_tags','ai_platforms'];
+  return {targets:['summary','details','classification'].includes(task.kind)&&repositoryId&&record&&!record.deleted&&expected[repositoryId]!==undefined
+    ?[{repositoryId,repository:source!.repository,currentVersion:record.version,expectedVersion:expected[repositoryId],fields}]:[]};
+}
+export function retryTaskCommit(db:DB,id:string,workspaceId:string,githubUserId:number,expectedVersions:Record<string,number> = {}):TaskRecord {
+  const task=getTask(db,id,workspaceId,githubUserId);
+  if(!['completed','interrupted'].includes(task.status)||task.commitStatus!=='conflict'||!task.result)throw new Error('TASK_COMMIT_NOT_RETRYABLE');
+  const parsed=z.record(z.string().max(200),z.number().int().nonnegative()).safeParse(expectedVersions);
+  if(!parsed.success)throw new Error('INVALID_TASK_COMMIT');
+  if(controllers.has(id))throw new Error('TASK_STILL_STOPPING');
+  task.checkpoint={...task.checkpoint,commitAttempt:(task.checkpoint?.commitAttempt??0)+1,commitVersions:{...task.checkpoint?.commitVersions,...parsed.data}};
+  // Submitted input and its hash are immutable receipt/idempotency evidence.
+  db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(task.checkpoint),task.id);
+  try {
+  if(task.checkpoint?.batch?.current?.validated){
+    const state=task.checkpoint.batch;commitBatchItem(db,task,state,state.completed.length);
+    const complete=state.completed.length===(task.input.repositories?.length??0);
+    const result={content:state.completed.map(item=>`${item.repository}: ${item.status}`).join('\n'),batch:state.completed,completed:state.completed.length,total:task.input.repositories?.length??0};
+    db.prepare("UPDATE ai_tasks SET status=?,stage=?,phase=?,commit_status='saved',failure_code=?,result=?,error=NULL,updated_at=? WHERE id=?").run(complete?'completed':'interrupted',complete?'completed':'evidence',complete?'committing':'queue_wait',complete?null:'BATCH_AWAITING_RESUME',JSON.stringify(result),now(),id);
+    taskEvent(db,id,'state',{status:complete?'completed':'interrupted',commitStatus:'saved',reason:'Commit retry did not call the provider; remaining batch items require explicit resume.'});
+  }else commitGeneratedResult(db,task);
+  }catch(error){
+    const code=error instanceof Error&&/^[A-Z][A-Z_0-9]+$/.test(error.message)?error.message:'RESULT_COMMIT_FAILED';
+    db.prepare("UPDATE ai_tasks SET commit_status='conflict',provider_outcome='succeeded',failure_code=?,error=?,updated_at=? WHERE id=?").run(code,code,now(),id);
+    taskEvent(db,id,'commit_conflict',{commitStatus:'conflict',providerOutcome:'succeeded',failureCode:code});
+    throw error;
+  }
+  return getTask(db,id,workspaceId,githubUserId);
+}
+function commitGeneratedResult(db:DB,task:TaskRecord):void {
+  const {evidence,content,value,discovery}=task.checkpoint??{};
+  if(!Array.isArray(evidence)||typeof content!=='string'||!value||!task.checkpoint?.validated)throw new Error('TASK_RESULT_NOT_PREPARED');
+  const commitAt=task.checkpoint.commitAt??now();
+  const expectedVersions={...task.input.expectedVersions,...task.checkpoint.commitVersions};
+  task.checkpoint.commitAt=commitAt;
+  db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(task.checkpoint),task.id);
+    task.stage='saving';db.prepare("UPDATE ai_tasks SET stage='saving',phase='committing' WHERE id=?").run(task.id);db.prepare("UPDATE ai_tasks SET commit_status='pending',updated_at=? WHERE id=?").run(now(),task.id);
+    const result:TaskOutput={...(['summary','details','classification'].includes(task.kind)&&evidence[0]?{repository:{...evidence[0].metadata,full_name:evidence[0].repository}}:{}),content:typeof value.content==='string'?value.content:content,data:value,evidence:evidence.map(e=>({repository:e.repository,commit:e.commit,retrievedAt:e.retrievedAt})),...(['proposal','organization'].includes(task.kind)?{proposal:value}:{})};
+    // Generated output is durable independently of the sync transaction.
+    db.prepare("UPDATE ai_tasks SET result=?,provider_outcome='succeeded' WHERE id=?").run(JSON.stringify(result),task.id);
+    db.transaction(()=>{
+      assertWorkspace(db,task.workspaceId,task.githubUserId);
+      const collection=['proposal','organization'].includes(task.kind)?'proposals':task.kind==='custom_discovery'?'discovery_editions':'messages';
+      const id=task.id;
+      const evidenceRecords=taskEvidenceRecords(task.id,evidence);
+      const sessionId=task.input.sessionId || task.id;
+      const operations:Operation[]=[{opId:`task:${task.id}:result`,collection,id,baseVersion:0,kind:'put',source:'ai',data:{...result,id,taskId:task.id,sessionId,projectId:task.input.projectId || null,...(task.kind==='custom_discovery'?{channelId:task.input.channelId,editionId:task.id}:{}),role:'assistant',evidenceIds:evidenceRecords.map(e=>e.id),status:['proposal','organization'].includes(task.kind)?'pending':'complete',createdAt:commitAt}}];
+      if(task.kind==='custom_discovery'){
+        const date=task.input.date??task.createdAt.slice(0,10);const channel=discovery?.channel;const editionId=`${task.input.channelId}:${date}:${channel?.revision??1}`;operations[0].id=editionId;operations[0].baseVersion=getRecord(db,'discovery_editions',editionId)?.version??0;Object.assign(operations[0].data!,{id:editionId,editionId});result.editionId=editionId;const selected=(value.repositories??[]) as Array<{repository:string;reason:string;findings?:unknown[];relevance?:number}>;
+        const rules=channel?effectiveRules(channel.plan,channel.ruleOverrides):null;
+        const candidates=evidence.map(source=>({repo:{...source.metadata,...discovery?.repositories.find(r=>r.full_name===source.repository),full_name:source.repository} as never,text:[source.readme,...source.files.map(f=>f.content)].join('\n')}));
+        const assessments=rules?assessResults(selected.map(item=>({id:Number(evidence.find(e=>e.repository===item.repository)?.metadata.id),reason:item.reason,relevance:item.relevance??1,findings:item.findings??[]})),candidates,rules.plan):selected.map(item=>({repo:candidates.find(c=>(c.repo as {full_name:string}).full_name===item.repository)!.repo,reason:item.reason,verdict:'match',evidence:[],method:'ai',relevance:1,preference:0}));
+        const ranked=(rules?rankAssessments(assessments as never,rules.sort):assessments).map(item=>({...item,relation:discovery?.relations?.[String((item.repo as {id:number}).id)]??'direct'})) as CandidateAssessment[];
+        const edition:ChannelDailyEdition={channelId:task.input.channelId!,date,revision:channel?.revision??1,instruction:channel?.instruction??task.input.prompt??'',entries:ranked.filter(item=>item.verdict==='match').slice(0,channel?.limit??10),pending:ranked.filter(item=>item.verdict==='unknown'),errors:[],complete:true,searched:discovery?.searched??1,filtered:discovery?.filtered??0,generatedAt:commitAt,...(rules?{ruleSnapshot:rules}:{})};
+        const previous=getRecord(db,'discovery_editions',editionId);
+        const rejected=candidates.filter(candidate=>!ranked.some(item=>item.repo.id===(candidate.repo as {id:number}).id)).map(candidate=>(candidate.repo as {id:number}).id);
+        const merged=channel?mergeChannelEdition(channel,edition,previous&&!previous.deleted?previous.data as unknown as ChannelDailyEdition:undefined,rejected):{edition,recommended:{}};
+        value.repositories=merged.edition.entries.map(item=>({repository:item.repo.full_name,reason:item.reason}));
+        Object.assign(operations[0].data!,JSON.parse(JSON.stringify(merged.edition)));
+        if(channel&&discovery){const current=getRecord(db,'discovery_subscriptions',channel.id);if(current?.version!==discovery.channelVersion)throw new Error('DISCOVERY_CHANNEL_CHANGED');operations.push({opId:`task:${task.id}:channel`,collection:'discovery_subscriptions',id:channel.id,baseVersion:discovery.channelVersion,kind:'put',source:'ai',data:{...channel,cursors:discovery.cursors,lastCompletedDate:date,lastRefresh:commitAt,recommended:merged.recommended}});}
+      }
+      operations.push(...evidenceRecords.map(e=>({opId:`task:${e.id}:evidence`,collection:'evidence' as const,id:e.id,baseVersion:0,kind:'put' as const,source:'ai' as const,data:e})));
+      if(!task.input.userMessageId)operations.push({opId:`task:${task.id}:user`,collection:'messages',id:`${task.id}:user`,baseVersion:0,kind:'put',source:'user',data:{id:`${task.id}:user`,sessionId,role:'user',content:task.input.prompt || task.kind,status:'complete',evidenceIds:[],createdAt:task.createdAt}});
+      if(!getRecord(db,'sessions',sessionId))operations.push({opId:`task:${task.id}:session`,collection:'sessions',id:sessionId,baseVersion:0,kind:'put',source:'user',data:{id:sessionId,repoId:evidence[0]?.metadata.id || 0,repoFullName:evidence[0]?.repository || '',sourceRefSha:evidence[0]?.commit || '',title:(task.input.prompt||task.kind).slice(0,100),ownerId:String(task.githubUserId),kind:task.input.projectId?'workbench':'repository',...(task.input.projectId?{projectId:task.input.projectId}:{}),createdAt:task.createdAt,updatedAt:commitAt}});
+      const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations});
+      if(saved.results.some(r=>r.status==='conflict'))throw new Error('RESULT_SYNC_CONFLICT');
+      if(['summary','details','classification'].includes(task.kind)&&evidence[0]) {
+        const repoId=String(evidence[0].metadata.id);const current=getRecord(db,'repositories',repoId);
+        if(current && expectedVersions[repoId]!==undefined) {
+          const patch=task.kind==='details'?{ai_details:value,...(typeof value.summary==='string'&&value.summary.trim()?{ai_summary:value.summary}: {})}:task.kind==='classification'?{ai_tags:(value as Record<string,unknown>).tags,ai_category:(value as Record<string,unknown>).category}:{ai_summary:(value as Record<string,unknown>).summary,ai_tags:(value as Record<string,unknown>).tags,ai_platforms:(value as Record<string,unknown>).platforms};
+          const update=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`task:${task.id}:repository:${task.checkpoint?.commitAttempt??0}`,collection:'repositories',id:repoId,baseVersion:expectedVersions[repoId],kind:'put',source:'ai',data:{...current.data,...patch,analyzed_at:commitAt}}]});
+          result.repositoryWrite=update.results[0];
+        } else result.repositoryWrite=current?{status:'proposal',reason:'Expected repository version required to apply AI fields'}:{status:'snapshot',reason:'Discovery analysis retained in task result; repository was not added or starred'};
+      }
+      const commitStatus=result.repositoryWrite?.status==='conflict'?'conflict':'saved';
+      db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status=?,provider_outcome='succeeded',result=?,failure_code=?,error=NULL,updated_at=? WHERE id=?").run(commitStatus,JSON.stringify(result),commitStatus==='conflict'?'RESULT_SYNC_CONFLICT':null,now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing',commitStatus});
+    })();
 }
 export interface TaskDependencies {githubFetch?:typeof fetch;evidence?:typeof collectTaskEvidence;model?:(task:TaskRecord,evidence:TaskEvidence[],signal:AbortSignal,emit:(type:string,data:unknown)=>void)=>Promise<string>}
 async function modelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:AbortSignal,emit:(type:string,data:unknown)=>void,promptOverride?:{system:string;user:string}) {
@@ -189,18 +305,30 @@ async function modelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:Ab
 }
 export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Promise<void> {
   if(controllers.has(task.id))return;
-  const controller=new AbortController();controllers.set(task.id,controller);const signal=controller.signal;
-  const deadline=setTimeout(()=>controller.abort(),Math.min(3600000,Math.max(240000,(task.input.repositories?.length || 1)*180000)));
-  const emit=(type:string,data:unknown)=>{signal.throwIfAborted();if(type!=='reasoning')taskEvent(db,task.id,type,data);};
-  const stage=(value:string)=>{signal.throwIfAborted();db.prepare('UPDATE ai_tasks SET stage=?,updated_at=? WHERE id=?').run(value,now(),task.id);emit('state',{status:'running',stage:value});};
+  const controller=new AbortController();controllers.set(task.id,controller);executionContexts.set(task.id,{db,shutdown:false});const signal=controller.signal;
+  // Repository batches run serially and accept up to 100 entries. Give every
+  // item the same execution budget instead of forcing every 20+ item batch into
+  // a one-hour ceiling; completed siblings are already checkpointed safely.
+  const deadline=setTimeout(()=>controller.abort(),Math.max(240000,(task.input.repositories?.length || 1)*180000));
+  let contentBuffer='',contentTimer:ReturnType<typeof setTimeout>|undefined;
+  const flushContent=()=>{clearTimeout(contentTimer);contentTimer=undefined;if(contentBuffer){const text=contentBuffer;contentBuffer='';taskEvent(db,task.id,'content',{text});}};
+  const emit=(type:string,data:unknown)=>{
+    signal.throwIfAborted();if(type==='reasoning')return;
+    if(type==='content'&&data&&typeof data==='object'&&'text' in data&&typeof data.text==='string'){
+      contentBuffer+=data.text;
+      if(contentBuffer.length>=8192)flushContent();
+      else contentTimer??=setTimeout(()=>{try{flushContent();}catch{controller.abort();}},250);
+    }else{flushContent();taskEvent(db,task.id,type,data);}
+  };
+  const stage=(value:string)=>{signal.throwIfAborted();const phase=phaseForStage(value);task.stage=value;task.phase=phase;db.prepare('UPDATE ai_tasks SET stage=?,phase=?,updated_at=? WHERE id=?').run(value,phase,now(),task.id);emit('state',{status:'running',stage:value,phase});};
   try {
     assertWorkspace(db,task.workspaceId,task.githubUserId);
     const claim=db.prepare("UPDATE ai_tasks SET status='running' WHERE id=? AND status='queued'").run(task.id);if(!claim.changes)return;
     if(task.input.projectId&&!task.configSnapshot.project)throw new Error('PROJECT_CONTEXT_SNAPSHOT_REQUIRED');
-    const checkpoint=(value:unknown)=>{signal.throwIfAborted();db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(value),task.id);};
+    const checkpoint=(value:TaskCheckpoint)=>{signal.throwIfAborted();task.checkpoint=value;db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(value),task.id);};
     if(task.kind==='refresh_stars') {
       await refreshStars(db,task,signal,{fetch:deps.githubFetch,state:task.checkpoint?.stars,stage,checkpoint:stars=>checkpoint({stars}),progress:data=>emit('progress',data),finish:result=>{
-        db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);
+        db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);
         taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed'});
       }});
       return;
@@ -210,7 +338,7 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
       const channelRecord=getRecord(db,'discovery_subscriptions',task.input.channelId!);
       if(channelRecord&&!channelRecord.deleted&&channelRecord.data?.planSource==='pending'){
         if(channelRecord.data.enabled===false||channelRecord.data.paused===true)throw new Error('DISCOVERY_CHANNEL_PAUSED');
-        stage('compiling');const instruction=String(channelRecord.data.instruction??task.input.prompt??'');
+        stage('compiling');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight' WHERE id=?").run(task.id);const instruction=String(channelRecord.data.instruction??task.input.prompt??'');
         const raw=await(deps.model?deps.model(task,[],signal,emit):modelCall(db,task,[],signal,()=>{},{system:discoveryCompilePrompt,user:instruction.slice(0,4000)}));signal.throwIfAborted();
         const plan=parsePlan(raw,instruction);if(plan.conflicts.length)throw new Error('DISCOVERY_PLAN_CONFLICTS');
         db.transaction(()=>{const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`task:${task.id}:compile`,collection:'discovery_subscriptions',id:channelRecord.id,baseVersion:channelRecord.version,kind:'put',source:'ai',data:{...channelRecord.data,plan,planSource:'compiled'}}]});if(saved.results[0].status!=='applied')throw new Error('DISCOVERY_CHANNEL_CHANGED');checkpoint({compiledPlan:plan});stage('evidence');})();
@@ -225,83 +353,76 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
     if(discovery)task.checkpoint={...task.checkpoint,discovery};
     let content:string;let value:Record<string,unknown>;
     if(task.checkpoint?.validated){content=task.checkpoint.content!;value=task.checkpoint.value!;}
-    else {stage('model');
+    else {stage('model');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight',updated_at=? WHERE id=?").run(now(),task.id);
       if(['research','compare'].includes(task.kind)&&!deps.model){
         const researched=await researchTask(db,task.id,task.input.prompt || task.kind,evidence,signal,async(prompt,researchStage)=>{stage(researchStage);return modelCall(db,task,evidence!,signal,()=>{},prompt);},async()=>{stage('drafting');return modelCall(db,task,evidence!,signal,()=>{});},research=>checkpoint({evidence,research}),task.checkpoint?.research);
         content=researched.content;value={content,quality:'model-reviewed',...(researched.review as Record<string,unknown>)};emit('content',{text:content});
-      }else{content=await(deps.model ? deps.model(task,evidence,signal,emit):modelCall(db,task,evidence,signal,emit));value=validateTaskResult(task.kind,content,evidence);}
-      signal.throwIfAborted();if(task.kind==='details')value={...(value as Record<string,unknown>),model:task.configSnapshot.model};checkpoint({evidence,discovery,validated:true,content,value});}
-    stage('saving');
-    const result:TaskOutput={...(['summary','details','classification'].includes(task.kind)&&evidence[0]?{repository:{...evidence[0].metadata,full_name:evidence[0].repository}}:{}),content:typeof value.content==='string'?value.content:content,data:value,evidence:evidence.map(e=>({repository:e.repository,commit:e.commit,retrievedAt:e.retrievedAt})),...(['proposal','organization'].includes(task.kind)?{proposal:value}:{})};
+      }else{content=await(deps.model ? deps.model(task,evidence,signal,emit):modelCall(db,task,evidence,signal,emit));db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded' WHERE id=?").run(task.id);value=validateTaskResult(task.kind,content,evidence);}
+      signal.throwIfAborted();if(task.kind==='details')value={...(value as Record<string,unknown>),model:task.configSnapshot.model};checkpoint({evidence,discovery,validated:true,content,value});db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded',updated_at=? WHERE id=?").run(now(),task.id);}
+    commitGeneratedResult(db,getTask(db,task.id,task.workspaceId,task.githubUserId));
+  } catch(error) {
+    const currentRow=db.prepare('SELECT * FROM ai_tasks WHERE id=?').get(task.id);
+    const current=currentRow?shape(db,currentRow):undefined;
+    if(current?.status!=='cancelled') {
+      const code=error instanceof Error && /^[A-Z][A-Z_0-9]+$/.test(error.message)?error.message:(signal.aborted?'TASK_DEADLINE_OR_SHUTDOWN':'TASK_EXECUTION_FAILED');
+      if (code === 'RESULT_SYNC_CONFLICT' && !current?.checkpoint?.batch) {
+        db.prepare("UPDATE ai_tasks SET status='completed',stage='committing',phase='committing',commit_status='conflict',provider_outcome='succeeded',failure_code=?,error=?,updated_at=? WHERE id=?").run(code,code,now(),task.id);
+        taskEvent(db,task.id,'commit_conflict',{status:'completed',commitStatus:'conflict',providerOutcome:'succeeded',failureCode:code});
+        taskEvent(db,task.id,'state',{status:'completed',stage:'committing',phase:'committing'});
+      } else {
+        const shutdown=executionContexts.get(task.id)?.shutdown===true;
+        const safe=!!current&&safeCheckpoint(current);
+        const unknown=!!current&&!safe&&current.providerOutcome!=='succeeded'&&(providerStage(current.stage)||current.providerOutcome==='in_flight');
+        const outcome=unknown?'unknown':safe&&(current?.checkpoint?.validated||current?.checkpoint?.batch?.current?.validated)?'succeeded':current?.providerOutcome==='succeeded'?'succeeded':'failed';
+        const failureCode=unknown?'unknown_provider_outcome':shutdown&&safe?'SAFE_SHUTDOWN_REQUEUED':code;
+        const status=shutdown&&safe?'queued':'interrupted';
+        db.prepare("UPDATE ai_tasks SET status=?,phase=?,provider_outcome=?,commit_status=?,failure_code=?,error=?,updated_at=? WHERE id=?").run(status,status==='queued'?'queue_wait':current?.phase??task.phase,outcome,code==='RESULT_SYNC_CONFLICT'?'conflict':current?.commitStatus??'not_started',failureCode,status==='queued'?null:code,now(),task.id);
+        taskEvent(db,task.id,'state',{status,error:status==='queued'?null:code,providerOutcome:outcome,failureCode});
+      }
+    }
+  } finally {clearTimeout(deadline);try{flushContent();}finally{controllers.delete(task.id);executionContexts.delete(task.id);}}
+}
+function commitBatchItem(db:DB,task:TaskRecord,state:BatchCheckpoint,index:number):void {
+  const names=task.input.repositories!,item=state.current;
+  if(!item?.validated||!item.value||typeof item.content!=='string')throw new Error('TASK_RESULT_NOT_PREPARED');
+  const {evidence,content,value}=item;
+  const expectedVersions={...task.input.expectedVersions,...task.checkpoint?.commitVersions};
+  const commitAt=item.commitAt??now();item.commitAt=commitAt;
+  db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify({...task.checkpoint,batch:state}),task.id);
+  db.prepare("UPDATE ai_tasks SET result=?,provider_outcome='succeeded' WHERE id=?").run(JSON.stringify({content,data:value,batch:state.completed,pendingRepository:item.repository}),task.id);
     db.transaction(()=>{
       assertWorkspace(db,task.workspaceId,task.githubUserId);
-      const collection=['proposal','organization'].includes(task.kind)?'proposals':task.kind==='custom_discovery'?'discovery_editions':'messages';
-      const id=task.id;
-      const evidenceRecords=taskEvidenceRecords(task.id,evidence);
-      const sessionId=task.input.sessionId || task.id;
-      const operations:Operation[]=[{opId:`task:${task.id}:result`,collection,id,baseVersion:0,kind:'put',source:'ai',data:{...result,id,taskId:task.id,sessionId,projectId:task.input.projectId || null,...(task.kind==='custom_discovery'?{channelId:task.input.channelId,editionId:task.id}:{}),role:'assistant',evidenceIds:evidenceRecords.map(e=>e.id),status:['proposal','organization'].includes(task.kind)?'pending':'complete',createdAt:now()}}];
-      if(task.kind==='custom_discovery'){
-        const date=task.input.date??task.createdAt.slice(0,10);const channel=discovery?.channel;const editionId=`${task.input.channelId}:${date}:${channel?.revision??1}`;operations[0].id=editionId;operations[0].baseVersion=getRecord(db,'discovery_editions',editionId)?.version??0;Object.assign(operations[0].data!,{id:editionId,editionId});result.editionId=editionId;const selected=(value.repositories??[]) as Array<{repository:string;reason:string;findings?:unknown[];relevance?:number}>;
-        const rules=channel?effectiveRules(channel.plan,channel.ruleOverrides):null;
-        const candidates=evidence.map(source=>({repo:{...source.metadata,...discovery?.repositories.find(r=>r.full_name===source.repository),full_name:source.repository} as never,text:[source.readme,...source.files.map(f=>f.content)].join('\n')}));
-        const assessments=rules?assessResults(selected.map(item=>({id:Number(evidence.find(e=>e.repository===item.repository)?.metadata.id),reason:item.reason,relevance:item.relevance??1,findings:item.findings??[]})),candidates,rules.plan):selected.map(item=>({repo:candidates.find(c=>(c.repo as {full_name:string}).full_name===item.repository)!.repo,reason:item.reason,verdict:'match',evidence:[],method:'ai',relevance:1,preference:0}));
-        const ranked=(rules?rankAssessments(assessments as never,rules.sort):assessments).map(item=>({...item,relation:discovery?.relations?.[String((item.repo as {id:number}).id)]??'direct'})) as CandidateAssessment[];
-        const edition:ChannelDailyEdition={channelId:task.input.channelId!,date,revision:channel?.revision??1,instruction:channel?.instruction??task.input.prompt??'',entries:ranked.filter(item=>item.verdict==='match').slice(0,channel?.limit??10),pending:ranked.filter(item=>item.verdict==='unknown'),errors:[],complete:true,searched:discovery?.searched??1,filtered:discovery?.filtered??0,generatedAt:now(),...(rules?{ruleSnapshot:rules}:{})};
-        const previous=getRecord(db,'discovery_editions',editionId);
-        const rejected=candidates.filter(candidate=>!ranked.some(item=>item.repo.id===(candidate.repo as {id:number}).id)).map(candidate=>(candidate.repo as {id:number}).id);
-        const merged=channel?mergeChannelEdition(channel,edition,previous&&!previous.deleted?previous.data as unknown as ChannelDailyEdition:undefined,rejected):{edition,recommended:{}};
-        value.repositories=merged.edition.entries.map(item=>({repository:item.repo.full_name,reason:item.reason}));
-        Object.assign(operations[0].data!,JSON.parse(JSON.stringify(merged.edition)));
-        if(channel&&discovery){const current=getRecord(db,'discovery_subscriptions',channel.id);if(current?.version!==discovery.channelVersion)throw new Error('DISCOVERY_CHANNEL_CHANGED');operations.push({opId:`task:${task.id}:channel`,collection:'discovery_subscriptions',id:channel.id,baseVersion:discovery.channelVersion,kind:'put',source:'ai',data:{...channel,cursors:discovery.cursors,lastCompletedDate:date,lastRefresh:now(),recommended:merged.recommended}});}
+      const repoId=String(evidence[0].metadata.id),current=getRecord(db,'repositories',repoId),id=`${task.id}:batch:${index}`;
+      const records=taskEvidenceRecords(id,evidence);let write:RepositoryWrite=current?{status:'proposal',reason:'Expected repository version required'}:{status:'snapshot',reason:'Discovery analysis retained in task message; repository was not added or starred'};
+      if(current&&expectedVersions[repoId]!==undefined) {
+        const patch=task.kind==='details'?{ai_details:value,...(typeof value.summary==='string'&&value.summary.trim()?{ai_summary:value.summary}: {})}:task.kind==='classification'?{ai_tags:value.tags,ai_category:value.category}:{ai_summary:value.summary,ai_tags:value.tags,ai_platforms:value.platforms};
+        write=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${id}:repository:${task.checkpoint?.commitAttempt??0}`,collection:'repositories',id:repoId,baseVersion:expectedVersions[repoId],kind:'put',source:'ai',data:{...current.data,...patch,analyzed_at:commitAt}}]}).results[0];
       }
-      operations.push(...evidenceRecords.map(e=>({opId:`task:${e.id}:evidence`,collection:'evidence' as const,id:e.id,baseVersion:0,kind:'put' as const,source:'ai' as const,data:e})));
-      if(!task.input.userMessageId)operations.push({opId:`task:${task.id}:user`,collection:'messages',id:`${task.id}:user`,baseVersion:0,kind:'put',source:'user',data:{id:`${task.id}:user`,sessionId,role:'user',content:task.input.prompt || task.kind,status:'complete',evidenceIds:[],createdAt:task.createdAt}});
-      if(!getRecord(db,'sessions',sessionId))operations.push({opId:`task:${task.id}:session`,collection:'sessions',id:sessionId,baseVersion:0,kind:'put',source:'user',data:{id:sessionId,repoId:evidence[0]?.metadata.id || 0,repoFullName:evidence[0]?.repository || '',sourceRefSha:evidence[0]?.commit || '',title:(task.input.prompt||task.kind).slice(0,100),ownerId:String(task.githubUserId),kind:task.input.projectId?'workbench':'repository',...(task.input.projectId?{projectId:task.input.projectId}:{}),createdAt:task.createdAt,updatedAt:now()}});
-      const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations});
+      // Keep the validated current item for commit-only retry; never lose it
+      // by advancing to the next provider call while its save is unresolved.
+      if(write.status==='conflict')throw new Error('RESULT_SYNC_CONFLICT');
+      const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${id}:message`,collection:'messages',id,baseVersion:0,kind:'put',source:'ai',data:{id,sessionId:task.input.sessionId || task.id,role:'assistant',status:'complete',evidenceIds:records.map(r=>r.id),content,data:value,repository:names[index],repositorySnapshot:{...evidence[0].metadata,full_name:names[index]},repositoryWrite:write,createdAt:commitAt}},...records.map(r=>({opId:`${r.id}:evidence`,collection:'evidence' as const,id:r.id,baseVersion:0,kind:'put' as const,source:'ai' as const,data:r}))]});
       if(saved.results.some(r=>r.status==='conflict'))throw new Error('RESULT_SYNC_CONFLICT');
-      if(['summary','details','classification'].includes(task.kind)&&evidence[0]) {
-        const repoId=String(evidence[0].metadata.id);const current=getRecord(db,'repositories',repoId);
-        if(current && task.input.expectedVersions?.[repoId]!==undefined) {
-          const patch=task.kind==='details'?{ai_details:value,...(typeof value.summary==='string'&&value.summary.trim()?{ai_summary:value.summary}: {})}:task.kind==='classification'?{ai_tags:(value as Record<string,unknown>).tags,ai_category:(value as Record<string,unknown>).category}:{ai_summary:(value as Record<string,unknown>).summary,ai_tags:(value as Record<string,unknown>).tags,ai_platforms:(value as Record<string,unknown>).platforms};
-          const update=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`task:${task.id}:repository`,collection:'repositories',id:repoId,baseVersion:task.input.expectedVersions[repoId],kind:'put',source:'ai',data:{...current.data,...patch,analyzed_at:now()}}]});
-          result.repositoryWrite=update.results[0];
-        } else result.repositoryWrite=current?{status:'proposal',reason:'Expected repository version required to apply AI fields'}:{status:'snapshot',reason:'Discovery analysis retained in task result; repository was not added or starred'};
-      }
-      db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed'});
+      const sessionId=task.input.sessionId || task.id;
+      if(!getRecord(db,'sessions',sessionId))pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${task.id}:batch-session`,collection:'sessions',id:sessionId,baseVersion:0,kind:'put',source:'user',data:{id:sessionId,repoId:0,repoFullName:'',sourceRefSha:'',title:`${task.kind}: ${names.length} repositories`,ownerId:String(task.githubUserId),kind:'workbench',createdAt:task.createdAt,updatedAt:now()}}]});
+      state.completed.push({repository:names[index],repositoryId:repoId,messageId:id,status:write.status});state.current=null;task.checkpoint={...task.checkpoint,batch:state};db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(task.checkpoint),task.id);taskEvent(db,task.id,'progress',{completed:index+1,total:names.length,repository:names[index],repositoryWrite:write.status});
     })();
-  } catch(error) {
-    const current=db.prepare('SELECT status FROM ai_tasks WHERE id=?').get(task.id) as {status:string}|undefined;
-    if(current?.status!=='cancelled') {const reason=error instanceof Error && /^[A-Z][A-Z_0-9]+$/.test(error.message)?error.message:(signal.aborted?'TASK_DEADLINE_OR_SHUTDOWN':'TASK_EXECUTION_FAILED');db.prepare("UPDATE ai_tasks SET status='interrupted',error=?,updated_at=? WHERE id=?").run(reason,now(),task.id);taskEvent(db,task.id,'state',{status:'interrupted',error:reason});}
-  } finally {clearTimeout(deadline);controllers.delete(task.id);}
 }
-async function runTaskBatch(db:DB,task:TaskRecord,deps:TaskDependencies,signal:AbortSignal,emit:(type:string,data:unknown)=>void,stage:(stage:string)=>void,checkpoint:(value:unknown)=>void) {
+async function runTaskBatch(db:DB,task:TaskRecord,deps:TaskDependencies,signal:AbortSignal,emit:(type:string,data:unknown)=>void,stage:(stage:string)=>void,checkpoint:(value:TaskCheckpoint)=>void) {
   const state:BatchCheckpoint=task.checkpoint?.batch || {completed:[],current:null};
   const names=task.input.repositories!;
   for(let index=state.completed.length;index<names.length;index++) {
     signal.throwIfAborted();assertWorkspace(db,task.workspaceId,task.githubUserId);
     stage('evidence');emit('progress',{completed:index,total:names.length,repository:names[index]});
     const evidence:TaskEvidence[]=state.current?.repository===names[index]?state.current.evidence:await(deps.evidence || collectTaskEvidence)(db,[names[index]],task.githubUserId,signal);
-    state.current={...(state.current?.repository===names[index]?state.current:{}),repository:names[index],evidence};checkpoint({batch:state});
+    state.current={...(state.current?.repository===names[index]?state.current:{}),repository:names[index],evidence};checkpoint({...task.checkpoint,batch:state});
     let value:Record<string,unknown>=state.current.value!;let content:string=state.current.content!;
-    if(!state.current.validated){stage('model');const itemTask={...task,input:{...task.input,repositories:[names[index]]}};content=await(deps.model?deps.model(itemTask,evidence,signal,emit):modelCall(db,itemTask,evidence,signal,emit));signal.throwIfAborted();value=validateTaskResult(task.kind,content,evidence);if(task.kind==='details')value={...value,model:task.configSnapshot.model};state.current={...state.current,validated:true,content,value};checkpoint({batch:state});}
-    stage('saving');
-    db.transaction(()=>{
-      assertWorkspace(db,task.workspaceId,task.githubUserId);
-      const repoId=String(evidence[0].metadata.id),current=getRecord(db,'repositories',repoId),id=`${task.id}:batch:${index}`;
-      const records=taskEvidenceRecords(id,evidence);let write:RepositoryWrite=current?{status:'proposal',reason:'Expected repository version required'}:{status:'snapshot',reason:'Discovery analysis retained in task message; repository was not added or starred'};
-      if(current&&task.input.expectedVersions?.[repoId]!==undefined) {
-        const patch=task.kind==='details'?{ai_details:value,...(typeof value.summary==='string'&&value.summary.trim()?{ai_summary:value.summary}: {})}:task.kind==='classification'?{ai_tags:value.tags,ai_category:value.category}:{ai_summary:value.summary,ai_tags:value.tags,ai_platforms:value.platforms};
-        write=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${id}:repository`,collection:'repositories',id:repoId,baseVersion:task.input.expectedVersions[repoId],kind:'put',source:'ai',data:{...current.data,...patch,analyzed_at:now()}}]}).results[0];
-      }
-      const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${id}:message`,collection:'messages',id,baseVersion:0,kind:'put',source:'ai',data:{id,sessionId:task.input.sessionId || task.id,role:'assistant',status:'complete',evidenceIds:records.map(r=>r.id),content,data:value,repository:names[index],repositorySnapshot:{...evidence[0].metadata,full_name:names[index]},repositoryWrite:write,createdAt:now()}},...records.map(r=>({opId:`${r.id}:evidence`,collection:'evidence' as const,id:r.id,baseVersion:0,kind:'put' as const,source:'ai' as const,data:r}))]});
-      if(saved.results.some(r=>r.status==='conflict'))throw new Error('RESULT_SYNC_CONFLICT');
-      const sessionId=task.input.sessionId || task.id;
-      if(!getRecord(db,'sessions',sessionId))pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`${task.id}:batch-session`,collection:'sessions',id:sessionId,baseVersion:0,kind:'put',source:'user',data:{id:sessionId,repoId:0,repoFullName:'',sourceRefSha:'',title:`${task.kind}: ${names.length} repositories`,ownerId:String(task.githubUserId),kind:'workbench',createdAt:task.createdAt,updatedAt:now()}}]});
-      state.completed.push({repository:names[index],repositoryId:repoId,messageId:id,status:write.status});state.current=null;checkpoint({batch:state});taskEvent(db,task.id,'progress',{completed:index+1,total:names.length,repository:names[index],repositoryWrite:write.status});
-    })();
+    if(!state.current.validated){stage('model');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight',updated_at=? WHERE id=?").run(now(),task.id);const itemTask={...task,input:{...task.input,repositories:[names[index]]}};content=await(deps.model?deps.model(itemTask,evidence,signal,emit):modelCall(db,itemTask,evidence,signal,emit));db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded',updated_at=? WHERE id=?").run(now(),task.id);signal.throwIfAborted();value=validateTaskResult(task.kind,content,evidence);if(task.kind==='details')value={...value,model:task.configSnapshot.model};state.current={...state.current,validated:true,content,value};checkpoint({...task.checkpoint,batch:state});}
+    stage('saving');db.prepare("UPDATE ai_tasks SET commit_status='pending',updated_at=? WHERE id=?").run(now(),task.id);
+    commitBatchItem(db,task,state,index);
   }
   const result={content:state.completed.map(r=>`${r.repository}: ${r.status}`).join('\n'),batch:state.completed,completed:state.completed.length,total:names.length};
-  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed'});})();
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,failure_code=NULL,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing'});})();
 }
 export function startTaskRunner(db:DB,deps:TaskDependencies={}):void {
   if(runner)return;running=true;
@@ -317,5 +438,5 @@ export function startTaskRunner(db:DB,deps:TaskDependencies={}):void {
     }
   }; runner=setInterval(tick,250);runner.unref();tick();
 }
-export async function stopTaskRunner():Promise<void> {running=false;if(runner)clearInterval(runner);runner=undefined;for(const controller of controllers.values())controller.abort();await Promise.allSettled([...activePromises]);}
+export async function stopTaskRunner():Promise<void> {running=false;if(runner)clearInterval(runner);runner=undefined;for(const [id,controller] of controllers){const context=executionContexts.get(id);if(context){context.shutdown=true;context.db.prepare("UPDATE ai_tasks SET failure_code='SHUTDOWN_REQUESTED',updated_at=? WHERE id=?").run(now(),id);taskEvent(context.db,id,'shutdown_intent',{reason:'service_shutdown'});}controller.abort();}await Promise.allSettled([...activePromises]);}
 

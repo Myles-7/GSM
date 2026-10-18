@@ -11,8 +11,9 @@ import { HomeSync } from '../home/sync';
 import type { HomeRecord } from '../home/types';
 import { holdRepositoryIdentityWrites, releaseRepositoryIdentityWrites } from './repositoryIdentityGate';
 import { inspectRepositoryIdentities, remapRepositoryList, validateRepositoryIdentityMappings, type RepositoryIdentityMapping } from '../utils/repositoryIdentity';
-import { backupParticipantIdentities, restoreParticipantIdentities, migrateWorkbenchRepositoryIdentities, migrateCustomDiscoveryRepositoryIdentities, migrateVectorRepositoryIdentities, participantIdentityRecoverySnapshots, participantIdentityRecoveryView, type RepositoryIdentityParticipantBackup } from './repositoryIdentityParticipants';
+import { backupParticipantIdentities, restoreParticipantIdentities, migrateWorkbenchRepositoryIdentities, migrateCustomDiscoveryRepositoryIdentities, migrateVectorRepositoryIdentities, participantIdentityRecoverySnapshots, participantIdentityRecoveryView, remapParticipantClassificationSchemes, type RepositoryIdentityParticipantBackup } from './repositoryIdentityParticipants';
 import { VectorSearchService, type VectorRepositoryIdentityBackup } from './vectorSearchService';
+import { remapParticipantRepositoryList } from '../utils/repositoryIdentityRemap';
 
 type Snapshot = ReturnType<NonNullable<typeof appPersistenceOptions.partialize>>;
 interface IdentityJournal {
@@ -78,6 +79,7 @@ function restoredStorePatch(before: Snapshot, state: AppState, account: string):
   const parked = state.accountWorkspaces[account];
   if (parked) patch.accountWorkspaces = { ...state.accountWorkspaces, [account]: {
     ...parked, repositories: before.repositories!, repositoryOrder: before.repositoryOrder,
+    classificationSchemes: (before as Partial<AppState>).classificationSchemes,
     releases: before.releases!, releaseSubscriptions: numericIds(before.releaseSubscriptions),
   } };
   return patch;
@@ -106,6 +108,11 @@ export function remapIdentityStoreSnapshot(state: Partial<AppState>, mappings: r
   const patch: Partial<AppState> = {
     repositories: remapRepositoryList(state.repositories ?? [], mappings),
     repositoryOrder: list(state.repositoryOrder),
+    classificationSchemes: remapParticipantClassificationSchemes(state.classificationSchemes, mappings),
+    ...(state.releaseSourceSettings ? { releaseSourceSettings: { ...state.releaseSourceSettings,
+      watchCustomReleaseRepos: remapParticipantRepositoryList(state.releaseSourceSettings.watchCustomReleaseRepos, mappings),
+      customReleaseRepos: remapParticipantRepositoryList(state.releaseSourceSettings.customReleaseRepos, mappings),
+    } } : {}),
     releaseSubscriptions: new Set(list(state.releaseSubscriptions)),
     releases: (state.releases ?? []).map(release => ({ ...release, repository: { ...release.repository, id:id(release.repository.id) } })),
     searchResults: remapRepositoryList(state.searchResults ?? [], mappings),
@@ -180,7 +187,7 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
     validateRepositoryIdentityMappings(mappings);
     assertIdle(); await waitForInFlightSync(); await assertHomeReady(sync); assertAccount(account); assertIdle();
     const before = snapshot();
-    const participants = await backupParticipantIdentities(account);
+    const participants = await backupParticipantIdentities(account, { prepareReading: true });
     const recoveryParticipants = await participantRecoveryFingerprints(participants, mappings);
     const plannedStore = remapIdentityStoreSnapshot(useAppStore.getState(), mappings);
     const service=vectorService();
@@ -245,7 +252,7 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
       if (!service) throw new Error('IDENTITY_VECTOR_SCOPE_CHANGED');
       await migrateVectorRepositoryIdentities(current.backup.vectors.scope.namespace,current.mappings,{service,backup:current.backup.vectors});
     });
-    await step('workbench',async()=>{ await migrateWorkbenchRepositoryIdentities({ownerId:account},current.mappings); });
+    await step('workbench',async()=>{ await migrateWorkbenchRepositoryIdentities({ownerId:account, maintenanceJournalId: current.id},current.mappings); });
     await step('custom-discovery',async()=>{
       if (current.backup.participants.customDiscovery) await migrateCustomDiscoveryRepositoryIdentities(account,current.mappings);
     });
@@ -256,6 +263,7 @@ async function applyRepositoryIdentityMigration(mappings?: RepositoryIdentityMap
       if (parked) {
         const changed=remapIdentityStoreSnapshot({ ...parked,releaseSubscriptions:new Set(parked.releaseSubscriptions),readReleases:new Set(parked.readReleases),readForks:new Set(parked.readForks) },current.mappings);
         patch.accountWorkspaces={...state.accountWorkspaces,[account]:{...parked,repositories:changed.repositories!,repositoryOrder:changed.repositoryOrder,
+          classificationSchemes: changed.classificationSchemes,
           releases:changed.releases!,releaseSubscriptions:Array.from(changed.releaseSubscriptions!)}};
       }
       setIdentityMigrationStoreState(patch); await flushAppStorePersistence();
@@ -318,7 +326,7 @@ async function restoreRepositoryIdentityMigrationNow(): Promise<void> {
     if (journal.backup.vectors) {
       await vectors!.restoreRepositoryIdentities(journal.backup.vectors);
     }
-    await restoreParticipantIdentities(account,journal.backup.participants);
+    await restoreParticipantIdentities(account,journal.backup.participants,journal.id);
     setIdentityMigrationStoreState(restoredStorePatch(journal.backup.store,useAppStore.getState(),account));
     await flushAppStorePersistence();
     journal.phase='restored'; delete journal.error; await saveJournal(journal);

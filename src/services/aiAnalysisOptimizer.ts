@@ -5,6 +5,7 @@ import { backend } from './backendAdapter';
 import { shouldBypassBackend } from './routeMode';
 import { AIRateLimiter, AIRateLimitConfig } from './aiRequestLimiter';
 import { isRateLimitedError, getRetryAfterMsFromError } from './aiService';
+import { bindTaskItemSignal, taskForSignal } from '../utils/taskSignals';
 
 export interface AnalysisTask {
   repo: Repository;
@@ -294,7 +295,10 @@ export class AIAnalysisOptimizer {
           // 起算点放在 acquire 之后：限流排队时间不应计入 provider 响应时长，
           // 否则 429 冷却会把「并发调节」误判为 provider 变慢而持续降并发
           const analysisStart = Date.now();
-          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, this.batchAbortController.signal, retryState);
+          const requestSignal = AbortSignal.any([this.batchAbortController.signal]);
+          const parentTask = taskForSignal(this.batchAbortController.signal);
+          if (parentTask) bindTaskItemSignal(requestSignal, parentTask, String(task.repo.id));
+          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, requestSignal, retryState);
           const analysisDuration = Date.now() - analysisStart;
           this.sharedLimiter.notifySuccess();
           this.recordResponseTime(analysisDuration);
@@ -394,8 +398,11 @@ export class AIAnalysisOptimizer {
             if (onProgress) {
               onProgress(completedCount.value, total, this.activeWorkers);
             }
-          } catch {
-            completedCount.value++;
+          } catch (error) {
+            // A callback/persistence exception must be visible to the caller.
+            // Silently continuing makes provider-success logs look like lost AI results.
+            this.abort();
+            throw error;
           }
         }
       } finally {
@@ -507,8 +514,9 @@ export class AIAnalysisOptimizer {
             if (onProgress) {
               onProgress(completedCount.value, total, this.activeWorkers);
             }
-          } catch {
-            completedCount.value++;
+          } catch (error) {
+            this.abort();
+            throw error;
           }
         }
       } finally {

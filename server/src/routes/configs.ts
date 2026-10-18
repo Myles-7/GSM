@@ -1,9 +1,12 @@
+import { recordVerifiedBinding } from '../services/homeBinding.js';
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { getDb } from '../db/connection.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { config } from '../config.js';
 import { logger } from '../services/logger.js';
+import { assertLegacyClassificationWrite, CLASSIFICATION_FIELDS, classificationWasUpgraded, ClassificationCompatibilityError, mergeStoredClassificationSchemes, parseClassificationJson } from '../services/classificationCompatibility.js';
+import { assertStoredTechnologyMembershipReferences, ClassificationReferenceError, classificationSchemesSchema } from '../services/classificationValidation.js';
 
 const router = Router();
 
@@ -580,12 +583,17 @@ router.put('/api/settings', (req, res) => {
   try {
     const db = getDb();
     const updates = req.body as Record<string, unknown>;
+    if (updates.classificationSchemes !== undefined && !classificationSchemesSchema.safeParse(parseClassificationJson(updates.classificationSchemes)).success) { res.status(400).json({ error: 'Invalid classification schemes', code: 'INVALID_CLASSIFICATION_SCHEMES' }); return; }
 
     const stmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
 
     const upsert = db.transaction(() => {
+      if (CLASSIFICATION_FIELDS.some(key => key in updates) && !updates.classificationSchemes) {
+        const previous = Object.fromEntries((db.prepare('SELECT key,value FROM settings').all() as { key: string; value: unknown }[]).map(row => [row.key, row.value]));
+        assertLegacyClassificationWrite(updates, previous, classificationWasUpgraded(db));
+      }
       for (const [key, rawValue] of Object.entries(updates)) {
-        let value = rawValue as string | null;
+        let value = (key === 'classificationSchemes' ? mergeStoredClassificationSchemes(db, rawValue) : rawValue) as string | null;
 
         if (key === 'github_token' && value && typeof value === 'string') {
           if (value.startsWith('***')) {
@@ -605,11 +613,15 @@ router.put('/api/settings', (req, res) => {
               : value;
         stmt.run(key, serialized);
       }
+      if(res.locals.verifiedGithubIdentity)recordVerifiedBinding(db,res.locals.verifiedGithubIdentity);
+      if (updates.classificationSchemes !== undefined) assertStoredTechnologyMembershipReferences(db);
     });
 
     upsert();
     res.json({ updated: true });
   } catch (err) {
+    if (err instanceof ClassificationReferenceError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ClassificationCompatibilityError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
     logger.errorFromError('configs.updateSettings', 'PUT /api/settings error', err);
     res.status(500).json({ error: 'Failed to update settings', code: 'UPDATE_SETTINGS_FAILED' });
   }

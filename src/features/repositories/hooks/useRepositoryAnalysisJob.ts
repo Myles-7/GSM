@@ -12,7 +12,9 @@ import { buildCategoryHints, resolveCategoryAssignment } from '../../../utils/ca
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
-import { bindTaskSignal, taskConfigSnapshot } from '../../../services/taskExecution';
+import { bindTaskSignal, taskConfigSnapshot, confirmLocalTaskCommit } from '../../../services/taskExecution';
+import { checkpointDesktopHomeRepository } from '../../../home/desktop';
+import { classifyAgyError } from '../../../services/agyErrors';
 
 export type RepositoryAnalysisScope = 'all' | 'unanalyzed' | 'failed' | 'selected';
 
@@ -254,20 +256,37 @@ export const useRepositoryAnalysisJob = ({
 
     let successCount = 0;
     let failedCount = 0;
+    let commitAttempted = false;
+    let persistenceFailed = false;
+    const savedIds = new Set<number>();
+    const confirmCommit = () => confirmLocalTaskCommit(journal, {
+      durabilityBarrier: async () => {
+        if (!currentAccount()) throw new Error('ACCOUNT_CHANGED');
+        if (startState.user?.id == null) return;
+        const owner = String(startState.user.id);
+        for (const repositoryId of savedIds) await checkpointDesktopHomeRepository(owner, repositoryId);
+      },
+      failureCode: 'HOME_CHECKPOINT_FAILED',
+    });
 
     try {
       const githubApi = createGitHubApiService(githubToken);
-      const aiService = new AIService(activeConfig.provider === 'agy-cli' ? { ...activeConfig, agyFeature: 'repository-summary' as const, agyPriority: repositories.length === 1 ? 'interactive' as const : 'background' as const } : activeConfig, language);
+      const aiService = new AIService(activeConfig.provider === 'agy-cli' ? { ...activeConfig, agyFeature: 'repository-summary' as const, agyPriority: 'interactive' as const } : activeConfig, language);
       const categoryNames = allCategories.filter((category) => category.id !== 'all').map((category) => category.name);
       const aiCategoryHints = buildCategoryHints(allCategories);
       const onResult = (result: AnalysisResult) => {
         if ((!mountedRef.current && !journal) || optimizerRef.current !== optimizer || !currentAccount()) return;
-        journal?.item(String(result.repo.id), result.success ? 'complete' : 'failed', result.success ? undefined : result.error);
         const latest = useAppStore.getState().repositories.find(repo => repo.id === result.repo.id);
         if (!latest) return;
         const merge = writes.get(result.repo.id)!;
 
+        if (!result.success && (stopRequestedRef.current || optimizer.isAborted()) && result.error?.message === 'Analysis aborted') {
+          journal?.item(String(result.repo.id), 'canceled');
+          return;
+        }
+
         if (result.success) {
+          journal?.commit('pending');
           const resolvedCategory = resolveCategoryAssignment(
             { ...result.repo, ai_summary: result.summary },
             result.tags || [],
@@ -282,6 +301,8 @@ export const useRepositoryAnalysisJob = ({
             categoryLocked: wasCategoryLocked,
             analyzedAt: new Date().toISOString(),
           })));
+          savedIds.add(result.repo.id);
+          journal?.item(String(result.repo.id), 'complete');
           successCount += 1;
           return;
         }
@@ -290,7 +311,12 @@ export const useRepositoryAnalysisJob = ({
           analyzedAt: new Date().toISOString(),
           error: result.error?.message || undefined,
         })));
+        journal?.item(String(result.repo.id), 'failed', result.error);
         failedCount += 1;
+        if (result.error && ['configuration', 'deferred'].includes(classifyAgyError(result.error))) {
+          journal?.metadata({ stopReason: 'config_changed' });
+          optimizer.abort();
+        }
       };
 
       await optimizer.analyzeRepositoriesPipelined(
@@ -308,6 +334,11 @@ export const useRepositoryAnalysisJob = ({
         onResult,
       );
 
+      if (successCount && currentAccount()) {
+        commitAttempted = true;
+        persistenceFailed = !await confirmCommit();
+        if (persistenceFailed) return false;
+      }
       const stats = optimizer.getStats();
       console.log('AI Analysis Stats:', stats);
       if (syncOnComplete && currentAccount()) {
@@ -339,7 +370,8 @@ export const useRepositoryAnalysisJob = ({
       return false;
     } finally {
       unsubscribe?.();
-      journal?.finish();
+      if (!commitAttempted && successCount && currentAccount()) persistenceFailed = !await confirmCommit();
+      journal?.finish(persistenceFailed ? 'partial' : undefined);
       journalRef.current = null;
       if (optimizerRef.current === optimizer) {
         optimizerRef.current = null;

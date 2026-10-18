@@ -42,7 +42,7 @@ export function useCustomDiscoveryLifecycle(): void {
         const due = useCustomDiscovery.getState().data.channels.filter(c => isDue(c));
         if (due.length && Date.now() - lastAttempt >= 15 * 60000) {
           lastAttempt = Date.now();
-          await startCustomRun(due.map(c => c.id));
+          await startCustomRun(due.map(c => c.id), { automatic: true });
         }
       } catch (error) { if (alive) reportCustomError(error); }
       finally { checking = false; }

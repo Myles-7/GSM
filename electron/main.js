@@ -7,12 +7,17 @@ const fs = require('fs');
 const os = require('os');
 const isDev = process.env.NODE_ENV === 'development';
 const { createMcpLocalServer } = require('./mcpLocalServer');
+const { createOrganizationBroker } = require('./mcpOrganization');
 const { createAgyDesktop } = require('./agyDesktop');
 const { registerAgyIpc } = require('./agyIpc');
+const { installRendererRecovery } = require('./rendererRecovery');
 const { registerWebdavIpc } = require('./webdavIpc');
 const { isTrustedDocument, isTrustedMainFrame, createTrustedIpcMain, registerMainDocumentNavigation } = require('./trustedRenderer');
 const { pathToFileURL } = require('url');
+const { fetch: undiciFetch, ProxyAgent } = require('undici');
+const { withOwnedDispatcher } = require('./mainFetch');
 const { createPluginManager } = require('./plugins/pluginManager');
+const { createPluginMarketplace } = require('./plugins/pluginMarketplace');
 const { createPluginHostOperations } = require('./plugins/pluginHostOperations');
 const { createPluginIpcRegistrar, registerPluginPageNavigation } = require('./plugins/pluginIpc');
 const { downloadReleaseAsset } = require('./plugins/releaseDownload');
@@ -38,11 +43,45 @@ let pluginNavigation = null;
 const getDevURL = () => isDev ? (process.env.GSM_DEV_SERVER_URL || 'http://localhost:5173') : undefined;
 const isTrustedAppFrame = event => isTrustedMainFrame(event, mainWindow, trustedPluginHostURL, getDevURL());
 const trustedIpcMain = createTrustedIpcMain({ ipcMain, isTrusted: isTrustedAppFrame });
+const redact = require('./redact');
+const { createDiagLogger } = require('./diagLogger');
+const { wrapFetch } = require('./netTap');
+const { buildSystemInfo } = require('./systemInfo');
+const { registerDiagnosticsIpc } = require('./diagnosticsIpc');
+let diagnostics;
+let diagnosticsDebug = false;
+function getDiagnostics() {
+  if (!diagnostics) diagnostics = createDiagLogger({ logsDir: path.join(app.getPath('userData'), 'diagnostics'),
+    maxFileBytes: () => (diagnosticsDebug ? 20 : 5) * 1024 * 1024,
+    maxTotalBytes: () => (diagnosticsDebug ? 40 : 20) * 1024 * 1024 });
+  return diagnostics;
+}
+const diagnosticSink = entry => getDiagnostics().record(entry);
+const undiciFetchTapped = wrapFetch(undiciFetch, { source: 'main:undici', record: diagnosticSink, isDebugMode: () => diagnosticsDebug });
+const chromiumFetchTapped = wrapFetch((url, init) => net.fetch(url, init), { source: 'main:chromium', record: diagnosticSink, isDebugMode: () => diagnosticsDebug });
+registerDiagnosticsIpc({ ipcMain: trustedIpcMain, getLogger: getDiagnostics,
+  setDebugMode: enabled => { diagnosticsDebug = enabled; },
+  getSystemInfo: async () => {
+    const plugins = pluginManager ? (await pluginManager.list()).plugins.map(p => ({ id: p.manifest.id, version: p.manifest.version, enabled: p.enabled })) : [];
+    return buildSystemInfo({ os, versions: process.versions, appVersion: app.getVersion(),
+      sessionId: getDiagnostics().sessionId, proxyConfig: loadProxyConfig(), plugins, frontendDebug: diagnosticsDebug });
+  },
+});
+process.on('uncaughtExceptionMonitor', error => {
+  try { diagnosticSink({ level: 'error', module: 'electron.global', message: 'Uncaught exception', data: redact.sanitizeError(error) }); } catch { /* preserve the original fatal error */ }
+});
+app.on('render-process-gone', (_event, _contents, details) => {
+  diagnosticSink({ level: 'error', module: 'electron.process', message: 'Renderer process gone', data: { reason: details?.reason, exitCode: details?.exitCode } });
+});
+app.on('child-process-gone', (_event, details) => {
+  diagnosticSink({ level: 'error', module: 'electron.process', message: 'Child process gone', data: { type: details?.type, reason: details?.reason, exitCode: details?.exitCode } });
+});
 let agyDesktop;
 let agyQuitReady = false;
 function getAgyDesktop() {
   if (!agyDesktop) agyDesktop = createAgyDesktop({
     userDataPath: app.getPath('userData'),
+    safeStorage,
     selectExecutable: async () => {
       const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openFile'], filters: [{ name: 'AGY CLI', extensions: ['exe'] }],
@@ -116,7 +155,8 @@ function createWindow() {
     url => isTrustedDocument(url, trustedPluginHostURL, getDevURL()), url => shell.openExternal(url));
   pluginNavigation = registerPluginPageNavigation(mainWindow.webContents, () => pluginManager);
   mainWindow.webContents.once('destroyed', () => agyDesktop?.cancel(agyOwner));
-  mainWindow.webContents.on('render-process-gone', () => agyDesktop?.cancel(agyOwner));
+  installRendererRecovery({ window: mainWindow, dialog, cancel: () => agyDesktop?.cancel(agyOwner),
+    userDataPath: app.getPath('userData'), locale: app.getLocale() });
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) agyDesktop?.cancel(agyOwner);
   });
@@ -385,7 +425,6 @@ function getFetchDispatcher() {
       ? 'socks5://' + auth + config.host + ':' + config.port
       : 'http://' + auth + config.host + ':' + config.port;
     try {
-      const { ProxyAgent } = require('undici');
       return new ProxyAgent(proxyUrl);
     } catch (err) {
       throw new Error(`Failed to initialize configured proxy agent: ${err instanceof Error ? err.message : String(err)}`);
@@ -394,7 +433,6 @@ function getFetchDispatcher() {
   const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy;
   if (envProxy) {
     try {
-      const { ProxyAgent } = require('undici');
       return new ProxyAgent(envProxy);
     } catch (err) {
       throw new Error(`Failed to initialize environment proxy agent: ${err instanceof Error ? err.message : String(err)}`);
@@ -409,8 +447,8 @@ trustedIpcMain.handle('x-fetch-timeline', async (_event, handle) => {
     return { success: false, error: 'invalid handle' };
   }
   try {
-    const dispatcher = getFetchDispatcher();
-    const response = await fetch(`https://x.com/${handle}`, {
+    return await withOwnedDispatcher(getFetchDispatcher, async dispatcher => {
+    const response = await undiciFetchTapped(`https://x.com/${handle}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml',
@@ -420,12 +458,14 @@ trustedIpcMain.handle('x-fetch-timeline', async (_event, handle) => {
       ...(dispatcher ? { dispatcher } : {}),
     });
     if (!response.ok) {
+      await response.body?.cancel();
       return { success: false, error: `x.com responded ${response.status}` };
     }
     const html = await response.text();
     return { success: true, html };
+    });
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
+    return { success: false, error: 'X request failed' };
   }
 });
 
@@ -441,7 +481,7 @@ trustedIpcMain.handle('telegram-fetch-channel', async (_event, channel, before) 
   }
   try {
     const suffix = before ? `?before=${before}` : '';
-    const response = await net.fetch(`https://t.me/s/${channel}${suffix}`, {
+    const response = await chromiumFetchTapped(`https://t.me/s/${channel}${suffix}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml',
@@ -482,6 +522,7 @@ trustedIpcMain.handle('x-fetch-graphql', async (_event, url, auth) => {
     return { success: false, error: 'invalid auth cookies' };
   }
   try {
+    return await withOwnedDispatcher(getFetchDispatcher, async dispatcher => {
     // GraphQL API 请求带 Bearer/CSRF 等专有头；HTML 页面与静态资源带这些头
     // 反而被 x.com 拒 401（实测），只发 UA + Cookie
     const isApiCall = url.startsWith('https://x.com/i/api/');
@@ -501,23 +542,25 @@ trustedIpcMain.handle('x-fetch-graphql', async (_event, url, auth) => {
           ...(url.startsWith('https://x.com/') ? { 'Cookie': `auth_token=${authToken}; ct0=${ct0}` } : {}),
         };
     // redirect: 'error' — 拒绝跨域（及一切）重定向，避免 Cookie 被转到允许域名之外
-    const dispatcher = getFetchDispatcher();
-    const response = await fetch(url, {
+    const response = await undiciFetchTapped(url, {
       headers,
       redirect: 'error',
       signal: AbortSignal.timeout(20_000),
       ...(dispatcher ? { dispatcher } : {}),
     });
     if (typeof response.url === 'string' && response.url && !isAllowedXProxyUrl(response.url)) {
+      await response.body?.cancel();
       return { success: false, error: 'redirect blocked' };
     }
     if (!response.ok) {
+      await response.body?.cancel();
       return { success: false, error: `x.com responded ${response.status}` };
     }
     const body = await response.text();
     return { success: true, body };
+    });
   } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
+    return { success: false, error: 'X request failed' };
   }
 });
 
@@ -893,10 +936,12 @@ let mcpConfig = {
   token: '',
 };
 let mcpSnapshot = null;
+const organizationBroker = createOrganizationBroker(() => mainWindow);
 const mcpServer = createMcpLocalServer(() => ({
   config: mcpConfig,
   snapshot: mcpSnapshot,
-}));
+}), (name, args, ownerId) => organizationBroker.request(name, args, ownerId));
+trustedIpcMain.handle('mcp:organization-reply', (event, requestId, result) => organizationBroker.reply(event.sender, requestId, result));
 
 /** Desktop MCP must only bind loopback. */
 function normalizeMcpHost(_rawHost) {
@@ -937,16 +982,18 @@ trustedIpcMain.handle('mcp:start', async () => {
   }
 });
 
-trustedIpcMain.handle('mcp:stop', async () => mcpServer.stop());
+trustedIpcMain.handle('mcp:stop', async () => { organizationBroker.stop(); return mcpServer.stop(); });
 
 trustedIpcMain.handle('mcp:getStatus', async () => mcpServer.getStatus());
 
 // ── Trusted local plugin host (discovery, lifecycle, and restricted IPC) ──
 let pluginManager = null;
+let pluginMarketplace = null;
 
 function getPluginManager() {
   if (!pluginManager) {
     pluginManager = createPluginManager({
+      recordDiagnostic: diagnosticSink,
       pluginsRoot: path.join(app.getPath('userData'), 'plugins'),
       hostOperations: createPluginHostOperations({
         clipboard, nativeImage, ClipboardItem, dialog, fs, path, getWindow: () => mainWindow,
@@ -954,6 +1001,18 @@ function getPluginManager() {
     });
   }
   return pluginManager;
+}
+
+function getPluginMarketplace() {
+  if (!pluginMarketplace) {
+    pluginMarketplace = createPluginMarketplace({
+      statePath: path.join(app.getPath('userData'), 'plugins-marketplace.json'),
+      stagingRoot: path.join(app.getPath('userData'), 'plugin-staging'),
+      fetchImpl: (url, options) => chromiumFetchTapped(url, options),
+      pluginManager: getPluginManager(),
+    });
+  }
+  return pluginMarketplace;
 }
 
 const handlePluginIpc = createPluginIpcRegistrar({
@@ -1010,7 +1069,7 @@ handlePluginIpc('plugins:downloadReleaseAsset', async (_event, request) => {
   );
   if (!resolved.success) return resolved;
   return downloadReleaseAsset({
-    fetchImpl: (url, options) => net.fetch(url, options),
+    fetchImpl: (url, options) => chromiumFetchTapped(url, options),
     showSaveDialog: (...args) => dialog.showSaveDialog(...args),
     ownerWindow: mainWindow,
     ...resolved.value,
@@ -1019,23 +1078,35 @@ handlePluginIpc('plugins:downloadReleaseAsset', async (_event, request) => {
 // 社区插件注册表（开发守则 §17）：主进程取回并逐条校验，渲染进程只拿到校验过的结构。
 // 这里不下载任何插件包，也不做任何安装动作。
 handlePluginIpc('plugins:loadRegistry', async () => loadPluginRegistry({
-  fetchImpl: (url, options) => net.fetch(url, options),
+  fetchImpl: (url, options) => chromiumFetchTapped(url, options),
 }));
 handlePluginIpc('plugins:runExporter', async (_event, request) =>
   getPluginManager().runExporter(request)
 );
+// Marketplace control plane is exposed to the trusted GSM renderer only. The
+// plugin-host registrar remains scoped to plugin pages and is never reused here.
+trustedIpcMain.handle('plugins:marketplace:getState', async () => getPluginMarketplace().getState());
+trustedIpcMain.handle('plugins:marketplace:addSource', async (_event, input) => getPluginMarketplace().addSource(input));
+trustedIpcMain.handle('plugins:marketplace:updateSource', async (_event, input) => getPluginMarketplace().updateSource(input));
+trustedIpcMain.handle('plugins:marketplace:removeSource', async (_event, input) => getPluginMarketplace().removeSource(input));
+trustedIpcMain.handle('plugins:marketplace:refresh', async (_event, options) => getPluginMarketplace().refresh(options));
+trustedIpcMain.handle('plugins:marketplace:install', async (_event, request) => getPluginMarketplace().install(request));
 registerAgyIpc({ ipcMain: trustedIpcMain, isMainFrame: isTrustedAppFrame, getService: getAgyDesktop });
 registerWebdavIpc({
   ipcMain: trustedIpcMain,
   isMainFrame: isTrustedAppFrame,
-  fetchImpl: (...args) => require('undici').fetch(...args),
+  fetchImpl: undiciFetchTapped,
+  chromiumFetch: (url, options) => chromiumFetchTapped(url, options),
   getDispatcher: getFetchDispatcher,
+  recordDiagnostic: entry => getDiagnostics().record(entry),
 });
 
 const { createHtmlReadingService, registerHtmlReadingIpc } = require('./htmlReading');
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock || isQuitting) return;
-  const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport });
+  const { resolveMailProxy } = require('./htmlReadingNetwork');
+  const service = createHtmlReadingService({ fs, path, userData: app.getPath('userData'), safeStorage, createTransport: require('nodemailer').createTransport,
+    getMailProxy: () => resolveMailProxy({ config: loadProxyConfig(), resolveSystem: target => require('electron').session.defaultSession.resolveProxy(target) }) });
   const { createReadingPreview } = require('./htmlReadingPreview');
   const electron = require('electron');
   const openPreview = createReadingPreview({ BrowserWindow: electron.BrowserWindow, Menu: electron.Menu, session: electron.session, shell: electron.shell, fs, path, tempDirectory: app.getPath('temp') });
@@ -1078,6 +1149,19 @@ app.whenReady().then(() => {
       },
     });
   });
+  const observedSession = require('electron').session.defaultSession;
+  // Metadata only. Do not register an intercepting onBeforeRequest hook.
+  observedSession.webRequest.onCompleted({ urls: ['http://*/*', 'https://*/*'] }, details => {
+    if (!diagnosticsDebug && details.statusCode < 400) return;
+    diagnosticSink({ level: details.statusCode >= 400 ? 'warn' : 'debug', module: 'electron.chromium',
+      message: 'Chromium request completed', data: { url: redact.redactUrl(details.url), method: details.method, status: details.statusCode, type: details.resourceType } });
+  });
+  observedSession.webRequest.onErrorOccurred({ urls: ['http://*/*', 'https://*/*'] }, details => {
+    diagnosticSink({ level: 'warn', module: 'electron.chromium', message: 'Chromium request failed',
+      data: { url: redact.redactUrl(details.url), method: details.method, error: details.error } });
+  });
+  getDiagnostics().record({ level: 'info', module: 'electron.startup', message: 'Desktop started',
+    data: buildSystemInfo({ os, versions: process.versions, appVersion: app.getVersion(), sessionId: getDiagnostics().sessionId, proxyConfig: loadProxyConfig() }) });
   reloadDesktopPrefs();
   void getPluginManager().initialize().catch((error) => {
     console.error('Failed to initialize plugins:', error instanceof Error ? error.message : 'Unknown error');
@@ -1126,6 +1210,7 @@ app.on('before-quit', (event) => {
 });
 
 app.on('will-quit', () => {
+  diagnostics?.flushSync();
   globalShortcut.unregisterAll();
   destroyTray();
   void mcpServer.stop();

@@ -1,0 +1,274 @@
+ M docs/personal/features.md
+ M electron/agyDesktop.js
+ M electron/agyDesktop.test.js
+ M electron/agyIpc.js
+ M electron/agyProtocol.js
+ M electron/agyProtocol.test.js
+ M electron/agyQueue.js
+ M electron/agyQueue.test.js
+ M electron/agyRuntime.js
+ M electron/agyRuntime.test.js
+ M electron/htmlReadingDelivery.js
+ M electron/main.js
+ M electron/mcpLocalServer.js
+ M electron/preload.js
+ M package-lock.json
+ M package.json
+ M scripts/fixtures/html-reading-production-electron.cjs
+ M scripts/package-reading-desktop.cjs
+ M scripts/test-html-reading-loop.py
+ M server/package-lock.json
+ M server/package.json
+ M server/src/db/schema.ts
+ M server/src/routes/categories.ts
+ M server/src/routes/configs.ts
+ M server/src/routes/repositories.ts
+ M server/src/routes/sync.ts
+ M server/src/services/repositoryOrganization.ts
+ M server/src/services/syncV2.ts
+ M server/src/types/api.ts
+ M src/App.tsx
+ M src/components/AIOrganizationPanel.test.tsx
+ M src/components/AIOrganizationPanel.tsx
+ M src/components/BulkCategorizeModal.tsx
+ M src/components/CategoryEditModal.tsx
+ M src/components/CategorySidebar.tsx
+ D src/components/CategoryStructurePanel.tsx
+ M src/components/Header.tsx
+ M src/components/RepositoryEditModal.tsx
+ M src/components/RepositoryList.tsx
+ M src/components/SearchBar.tsx
+ M src/components/SettingsPanel.test.tsx
+ M src/components/SettingsPanel.tsx
+ M src/components/settings/AgyConfigPanel.test.tsx
+ M src/components/settings/DataManagementPanel.tsx
+ M src/components/settings/HtmlReadingImport.test.tsx
+ M src/components/settings/HtmlReadingImport.tsx
+ M src/components/settings/HtmlReadingMail.tsx
+ M src/components/settings/HtmlReadingPanel.test.tsx
+ M src/components/settings/HtmlReadingPanel.tsx
+ M src/components/settings/McpSettingsPanel.tsx
+ M src/components/settings/MenuManagementPanel.tsx
+ M src/components/settings/htmlReadingI18n.test.tsx
+ M src/components/ui/input.tsx
+ M src/components/ui/select.tsx
+ M src/components/ui/textarea.tsx
+ M src/features/ai-workbench/components/AIWorkbench.tsx
+ M src/features/ai-workbench/components/InspirationGrid.tsx
+ M src/features/ai-workbench/components/WorkbenchResults.tsx
+ M src/features/ai-workbench/components/workbench-layout.css
+ M src/features/repositories/components/PendingClassification.tsx
+ M src/features/repositories/components/RepositoryGroups.test.tsx
+ M src/features/repositories/components/RepositoryGroups.tsx
+ M src/features/repositories/components/repositoryCategoryAssignment.ts
+ M src/features/repositories/hooks/useBulkRepositoryActions.ts
+ M src/features/settings/hooks/useAgySettings.ts
+ M src/features/settings/hooks/useBackupActions.test.tsx
+ M src/features/settings/hooks/useBackupActions.ts
+ M src/features/settings/hooks/useHtmlReading.test.ts
+ M src/features/settings/hooks/useHtmlReading.ts
+ M src/features/settings/hooks/useMcpActions.ts
+ M src/home/desktop.identity.test.ts
+ M src/home/desktop.ts
+ M src/hooks/useAIOrganization.test.ts
+ M src/hooks/useAIOrganization.ts
+ M src/lib/html-reading/batch.ts
+ M src/lib/html-reading/model.ts
+ M src/lib/html-reading/reader-runtime.txt
+ M src/lib/html-reading/reader-style.txt
+ M src/lib/html-reading/render.test.ts
+ M src/lib/html-reading/render.ts
+ M src/lib/html-reading/storage.test.ts
+ M src/lib/html-reading/storage.ts
+ M src/locales/de/app.json
+ M src/locales/de/repositories.json
+ M src/locales/en/app.json
+ M src/locales/en/repositories.json
+ M src/locales/en/settings.json
+ M src/locales/es/app.json
+ M src/locales/es/repositories.json
+ M src/locales/fr/app.json
+ M src/locales/fr/repositories.json
+ M src/locales/ja/app.json
+ M src/locales/ja/repositories.json
+ M src/locales/ko/app.json
+ M src/locales/ko/repositories.json
+ M src/locales/pt-BR/app.json
+ M src/locales/pt-BR/repositories.json
+ M src/locales/ru/app.json
+ M src/locales/ru/repositories.json
+ M src/locales/zh-TW/app.json
+ M src/locales/zh-TW/repositories.json
+ M src/locales/zh/app.json
+ M src/locales/zh/repositories.json
+ M src/locales/zh/settings.json
+ M src/services/agyClient.ts
+ M src/services/aiCategoryStructure.test.ts
+ M src/services/aiCategoryStructure.ts
+ M src/services/aiOrganizationExecution.ts
+ M src/services/aiOrganizationSchema.ts
+ M src/services/aiOrganizationWorkflow.ts
+ M src/services/aiService.ts
+ M src/services/aiWorkbenchOperations.test.ts
+ M src/services/aiWorkbenchOperations.ts
+ M src/services/autoSync.ts
+ M src/services/backendAdapter.ts
+ M src/services/electronProxy.ts
+ M src/services/githubApi.starStatus.test.ts
+ M src/services/githubApi.ts
+ M src/services/htmlReading.test.ts
+ M src/services/htmlReading.ts
+ M src/services/localBackup.ts
+ M src/services/localBackupRestorePlan.test.ts
+ M src/services/localBackupRestorePlan.ts
+ M src/services/mcpElectronBridge.test.ts
+ M src/services/mcpElectronBridge.ts
+ M src/services/mcpSnapshot.ts
+ M src/services/repositoryChatStorage.test.ts
+ M src/services/repositoryChatStorage.ts
+ M src/services/webdavService.test.ts
+ M src/store/helpers/accountWorkspace.ts
+ M src/store/helpers/aiOrganizationTransaction.ts
+ M src/store/helpers/categoryHelpers.ts
+ M src/store/helpers/repositoryOrganization.ts
+ M src/store/initialState.ts
+ M src/store/normalizers/persistedState.ts
+ M src/store/persistence/options.ts
+ M src/store/schema.ts
+ M src/store/slices/preferenceSlice.ts
+ M src/store/types.ts
+ M src/store/useAppStore.modularization.test.ts
+ M src/store/useAppStore.test.ts
+ M src/store/useAppStore.ts
+ M src/types/agy.ts
+ M src/types/aiOrganization.ts
+ M src/types/aiWorkbench.ts
+ M src/types/index.ts
+ M src/utils/repositoryMerge.ts
+ M tailwind.config.js
+?? .workbuddy-ai/
+?? .workbuddy/
+?? docs/daily-reading-ux-20261006.md
+?? docs/design/
+?? docs/html-reading-mail-fix-20261004.md
+?? docs/html-reading-mobile-polish-20261004.md
+?? docs/html-reading-mobile-polish-decisions-20261004.md
+?? docs/html-reading-return-20261006.md
+?? docs/html-workspace-clean-20261006.md
+?? docs/personal/upgrades/dual-classification-20261006-validation.md
+?? docs/personal/upgrades/v0.8.6-migration-analysis-final-20261016.md
+?? docs/personal/upgrades/v0.8.6-migration-analysis-review-2.md
+?? docs/personal/upgrades/v0.8.6-migration-analysis-review.md
+?? docs/personal/upgrades/v0.8.6-migration-analysis.md
+?? docs/personal/upgrades/v0.8.6-migration-baseline-20261017/
+?? docs/plans/2026-10-06-dual-classification-implementation.md
+?? docs/plans/2026-10-06-integrated-category-management.md
+?? docs/plans/2026-10-06-organization-depth-concurrency.md
+?? docs/plans/2026-10-06-organization-pending-continuation.md
+?? docs/plans/2026-10-06-organization-structure-timeout-fix.md
+?? docs/plans/2026-10-06-organization-ux-reliability.md
+?? docs/plans/2026-10-07-direct-category-tree.md
+?? docs/plans/2026-10-07-local-agent-organization.md
+?? docs/plans/2026-10-07-organization-complete-validation.md
+?? docs/plans/2026-10-07-organization-executor-recovery.md
+?? docs/plans/2026-10-07-organization-pipeline-refactor.md
+?? docs/plans/2026-10-07-organization-renderer-recovery.md
+?? docs/superpowers/plans/2026-10-06-daily-reading-ux.md
+?? electron/htmlReadingNetwork.js
+?? electron/htmlReadingNetwork.test.js
+?? electron/mcpOrganization.js
+?? electron/mcpOrganization.test.js
+?? electron/rendererRecovery.js
+?? electron/rendererRecovery.test.js
+?? findings.md
+?? progress.md
+?? scripts/fixtures/html-reading-mail-verify.cjs
+?? scripts/fixtures/local-agent-electron.cjs
+?? scripts/test-category-sidebar-tree.cjs
+?? scripts/test-daily-reading-ux.py
+?? scripts/test-html-reading-mobile-polish.py
+?? scripts/test-html-reading-return.py
+?? scripts/test-html-workspace-clean.py
+?? scripts/test-local-agent-organization.cjs
+?? scripts/update-category-tree-locales.cjs
+?? scripts/update-dual-classification-locales.cjs
+?? scripts/update-organization-pending-locales.cjs
+?? scripts/update-organization-runtime-locales.cjs
+?? scripts/update-organization-speed-locales.cjs
+?? scripts/update-organization-stall-locales.cjs
+?? scripts/update-organization-ux-locales.cjs
+?? server/src/services/classificationCompatibility.ts
+?? server/src/services/classificationValidation.ts
+?? server/tests/routes/classificationCompatibility.test.ts
+?? src/components/CategorySidebar.tree.test.tsx
+?? src/components/ClassificationSchemeSwitch.tsx
+?? src/components/ClassificationSidebarChildren.tsx
+?? src/components/DualOrganizationWizard.tsx
+?? src/components/organization/
+?? src/components/reading/
+?? src/components/settings/HtmlReadingCandidates.test.tsx
+?? src/components/settings/HtmlReadingCandidates.tsx
+?? src/components/settings/HtmlReadingCommonSettings.tsx
+?? src/components/settings/HtmlReadingRecords.test.tsx
+?? src/components/settings/HtmlReadingRecords.tsx
+?? src/components/settings/LocalAgentMcpPanel.tsx
+?? src/components/settings/ReadingImportRows.tsx
+?? src/features/ai-workbench/components/WorkbenchSelect.tsx
+?? src/features/settings/hooks/useAgySettings.test.ts
+?? src/features/settings/hooks/useLocalAgentMcp.ts
+?? src/features/settings/hooks/useReadingCandidates.test.ts
+?? src/features/settings/hooks/useReadingCandidates.ts
+?? src/features/settings/hooks/useReadingProjects.test.ts
+?? src/features/settings/hooks/useReadingProjects.ts
+?? src/lib/html-reading/candidates.test.ts
+?? src/lib/html-reading/candidates.ts
+?? src/lib/html-reading/workspace.test.ts
+?? src/lib/html-reading/workspace.ts
+?? src/services/aiOrganizationAssignments.ts
+?? src/services/aiOrganizationCheckpoint.test.ts
+?? src/services/aiOrganizationCheckpoint.ts
+?? src/services/aiOrganizationDual.test.ts
+?? src/services/aiOrganizationDual.ts
+?? src/services/aiOrganizationDualExecution.test.ts
+?? src/services/aiOrganizationDualExecution.ts
+?? src/services/aiOrganizationDualSchema.ts
+?? src/services/aiOrganizationDualStructure.ts
+?? src/services/aiOrganizationDualWorkflow.ts
+?? src/services/aiOrganizationEvidence.ts
+?? src/services/aiOrganizationExecutor.test.ts
+?? src/services/aiOrganizationExecutor.ts
+?? src/services/aiOrganizationPipeline.test.ts
+?? src/services/aiOrganizationPipeline.ts
+?? src/services/aiOrganizationPlanning.ts
+?? src/services/aiOrganizationProfiles.test.ts
+?? src/services/aiOrganizationProfiles.ts
+?? src/services/aiOrganizationReadiness.ts
+?? src/services/aiOrganizationRefinement.test.ts
+?? src/services/aiOrganizationRefinement.ts
+?? src/services/aiOrganizationReliability.test.ts
+?? src/services/aiOrganizationReliability.ts
+?? src/services/aiOrganizationRunEvents.test.ts
+?? src/services/aiOrganizationRunEvents.ts
+?? src/services/aiOrganizationScheduling.test.ts
+?? src/services/aiOrganizationScheduling.ts
+?? src/services/aiOrganizationTaxonomy.ts
+?? src/services/aiOrganizationTree.ts
+?? src/services/aiOrganizationTreeRedesign.ts
+?? src/services/aiOrganizationUnderstandingCache.test.ts
+?? src/services/aiOrganizationUnderstandingCache.ts
+?? src/services/classificationSchema.ts
+?? src/services/mcpClientConfig.ts
+?? src/services/mcpOrganizationService.test.ts
+?? src/services/mcpOrganizationService.ts
+?? src/services/readingCandidatePresentation.ts
+?? src/services/readingStarBatch.test.ts
+?? src/services/readingStarBatch.ts
+?? src/services/repositoryChatStorage.incremental.test.ts
+?? src/services/repositoryChatStorage.recovery.test.ts
+?? src/store/classificationActions.ts
+?? src/store/helpers/classificationSchemes.test.ts
+?? src/store/helpers/classificationSchemes.ts
+?? src/store/slices/classificationSlice.ts
+?? src/store/useClassificationStore.ts
+?? src/types/classification.ts
+?? task_plan.md

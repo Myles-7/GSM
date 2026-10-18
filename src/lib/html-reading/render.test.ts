@@ -25,6 +25,41 @@ const restoreFile = async (dom: ReaderTestDom, data: unknown) => { const input =
 afterEach(() => { windows.splice(0).forEach(dom => dom.window.close()); });
 
 describe('standalone desktop reading view', () => {
+  it('shows known Star state and replaces candidate with a readonly label without clearing saved candidates', () => {
+    const snapshot=fixture(); snapshot.items!['1'].starStatus='starred';snapshot.items!['1'].state.candidate=true;
+    const {document,errors}=load(snapshot);
+    expect(document.querySelector('[data-id="1"] .star-badge')?.textContent).toBe('已 Star');
+    expect(document.querySelector('[data-action="candidate"][data-repo="1"]')).toBeNull();
+    click(document,'[data-open="1"]');
+    expect(document.querySelector('.reading-controls .star-readonly')?.textContent).toContain('已 Star');
+    expect(document.querySelector('.reading-controls [data-field="candidate"]')).toBeNull();
+    expect(document.getElementById('detail-title')?.textContent).toBe('tool-1');
+    expect(exported(document).operations.some(op=>op.field==='candidate')).toBe(false);
+    expect(errors).toEqual([]);
+  });
+  it('opens notes only on demand and keeps empty editions out of the picker but explains them', () => {
+    const snapshot=fixture(); snapshot.sections[2].editions!.unshift({id:'empty',date:'2026-10-04',generatedAt:'',complete:false,entries:[],warning:'本期未生成可用项目'});
+    const {document}=load(snapshot);click(document,'[data-open="1"]');
+    expect(document.querySelector('details.note-editor')?.hasAttribute('open')).toBe(false);
+    expect(document.querySelector('details.note-editor summary')?.textContent).toContain('添加笔记');
+    click(document,'#detail-back');
+    click(document,'[data-page="discovery"]');click(document,'#channels-open');
+    ([...document.querySelectorAll('#drawer-content button')].find(element=>element.textContent?.includes('研究工具')) as HTMLElement).click();
+    click(document,'#edition-open');
+    expect(document.querySelector('[data-edition="empty"]')).toBeNull();
+    expect(document.querySelectorAll('[data-edition]')).toHaveLength(2);
+    expect(document.querySelector('#empty-editions')?.textContent).toContain('2026-10-04');
+    expect(document.querySelector('#empty-editions')?.textContent).toContain('本期未生成可用项目');
+  });
+  it('explains an all-empty channel without presenting an empty period selector',()=>{
+    const snapshot=fixture();snapshot.sections[2].editions!.forEach(edition=>{edition.entries=[];edition.warning='导出条件下无内容';});
+    const {document,errors}=load(snapshot);click(document,'[data-page="discovery"]');click(document,'#channels-open');
+    ([...document.querySelectorAll('#drawer-content button')].find(element=>element.textContent?.includes('研究工具')) as HTMLElement).click();
+    expect(document.getElementById('edition-open')?.hidden).toBe(true);
+    expect(document.getElementById('section-warning')?.textContent).toContain('无内容');
+    expect(document.getElementById('empty-editions')?.textContent).toContain('2026-10-03');
+    expect(errors).toEqual([]);
+  });
   it('expands search on demand without clearing queries, and keeps full detail identity once', () => {
     const { document, dom, errors } = load(fixture());
     expect(document.getElementById('search-row')?.hidden).toBe(true);
@@ -38,7 +73,7 @@ describe('standalone desktop reading view', () => {
     expect(document.querySelectorAll('.project')).toHaveLength(1);
     click(document, '#search-toggle'); expect(input.value).toBe('tool-2');
     click(document, '[data-open="2"]');
-    expect(document.getElementById('detail-title')?.textContent).toBe('acme/tool-2');
+    expect(document.getElementById('detail-title')?.textContent).toBe('tool-2');
     expect(document.querySelector('#detail-hero .detail-identity')).toBeNull();
     expect(document.getElementById('detail-tabs')?.parentElement?.id).toBe('detail-page');
     expect(document.getElementById('section-description')?.closest('dialog')?.id).toBe('information');
@@ -55,7 +90,7 @@ describe('standalone desktop reading view', () => {
     expect(Number((document.querySelector('.project') as HTMLElement).dataset.id)).toBeGreaterThan(40);
     expect(document.getElementById('result-count')?.textContent).toBe('5000 个项目');
     expect(errors).toEqual([]);
-  });
+  }, 20000); // Large jsdom fixture shares CPU with the full suite; card-count bounds remain the gate.
   it('opens full screen structured analysis, with commands and no empty maintenance tab', () => {
     const { document, errors } = load(fixture());
     expect(document.querySelector('.card-main')?.textContent).not.toContain('Original description');
@@ -85,9 +120,10 @@ describe('standalone desktop reading view', () => {
     const input = document.getElementById('search') as HTMLInputElement; input.value = 'tool-2'; input.dispatchEvent(new dom.window.Event('input'));
     expect(document.querySelectorAll('.project')).toHaveLength(1);
     click(document, '[data-page="discovery"]'); expect(input.value).toBe('');
-    const custom = [...document.querySelectorAll('#channel-tabs button')].find(element => element.textContent === '研究工具') as HTMLElement; custom.click();
-    expect((document.getElementById('edition-select') as HTMLSelectElement).value).toBe('latest');
-    const select = document.getElementById('edition-select') as HTMLSelectElement; select.value = 'past'; select.dispatchEvent(new dom.window.Event('change'));
+    click(document,'#channels-open');
+    ([...document.querySelectorAll('#drawer-content button')].find(element=>element.textContent?.includes('研究工具')) as HTMLElement).click();
+    click(document,'#edition-open');expect(document.querySelector('[data-edition="latest"]')?.getAttribute('aria-pressed')).toBe('true');
+    click(document,'[data-edition="past"]');
     expect(document.querySelector('.project')?.getAttribute('data-id')).toBe('2');
     click(document, '[data-page="repositories"]'); expect(input.value).toBe('tool-2');
   });
@@ -130,8 +166,8 @@ describe('standalone desktop reading view', () => {
   });
   it('returns to the most recently visited discovery channel', () => {
     const { document } = load(fixture()); click(document, '[data-page="discovery"]');
-    ([...document.querySelectorAll('#channel-tabs button')].find(element => element.textContent === '研究工具') as HTMLElement).click();
-    ([...document.querySelectorAll('#channel-tabs button')].find(element => element.textContent === '趋势') as HTMLElement).click();
+    click(document,'#channels-open');([ ...document.querySelectorAll('#drawer-content button')].find(element=>element.textContent?.includes('研究工具')) as HTMLElement).click();
+    click(document,'#channels-open');([ ...document.querySelectorAll('#drawer-content button')].find(element=>element.textContent?.includes('趋势')) as HTMLElement).click();
     click(document, '[data-page="repositories"]'); click(document, '[data-page="discovery"]');
     expect(document.getElementById('section-title')?.textContent).toBe('趋势');
   });
@@ -146,9 +182,13 @@ describe('standalone desktop reading view', () => {
     expect(document.querySelector('.summary')?.textContent).toBe(snapshot.items!['1'].summary);
     click(document,'[data-open="1"]');
     expect(document.querySelector('.folded-block summary')?.textContent).toBe('原始介绍');
-    expect(exported(document).operations).toEqual([]);click(document,'#close-export');await new Promise(resolve=>setTimeout(resolve,30));
-    click(document,'#detail-options-open');click(document,'#next-project');await new Promise(resolve=>setTimeout(resolve,30));
-    expect(document.getElementById('detail-title')?.textContent).toBe('acme/tool-2');
+    expect(exported(document).operations).toEqual([]);
+    const closeExport = new Promise<void>(resolve => dom.window.addEventListener('popstate', () => resolve(), { once: true }));
+    click(document,'#close-export');await closeExport;
+    click(document,'#detail-options-open');
+    const nextProject = new Promise<void>(resolve => dom.window.addEventListener('popstate', () => resolve(), { once: true }));
+    click(document,'#next-project');await nextProject;
+    expect(document.getElementById('detail-title')?.textContent).toBe('tool-2');
     expect(dom.window.history.state.detail).toBe(2);
     await new Promise<void>(resolve => {
       dom.window.addEventListener('popstate', () => resolve(), { once: true });

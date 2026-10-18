@@ -22,6 +22,8 @@ import {
   X,
 } from 'lucide-react';
 import { logger, LogLevel, LogEntry } from '../../services/logger';
+import { useDesktopDiagnostics } from '../../features/settings/hooks/useDesktopDiagnostics';
+import { sanitizeDiagnosticData } from '../../utils/logSanitizer';
 import { maskUrlDomain } from '../../utils/logSanitizer';
 import { inferEventType, EVENT_TYPE_LABELS, LogEventType } from '../../utils/logEventTypes';
 import { version as appVersion } from '../../../package.json';
@@ -78,6 +80,9 @@ function getStatusColor(status: unknown): string {
 }
 
 const PAGE_SIZE = 100;
+type Scope = 'all' | 'frontend' | 'backend' | 'main' | 'network' | 'plugins';
+const logScope = (entry: LogEntry): Scope => /(?:netTap|chromium|fetch|network)/i.test(entry.module) ? 'network' : entry.source;
+
 
 // ─── Detail Modal ──────────────────────────────────────────────
 interface LogDetailModalProps {
@@ -102,7 +107,7 @@ const LogDetailModal: React.FC<LogDetailModalProps> = ({ entry, language, t, onC
             </Row>
             <Row label={t('diagnosticLogsPanel.source')}>
               <Badge variant="secondary">
-                {entry.source === 'frontend' ? t('diagnosticLogsPanel.frontend') : t('diagnosticLogsPanel.backend')}
+                {t(`diagnosticLogsPanel.${entry.source}`)}
               </Badge>
             </Row>
             <Row label={t('diagnosticLogsPanel.event-type')}>
@@ -254,6 +259,9 @@ const DataBlock: React.FC<{ data: unknown; emptyText: string }> = ({ data, empty
 // ─── Main Panel ────────────────────────────────────────────────
 export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) => {
   const language = useAppStore.getState().language;
+  const desktop = useDesktopDiagnostics();
+  const refreshDesktop = desktop.refresh;
+  const [exportError, setExportError] = useState(false);
 
   // Debug mode state
   const [frontendDebug, setFrontendDebug] = useState(() => {
@@ -276,11 +284,11 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
   // Filter state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLevels, setSelectedLevels] = useState<Set<LogLevel>>(new Set(['info', 'warn', 'error']));
-  const [selectedScope, setSelectedScope] = useState<'all' | 'frontend' | 'backend'>('all');
+  const [selectedScope, setSelectedScope] = useState<Scope>('all');
   const {
     backendAvailable, backendUrl, backendDebug, backendEntries, backendLogCount,
     clear: clearBackend, refresh: refreshBackend, toggleDebug: toggleBackendDebug, fetchLogs: fetchBackendLogs,
-  } = useDiagnosticBackendActions({ selectedScope });
+  } = useDiagnosticBackendActions({ selectedScope: selectedScope === 'all' || selectedScope === 'backend' ? selectedScope : 'frontend' });
   const [selectedEventTypes, setSelectedEventTypes] = useState<Set<LogEventType>>(new Set());
   const [showEventTypeDropdown, setShowEventTypeDropdown] = useState(false);
 
@@ -307,10 +315,11 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
 
   // Merge entries — sorted by timestamp DESCENDING (newest first)
   const allEntries = useMemo(() => {
-    if (selectedScope === 'frontend') return [...entries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    if (selectedScope === 'backend') return [...backendEntries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    return [...entries, ...backendEntries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  }, [entries, backendEntries, selectedScope]);
+    const unique = new Map([...desktop.entries, ...entries, ...backendEntries].map(entry => [entry.id, entry]));
+    return [...unique.values()].filter(entry => selectedScope === 'all' ||
+      (selectedScope === 'network' ? logScope(entry) === 'network' : entry.source === selectedScope))
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }, [entries, backendEntries, desktop.entries, selectedScope]);
 
   // Derived: available event types
   const availableEventTypes = useMemo(() => {
@@ -353,6 +362,7 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
     setFrontendDebug(next);
     logger.setLevel(next ? 'debug' : 'info');
     sessionStorage.setItem('gsm:frontend-debug', String(next));
+    void window.electronAPI?.diagnostics?.append({ entries: [], debugMode: next }).catch(() => {});
     if (next) {
       setSelectedLevels(prev => new Set([...prev, 'debug']));
     }
@@ -370,11 +380,12 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
   // Refresh
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    try { await refreshBackend(); } finally { setIsRefreshing(false); }
-  }, [refreshBackend]);
+    try { await Promise.all([refreshBackend(), refreshDesktop()]); } finally { setIsRefreshing(false); }
+  }, [refreshBackend, refreshDesktop]);
 
   // Export
-  const handleExport = useCallback(async () => {
+  const handleExport = useCallback(async (bundle = false) => {
+    setExportError(false);
     setIsExporting(true);
     try {
       const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -382,10 +393,10 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
         ? (Object.entries(levelOrder).find(([l]) => selectedLevels.has(l as LogLevel))?.[1] ?? 3)
         : 3;
       const minLevelName = (Object.entries(levelOrder).find(([, v]) => v === minLevel)?.[0] as LogLevel) || 'info';
-      const frontendLogs = selectedScope !== 'backend'
+      const frontendLogs = (bundle || selectedScope === 'all' || selectedScope === 'frontend' || selectedScope === 'network')
         ? logger.getEntries({ level: minLevelName }).filter(e => selectedLevels.has(e.level)) : [];
       let backendLogs: LogEntry[] = [];
-      if (selectedScope !== 'frontend' && backendAvailable) {
+      if ((bundle || selectedScope === 'all' || selectedScope === 'backend' || selectedScope === 'network') && backendAvailable) {
         backendLogs = ((await fetchBackendLogs(minLevelName))?.logs ?? []).filter((entry) => selectedLevels.has(entry.level));
       }
       const state = useAppStore.getState();
@@ -403,19 +414,21 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
         backendDebugMode: backendDebug,
         appVersion,
       };
-      const exportData = {
+      const desktopBundle = window.electronAPI?.diagnostics?.exportBundle
+        ? await window.electronAPI.diagnostics.exportBundle({ limit: 5000 }) : undefined;
+      const exportData = sanitizeDiagnosticData({
         format: 'github-stars-manager-logs-v1',
         exportDate: new Date().toISOString(),
         appVersion, environment,
         sanitizationNote: t('diagnosticLogsPanel.all-tokens-api-keys-passwords-and-emails-have-be'),
-        frontendLogs, backendLogs,
-      };
+        frontendLogs, backendLogs, desktop: desktopBundle,
+      });
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url;
       a.download = `github-stars-manager-logs-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    } catch { /* Export failed */ } finally { setIsExporting(false); }
+    } catch { setExportError(true); } finally { setIsExporting(false); }
   }, [selectedScope, selectedLevels, backendAvailable, backendDebug, backendUrl, fetchBackendLogs, frontendDebug, t]);
 
   const toggleLevel = useCallback((level: LogLevel) => {
@@ -483,6 +496,10 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
           </div>
         </section>
 
+        {(desktop.error || exportError) && <p role="alert" className="text-sm text-destructive">{t('diagnosticLogsPanel.desktop-error')}</p>}
+        {desktop.available && <Button type="button" variant="outline" disabled={isExporting} onClick={() => void handleExport(true)}>
+          {t('diagnosticLogsPanel.export-bundle')}
+        </Button>}
         {/* Privacy Notice */}
         <p className="flex items-center gap-2 rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
           <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -521,13 +538,13 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
           {/* Scope + Event type + Actions */}
           <div className="flex items-center space-x-3 flex-wrap gap-y-2">
             <div className="flex items-center rounded-lg border border-border dark:border-border overflow-hidden">
-              {(['all', 'frontend', 'backend'] as const).map(scope => (
+              {(['all', 'frontend', 'backend', ...(desktop.available ? ['main', 'network', 'plugins'] as const : [])] as const).map(scope => (
                 <Button key={scope} onClick={() => setSelectedScope(scope)} disabled={scope === 'backend' && !backendAvailable}
                   aria-pressed={selectedScope === scope}
                   variant={selectedScope === scope ? 'default' : 'outline'}
                   size="sm"
                   className={`h-8 rounded-none border-0 px-3 text-sm first:rounded-l-md last:rounded-r-md ${scope === 'backend' && !backendAvailable ? 'opacity-40 cursor-not-allowed' : ''}`}>
-                  {scope === 'all' ? t('diagnosticLogsPanel.all') : scope === 'frontend' ? t('diagnosticLogsPanel.frontend') : t('diagnosticLogsPanel.backend')}
+                  {t(`diagnosticLogsPanel.${scope}`)}
                 </Button>
               ))}
             </div>
@@ -561,7 +578,7 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
               <Button variant="secondary" onClick={handleClear} className="h-9 gap-1 px-3 text-sm font-medium">
                 <Trash2 className="w-4 h-4" /><span>{t('diagnosticLogsPanel.clear')}</span>
               </Button>
-              <Button onClick={handleExport} disabled={isExporting}
+              <Button onClick={() => void handleExport()} disabled={isExporting}
                 className="h-9 gap-1 px-3 text-sm font-medium">
                 {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 <span>{isExporting ? t('diagnosticLogsPanel.exporting') : t('diagnosticLogsPanel.export')}</span>
@@ -621,7 +638,7 @@ export const DiagnosticLogsPanel: React.FC<DiagnosticLogsPanelProps> = ({ t }) =
                       <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                         <Badge variant={LEVEL_BADGE_VARIANTS[entry.level]}>{entry.level}</Badge>
                         <Badge variant="secondary">
-                          {entry.source === 'frontend' ? t('diagnosticLogsPanel.fe') : t('diagnosticLogsPanel.be')}
+                          {t(`diagnosticLogsPanel.${entry.source}`)}
                         </Badge>
                         <Badge variant="outline">
                           {language === 'zh' ? EVENT_TYPE_LABELS[eventType].zh : EVENT_TYPE_LABELS[eventType].en}

@@ -94,7 +94,7 @@ test('a second instance never initializes windows or background services while q
     return localRequire(name);
   };
   vm.runInNewContext(fs.readFileSync(entry, 'utf8'), { require: mockRequire,
-    __dirname: path.dirname(entry), process: {...process, stdout:new EventEmitter(), stderr:new EventEmitter()}, console });
+    __dirname: path.dirname(entry), process: {...process, on() {}, stdout:new EventEmitter(), stderr:new EventEmitter()}, console });
   assert.equal(quit, 1);
   for (const callback of ready) assert.doesNotThrow(callback);
   assert.doesNotThrow(() => app.emit('activate'));

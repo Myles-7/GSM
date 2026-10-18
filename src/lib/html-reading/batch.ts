@@ -1,5 +1,7 @@
 import { returnSchema, emptyReadingState, type ReadingReturn, type ReadingPosition } from './model';
 import { inspectReadingReturn, inspectReadingPositions, loadReadingData, readingTransaction, type ReadingData, type ImportRow, type ImportPositionRow } from './storage';
+import { rememberCandidateSource, type ReadingImportMetadata } from './candidates';
+import { rememberProjectSource, rememberReadingImport } from './workspace';
 
 export interface ReadingReturnFile { name: string; input: ReadingReturn }
 export interface BatchSource { fileName: string; snapshotId: string; op: ReadingReturn['operations'][number]; status: ImportRow['status'] }
@@ -57,10 +59,12 @@ export function inspectReadingReturnBatch(data: ReadingData, account: string, fi
 export async function previewReadingReturnBatch(account: string, files: ReadingReturnFile[]): Promise<ReadingBatchPreview> {
   return inspectReadingReturnBatch(await loadReadingData(account, { snapshotIds: files.map(file => file.input.snapshotId) }), account, files);
 }
-export const applyReadingReturnBatch = (account: string, expected: ReadingBatchPreview, choices: ReadingBatchChoices = {}) => readingTransaction(account, data => {
+export const applyReadingReturnBatch = (account: string, expected: ReadingBatchPreview, choices: ReadingBatchChoices = {}, metadata: ReadingImportMetadata = {}) => readingTransaction(account, data => {
   const preview = inspectReadingReturnBatch(data, account, expected.files);
   if (preview.rows.some(row => row.current !== expected.rows.find(prior => prior.key === row.key)?.current) || preview.positions.some(row => row.current !== expected.positions.find(prior => prior.key === row.key)?.current)) throw new Error('电脑记录或继续阅读位置在预览后发生变化，请重新预览。');
+  const importId = metadata.importId ?? crypto.randomUUID(); const importedAt = new Date().toISOString();
   const results = { applied: 0, duplicate: 0, kept: 0, positionApplied: 0, positionStale: 0, positionDuplicate: 0 };
+  let unchanged = 0; const acceptedIds = new Set<string>();
   for (const row of preview.rows) {
     const choice = choices[row.key];
     if (row.status === 'conflict' && !choice) throw new Error('请处理所有冲突后再导入。');
@@ -71,8 +75,16 @@ export const applyReadingReturnBatch = (account: string, expected: ReadingBatchP
     for (const source of row.sources) {
       if (seen.has(source.op.id) || source.status === 'duplicate') { results.duplicate++; continue; } seen.add(source.op.id);
       if (selected && source.op.value === selected.op.value) {
-        if (!updated) { const state = data.states[row.repoId] ?? emptyReadingState(); Object.assign(state, { [row.field]: selected.op.value }); data.states[row.repoId] = state; results.applied++; updated = true; }
+        if (!updated) {
+          if (row.current === selected.op.value) unchanged++;
+          else { const state = data.states[row.repoId] ?? emptyReadingState(); Object.assign(state, { [row.field]: selected.op.value }); data.states[row.repoId] = state; results.applied++; }
+          updated = true;
+        }
         else results.duplicate++;
+        data.states[row.repoId] ??= emptyReadingState();
+        acceptedIds.add(String(row.repoId));
+        rememberProjectSource(data, { repoId: row.repoId, operationId: source.op.id, fileName: source.fileName, snapshotId: source.snapshotId, generatedAt: data.snapshots[source.snapshotId].generatedAt, importedAt, importId });
+        if (row.field === 'candidate' && source.op.value === true) rememberCandidateSource(data, { repoId: row.repoId, operationId: source.op.id, fileName: source.fileName, snapshotId: source.snapshotId, generatedAt: data.snapshots[source.snapshotId].generatedAt, importedAt, importId });
       } else results.kept++;
       data.applied[source.op.id] = JSON.stringify(source.op);
     }
@@ -99,5 +111,6 @@ export const applyReadingReturnBatch = (account: string, expected: ReadingBatchP
       data.positionReceipts![source.value.id] = JSON.stringify({ snapshotId: source.snapshotId, kind: row.kind, value: source.value });
     }
   }
-  return results;
-}, { snapshotIds: expected.files.map(file => file.input.snapshotId) });
+  rememberReadingImport(data, importId, importedAt, acceptedIds);
+  return { ...results, ...(unchanged ? { unchanged } : {}), ...(acceptedIds.size ? { importId } : {}) };
+}, { snapshotIds: expected.files.map(file => file.input.snapshotId), includeCandidates: true });

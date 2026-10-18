@@ -8,6 +8,7 @@ it('shows a separate position preview and permits positions-only import',()=>{
   render(<HtmlReadingImport controller={controller}/>);
   expect(screen.getByRole('region',{name:'继续阅读位置预览'})).toBeInTheDocument();expect(screen.getByText('今日趋势 · acme/tool')).toBeInTheDocument();
   expect(screen.getByText('已有更新的位置，将跳过这项')).toBeInTheDocument();const button=screen.getByRole('button',{name:'确认导入'});expect(button).toBeEnabled();fireEvent.click(button);expect(apply).toHaveBeenCalledOnce();
+  expect(screen.getByText('已有更新的位置，将跳过这项').closest('details')).not.toHaveAttribute('open');
 });
 
 it('does not offer import for an empty return',()=>{
@@ -18,6 +19,43 @@ it('does not offer import for an empty return',()=>{
 function batchController() {
   return {data:null,busy:false,incoming:null,importRows:[],positionRows:[],choices:{},batch:null,batchChoices:{},fileErrors:[],inspectFiles:vi.fn(async()=>true),applyBatch:vi.fn(),setBatchChoices:vi.fn()} as unknown as ReturnType<typeof useHtmlReading>;
 }
+
+it('offers two guided input choices without exposing JSON until paste is chosen',()=>{
+  const c=batchController();
+  render(<HtmlReadingImport controller={c} guided/>);
+  expect(screen.getByRole('button',{name:'选择文件'})).toBeVisible();
+  expect(screen.getByRole('button',{name:'粘贴记录'})).toBeVisible();
+  expect(screen.queryByRole('textbox',{name:'手机回传文本'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'粘贴记录'}));
+  expect(screen.getByRole('textbox',{name:'手机回传文本'})).toBeVisible();
+  expect(screen.queryByRole('tab',{name:'阅读记录'})).toBeNull();
+});
+
+it('groups ordinary edits behind a summary and prevents a changed paste from applying the old preview',()=>{
+  const c=batchController();c.inspect=vi.fn();c.apply=vi.fn();
+  const {rerender}=render(<HtmlReadingImport controller={c} guided/>);
+  fireEvent.click(screen.getByRole('button',{name:'粘贴记录'}));
+  const input=screen.getByRole('textbox',{name:'手机回传文本'});
+  fireEvent.change(input,{target:{value:'first'}});
+  fireEvent.click(screen.getByRole('button',{name:'预览回传修改'}));
+  c.incoming={version:1} as never;
+  c.importRows=[{op:{id:'note',repoId:1,field:'note',base:'',value:'note value'},name:'acme/tool',current:'',status:'ready'}];
+  rerender(<HtmlReadingImport controller={c} guided/>);
+  expect(screen.getByText('查看 1 个项目的普通修改')).toBeVisible();
+  expect(screen.queryByText('手机：note value')).toBeNull();
+  expect(screen.getByRole('button',{name:'确认导入'})).toBeEnabled();
+  fireEvent.change(input,{target:{value:'changed'}});
+  expect(screen.queryByRole('button',{name:'确认导入'})).toBeNull();
+  expect(c.apply).not.toHaveBeenCalled();
+});
+
+it('opens unified project processing after guided import completion',()=>{
+  const c=batchController();
+  c.lastImportSummary={applied:2,duplicate:0,kept:0,positionApplied:0,positionStale:0,positionDuplicate:0,candidates:1,projects:2};
+  const open=vi.fn();render(<HtmlReadingImport controller={c} guided onProjects={open}/>);
+  fireEvent.click(screen.getByRole('button',{name:'浏览并处理本次项目'}));
+  expect(open).toHaveBeenCalledOnce();
+});
 it('checks file count and bytes before reading any file, then allows removal and repreview',async()=>{
   const c=batchController();const read=vi.fn(async()=> '{}');
   const valid=Object.assign(new File(['{}'],'valid.json'),{text:read});
@@ -79,4 +117,35 @@ it('keeps new per-file errors visible after inspection fails instead of acceptin
   fireEvent.change(screen.getByLabelText('选择回传文件'),{target:{files:[file]}});
   expect(await screen.findByRole('alert')).toHaveTextContent('bad.json：账户不匹配');
   expect(screen.getByText(/bad.json.*无效/)).toBeInTheDocument();expect(screen.queryByRole('button',{name:'确认批量导入'})).not.toBeInTheDocument();
+});
+
+it('batch resolves only state conflicts with a unique phone value and leaves notes manual',()=>{
+  const c=batchController();
+  const source=(id:string,field:'read'|'candidate'|'note',value:boolean|string)=>({fileName:`${id}.json`,snapshotId:'s',status:'ready' as const,op:{id,repoId:1,field,base:false,value}});
+  c.batch={files:[],positions:[],rows:[
+    {key:'1:read',repoId:1,name:'acme/tool',field:'read',current:false,status:'conflict',sources:[source('read','read',true)]},
+    {key:'1:note',repoId:1,name:'acme/tool',field:'note',current:'desktop note',status:'conflict',sources:[source('note','note','phone note')]},
+    {key:'1:candidate',repoId:1,name:'acme/tool',field:'candidate',current:false,status:'conflict',sources:[source('candidate1','candidate',true),source('candidate2','candidate',false)]},
+  ]};
+  render(<HtmlReadingImport controller={c}/>);
+  fireEvent.click(screen.getByRole('button',{name:'状态冲突使用唯一手机值'}));
+  const calls=vi.mocked(c.setBatchChoices).mock.calls;
+  const choosePhone=calls[0][0] as (current:Record<string,string>)=>Record<string,string>;
+  expect(choosePhone({})).toEqual({'1:read':'read'});
+  fireEvent.click(screen.getByRole('button',{name:'全部状态冲突保留电脑'}));
+  const chooseDesktop=calls[1][0] as (current:Record<string,string>)=>Record<string,string>;
+  expect(chooseDesktop({})).toEqual({'1:read':'desktop','1:candidate':'desktop'});
+});
+
+it('keeps the completed import summary visible until the user opens candidates',()=>{
+  const c=batchController();
+  c.lastImportSummary={applied:3,duplicate:1,kept:0,positionApplied:1,positionStale:1,positionDuplicate:0,candidates:1,projects:2};
+  c.lastImportId='this';
+  c.candidates={items:[],batches:[],busy:false,error:'',accountLabel:'alice (42)',start:vi.fn(),resume:vi.fn(),stop:vi.fn(),dismiss:vi.fn(),refresh:vi.fn()} as unknown as typeof c.candidates;
+  render(<HtmlReadingImport controller={c}/>);
+  expect(screen.getByText('导入完成，阅读变化已保存；请检查候选并确认 Star。')).toBeVisible();
+  expect(screen.getByRole('tab',{name:'导入回传'})).toHaveAttribute('data-state','active');
+  fireEvent.click(screen.getByRole('button',{name:'查看 Star 候选'}));
+  expect(screen.getByRole('tab',{name:'Star 候选 (0)'})).toHaveAttribute('data-state','active');
+  expect(screen.getByText('没有匹配的待处理候选。')).toBeVisible();
 });

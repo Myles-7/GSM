@@ -190,4 +190,29 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
     // 断言 README 请求确实收到了中止信号，而非流水线提前返回放任其挂起
     expect(readmeAborted).toHaveBeenCalled();
   });
+
+  it('does not swallow result callback failures after the provider succeeded', async () => {
+    const optimizer = new AIAnalysisOptimizer({
+      maxRetries: 0,
+      rateLimiter: { maxConcurrency: 0, requestsPerMinute: 0 },
+    });
+    const fakeAi = {
+      analyzeRepository: vi.fn().mockResolvedValue({ summary: 'persist me', tags: [], platforms: [] }),
+    } as unknown as AIService;
+    const githubApi = {
+      getRepositoryReadme: vi.fn().mockResolvedValue('# readme'),
+    } as unknown as GitHubApiService;
+    const writeFailure = new Error('repository write failed');
+
+    await expect(optimizer.analyzeRepositoriesPipelined(
+      [makeRepo(8)],
+      githubApi,
+      fakeAi,
+      [],
+      undefined,
+      undefined,
+      () => { throw writeFailure; },
+    )).rejects.toBe(writeFailure);
+    expect(optimizer.isAborted()).toBe(true);
+  });
 });

@@ -2,6 +2,7 @@ import type { Collection, HomeOperation, HomeRecord, PendingOperation } from './
 import { z } from 'zod';
 import { PendingTaskRequestError } from './taskSubmission';
 import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../services/repositoryIdentityGate';
+import { repositoryHomeProjection } from './repositoryProjection';
 
 const collectionSchema = z.enum(['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions']);
 const recordSchema = z.object({ collection: collectionSchema, id: z.string().min(1), data: z.record(z.string(), z.unknown()).nullable(), version: z.number().int().nonnegative(), deleted: z.boolean().optional(), seq: z.number().int().nonnegative().optional() });
@@ -145,6 +146,42 @@ export class HomeDatabase {
     const pending = await result(tx.objectStore('meta').get('inFlight')) as { operations: HomeOperation[] } | undefined;
     if (JSON.stringify(pending?.operations) === JSON.stringify(operations)) tx.objectStore('meta').delete('inFlight'); await done;
   }
+  /** Only the sync endpoint's pre-application data rejection proves this exact batch was not applied. */
+  async repairRejectedRepositoryBatch(batch: { clientId: string; operations: HomeOperation[] }, proof: { status: number; code: string }): Promise<boolean> {
+    if (proof.status !== 400 || proof.code !== 'PRIVATE_DATA_NOT_SYNCABLE') return false;
+    const containsLegacyToken = (data: unknown): boolean => !!data && typeof data === 'object'
+      && Object.entries(data).some(([name, value]) => name === 'temp_clone_token' || containsLegacyToken(value));
+    if (!batch.operations.some(op => op.collection === 'repositories' && containsLegacyToken(op.data))) return false;
+    this.assertWritable();
+    const db = await this.open(); this.assertWritable();
+    const tx = db.transaction(['meta', 'outbox', 'records'], 'readwrite'), done = complete(tx);
+    try {
+      const meta = tx.objectStore('meta'), outbox = tx.objectStore('outbox');
+      const frozen = await result(meta.get('inFlight'));
+      this.assertWritable(tx, done);
+      if (JSON.stringify(frozen) !== JSON.stringify(batch)) { await done; return false; }
+      const pending = await result(outbox.getAll()) as PendingOperation[];
+      this.assertWritable(tx, done);
+      const lineage: Array<{ previous: string; replacement: string }> = [];
+      for (const op of pending) {
+        if (op.collection !== 'repositories' || op.kind !== 'put' || !op.data) continue;
+        const data = repositoryHomeProjection(op.data);
+        if (JSON.stringify(data) === JSON.stringify(op.data)) continue;
+        const replacement = crypto.randomUUID();
+        lineage.push({ previous: op.opId, replacement });
+        const sent = batch.operations.find(item => item.collection === op.collection && item.id === op.id);
+        if (sent && sent.opId !== op.opId) lineage.push({ previous: sent.opId, replacement });
+        outbox.put({ ...op, opId: replacement, data }, op.key);
+        const record = await result(tx.objectStore('records').get(op.key)) as HomeRecord | undefined;
+        this.assertWritable(tx, done);
+        if (record) tx.objectStore('records').put({ ...record, data }, op.key);
+      }
+      // Never retain rejected credentials in a recovery marker or diagnostics.
+      meta.put({ at: new Date().toISOString(), code: proof.code, lineage }, 'repositoryProjectionRepair');
+      meta.delete('inFlight');
+      await done; return true;
+    } catch (error) { void done.catch(() => {}); try { tx.abort(); } catch { /* transaction already closed */ } throw error; }
+  }
   async claimTaskRequest(request: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.assertWritable();
     const db = await this.open(); this.assertWritable();
@@ -158,6 +195,16 @@ export class HomeDatabase {
       }
       const oldPayload = { ...previous }; delete oldPayload.requestId;
       const newPayload = { ...request }; delete newPayload.requestId;
+      if(JSON.stringify(oldPayload)===JSON.stringify(newPayload)){await done;this.assertWritable();return previous;}
+      if(request.requestId===previous.requestId){await done;throw new PendingTaskRequestError(previous);}
+      const proof = await result(tx.objectStore('meta').get(`task-receipt:${previous.requestId}`)) as {request?:unknown;taskId?:unknown}|undefined;
+      if (proof && typeof proof.taskId==='string' && JSON.stringify(proof.request)===JSON.stringify(previous)) {
+        // A validated server receipt proves acceptance. Retain its cleanup
+        // lineage independently so it cannot lock unrelated new submissions.
+        tx.objectStore('meta').put(previous,`task-pending:${previous.requestId}`);
+        tx.objectStore('meta').put(request,'unconfirmedTask');
+        await done;this.assertWritable();return request;
+      }
       await done;
       this.assertWritable();
       if (JSON.stringify(oldPayload) !== JSON.stringify(newPayload)) throw new PendingTaskRequestError(previous);
@@ -172,7 +219,23 @@ export class HomeDatabase {
     const db = await this.open(); const tx = db.transaction('meta', 'readwrite'); const done = complete(tx);
     const pending = await result(tx.objectStore('meta').get('unconfirmedTask')) as Record<string, unknown> | undefined;
     if (pending?.requestId === requestId) tx.objectStore('meta').delete('unconfirmedTask');
+    tx.objectStore('meta').delete(`task-pending:${requestId}`);
+    tx.objectStore('meta').delete(`task-receipt:${requestId}`);
     await done;
+  }
+  /** Called only after strict receipt payload and workspace identity validation. */
+  async recordTaskReceipt(request: Record<string,unknown>, taskId:string):Promise<void> {
+    const db=await this.open();const tx=db.transaction('meta','readwrite');const done=complete(tx);
+    const meta=tx.objectStore('meta');
+    const pending=await result(meta.get('unconfirmedTask')) as Record<string,unknown>|undefined;
+    const archived=await result(meta.get(`task-pending:${request.requestId}`));
+    if(JSON.stringify(pending)===JSON.stringify(request)||JSON.stringify(archived)===JSON.stringify(request))meta.put({request,taskId},`task-receipt:${request.requestId}`);
+    await done;
+  }
+  async pendingTaskRequests():Promise<unknown[]> {
+    const db=await this.open();const tx=db.transaction('meta');const meta=tx.objectStore('meta');
+    const [pending,archived]=await Promise.all([result(meta.get('unconfirmedTask')),result(meta.getAll(IDBKeyRange.bound('task-pending:','task-pending:\uffff')))]);
+    return [...(pending===undefined?[]:[pending]),...archived];
   }
   async metadata<T>(name: string): Promise<T | undefined> {
     const db = await this.open(); return result(db.transaction('meta').objectStore('meta').get(name));
@@ -222,7 +285,7 @@ export class HomeDatabase {
       const ownIds = new Set(operations.map(item => item.operation.opId));
       if (pending.some(item => !ownIds.has(item.opId)) || (!marker && pending.length)) throw new Error('BACKUP_PENDING_OPERATIONS');
       for (const { operation: op, before } of operations) {
-        if (!['repositories', 'organization'].includes(op.collection) || (op.collection === 'organization' && op.id !== 'default') || op.key !== key(op.collection, op.id)) throw new Error('BACKUP_HOME_SCOPE_INVALID');
+        if (!['repositories', 'organization', 'releases', 'subscriptions', 'release_reads'].includes(op.collection) || (op.collection === 'organization' && op.id !== 'default') || op.key !== key(op.collection, op.id)) throw new Error('BACKUP_HOME_SCOPE_INVALID');
         const [current, queued, shadow] = await Promise.all([
           result(records.get(op.key)) as Promise<HomeRecord | undefined>, result(outbox.get(op.key)) as Promise<PendingOperation | undefined>,
           result(tx.objectStore('shadow').get(op.key)) as Promise<HomeRecord | undefined>,
@@ -246,20 +309,50 @@ export class HomeDatabase {
     const tx = db.transaction('meta', 'readwrite'); const done = complete(tx);
     tx.objectStore('meta').delete(`local-restore:${journalId}`); await done;
   }
-  async applyRemote(rows: HomeRecord[], cursor: number, reset = false): Promise<void> {
+  async applyRemote(rows: HomeRecord[], cursor: number, reset = false): Promise<number> {
     const db = await this.open(); const tx = db.transaction(['records', 'shadow', 'outbox', 'meta'], 'readwrite'); const done = complete(tx);
     const pending = await result(tx.objectStore('outbox').getAll()) as PendingOperation[];
     const pendingKeys = new Set(pending.map(item => item.key));
+    let changed = 0;
     if (reset) { tx.objectStore('records').clear(); tx.objectStore('shadow').clear(); }
     for (const row of rows) {
       const recordKey = key(row.collection, row.id);
       const previous = await result(tx.objectStore('shadow').get(recordKey)) as HomeRecord | undefined;
-      if (previous && previous.version > row.version) continue;
+      // Acknowledged writes later reappear in the change feed. An immutable
+      // version already in shadow is an echo, not another business change.
+      if (previous && previous.version >= row.version) continue;
+      changed++;
       tx.objectStore('shadow').put(row, recordKey);
       if (!pendingKeys.has(recordKey)) tx.objectStore('records').put(row, recordKey);
     }
     if (reset) for (const item of pending) tx.objectStore('records').put({ collection: item.collection, id: item.id, version: item.baseVersion, data: item.data ?? null, deleted: item.kind === 'delete' }, item.key);
     tx.objectStore('meta').put(cursor, 'cursor'); tx.objectStore('meta').put(true, 'initialized');
+    await done; return changed;
+  }
+  async clearSnapshotStage(): Promise<void> {
+    const db=await this.open(),tx=db.transaction('meta','readwrite'),done=complete(tx);
+    tx.objectStore('meta').delete(IDBKeyRange.bound('snapshot-stage:','snapshot-stage:\uffff'));await done;
+  }
+  async stageSnapshotPage(offset:number,rows:HomeRecord[]):Promise<void> {
+    const db=await this.open(),tx=db.transaction('meta','readwrite'),done=complete(tx);
+    tx.objectStore('meta').put(rows,`snapshot-stage:${String(offset).padStart(12,'0')}`);await done;
+  }
+  /** Promote staged pages and the fixed cursor atomically, retaining local outbox edits. */
+  async commitSnapshotStage(cursor:number):Promise<void> {
+    const db=await this.open(),tx=db.transaction(['meta','records','shadow','outbox'],'readwrite'),done=complete(tx);
+    const pending=await result(tx.objectStore('outbox').getAll()) as PendingOperation[];
+    const pendingKeys=new Set(pending.map(item=>item.key));
+    const records=tx.objectStore('records'),shadow=tx.objectStore('shadow'),meta=tx.objectStore('meta');
+    records.clear();shadow.clear();
+    const pages=meta.openCursor(IDBKeyRange.bound('snapshot-stage:','snapshot-stage:\uffff'));
+    pages.onsuccess=()=>{
+      const page=pages.result;
+      if(page){for(const row of page.value as HomeRecord[]){const id=key(row.collection,row.id);shadow.put(row,id);if(!pendingKeys.has(id))records.put(row,id);}page.delete();page.continue();}
+      else {
+        for(const item of pending)records.put({collection:item.collection,id:item.id,version:item.baseVersion,data:item.data??null,deleted:item.kind==='delete'},item.key);
+        meta.put(cursor,'cursor');meta.put(true,'initialized');
+      }
+    };
     await done;
   }
   async acknowledge(sent: HomeOperation, record: HomeRecord): Promise<void> {

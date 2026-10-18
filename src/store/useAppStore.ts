@@ -4,6 +4,7 @@ import { persist } from 'zustand/middleware';
 import { createInitialState } from './initialState';
 import { appPersistenceOptions } from './persistence/options';
 import { createAuthSlice } from './slices/authSlice';
+import { createClassificationSlice } from './slices/classificationSlice';
 import { createCategorySlice } from './slices/categorySlice';
 import { createConfigurationSlice } from './slices/configurationSlice';
 import { createDiscoverySlice } from './slices/discoverySlice';
@@ -40,6 +41,7 @@ export const useAppStore = create<AppStoreState>()(
       ...createConfigurationSlice(guardedSet, get),
       ...createTimelineSlice(guardedSet, get),
       ...createCategorySlice(guardedSet, get),
+      ...createClassificationSlice(guardedSet, get),
       ...createPreferenceSlice(guardedSet, get),
       ...createDiscoverySlice(guardedSet, get),
       setHasHydrated: hasHydrated => set({ hasHydrated }),

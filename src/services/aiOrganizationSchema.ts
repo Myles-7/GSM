@@ -1,9 +1,16 @@
 import { z } from 'zod';
 import { structureOperationsSchema } from './aiOrganizationStructureSchema';
+import { dualOrganizationSchema, validateDualCoverage } from './aiOrganizationDualSchema';
 const id = z.string().trim().min(1).max(160);
 const membership = z.object({ categoryId: id.nullable(), subcategoryId: id.nullable(), locked: z.boolean() }).strict();
 export const organizationDraftSchema = z.object({
-  version: z.union([z.literal(1), z.literal(2)]), revision: z.number().int().positive(),
+  agyReceipts: z.array(z.object({ requestId: id, digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(10000).optional(),
+  externalAgent: z.object({ source: z.literal('local-agent'), startRequestId: id, startHash: z.string().max(100), baseProposalId: id.optional(),
+    progress: z.string().max(1000).optional(), receipts: z.array(z.object({ requestId: id, hash: z.string().max(100), aliases: z.record(z.string(), id) }).strict()).max(100) }).strict().optional(),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]), revision: z.number().int().positive(),
+  analysisDepth: z.enum(['quick', 'deep']).optional(), concurrency: z.number().int().min(1).max(10).optional(),
+  dual: dualOrganizationSchema.optional(),
+  singleSchemeId: z.enum(['purpose', 'technology']).optional(),
   purpose: z.enum(['repositories', 'structure']).optional(), mode: z.enum(['supplement', 'reorganize']).optional(),
   rangeSource: z.string().max(200).optional(), structureOperations: structureOperationsSchema.optional(),
   scope: z.object({ name: z.string().max(200), repositoryIds: z.array(z.number().int().positive()).max(10000) }).strict(),
@@ -12,6 +19,7 @@ export const organizationDraftSchema = z.object({
   entries: z.array(z.object({ repositoryId: z.number().int().positive(), before: membership,
     categoryId: id.nullable(), subcategoryId: id.nullable(), reason: z.string().max(2000),
     disposition: z.enum(['move', 'unchanged', 'insufficient']), selected: z.boolean(), overrideLocked: z.boolean(), manual: z.boolean(), preserveMain: z.boolean().optional(),
+    verification: z.enum(['pending', 'verified', 'failed']).optional(), verificationHash: z.string().optional(),
     status: z.enum(['pending', 'success', 'conflict', 'restored']), error: z.string().max(2000).optional(),
   }).strict()).max(10000),
   batches: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()).max(20), status: z.enum(['pending', 'complete', 'failed']), error: z.string().max(2000).optional() }).strict()).max(10000),
@@ -19,6 +27,9 @@ export const organizationDraftSchema = z.object({
   createdCategoryIds: z.array(id).max(2000),
 }).strict().superRefine((draft, ctx) => {
   const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
+  if (draft.version === 3 && !draft.singleSchemeId) validateDualCoverage(draft, fail);
+  if (draft.singleSchemeId && (draft.version !== 3 || draft.dual)) fail('Explicit single-scheme structure requires version 3 without a dual draft');
+  if (draft.version !== 3 && draft.dual) fail('Legacy draft cannot infer dual classification');
   const ids = new Set(draft.scope.repositoryIds);
   if (ids.size !== draft.scope.repositoryIds.length) fail('Duplicate scope repository');
   if (new Set(draft.entries.map(e => e.repositoryId)).size !== draft.entries.length

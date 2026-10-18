@@ -2,6 +2,8 @@
 
 const { protocolError } = require('./pluginProtocol');
 const { decodeBinary, validateFileName, argsBudget } = require('./pluginPageBridge');
+const { parsePermission } = require('./permissionPolicy');
+const { isAllowedNetworkTarget } = require('./networkTargets');
 
 function createCapabilityRouter({ storage, logger, catalog, hostOperations = null }) {
   return {
@@ -39,6 +41,16 @@ function createCapabilityRouter({ storage, logger, catalog, hostOperations = nul
         return hostOperations[operation]({ buffer,
           ...(operation === 'saveFile' ? { fileName: validateFileName(args.fileName) } : {}),
         });
+      }
+      if (request.capability === 'network') {
+        if (request.operation !== 'request') throw protocolError('PLUGIN_CAPABILITY_UNKNOWN', 'Unknown network operation');
+        if (!isAllowedNetworkTarget(request.args)) {
+          throw protocolError('PLUGIN_PAGE_REQUEST_INVALID', 'Network target is not allowed');
+        }
+        if (!permissions.some(value => parsePermission(value)?.host === request.args.host)) {
+          throw protocolError('PLUGIN_PERMISSION_DENIED', 'Network host permission is required');
+        }
+        return null; // Credentials and the actual HTTPS request stay in the host renderer.
       }
       if (request.capability === 'ai') {
         if (request.operation !== 'generate') {

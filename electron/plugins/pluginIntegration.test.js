@@ -171,7 +171,7 @@ test('installs V1.4 Info Card without a Worker and revokes capabilities on reope
   assert.deepEqual(await manager.enable(pluginId, permissions), { success: true });
   const page = manager.getPage(pluginId, 'info-card');
   assert.equal(page.success, true);
-  assert.match(manager.readPageResource(page.url).body.toString(), /Repo Info Card/);
+  assert.match(manager.readPageResource(page.url).body.toString(), /Repository Info Card/);
   const request = { pluginId, pageId: 'info-card', sessionToken: page.sessionToken,
     requestId: 'ai', method: 'ai.generate', args: { system: '', user: 'Example repository' } };
   assert.deepEqual(await manager.requestPageCapability(request), { success: true, value: null });

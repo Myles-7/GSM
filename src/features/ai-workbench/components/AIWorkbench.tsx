@@ -34,6 +34,7 @@ import { ResearchStatus, ResearchTimer } from './ResearchStatus';
 import { safeWriteText } from '../../../utils/clipboardUtils';
 import { useAppStore } from '../../../store/useAppStore';
 import { WorkbenchResults } from './WorkbenchResults';
+import { WorkbenchSelect } from './WorkbenchSelect';
 import { mergeWorkbenchCandidates } from '../../../services/workbenchOverview';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import type { WorkbenchInputIntent } from '../../../types/aiWorkbench';
@@ -45,7 +46,6 @@ const download = (filename: string, content: string, type: string) => {
   anchor.href = url; anchor.download = filename; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-const selectClass = 'h-8 min-w-0 max-w-full rounded-md border border-border bg-background px-2 text-xs';
 const sourceHref = (raw: string): string | undefined => {
   try {
     const url = new URL(raw);
@@ -148,6 +148,7 @@ function OperationPreview({ proposal, disabled, onExecute }: {
   proposal: WorkbenchProposal; disabled: boolean;
   onExecute: (proposal: WorkbenchProposal, restore: boolean) => void;
 }) {
+  const repositoryT = useT('repositories');
   const t = useT('chat');
   const [selection, setSelection] = useState<Record<string, boolean>>({});
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
@@ -228,7 +229,7 @@ function OperationPreview({ proposal, disabled, onExecute }: {
   };
 
   return (
-    <section className="space-y-3 border-y border-border py-4">
+    <section className="space-y-3 rounded-lg border border-border bg-card/40 px-3 py-4">
       <h2 className="text-sm font-semibold">{t('workbench.operationPreview')}</h2>
       {proposal.operations.length === 0 && <p className="text-sm text-muted-foreground">{t('workbench.noMatches')}</p>}
       {selected.map((op) => (
@@ -237,13 +238,14 @@ function OperationPreview({ proposal, disabled, onExecute }: {
             <input type="checkbox" checked={op.selected} disabled={disabled || !['proposed', 'failed', 'success', 'unknown', 'running'].includes(op.status)}
               onChange={(e) => setSelection({ ...selection, [op.id]: e.target.checked })} />
             <span className="min-w-0 flex-1 break-words font-semibold">{op.repository.full_name}</span>
-            <Badge variant={op.status === 'success' ? 'success' : op.status === 'failed' ? 'destructive' : 'outline'} className="text-[10px] font-normal py-0">
+            <Badge variant={op.status === 'success' ? 'success' : op.status === 'failed' ? 'destructive' : 'outline'} className="text-[11px] font-normal py-0">
               {t(`workbench.${op.status}`)}
             </Badge>
           </label>
           <p className="my-2 break-words text-muted-foreground">{op.reason}</p>
+          {op.kind === 'update' && <p className="mb-2 text-muted-foreground">{repositoryT(`dualOrganization.${op.classificationSchemeId ?? 'purpose'}`)}</p>}
           {op.kind === 'unstar' ? <p className="text-destructive font-medium">{t('workbench.unstar')}</p> : (
-            <dl className="grid gap-2">
+            <dl className="grid gap-2 rounded-md bg-muted/30 p-2">
               {(['custom_category', 'custom_tags', 'custom_description'] as const).filter((field) => JSON.stringify(op.before[field]) !== JSON.stringify(op.after[field])).map((field) =>
                 renderFieldDiff(field, op.before[field], op.after[field])
               )}
@@ -553,13 +555,22 @@ export function AIWorkbench() {
     setEditor({ kind: 'project', title: project.name, project });
   };
   const sessionRow = (s: RepositoryChatSession) => (
-    <div key={s.id} className={`flex min-w-0 items-center rounded-md ${s.id === w.activeId ? 'bg-accent' : 'hover:bg-muted'}`}>
-      <button className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-xs" onClick={() => {
+    <div key={s.id} className={`flex min-w-0 items-center rounded-md border-l-2 transition-colors ${s.id === w.activeId ? 'border-primary bg-muted/50 font-medium' : 'border-transparent hover:bg-muted'}`}>
+      <button className="flex min-w-0 flex-1 items-start gap-2 px-2 py-2 text-left text-xs" onClick={() => {
         if (w.mode !== 'legacy') { w.select(s.id); setMobileLeft(false); }
       }} disabled={w.mode === 'legacy'}>
-        {s.pinned && <Pin className="h-3 w-3 shrink-0" />}
-        {busy && s.id === w.task.sessionId && <Loader2 className="h-3 w-3 shrink-0 animate-spin" />}
-        <span className="truncate">{s.title}</span>
+        {s.pinned && <Pin className="mt-0.5 h-3 w-3 shrink-0 text-primary" />}
+        {busy && s.id === w.task.sessionId && <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-primary" />}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{s.title}</span>
+          {(s.summary || (busy && s.id === w.task.sessionId)) && (
+            <span className={`mt-0.5 block truncate text-[11px] font-normal text-muted-foreground ${isKeyboardOpen ? 'hidden' : ''}`}>
+              {busy && s.id === w.task.sessionId
+                ? (w.task.stage === 'overview' ? t('overview.stage') : t(`workbench.stage-${w.task.stage}`, { defaultValue: w.task.stage }))
+                : s.summary}
+            </span>
+          )}
+        </span>
       </button>
       <DropdownMenu><DropdownMenuTrigger asChild>
         <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label={t('workbench.actions')}><MoreHorizontal className="h-4 w-4" /></Button>
@@ -581,18 +592,21 @@ export function AIWorkbench() {
   const history = (
     <div className="flex h-full min-h-0 flex-col gap-3 p-3">
       <div className="flex gap-2">
-        <Button className="min-w-0 flex-1" size="sm" variant="secondary" onClick={() => void w.guard(() => w.createSession())}><Plus className="h-4 w-4" />{t('workbench.newChat')}</Button>
+        <Button className="min-w-0 flex-1" size="sm" onClick={() => void w.guard(() => w.createSession())}><Plus className="h-4 w-4" />{t('workbench.newChat')}</Button>
         <Button size="icon" variant="ghost" className="h-8 w-8" title={t('workbench.newProject')} aria-label={t('workbench.newProject')} onClick={() => setEditor({ kind: 'newProject', title: '' })}><FolderPlus className="h-4 w-4" /></Button>
       </div>
-      <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('workbench.searchHistory')} aria-label={t('workbench.searchHistory')} className="h-8 text-xs" />
-      <select className={selectClass} aria-label={t('workbench.history')} value={w.mode} onChange={(e) => w.setMode(e.target.value as typeof w.mode)}>
-        {(['active', 'archived', 'trash', 'legacy'] as const).map((mode) => <option key={mode} value={mode}>{t(`workbench.${mode}`)}</option>)}
-      </select>
+      <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('workbench.searchHistory')} aria-label={t('workbench.searchHistory')} className="h-8 border-border/60 bg-muted/40 text-xs transition-colors hover:bg-muted/70" />
+      <WorkbenchSelect
+        ariaLabel={t('workbench.history')}
+        value={w.mode}
+        onValueChange={(mode) => w.setMode(mode)}
+        items={(['active', 'archived', 'trash', 'legacy'] as const).map((mode) => ({ value: mode, label: t(`workbench.${mode}`) }))}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {w.mode === 'active' && w.projects.filter((p) => !p.deletedAt && (p.name.toLowerCase().includes(query.toLowerCase()) || visibleSessions.some((s) => s.projectId === p.id))).map((p) => (
           <section key={p.id} className="mb-3">
             <div className="flex items-center gap-1">
-              <button className="min-w-0 flex-1 truncate px-2 py-2 text-left text-xs font-semibold" onClick={() => editProject(p)}>{p.name}</button>
+              <button className="min-w-0 flex-1 truncate rounded-md px-2 py-2 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => editProject(p)}>{p.name}</button>
               <Button size="icon" variant="ghost" className="h-7 w-7" title={t('workbench.newChat')} aria-label={t('workbench.newChat')} onClick={() => void w.guard(() => w.createSession(p.id))}><Plus className="h-3 w-3" /></Button>
             </div>
             {visibleSessions.filter((s) => s.projectId === p.id).map(sessionRow)}
@@ -622,25 +636,28 @@ export function AIWorkbench() {
     }} />;
   return (
     <div className={`flex flex-col overflow-hidden bg-background text-foreground transition-all duration-150 ${isKeyboardOpen ? 'h-[100dvh] min-h-0' : 'h-[calc(100dvh-4.5rem)] min-h-[420px]'}`}>
-      <header className={`flex shrink-0 items-center gap-2 border-b border-border transition-all ${isKeyboardOpen ? 'h-9 px-2' : 'h-11 px-3'}`}>
+      <header className={`grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border transition-all ${isKeyboardOpen ? 'h-9 px-2' : 'h-11 px-3'}`}>
+        <div className="flex min-w-0 items-center gap-1">
         <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" aria-label={t('workbench.history')} title={t('workbench.history')} onClick={() => setLeftOpen(!leftOpen)}><PanelLeft className="h-4 w-4" /></Button>
         <Button size="icon" variant="ghost" className="relative h-8 w-8 lg:hidden" aria-label={t('workbench.history')} onClick={() => setMobileLeft(true)}>
           <PanelLeft className="h-4 w-4" />
           {hasPendingProposals && (
             <span
               data-testid="badge-mobile-left"
-              className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background animate-pulse"
+              className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-background animate-pulse"
               aria-label={isZh ? '有未确认提案' : 'Pending proposals'} /* i18n-allow-literal */
             />
           )}
         </Button>
         <Bot className="h-4 w-4 shrink-0 text-primary" />
         <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{w.active?.title ?? t('workbench.title')}</h1>
-        <div className="flex shrink-0 items-center border-b border-border" role="tablist" aria-label={t('workbench.title')}>
-          {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
-            className={`flex h-8 items-center gap-1.5 border-b-2 px-2 text-xs ${view === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
-            onClick={() => setView(item)}>{item === 'chat' ? <MessageSquare className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}</span>{item === 'overview' && hasNewCandidates && <span className="text-[10px] text-muted-foreground">{candidates.length}</span>}</button>)}
         </div>
+        <div className="flex shrink-0 items-center justify-center" role="tablist" aria-label={t('workbench.title')}>
+          {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
+            className={`flex h-8 items-center gap-1.5 border-b-2 px-2.5 text-xs transition-colors hover:text-foreground ${view === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
+            onClick={() => setView(item)}>{item === 'chat' ? <MessageSquare className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}</span>{item === 'overview' && hasNewCandidates && <span className="text-[11px] text-muted-foreground">{candidates.length}</span>}</button>)}
+        </div>
+        <div className="flex min-w-0 items-center justify-end gap-0.5">
         {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.dock')} aria-label={t('overview.dock')} aria-pressed={docked} onClick={() => setDocked(!docked)}><PanelRight className="h-4 w-4" /></Button>}
         {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(60); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
         {w.project && !isKeyboardOpen && <button className="hidden max-w-40 truncate text-xs text-muted-foreground sm:block" onClick={() => editProject(w.project!)}>{w.project.name}</button>}
@@ -651,11 +668,12 @@ export function AIWorkbench() {
           {(hasNewCandidates || hasPendingProposals) && (
             <span
               data-testid="badge-mobile-right"
-              className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background animate-pulse"
+              className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-background animate-pulse"
               aria-label={isZh ? '有候选仓库或提案' : 'New candidates or proposals'} /* i18n-allow-literal */
             />
           )}
         </Button>
+        </div>
       </header>
       <div className="flex min-h-0 flex-1">
         {leftOpen && <aside className="hidden w-[220px] shrink-0 border-r border-border lg:block">{history}</aside>}
@@ -695,7 +713,7 @@ export function AIWorkbench() {
                 message.role === 'user' ? (
                   <article
                     key={message.id}
-                    className="ml-auto w-fit max-w-[88%] sm:max-w-2xl text-sm [overflow-wrap:anywhere] rounded-2xl rounded-tr-sm border border-border/60 bg-muted/60 dark:bg-muted/40 px-4 py-3 shadow-xs"
+                    className="ml-auto w-fit max-w-[88%] sm:max-w-2xl text-sm [overflow-wrap:anywhere] rounded-2xl rounded-tr-sm border border-border/60 dark:border-border-strong/50 bg-muted/60 dark:bg-muted/40 px-4 py-3 shadow-xs"
                   >
                     <div className="mb-1.5 flex items-center justify-between gap-3 text-xs text-muted-foreground border-b border-border/30 pb-1">
                       <span className="font-semibold text-foreground">{t('repositoryChatSheet.you')}</span>
@@ -744,7 +762,7 @@ export function AIWorkbench() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                          className="h-6 w-6 text-muted-foreground opacity-60 transition-opacity hover:text-foreground hover:opacity-100"
                           aria-label={t('repositoryChatSheet.copy-answer')}
                           title={t('repositoryChatSheet.copy-answer')}
                           onClick={() => void w.guard(async () => {
@@ -803,9 +821,9 @@ export function AIWorkbench() {
                                 return (
                                   <div
                                     key={e.id}
-                                    className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1.5 text-foreground"
+                                    className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2.5 py-1.5 text-foreground transition-colors hover:bg-muted/40"
                                   >
-                                    <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                    <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-success" />
                                     <span className="font-medium truncate">{e.repoFullName}</span>
                                     {e.path && <span className="text-muted-foreground truncate">{e.path}</span>}
                                     {e.lineStart && (
@@ -813,7 +831,7 @@ export function AIWorkbench() {
                                         (L{e.lineStart}{e.lineEnd && e.lineEnd !== e.lineStart ? `-${e.lineEnd}` : ''})
                                       </span>
                                     )}
-                                    <Badge variant="outline" className="ml-auto shrink-0 py-0 text-[10px] font-normal">
+                                    <Badge variant="outline" className="ml-auto shrink-0 py-0 text-[11px] font-normal">
                                       {freshnessText}
                                     </Badge>
                                   </div>
@@ -836,7 +854,7 @@ export function AIWorkbench() {
                                       (L{e.lineStart}{e.lineEnd && e.lineEnd !== e.lineStart ? `-${e.lineEnd}` : ''})
                                     </span>
                                   )}
-                                  <Badge variant="outline" className="ml-auto shrink-0 py-0 text-[10px] font-normal">
+                                  <Badge variant="outline" className="ml-auto shrink-0 py-0 text-[11px] font-normal">
                                     {freshnessText}
                                   </Badge>
                                   <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-50 group-hover:opacity-100" />
@@ -884,7 +902,7 @@ export function AIWorkbench() {
                 variant="outline"
                 size="sm"
                 onClick={scrollToProposals}
-                className="flex items-center gap-1.5 rounded-full border-primary/40 bg-background/95 px-4 py-1.5 text-xs font-medium text-primary shadow-lg backdrop-blur transition-all duration-200 hover:scale-105 hover:bg-primary/10 animate-pulse"
+                className="flex items-center gap-1.5 rounded-full border-primary/40 bg-background/95 px-4 py-1.5 text-xs font-medium text-primary shadow-lg backdrop-blur transition-all duration-200 hover:scale-105 hover:bg-primary/10"
                 aria-label={t('workbench.viewNewProposals')}
               >
                 <ClipboardList className="h-3.5 w-3.5" />
@@ -969,18 +987,19 @@ export function AIWorkbench() {
               <span>{t(invalidOverviewScope ? 'overview.scopeLimit' : 'overview.askScope', { count: askedCandidates.length })}</span>
               <Button type="button" variant="outline" size="sm" onClick={() => setView('overview')}>{t('overview.chooseScope')}</Button>
             </div>}
+            <div className="rounded-xl border border-border bg-card p-2.5 transition-all focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
             <Textarea
               ref={textareaRef}
               value={draft}
               disabled={readonly}
               onChange={(e) => setDraft(e.target.value)}
-              className={`resize-y transition-all ${isKeyboardOpen ? 'min-h-[42px] max-h-24 py-1.5 text-xs' : 'min-h-20 max-h-40'}`}
+              className={`resize-y border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0 ${isKeyboardOpen ? 'min-h-[42px] max-h-24 text-xs' : 'min-h-20 max-h-40'}`}
               aria-label={t('repositoryChatSheet.question')}
               placeholder={t(w.data.scope === 'github' ? inputIntent === 'results' ? 'overview.askPlaceholder' : 'workbench.emptyQuestion' : 'research.question')}
             />
             {w.data.scope === 'github' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={t('overview.brief')}>
               {(['search', 'results'] as const).map(intent => <button type="button" key={intent} aria-pressed={inputIntent === intent} disabled={busy || readonly || (intent === 'results' && !hasNewCandidates)}
-                className={`border-b-2 px-1 py-1 ${inputIntent === intent ? 'border-primary font-medium' : 'border-transparent text-muted-foreground'}`}
+                className={`rounded-full px-2.5 py-0.5 transition-colors ${inputIntent === intent ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`}
                 onClick={() => { setInputIntent(intent); if (w.activeId) void w.guard(() => w.patchData(w.activeId!, { inputIntent: intent })); }}>{t(intent === 'search' ? 'overview.newSearch' : 'overview.ask')}</button>)}
               {inputIntent === 'search' && <span className="text-muted-foreground">{t('overview.brief')}</span>}
             </div>}
@@ -1084,11 +1103,16 @@ export function AIWorkbench() {
                 )}
               </div>
 
-              <Button type={busy ? 'button' : 'submit'} size="icon" className="ml-auto h-8 w-8 shrink-0" disabled={!busy && (!draft.trim() || readonly || !modelReady || invalidOverviewScope)} onClick={busy ? w.stop : undefined}
+              <Button type={busy ? 'button' : 'submit'} size="icon" className={`ml-auto h-8 w-8 shrink-0 rounded-lg ${busy ? 'animate-pulse' : ''}`} disabled={!busy && (!draft.trim() || readonly || !modelReady || invalidOverviewScope)} onClick={busy ? w.stop : undefined}
                 aria-label={t(busy ? 'workbench.stop' : 'workbench.send')} title={t(busy ? 'workbench.stop' : 'workbench.send')}>
                 {busy ? <Square className="h-3 w-3" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
+            </div>
+            <p className="mt-1.5 hidden items-center gap-3 text-[11px] text-muted-foreground/70 sm:flex">
+              <span>Enter {t('workbench.send')}</span>
+              <span>Shift+Enter</span>
+            </p>
           </form>
         </main>
         </div>

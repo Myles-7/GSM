@@ -15,7 +15,7 @@ export interface PendingTaskRequest extends Record<string, unknown> {
 type TaskIdentity = Pick<PendingTaskRequest, 'workspaceId' | 'githubUserId'>;
 type TaskSubmissionContext = {
   api: Pick<HomeApi, 'request'>;
-  db: Pick<HomeDatabase, 'metadata' | 'claimTaskRequest' | 'confirmTaskRequest'>;
+  db: Pick<HomeDatabase, 'metadata' | 'claimTaskRequest' | 'confirmTaskRequest'> & Partial<Pick<HomeDatabase,'recordTaskReceipt'|'pendingTaskRequests'>>;
   identity: TaskIdentity;
 };
 
@@ -87,6 +87,11 @@ export async function readPendingTaskRequest(context: TaskSubmissionContext): Pr
   return value === undefined ? null : validateRequest(value, context.identity);
 }
 
+export async function readPendingTaskRequests(context:TaskSubmissionContext):Promise<PendingTaskRequest[]> {
+  const values=context.db.pendingTaskRequests?await context.db.pendingTaskRequests():[await context.db.metadata('unconfirmedTask')].filter(value=>value!==undefined);
+  return values.map(value=>validateRequest(value,context.identity));
+}
+
 function stableJson(value: unknown): string | undefined {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -108,6 +113,14 @@ function taskReceipt(value: unknown, request: PendingTaskRequest): HomeTask {
     throw new PendingTaskRequestError(request, '电脑返回的任务与上次提交不一致，已保留原提交，请检查原工作区的任务中心。');
   }
   return task as HomeTask;
+}
+
+/** Polling receipts use the same payload/identity validation as POST replies. */
+export async function confirmPolledTaskReceipt(context: TaskSubmissionContext, request: PendingTaskRequest, value: unknown): Promise<HomeTask> {
+  const task = taskReceipt(value, validateRequest(request, context.identity));
+  await context.db.recordTaskReceipt?.(request,task.id);
+  await context.db.confirmTaskRequest(request.requestId);
+  return task;
 }
 
 function uncertainSubmission(request: PendingTaskRequest, error: unknown): PendingTaskRequestError {
@@ -155,9 +168,7 @@ async function dispatch(context: TaskSubmissionContext, request: PendingTaskRequ
     throw uncertainSubmission(request, error);
   }
   try {
-    const task = taskReceipt(receipt, request);
-    await context.db.confirmTaskRequest(request.requestId);
-    return task;
+    return await confirmPolledTaskReceipt(context,request,receipt);
   } catch (error) {
     throw uncertainSubmission(request, error);
   }
@@ -176,14 +187,16 @@ async function lookup(context: TaskSubmissionContext, request: PendingTaskReques
   const query = new URLSearchParams({ workspaceId: request.workspaceId, githubUserId: String(request.githubUserId) });
   try {
     const receipt = await context.api.request<unknown>(`/tasks/by-request/${encodeURIComponent(request.requestId)}?${query}`);
-    const task = taskReceipt(receipt, request);
-    await context.db.confirmTaskRequest(request.requestId);
-    return task;
+    return await confirmPolledTaskReceipt(context,request,receipt);
   } catch (error) {
     // A missing receipt cannot prove that an earlier HTTP request will never arrive.
     if (error instanceof HomeApiError && error.status === 404) return null;
     throw uncertainSubmission(request, error);
   }
+}
+
+export async function lookupTaskReceipt(context:TaskSubmissionContext,request:PendingTaskRequest):Promise<HomeTask|null> {
+  return lookup(context,validateRequest(request,context.identity));
 }
 
 /** Read-only server lookup is safe on mount; it never resubmits a paid task. */

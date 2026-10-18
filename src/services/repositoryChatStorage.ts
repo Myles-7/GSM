@@ -17,9 +17,13 @@ import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
 import type { RepositoryIdentityParticipantResult, WorkbenchRepositoryIdentitySnapshot } from './repositoryIdentityParticipants';
 
 const DB_NAME = 'gsm-repository-chat-db';
-const DB_VERSION = 2;
+export class ProposalRevisionError extends Error {
+  constructor() { super('Draft changed; read the latest checkpoint'); this.name = 'ProposalRevisionError'; }
+}
+const DB_VERSION = 3;
 const FALLBACK_KEY = 'gsm-repository-chat-fallback-v1';
 const FALLBACK_MODE_KEY = 'gsm-repository-chat-use-fallback-v1';
+const RECOVERED_FALLBACK_KEY = 'gsm-repository-chat-recovered-fallback-v1';
 const PRE_WORKBENCH_BACKUP_KEY = 'gsm-repository-chat-pre-workbench-v1';
 const STORE_NAMES = ['sessions', 'messages', 'toolEvents', 'evidence', 'projects', 'proposals'] as const;
 type StoreName = typeof STORE_NAMES[number];
@@ -48,9 +52,10 @@ const emptySnapshot = (): FallbackSnapshot => ({
 const keepOperationHistory = (proposal: WorkbenchProposal) => !!proposal.organization
   || proposal.operations.some(item => ['success', 'restored', 'unknown', 'conflict', 'running'].includes(item.status));
 
-const notifyGlobalHistoryChanged = (source?: 'home-projection'): void => {
+export interface ChatHistoryChange { source?: 'home-projection'; proposalId?: string; ownerId?: string; sessionId?: string }
+const notifyGlobalHistoryChanged = (source?: 'home-projection', change?: ChatHistoryChange): void => {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT, { detail: source ? { source } : undefined }));
+  window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT, { detail: source || change ? { ...change, ...(source ? { source } : {}) } : undefined }));
 };
 
 const canUseIndexedDb = () => typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
@@ -80,15 +85,18 @@ const enableFallbackStorage = (): boolean => {
 };
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs = 2000): Promise<T> => {
-  return await Promise.race([
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([
     promise,
-    new Promise<T>((_, reject) => window.setTimeout(() => reject(new Error('Repository chat IndexedDB timeout')), timeoutMs)),
-  ]);
+    new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error('Repository chat IndexedDB timeout')), timeoutMs); }),
+  ]); } finally { clearTimeout(timer); }
 };
 
 const readFallback = (): FallbackSnapshot => {
   if (typeof window === 'undefined') return emptySnapshot();
   try {
+    // Retain the original recovery copy without merging its stale/deleted rows back.
+    if (!persistedFallbackMode() && window.localStorage.getItem(RECOVERED_FALLBACK_KEY) === '1') return emptySnapshot();
     const raw = window.localStorage.getItem(FALLBACK_KEY);
     if (!raw) return emptySnapshot();
     const value = JSON.parse(raw) as Partial<FallbackSnapshot>;
@@ -107,7 +115,7 @@ const readFallback = (): FallbackSnapshot => {
   }
 };
 
-const writeFallback = (snapshot: FallbackSnapshot, source: 'local' | 'identity-migration' = 'local'): void => {
+const writeFallback = (snapshot: FallbackSnapshot, source: 'local' | 'identity-migration' = 'local', change?: ChatHistoryChange): void => {
   if (source !== 'identity-migration') assertRepositoryIdentityWritable();
   if (typeof window === 'undefined') {
     throw new Error('[repository-chat] localStorage is unavailable for fallback persistence');
@@ -122,16 +130,21 @@ const writeFallback = (snapshot: FallbackSnapshot, source: 'local' | 'identity-m
       }
     }
     window.localStorage.setItem(FALLBACK_KEY, JSON.stringify(snapshot));
-    notifyGlobalHistoryChanged();
+    window.localStorage.removeItem(RECOVERED_FALLBACK_KEY);
+    notifyGlobalHistoryChanged(undefined, change);
   } catch {
     throw new Error('[repository-chat] unable to persist fallback snapshot');
   }
 };
 
-const openDb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
+export const openRepositoryChatDatabase = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
   const request = window.indexedDB.open(DB_NAME, DB_VERSION);
   request.onupgradeneeded = (event) => {
     const db = request.result;
+    if (!db.objectStoreNames.contains('organizationUnderstandingCache')) {
+      const cache = db.createObjectStore('organizationUnderstandingCache', { keyPath: 'id' });
+      cache.createIndex('ownerId', 'ownerId', { unique: false });
+    }
     if (event.oldVersion === 1 && request.transaction) {
       const backup = db.createObjectStore('preWorkbenchBackup', { keyPath: 'id' });
       const transaction = request.transaction;
@@ -171,9 +184,58 @@ const openDb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
       store.createIndex('updatedAt', 'updatedAt', { unique: false });
     }
   };
-  request.onsuccess = () => resolve(request.result);
+  request.onsuccess = () => { request.result.onversionchange = () => request.result.close(); resolve(request.result); };
   request.onerror = () => reject(request.error ?? new Error('Unable to open repository chat IndexedDB'));
 });
+const openDb = openRepositoryChatDatabase;
+
+let fallbackRecovery: Promise<void> | undefined;
+/** A prior transient failure must not permanently serialize the entire chat history. */
+const recoverIndexedFallback = async (): Promise<void> => {
+  if (!useFallbackStorage || !canUseIndexedDb()) return;
+  if (!fallbackRecovery) fallbackRecovery = (async () => {
+    const raw = window.localStorage.getItem(FALLBACK_KEY);
+    if (!raw) return;
+    const value = JSON.parse(raw) as Partial<FallbackSnapshot>;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid fallback snapshot');
+    if (!Array.isArray(value.sessions) || !Array.isArray(value.messages)) throw new Error('Incomplete fallback snapshot');
+    const snapshot = emptySnapshot();
+    for (const name of STORE_NAMES) {
+      const records = value[name] ?? [];
+      if (!Array.isArray(records) || records.some(row => !row || typeof row.id !== 'string') || new Set(records.map(row => row.id)).size !== records.length) throw new Error('Invalid fallback records');
+      Object.assign(snapshot, { [name]: records });
+    }
+    assertRepositoryIdentityWritable();
+    const db = await withTimeout(openDb(), 10000);
+    try {
+      assertRepositoryIdentityWritable();
+      if (window.localStorage.getItem(FALLBACK_KEY) !== raw) throw new Error('Fallback changed during recovery');
+      const tx = db.transaction([...STORE_NAMES], 'readwrite');
+      const completion = new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('Fallback recovery aborted'));
+      });
+      const timer = setTimeout(() => { try { tx.abort(); } catch { /* Already settled. */ } }, 15000);
+      try {
+        // Fallback mode is authoritative, including deletions. Publish all stores atomically.
+        for (const name of STORE_NAMES) {
+          tx.objectStore(name).clear();
+          for (const row of snapshot[name]) tx.objectStore(name).put(row);
+        }
+        await completion;
+        assertRepositoryIdentityWritable();
+        if (window.localStorage.getItem(FALLBACK_KEY) !== raw) throw new Error('Fallback changed during recovery');
+        window.localStorage.setItem(RECOVERED_FALLBACK_KEY, '1');
+        window.localStorage.removeItem(FALLBACK_MODE_KEY);
+        useFallbackStorage = false;
+      } catch (error) {
+        try { tx.abort(); } catch { /* Committed recovery remains inactive if the source changed. */ }
+        await completion.catch(() => {}); throw error;
+      } finally { clearTimeout(timer); }
+    } finally { db.close(); }
+  })().catch(() => { /* Leave the authoritative fallback and its mode intact. */ });
+  await fallbackRecovery;
+};
 
 const requestValue = <T>(request: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -323,7 +385,7 @@ const TOOL_EVENT_KEYS = ['id', 'sessionId', 'messageId', 'toolName', 'status', '
 const EVIDENCE_KEYS = ['id', 'source', 'repoFullName', 'refSha', 'path', 'lineStart', 'lineEnd', 'url', 'contentHash', 'excerpt', 'retrievedAt'] as const;
 const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'repositories', 'selectedRepositoryNames', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
-const OPERATION_KEYS = ['id', 'repository', 'kind', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
+const OPERATION_KEYS = ['id', 'repository', 'kind', 'classificationSchemeId', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
 const EDITABLE_KEYS = ['category_id', 'subcategory_id', 'custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
 const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject', 'inputIntent'] as const;
 const REQUIREMENTS_KEYS = ['purpose', 'required', 'preferred', 'excluded', 'questions', 'queries'] as const;
@@ -693,6 +755,10 @@ const validateProposal = (value: unknown, label: string, ownerId: string): Workb
     operationIds.add(id);
     validateRepository(operationRecord.repository, `${operationLabel}.repository`);
     asEnum(operationRecord.kind, `${operationLabel}.kind`, ['update', 'unstar'] as const);
+    if (operationRecord.classificationSchemeId !== undefined) {
+      asEnum(operationRecord.classificationSchemeId, `${operationLabel}.classificationSchemeId`, ['purpose', 'technology'] as const);
+      if (operationRecord.kind === 'unstar' && operationRecord.classificationSchemeId !== 'purpose') throw new Error('[repository-chat] unstar must use the canonical repository snapshot');
+    }
     asString(operationRecord.reason, `${operationLabel}.reason`, MAX_TEXT);
     validateEditableFields(operationRecord.before, `${operationLabel}.before`);
     validateEditableFields(operationRecord.after, `${operationLabel}.after`);
@@ -868,6 +934,7 @@ const remapImportedBackup = (backup: WorkbenchBackup, current: FallbackSnapshot)
   const proposals = backup.proposals.map((proposal) => ({
     ...proposal,
     ...(proposal.organization ? { organization: { ...proposal.organization, status: 'imported' as const, entries: proposal.organization.entries.map(entry => ({ ...entry, selected: false })),
+      ...(proposal.organization.dual ? { dual: { ...proposal.organization.dual, schemes: Object.fromEntries(Object.entries(proposal.organization.dual.schemes).map(([id, scheme]) => [id, { ...scheme, selected: false, ...(scheme.structureOperations ? { structureOperations: scheme.structureOperations.map(op => ({ ...op, selected: false })) } : {}), entries: scheme.entries.map(entry => ({ ...entry, selected: false })) }])) as typeof proposal.organization.dual.schemes } } : {}),
       ...(proposal.organization.structureOperations ? { structureOperations: proposal.organization.structureOperations.map(op => ({ ...op, selected: false })) } : {}) } } : {}),
     id: proposalIds.get(proposal.id) ?? proposal.id,
     sessionId: sessionIds.get(proposal.sessionId) ?? proposal.sessionId,
@@ -994,6 +1061,7 @@ export const repositoryChatStorage = {
   },
   /** Stable-ID projection from account-bound home sync. Unlike backup import, never remaps IDs. */
   async applyHomeProjection(ownerId: string, records: Array<{ collection: string; id: string; data: Record<string, unknown> | null; deleted?: boolean }>): Promise<void> {
+    await recoverIndexedFallback();
     const merge = (snapshot: FallbackSnapshot): FallbackSnapshot => {
     const deleted = (collection: string) => new Set(records.filter(row => row.collection === collection && row.deleted).map(row => row.id));
     const ownedSessions = new Set(snapshot.sessions.filter(session => session.ownerId === ownerId && !session.deviceOnly && !session.workbench?.localProject && deleted('sessions').has(session.id)).map(session => session.id));
@@ -1032,6 +1100,7 @@ export const repositoryChatStorage = {
     notifyGlobalHistoryChanged('home-projection');
   },
   async listSessionsByRepository(repoId: number): Promise<RepositoryChatSession[]> {
+    await recoverIndexedFallback();
     const fallback = () => fallbackList<RepositoryChatSession>('sessions', (session) => session.repoId === repoId && !session.deletedAt).sort(byUpdatedAtDescending);
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1050,6 +1119,7 @@ export const repositoryChatStorage = {
   },
 
   async listRecentSessions(limit = 50): Promise<RepositoryChatSession[]> {
+    await recoverIndexedFallback();
     const count = Math.max(1, Math.floor(limit));
     const fallback = () => readFallback().sessions
       .filter((session) => !session.deletedAt)
@@ -1072,6 +1142,7 @@ export const repositoryChatStorage = {
   },
 
   async getSession(sessionId: string): Promise<RepositoryChatSession | null> {
+    await recoverIndexedFallback();
     const fallback = () => readFallback().sessions.find((session) => session.id === sessionId) ?? null;
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1089,6 +1160,7 @@ export const repositoryChatStorage = {
   },
 
   async saveSession(session: RepositoryChatSession): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.sessions.findIndex((item) => item.id === session.id);
@@ -1121,6 +1193,7 @@ export const repositoryChatStorage = {
     ownerId: string,
     mode: 'active' | 'archived' | 'trash' | 'legacy' = 'active',
   ): Promise<RepositoryChatSession[]> {
+    await recoverIndexedFallback();
     const matches = (session: RepositoryChatSession): boolean => {
       if (mode === 'legacy') return !session.ownerId && !session.deletedAt;
       if (session.ownerId !== ownerId) return false;
@@ -1147,6 +1220,7 @@ export const repositoryChatStorage = {
   },
 
   async listProjects(ownerId: string): Promise<WorkbenchProject[]> {
+    await recoverIndexedFallback();
     const fallback = () => readFallback().projects
       .filter((project) => project.ownerId === ownerId && !project.deletedAt)
       .sort(byUpdatedAtDescending);
@@ -1167,6 +1241,7 @@ export const repositoryChatStorage = {
   },
 
   async saveProject(project: WorkbenchProject): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.projects.findIndex((item) => item.id === project.id);
@@ -1196,6 +1271,7 @@ export const repositoryChatStorage = {
   },
 
   async getProposal(id: string): Promise<WorkbenchProposal | null> {
+    await recoverIndexedFallback();
     const fallback = () => readFallback().proposals.find((proposal) => proposal.id === id) ?? null;
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1213,6 +1289,7 @@ export const repositoryChatStorage = {
   },
 
   async listProposals(ownerId: string, sessionId?: string): Promise<WorkbenchProposal[]> {
+    await recoverIndexedFallback();
     const matches = (proposal: WorkbenchProposal) => proposal.ownerId === ownerId && (!sessionId || proposal.sessionId === sessionId);
     const fallback = () => readFallback().proposals.filter(matches).sort(byUpdatedAtDescending);
     if (useFallbackStorage || !canUseIndexedDb()) {
@@ -1221,7 +1298,7 @@ export const repositoryChatStorage = {
     }
     try {
       return await withTimeout(runTransaction('proposals', 'readonly', async (stores) => {
-        const records = await requestValue(stores.proposals.index('ownerId').getAll(ownerId)) as WorkbenchProposal[];
+        const records = await requestValue(stores.proposals.index(sessionId ? 'sessionId' : 'ownerId').getAll(sessionId ?? ownerId)) as WorkbenchProposal[];
         return records.filter(matches).sort(byUpdatedAtDescending);
       }));
     } catch (error) {
@@ -1231,16 +1308,18 @@ export const repositoryChatStorage = {
     }
   },
 
-  async saveProposal(proposal: WorkbenchProposal): Promise<void> {
+  async saveProposal(proposal: WorkbenchProposal, expectedUpdatedAt?: string): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.proposals.findIndex((item) => item.id === proposal.id);
+      if (expectedUpdatedAt !== undefined && snapshot.proposals[index]?.updatedAt !== expectedUpdatedAt) throw new ProposalRevisionError();
       if (index >= 0) {
         assertOwnerCompatible(snapshot.proposals[index].ownerId, proposal.ownerId, `proposal ${proposal.id}`);
         snapshot.proposals[index] = proposal;
       }
       else snapshot.proposals.push(proposal);
-      writeFallback(snapshot);
+      writeFallback(snapshot, 'local', { proposalId: proposal.id, ownerId: proposal.ownerId, sessionId: proposal.sessionId });
     };
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1249,11 +1328,13 @@ export const repositoryChatStorage = {
     try {
       await withTimeout(runTransaction('proposals', 'readwrite', async (stores) => {
         const existing = await requestValue(stores.proposals.get(proposal.id)) as WorkbenchProposal | undefined;
+        if (expectedUpdatedAt !== undefined && existing?.updatedAt !== expectedUpdatedAt) throw new ProposalRevisionError();
         if (existing) assertOwnerCompatible(existing.ownerId, proposal.ownerId, `proposal ${proposal.id}`);
         await requestValue(stores.proposals.put(proposal));
       }));
-      notifyGlobalHistoryChanged();
+      notifyGlobalHistoryChanged(undefined, { proposalId: proposal.id, ownerId: proposal.ownerId, sessionId: proposal.sessionId });
     } catch (error) {
+      if (error instanceof ProposalRevisionError) throw error;
       console.warn('[repository-chat] proposal write fell back to localStorage', error);
       if (!await transitionToFallbackStorage()) throw error;
       fallback();
@@ -1261,6 +1342,7 @@ export const repositoryChatStorage = {
   },
 
   async claimSession(sessionId: string, ownerId: string): Promise<RepositoryChatSession | null> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.sessions.findIndex((session) => session.id === sessionId);
@@ -1295,6 +1377,7 @@ export const repositoryChatStorage = {
   },
 
   async restoreSession(sessionId: string): Promise<RepositoryChatSession | null> {
+    await recoverIndexedFallback();
     const session = await this.getSession(sessionId);
     if (!session) return null;
     const restored: RepositoryChatSession = {
@@ -1307,6 +1390,7 @@ export const repositoryChatStorage = {
   },
 
   async cleanupWorkbench(ownerId: string, retentionDays: number, activeSessionId?: string): Promise<void> {
+    await recoverIndexedFallback();
     const snapshot = await readCompleteSnapshot();
     const now = Date.now();
     const retentionCutoff = now - normalizeRetentionDays(retentionDays) * 24 * 60 * 60 * 1000;
@@ -1330,6 +1414,7 @@ export const repositoryChatStorage = {
   },
 
   async exportWorkbench(ownerId: string): Promise<unknown> {
+    await recoverIndexedFallback();
     const snapshot = await readCompleteSnapshot();
     const localEvidenceIds = new Set(snapshot.evidence.filter(item => item.source === 'local').map(item => item.id));
     const localSessionIds = new Set(snapshot.messages.filter(message => message.evidenceIds.some(id => localEvidenceIds.has(id))).map(message => message.sessionId));
@@ -1358,6 +1443,7 @@ export const repositoryChatStorage = {
   },
 
   async importWorkbench(ownerId: string, data: unknown): Promise<void> {
+    await recoverIndexedFallback();
     const backup = parseWorkbenchBackup(ownerId, data);
     const importIntoFallback = () => {
       const snapshot = readFallback();
@@ -1410,6 +1496,7 @@ export const repositoryChatStorage = {
   },
 
   async softDeleteSession(sessionId: string): Promise<void> {
+    await recoverIndexedFallback();
     const session = await this.getSession(sessionId);
     if (!session) return;
     await this.saveSession({
@@ -1421,6 +1508,7 @@ export const repositoryChatStorage = {
   },
 
   async permanentlyDeleteSession(sessionId: string): Promise<void> {
+    await recoverIndexedFallback();
     const session = await this.getSession(sessionId);
     // A storage failure must remain visible; do not claim a permanent deletion
     // while device-only research excerpts still exist.
@@ -1467,6 +1555,7 @@ export const repositoryChatStorage = {
   },
 
   async listMessages(sessionId: string): Promise<RepositoryChatMessage[]> {
+    await recoverIndexedFallback();
     const fallback = () => fallbackList<RepositoryChatMessage>('messages', (message) => message.sessionId === sessionId).sort(byCreatedAt);
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1484,6 +1573,7 @@ export const repositoryChatStorage = {
   },
 
   async saveMessage(message: RepositoryChatMessage): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.messages.findIndex((item) => item.id === message.id);
@@ -1508,6 +1598,7 @@ export const repositoryChatStorage = {
   },
 
   async permanentlyDeleteMessages(messageIds: string[]): Promise<void> {
+    await recoverIndexedFallback();
     if (messageIds.length === 0) return;
     const messageIdSet = new Set(messageIds);
     const fallback = () => {
@@ -1547,6 +1638,7 @@ export const repositoryChatStorage = {
   },
 
   async listToolEvents(sessionId: string): Promise<RepositoryChatToolEvent[]> {
+    await recoverIndexedFallback();
     const fallback = () => fallbackList<RepositoryChatToolEvent>('toolEvents', (event) => event.sessionId === sessionId).sort(byCreatedAt);
     if (useFallbackStorage || !canUseIndexedDb()) {
       enableFallbackStorage();
@@ -1564,6 +1656,7 @@ export const repositoryChatStorage = {
   },
 
   async saveToolEvent(event: RepositoryChatToolEvent): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.toolEvents.findIndex((item) => item.id === event.id);
@@ -1588,6 +1681,7 @@ export const repositoryChatStorage = {
   },
 
   async saveEvidence(evidence: ToolEvidence): Promise<void> {
+    await recoverIndexedFallback();
     const fallback = () => {
       const snapshot = readFallback();
       const index = snapshot.evidence.findIndex((item) => item.id === evidence.id);
@@ -1612,6 +1706,7 @@ export const repositoryChatStorage = {
   },
 
   async listEvidence(ids: string[]): Promise<ToolEvidence[]> {
+    await recoverIndexedFallback();
     const idSet = new Set(ids);
     const fallback = () => readFallback().evidence.filter((evidence) => idSet.has(evidence.id));
     if (ids.length === 0 || useFallbackStorage || !canUseIndexedDb()) {

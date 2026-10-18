@@ -55,6 +55,8 @@ export interface WorkbenchProject {
 export type WorkbenchEditableFields = Pick<Repository, 'custom_category' | 'category_id' | 'subcategory_id' | 'category_locked' | 'custom_tags' | 'custom_description'>;
 export interface WorkbenchOperation {
   id: string;
+  /** Missing on legacy history: permanently bound to purpose. */
+  classificationSchemeId?: import('./classification').ClassificationSchemeId;
   repository: Repository;
   kind: 'update' | 'unstar';
   reason: string;

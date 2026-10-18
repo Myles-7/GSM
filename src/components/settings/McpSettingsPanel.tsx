@@ -24,19 +24,21 @@ import { isElectron } from '../../services/electronProxy';
 import { useDialog } from '../../hooks/useDialog';
 import { useMcpActions } from '../../features/settings/hooks/useMcpActions';
 import { MCP_DEFAULT_PORT, normalizeMcpHost } from '../../utils/mcpHost';
+import { LocalAgentMcpPanel } from './LocalAgentMcpPanel';
 
 interface McpSettingsPanelProps {
   t: TranslateFn;
 }
 
 export const McpSettingsPanel: React.FC<McpSettingsPanelProps> = ({ t }) => {
-  const { mcpConfig, setMcpConfig } = useAppStore(useShallow((state) => ({
-    mcpConfig: state.mcpConfig,
+  const { localMcpConfig, setMcpConfig } = useAppStore(useShallow((state) => ({
+    localMcpConfig: state.mcpConfig,
     setMcpConfig: state.setMcpConfig,
     language: state.language,
   })));
   const { toast } = useDialog();
-  const { loading, saving, error, backendMode, vectorAvailable, endpoints, refresh: refreshFromBackend, toggle: handleToggle, resetToken: handleResetToken } = useMcpActions();
+  const { loading, saving, error, backendMode, backendConfig, backendUrl, vectorAvailable, endpoints, refresh: refreshFromBackend, toggle: handleToggle, resetToken: handleResetToken } = useMcpActions();
+  const mcpConfig = backendMode ? { ...localMcpConfig, enabled: backendConfig?.enabled ?? false, token: backendConfig?.token ?? '' } : localMcpConfig;
   const [showToken, setShowToken] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [portInput, setPortInput] = useState(String(mcpConfig.port || MCP_DEFAULT_PORT));
@@ -54,8 +56,8 @@ export const McpSettingsPanel: React.FC<McpSettingsPanelProps> = ({ t }) => {
       return `http://${host}:${mcpConfig.port || MCP_DEFAULT_PORT}`;
     }
     // Backend / Docker: agents should hit the same origin nginx proxies (/mcp)
-    return window.location.origin;
-  }, [backendMode, isElectronApp, mcpConfig.host, mcpConfig.port]);
+    return backendUrl || window.location.origin;
+  }, [backendMode, backendUrl, isElectronApp, mcpConfig.host, mcpConfig.port]);
 
   const mcpHttpUrl = `${baseUrl}${endpoints.streamableHttp}`;
   const mcpSseUrl = `${baseUrl}${endpoints.sse}`;
@@ -109,12 +111,15 @@ export const McpSettingsPanel: React.FC<McpSettingsPanelProps> = ({ t }) => {
     ? t('mcpSettingsPanel.running')
     : t('mcpSettingsPanel.stopped');
 
+  if (isElectronApp && !backendMode) return <LocalAgentMcpPanel />;
+
   return (
     <div className="space-y-6">
+      {isElectronApp && <LocalAgentMcpPanel />}
       <div className="flex items-center space-x-3">
         <Cable className="w-6 h-6 text-muted-foreground dark:text-muted-foreground" />
         <h3 className="text-lg font-semibold text-foreground dark:text-foreground">
-          {t('mcpSettingsPanel.mcp-server')}
+          {t(backendMode ? 'localAgentMcp.backendTitle' : 'mcpSettingsPanel.mcp-server')}
         </h3>
       </div>
 

@@ -28,6 +28,60 @@ function fixture(fetchImpl = async () => new Response('body'), options = {}) {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('safe reads fall back to Chromium without forwarding the Node dispatcher', async () => {
+  let fallback = 0, destroyed = 0;
+  const dispatcher = { destroy: async () => { destroyed++; } };
+  const f = fixture(async () => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'CERT_HAS_EXPIRED' } }); }, {
+    getDispatcher: () => dispatcher,
+    chromiumFetch: async (_url, init) => { fallback++; assert.equal(init.dispatcher, undefined); return new Response('fallback'); },
+  });
+  for (const method of ['GET', 'HEAD', 'PROPFIND']) {
+    const result = await f.send(request({ method }));
+    assert.equal(result.success, true); assert.equal(result.body, 'fallback');
+  }
+  assert.equal(fallback, 3); assert.equal(destroyed, 3);
+});
+
+test('unknown mutation outcomes and mutation redirects are never replayed', async () => {
+  for (const method of ['PUT', 'POST', 'DELETE', 'MKCOL', 'MOVE', 'COPY', 'LOCK', 'UNLOCK', 'PROPPATCH']) {
+    for (const redirect of [false, true]) {
+      let fallback = 0;
+      const f = fixture(async () => {
+        if (redirect) return new Response('', { status: 307, headers: { location: '/moved' } });
+        throw new Error('unknown server outcome');
+      }, { chromiumFetch: async () => { fallback++; return new Response('unsafe'); } });
+      assert.equal((await f.send(request({ method }))).success, false);
+      assert.equal(f.calls.length, 1); assert.equal(fallback, 0);
+    }
+  }
+});
+
+test('redirect credentials are stripped and redirect bodies are canceled', async () => {
+  let canceled = false;
+  const f = fixture(async (url, init) => {
+    if (url.includes('dav.example')) return new Response(new ReadableStream({ cancel() { canceled = true; } }), { status: 302, headers: { location: 'https://other.example/final' } });
+    assert.equal(init.headers.authorization, undefined);
+    return new Response('done');
+  });
+  assert.equal((await f.send(request({ headers: { Authorization: 'Basic private' } }))).body, 'done');
+  assert.equal(canceled, true); assert.equal(f.calls.length, 2);
+});
+
+test('cancellation prevents fallback and dispatcher stays alive through body consumption', async () => {
+  let destroyed = false, releaseBody, fallback = 0;
+  const f = fixture(async () => new Response(new ReadableStream({ start(controller) { releaseBody = () => { controller.enqueue(new TextEncoder().encode('ok')); controller.close(); }; } })), {
+    getDispatcher: () => ({ destroy: async () => { destroyed = true; } }),
+    chromiumFetch: async () => { fallback++; return new Response('unexpected'); },
+  });
+  const pending = f.send(); await tick(); assert.equal(destroyed, false);
+  releaseBody(); assert.equal((await pending).body, 'ok'); assert.equal(destroyed, true);
+  const canceled = fixture(async () => { throw new Error('offline'); }, {
+    chromiumFetch: async (_url, init) => { assert.equal(init.signal.aborted, false); return new Promise(() => {}); },
+  });
+  const second = canceled.send(); canceled.cancel();
+  assert.equal((await second).canceled, true); assert.equal(fallback, 0);
+});
+
 test('trust requires the actual app main frame, not a matching URL in a child or other window', () => {
   const { event, window } = fixture();
   assert.equal(isTrustedWebdavFrame(event, window, appUrl), true);
@@ -102,7 +156,7 @@ test('DAV methods, inline auth, text body and bounded metadata round-trip withou
     success: true, status: 207, statusText: 'Multi-Status', body: '<xml/>',
     headers: { 'content-type': 'application/xml', server: 'fixture', dav: '1,2' },
   });
-  assert.equal(f.calls[0][1].redirect, 'error');
+  assert.equal(f.calls[0][1].redirect, 'manual');
   assert.equal(f.calls[0][1].headers.authorization, 'Basic inline-new');
   assert.equal(f.calls[0][1].body, '<propfind/>');
   assert.ok(f.calls[0][1].signal instanceof AbortSignal);

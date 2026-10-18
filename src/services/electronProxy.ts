@@ -29,6 +29,7 @@ export interface McpVectorRuntimeConfig {
 }
 
 export interface McpDataSnapshot {
+  ownerId?: string;
   repositories: Repository[];
   customCategories: Category[];
   releases: Release[];
@@ -37,6 +38,8 @@ export interface McpDataSnapshot {
 }
 
 export interface McpElectronAPI {
+  onOrganizationRequest?: (listener: (request: { requestId: string; name: string; args: unknown; ownerId: string; deadline: number }) => void) => () => void;
+  replyOrganization?: (requestId: string, result: unknown) => Promise<boolean>;
   setConfig: (config: McpLocalConfig) => Promise<{ success: boolean; error?: string }>;
   getConfig: () => Promise<McpLocalConfig | null>;
   pushSnapshot: (snapshot: McpDataSnapshot) => Promise<{ success: boolean }>;
@@ -63,6 +66,13 @@ export interface DesktopElectronAPI {
 }
 
 export interface ElectronAPI {
+  diagnostics?: {
+    append: (payload: unknown) => Promise<unknown>;
+    flush: (payload: unknown) => void;
+    getLogs?: (filters?: { since?: string; level?: string; sources?: string[]; limit?: number }) => Promise<import('./logger').LogEntry[]>;
+    getSystemInfo?: () => Promise<Record<string, unknown>>;
+    exportBundle?: (filters?: { since?: string; level?: string; sources?: string[]; limit?: number }) => Promise<Record<string, unknown>>;
+  };
   webdavRequest?: (params: DesktopDavRequest) => Promise<DesktopDavResult>;
   webdavCancel?: (requestId: string) => Promise<{ success: boolean; error?: string }>;
   htmlReading?: import('../lib/html-reading/desktopApi').HtmlReadingApi;

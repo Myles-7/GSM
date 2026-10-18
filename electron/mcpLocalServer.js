@@ -5,6 +5,7 @@
  */
 const http = require('http');
 const crypto = require('crypto');
+const { organizationToolDefinitions } = require('./mcpOrganization');
 const { version: MCP_SERVER_VERSION } = require('../package.json');
 const {
   buildBatchLookupResult,
@@ -664,7 +665,7 @@ function timingSafeEqualString(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-function createMcpLocalServer(getState) {
+function createMcpLocalServer(getState, organizationRequest) {
   /** @type {import('http').Server | null} */
   let server = null;
   let lastError = null;
@@ -703,13 +704,23 @@ function createMcpLocalServer(getState) {
       return {
         jsonrpc: '2.0',
         id,
-        result: { tools: getMcpToolDefinitions(vectorInfo.available) },
+        result: { tools: [...getMcpToolDefinitions(vectorInfo.available), ...(organizationRequest ? organizationToolDefinitions : [])] },
       };
     }
     if (method === 'tools/call') {
       const name = body?.params?.name;
       const args = body?.params?.arguments || {};
+      if (organizationRequest && organizationToolDefinitions.some(tool => tool.name === name)) {
+        const data = await organizationRequest(name, args, snapshot?.ownerId ?? '');
+        return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(data) }], ...(data?.error ? { isError: true } : {}) } };
+      }
       const result = await callTool(name, args, snapshot);
+      if (name === 'gsm_status' && organizationRequest && result.content?.[0]?.type === 'text') {
+        const status = JSON.parse(result.content[0].text);
+        status.availableTools.push(...organizationToolDefinitions.map(tool => tool.name));
+        status.organization = { available: true, humanApplicationRequired: true };
+        result.content[0].text = JSON.stringify(status);
+      }
       return { jsonrpc: '2.0', id, result };
     }
     return {
@@ -749,9 +760,8 @@ function createMcpLocalServer(getState) {
     };
 
     if (server) {
-      const h = normalizeHost(state.config?.host);
-      const p = state.config?.port || 3927;
-      return { success: true, url: `http://${h}:${p}/mcp` };
+      const status = getStatus();
+      return status.running ? { success: true, url: status.url } : { success: false, error: 'MCP listener is starting or stopping' };
     }
 
     // Hard-bind loopback only — never listen on 0.0.0.0 for local MCP token auth
@@ -916,6 +926,7 @@ function createMcpLocalServer(getState) {
       server.listen(port, host, () => resolve());
     });
 
+    lastError = null;
     return { success: true, url: `http://${host}:${port}/mcp` };
   }
 
@@ -937,15 +948,11 @@ function createMcpLocalServer(getState) {
   }
 
   function getStatus() {
-    const state = getState();
-    const cfg = state?.config || {};
-    const host =
-      !cfg.host || cfg.host === '0.0.0.0' || cfg.host === '::'
-        ? '127.0.0.1'
-        : cfg.host;
+    const address = server?.listening ? server.address() : null;
+    const running = !!address && typeof address === 'object';
     return {
-      running: !!server,
-      url: server ? `http://${host}:${cfg.port || 3927}/mcp` : undefined,
+      running,
+      url: running ? `http://127.0.0.1:${address.port}/mcp` : undefined,
       error: lastError || undefined,
     };
   }

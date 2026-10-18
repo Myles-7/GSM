@@ -1,0 +1,20 @@
+// Actual sync router and SQLite, contained in the caller's copied-data directory.
+const fs = require('node:fs'), path = require('node:path'), { createRequire } = require('node:module');
+const scratch = path.resolve(process.env.GSM_FAILURE_FIX_ROOT || '');
+if (!path.basename(scratch).startsWith('gsm-failure-fix-')) throw Error('Explicit scratch root required');
+process.env.DATA_DIR = path.join(scratch, 'sync-server-config');
+process.env.ENCRYPTION_KEY = 'f'.repeat(64); process.env.API_SECRET = 'isolated-fixture';
+global.fetch = async () => { throw Error('FIXTURE_OUTBOUND_FORBIDDEN'); };
+const requireRelease = createRequire(path.join(scratch, 'release/server/package.json'));
+const express = requireRelease('express'), D = requireRelease('better-sqlite3');
+const suffix = process.env.GSM_FAILURE_FIX_SUFFIX || '';
+if (!/^(?:-r\d+)?$/.test(suffix)) throw Error('Invalid fixture suffix');
+const target = path.join(scratch, `sync-server${suffix}.db`);
+fs.copyFileSync(path.resolve(__dirname, '../../output/reliability/sqlite-smoke/service.db'), target, fs.constants.COPYFILE_EXCL);
+const db = new D(target); db.pragma('foreign_keys=ON');
+const { createSyncV2Router } = requireRelease('./dist/routes/syncV2.js');
+const app = express(); app.use(express.json({ limit: '20mb' }));
+app.use((req, res, next) => { if (req.headers.authorization !== 'Bearer isolated-fixture') { res.sendStatus(401); return; } next(); });
+app.post('/fixture-stop', (_req, res) => { res.json({ stopped: true }); server.close(() => { db.close(); process.exit(0); }); });
+app.use(createSyncV2Router({ db: () => db, requireSecret: false }));
+const server = app.listen(0, '127.0.0.1', () => console.log(JSON.stringify({ port: server.address().port })));

@@ -38,6 +38,17 @@ function createTrustedIpcMain({ ipcMain, isTrusted }) {
         return handler(event, ...args);
       });
     },
+    on(channel, listener) {
+      if (typeof ipcMain.on !== 'function') throw new Error('IPC one-way events unavailable');
+      const wrapped = (event, ...args) => {
+        if (!isTrusted(event)) return undefined;
+        return listener(event, ...args);
+      };
+      ipcMain.on(channel, wrapped);
+      return () => {
+        if (typeof ipcMain.removeListener === 'function') ipcMain.removeListener(channel, wrapped);
+      };
+    },
   };
 }
 

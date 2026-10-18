@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AIOrganizationPanel } from './AIOrganizationPanel';
+import { DualOrganizationWizard } from './DualOrganizationWizard';
 import type { useAIOrganization } from '../hooks/useAIOrganization';
 import type { Repository } from '../types';
 import type { WorkbenchProposal } from '../types/aiWorkbench';
@@ -111,6 +112,13 @@ function createMockController(overrides?: Partial<ReturnType<typeof useAIOrganiz
   };
 
   const defaultController: ReturnType<typeof useAIOrganization> = {
+    recoverableResults: false, retrySave: vi.fn(),
+    continueCompleted: vi.fn(),
+    treeCategories: [], treePreview: null, editTree: vi.fn(), continueLegacy: vi.fn(), redesignMerge: vi.fn(),
+    analysisDepth: 'quick', setAnalysisDepth: vi.fn(), concurrency: undefined, setConcurrency: vi.fn(), concurrencyLimit: 3,
+    evidenceSummary: { detailed: 0, stale: 0, pending: 2 }, deepenAll: vi.fn(),
+    structureSchemeId: 'purpose',
+    reviewScheme: 'purpose', setReviewScheme: vi.fn(), setSchemeSelected: vi.fn(), setRetireCategories: vi.fn(), setCleanupReplaced: vi.fn(), refine: vi.fn(),
     purpose: 'repositories', setPurpose: vi.fn(), mode: 'reorganize', setMode: vi.fn(),
     rangeSummary: { total: 2, assigned: 0, locked: 0, fullLibrary: true },
     bulkEdit: vi.fn(), addStructure: vi.fn(), editStructure: vi.fn(), applyStructure: vi.fn(), restoreStructure: vi.fn(), acceptOriginalGroup: vi.fn(), migrateSelected: vi.fn(),
@@ -156,245 +164,69 @@ function createMockController(overrides?: Partial<ReturnType<typeof useAIOrganiz
   return defaultController;
 }
 
-describe('AIOrganizationPanel Phase 3 features', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+function dualController(overrides: Partial<ReturnType<typeof useAIOrganization>> = {}) {
+  const controller = createMockController({ busy: false });
+  const proposal = structuredClone(controller.proposal!); const draft = proposal.organization!;
+  const before = { customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], categoryListIdMap: {} };
+  draft.version = 3; draft.status = 'ready';
+  const scheme = () => ({ selected: true, ready: true, categories: structuredClone(draft.categories), entries: structuredClone(draft.entries), before, createdCategoryIds: [] });
+  draft.dual = { phase: 'review', outcome: 'complete', requests: {}, errors: [], understanding: [], summaries: [], schemes: { purpose: scheme(), technology: scheme() } };
+  return { ...controller, proposal, versions: [proposal], ...overrides };
+}
+
+describe('compact organization wizard', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  it('shows the remaining pending repository in problem view and offers explicit continuation', async () => {
+    const current = dualController({ busy: true }); const draft = current.proposal!.organization!;
+    draft.status = 'generating'; draft.dual!.phase = 'understanding';
+    draft.dual!.understanding = [101, 102].map((id, i) => ({ repositoryId: id, fingerprint: '', sources: [],
+      sourceMetadata: { name: i ? 'fixture/slow' : 'fixture/done', description: '', summary: '', tags: [], language: '', details: '' },
+      status: i ? 'pending' as const : 'understood' as const, purpose: i ? [] : ['Known use'], technology: [], activity: i ? 'understanding' as const : undefined }));
+    const user = userEvent.setup(); render(<AIOrganizationPanel open onOpenChange={vi.fn()} controller={current} />);
+    expect(document.querySelectorAll('[data-organization-repository]')).toHaveLength(2);
+    expect(screen.getByText('organizationRuntime.title')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'organizationSpeed.deferPending:1' }));
+    expect(current.continueCompleted).toHaveBeenCalledOnce();
   });
-
-  it('renders high-frequency prompt presets and fills instruction upon click', async () => {
-    const user = userEvent.setup();
-    const controller = createMockController({ busy: false });
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={controller} />);
-
-    // Check prompt preset chips are rendered
-    const domainChip = screen.getByText('🏷️ 领域与形态');
-    const techChip = screen.getByText('💻 技术栈与编程语言');
-
-    expect(domainChip).toBeInTheDocument();
-    expect(techChip).toBeInTheDocument();
-    expect(screen.queryByText('🎯 保持一级分类')).not.toBeInTheDocument();
-    expect(screen.queryByText('🧹 提取关键词生成规范标签')).not.toBeInTheDocument();
-
-    // Click domain chip
-    await user.click(domainChip);
-    expect(controller.setInstruction).toHaveBeenCalledWith(
-      expect.stringContaining('请按项目所属应用领域与工程形态'),
-    );
-
-    // Click tech stack chip
-    await user.click(techChip);
-    expect(controller.setInstruction).toHaveBeenCalledWith(
-      expect.stringContaining('请以主要编程语言与底层技术栈'),
-    );
-
+  it('resets filters when another draft opens', async () => {
+    const current = dualController(); const user = userEvent.setup();
+    const { rerender } = render(<DualOrganizationWizard open onOpenChange={vi.fn()} controller={current} />);
+    await user.click(screen.getByRole('button', { name: /^Tools/ }));
+    expect(document.querySelectorAll('[data-organization-repository]')).toHaveLength(1);
+    const next = structuredClone(current.proposal!); next.id = 'next';
+    next.organization!.dual!.schemes.purpose.entries.forEach(entry => { entry.categoryId = 'cat-frontend'; });
+    rerender(<DualOrganizationWizard open onOpenChange={vi.fn()} controller={{ ...current, proposal: next, versions: [next] }} />);
+    expect(document.querySelectorAll('[data-organization-repository]')).toHaveLength(2);
   });
-
-  it('renders dual-track progress bar: overall progress and current batch card', () => {
-    const controller = createMockController({ busy: true });
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={controller} />);
-
-    // Track 1: Overall progress text: 1 / 2 completed -> 50%
-    expect(screen.getByText(/已就绪 1 \/ 2 \(50%\)/)).toBeInTheDocument();
-
-    // Track 2: Active batch processing card: Batch 2 / 2 · 处理中 (1 项)
-    expect(screen.getByText(/批次 2 \/ 2 · 处理中 \(1 项\)/)).toBeInTheDocument();
-
-    // Highlight ready item in the repository list: repository 101 is in completed batch
-    const readyBadges = screen.getAllByText('已就绪');
-    expect(readyBadges.length).toBeGreaterThan(0);
+  it('shows target editors only after opening a repository', async () => {
+    const current = dualController(); const user = userEvent.setup();
+    render(<AIOrganizationPanel open onOpenChange={vi.fn()} controller={current} />);
+    expect(screen.queryByRole('combobox', { name: 'aiOrganization.targetMain' })).not.toBeInTheDocument();
+    await user.click(document.querySelector<HTMLButtonElement>('[data-open-organization-detail]')!);
+    expect(screen.getByRole('combobox', { name: 'aiOrganization.targetMain' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'organizationUx.closeDetail' }));
+    expect(screen.queryByRole('combobox', { name: 'aiOrganization.targetMain' })).not.toBeInTheDocument();
   });
-
-  it('renders batch failure card and triggers single batch retry', async () => {
-    const user = userEvent.setup();
-    const failedController = createMockController({
-      busy: false,
-      proposal: {
-        id: 'prop-1',
-        sessionId: 'session-1',
-        ownerId: 'user-1',
-        createdAt: '2026-01-01',
-        updatedAt: '2026-01-01',
-        operations: [],
-        organization: {
-          version: 1,
-          revision: 1,
-          scope: { name: 'all', repositoryIds: [101, 102] },
-          instruction: '',
-          configId: 'model-1',
-          maxNewSubcategories: 6,
-          structureReady: true,
-          categories: [],
-          entries: [],
-          batches: [
-            { repositoryIds: [101], status: 'complete' },
-            { repositoryIds: [102], status: 'failed', error: 'Network timeout' },
-          ],
-          status: 'interrupted',
-          createdCategoryIds: [],
-        },
-      },
-    });
-
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={failedController} />);
-
-    // Batch 2 failed card
-    expect(screen.getByText(/批次 2 \/ 2 · 失败 \(1 项\)/)).toBeInTheDocument();
-    expect(screen.getByText(/\(Network timeout\)/)).toBeInTheDocument();
-
-    // Click single batch retry button
-    const retryBatchBtn = screen.getByRole('button', { name: /重试批次 2/ });
-    await user.click(retryBatchBtn);
-
-    expect(failedController.retryBatch).toHaveBeenCalledWith(1);
+  it('blocks generation for an unavailable model and removes duplicate technical tabs', () => {
+    const current = createMockController({ versions: [], busy: false, proposal: undefined });
+    render(<AIOrganizationPanel open onOpenChange={vi.fn()} controller={current} />);
+    expect(screen.getByRole('button', { name: 'dualOrganization.start' })).toBeDisabled();
+    expect(screen.queryByRole('tab', { name: 'aiOrganization.purpose.repositories' })).not.toBeInTheDocument();
   });
-
-  it('renders multiple failed batch cards allowing independent retries', async () => {
-    const user = userEvent.setup();
-    const multiFailedController = createMockController({
-      busy: false,
-      proposal: {
-        id: 'prop-1',
-        sessionId: 'session-1',
-        ownerId: 'user-1',
-        createdAt: '2026-01-01',
-        updatedAt: '2026-01-01',
-        operations: [],
-        organization: {
-          version: 1,
-          revision: 1,
-          scope: { name: 'all', repositoryIds: [101, 102, 103] },
-          instruction: '',
-          configId: 'model-1',
-          maxNewSubcategories: 6,
-          structureReady: true,
-          categories: [],
-          entries: [],
-          batches: [
-            { repositoryIds: [101], status: 'complete' },
-            { repositoryIds: [102], status: 'failed', error: 'Timeout' },
-            { repositoryIds: [103], status: 'failed', error: 'Rate limit' },
-          ],
-          status: 'interrupted',
-          createdCategoryIds: [],
-        },
-      },
-    });
-
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={multiFailedController} />);
-
-    expect(screen.getByText(/批次 2 \/ 3 · 失败 \(1 项\)/)).toBeInTheDocument();
-    expect(screen.getByText(/批次 3 \/ 3 · 失败 \(1 项\)/)).toBeInTheDocument();
-
-    const retryBatch3Btn = screen.getByRole('button', { name: /重试批次 3/ });
-    await user.click(retryBatch3Btn);
-
-    expect(multiFailedController.retryBatch).toHaveBeenCalledWith(2);
+  it('renders a common AGY fault as paused, not as every repository failed', () => {
+    const current = dualController(); const draft = current.proposal!.organization!;
+    draft.status = 'interrupted'; draft.dual!.blocked = { code: 'AGY_DISABLED', message: 'AGY_DISABLED', phase: 'understanding' };
+    render(<AIOrganizationPanel open onOpenChange={vi.fn()} controller={current} />);
+    expect(screen.getByText('organizationUx.paused')).toBeInTheDocument();
+    expect(screen.getByText(/organizationUx.problems.disabled/)).toBeInTheDocument();
+    expect(screen.getByText('dualOrganization.failed:0')).toBeInTheDocument();
   });
-
-  it('supports staged apply for ready items and disables button during saving', async () => {
-    const user = userEvent.setup();
-    const controller = createMockController({ busy: true, saving: false });
-    const { rerender } = render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={controller} />);
-
-    // Repository 101 belongs to completed batch 1 and is selected move pending
-    const stagedApplyBtn = screen.getByRole('button', { name: /应用当前已就绪的 1 项变更/ });
-    expect(stagedApplyBtn).toBeInTheDocument();
-    expect(stagedApplyBtn).not.toBeDisabled();
-
-    await user.click(stagedApplyBtn);
-    expect(controller.apply).toHaveBeenCalledWith([101]);
-
-    // When saving is true, button is disabled
-    const savingController = createMockController({ busy: true, saving: true });
-    rerender(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={savingController} />);
-    const disabledBtn = screen.getByRole('button', { name: /应用当前已就绪的 1 项变更/ });
-    expect(disabledBtn).toBeDisabled();
-  });
-
-  it('keeps standard apply button with spinner when saving outside generation without disappearing or morphing', () => {
-    const readyController = createMockController({
-      busy: true,
-      saving: true,
-      proposal: {
-        id: 'prop-1',
-        sessionId: 'session-1',
-        ownerId: 'user-1',
-        createdAt: '2026-01-01',
-        updatedAt: '2026-01-01',
-        operations: [],
-        organization: {
-          version: 1,
-          revision: 1,
-          scope: { name: 'all', repositoryIds: [101, 102] },
-          instruction: '',
-          configId: 'model-1',
-          maxNewSubcategories: 6,
-          structureReady: true,
-          categories: [],
-          entries: [
-            {
-              repositoryId: 101,
-              before: { categoryId: null, subcategoryId: null, locked: false },
-              categoryId: 'cat-tools',
-              subcategoryId: null,
-              reason: 'CLI Tool',
-              disposition: 'move',
-              selected: true,
-              overrideLocked: false,
-              manual: false,
-              status: 'pending',
-            },
-          ],
-          batches: [{ repositoryIds: [101], status: 'complete' }],
-          status: 'ready',
-          createdCategoryIds: [],
-        },
-      },
-    });
-
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={readyController} />);
-
-    expect(screen.queryByRole('button', { name: /应用当前已就绪的/ })).not.toBeInTheDocument();
-    const standardApplyBtn = screen.getByRole('button', { name: /aiOrganization\.apply:1/ });
-    expect(standardApplyBtn).toBeInTheDocument();
-    expect(standardApplyBtn).toBeDisabled();
-  });
-
-  it('renders both active processing card and failed batch card simultaneously during batch retry', () => {
-    const retryController = createMockController({
-      busy: true,
-      proposal: {
-        id: 'prop-1',
-        sessionId: 'session-1',
-        ownerId: 'user-1',
-        createdAt: '2026-01-01',
-        updatedAt: '2026-01-01',
-        operations: [],
-        organization: {
-          version: 1,
-          revision: 1,
-          scope: { name: 'all', repositoryIds: [101, 102, 103] },
-          instruction: '',
-          configId: 'model-1',
-          maxNewSubcategories: 6,
-          structureReady: true,
-          categories: [],
-          entries: [],
-          batches: [
-            { repositoryIds: [101], status: 'complete' },
-            { repositoryIds: [102], status: 'pending' },
-            { repositoryIds: [103], status: 'failed', error: 'Rate limit' },
-          ],
-          status: 'generating',
-          createdCategoryIds: [],
-        },
-      },
-    });
-
-    render(<AIOrganizationPanel open={true} onOpenChange={vi.fn()} controller={retryController} />);
-
-    expect(screen.getByText(/批次 2 \/ 3 · 处理中 \(1 项\)/)).toBeInTheDocument();
-    expect(screen.getByText(/批次 3 \/ 3 · 失败 \(1 项\)/)).toBeInTheDocument();
+  it('keeps old drafts readable without resurrecting old prompt controls', () => {
+    const current = createMockController({ busy: false });
+    render(<AIOrganizationPanel open onOpenChange={vi.fn()} controller={current} />);
+    expect(screen.getByText('organizationUx.history')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-organization-repository]')).toHaveLength(2);
+    expect(screen.queryByText(/Domain & Form/)).not.toBeInTheDocument();
   });
 });
 

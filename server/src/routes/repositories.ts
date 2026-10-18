@@ -1,6 +1,9 @@
 import { Router } from 'express';
+import { ZodError } from 'zod';
+import { assertLegacyClassificationWrite, classificationWasUpgraded, ClassificationCompatibilityError } from '../services/classificationCompatibility.js';
 import { getDb } from '../db/connection.js';
 import { repositoryOrganizationDto, writeRepositoryOrganization } from '../services/repositoryOrganization.js';
+import { assertStoredTechnologyMembershipReferences, ClassificationReferenceError } from '../services/classificationValidation.js';
 
 const router = Router();
 
@@ -202,6 +205,11 @@ router.put('/api/repositories', (req, res) => {
       db.prepare(`DELETE FROM repositories WHERE id NOT IN (${placeholders})`);
 
     const upsert = db.transaction(() => {
+      const upgraded = classificationWasUpgraded(db);
+      for (const repo of repositories) {
+        const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(repo.id) as Record<string, unknown> | undefined;
+        if (previous) assertLegacyClassificationWrite(repo, previous, upgraded || !!previous.classifications, req.body.classificationSchemaVersion === 2);
+      }
       const isFullSync = Boolean(req.body?.isFullSync);
 
       if (isFullSync) {
@@ -251,12 +259,16 @@ router.put('/api/repositories', (req, res) => {
         writeRepositoryOrganization(db, repo, previous);
         count++;
       }
+      assertStoredTechnologyMembershipReferences(db);
       return count;
     });
 
     const count = upsert();
     res.json({ upserted: count });
   } catch (err) {
+    if (err instanceof ClassificationCompatibilityError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ClassificationReferenceError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ZodError) { res.status(400).json({ error: 'Invalid repository classifications', code: 'INVALID_REPOSITORY_CLASSIFICATIONS' }); return; }
     console.error('PUT /api/repositories error:', err);
     res.status(500).json({ error: 'Failed to upsert repositories', code: 'UPSERT_REPOSITORIES_FAILED' });
   }
@@ -313,7 +325,7 @@ router.patch('/api/repositories/:id', (req, res) => {
       }
     }
 
-    const organizationFields = ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details'];
+    const organizationFields = ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details', 'classifications'];
     if (setClauses.length === 0 && !organizationFields.some(key => key in updates)) {
       res.status(400).json({ error: 'No valid fields to update', code: 'NO_VALID_FIELDS' });
       return;
@@ -321,11 +333,13 @@ router.patch('/api/repositories/:id', (req, res) => {
 
     db.transaction(() => {
       const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      if (previous && ['category_id', 'subcategory_id', 'category_locked', 'custom_category'].some(key => key in updates)) assertLegacyClassificationWrite(updates, previous, classificationWasUpgraded(db) || !!previous.classifications, updates.classificationSchemaVersion === 2);
       if (setClauses.length) {
         values.push(id);
         db.prepare(`UPDATE repositories SET ${setClauses.join(', ')} WHERE id = ?`).run(...values);
       }
       writeRepositoryOrganization(db, { ...updates, id }, previous);
+      assertStoredTechnologyMembershipReferences(db);
     })();
 
     const row = db.prepare('SELECT * FROM repositories WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -335,6 +349,9 @@ router.patch('/api/repositories/:id', (req, res) => {
     }
     res.json(transformRepo(row));
   } catch (err) {
+    if (err instanceof ClassificationCompatibilityError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ClassificationReferenceError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ZodError) { res.status(400).json({ error: 'Invalid repository classifications', code: 'INVALID_REPOSITORY_CLASSIFICATIONS' }); return; }
     console.error('PATCH /api/repositories error:', err);
     res.status(500).json({ error: 'Failed to update repository', code: 'UPDATE_REPOSITORY_FAILED' });
   }

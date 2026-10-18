@@ -4,6 +4,7 @@ import { validateDiscoveryWorkspace } from '../features/discovery/workspace/stor
 import type { DiscoveryWorkspaceSnapshot } from '../features/discovery/workspace/model';
 import { validateRepositoryAnalysisAssets } from './repositoryAnalysisAssets';
 import { validateRepositoryIdentityMappings, type RepositoryIdentityMapping } from '../utils/repositoryIdentity';
+import { assertRepositoryMaintenanceOwner } from './repositoryIdentityGate';
 
 const text = z.string().min(1);
 const id = z.number().int().positive().safe();
@@ -132,16 +133,22 @@ export async function exportDiscoveryWorkspaceBackup(account: string, includeCus
   return validateDiscoveryWorkspaceBackup(account, { version: 1, accountId: account, workspace, analyses, customDiscovery })!;
 }
 
-export async function importDiscoveryWorkspaceBackup(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false): Promise<void> {
+export async function importDiscoveryWorkspaceBackup(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false, maintenanceOwner?: string): Promise<void> {
   const backup = validateDiscoveryWorkspaceBackup(account, payload);
   if (!backup) return;
   if (mode !== 'merge' && mode !== 'replace') throw new Error('DISCOVERY_BACKUP_INVALID_MODE');
-  const [{ importDiscoveryWorkspace }, { importRepositoryAnalysisAssets }, { transact }] = await Promise.all([
+  const [{ importDiscoveryWorkspace }, { importRepositoryAnalysisAssets }, { transact, transactBackupRestore }] = await Promise.all([
     import('../features/discovery/workspace/storage'), import('./repositoryAnalysisAssets'), import('../features/discovery/custom/storage'),
   ]);
-  if (backup.workspace) await importDiscoveryWorkspace(account, backup.workspace, mode, migration);
-  if (backup.analyses) await importRepositoryAnalysisAssets(account, backup.analyses, mode, migration);
-  if (backup.customDiscovery) await transact(account, current => {
+  const checkOwner = () => { if (maintenanceOwner) assertRepositoryMaintenanceOwner(account, maintenanceOwner); };
+  checkOwner();
+  if (backup.workspace) await importDiscoveryWorkspace(account, backup.workspace, mode, migration, maintenanceOwner);
+  checkOwner();
+  if (backup.analyses) await importRepositoryAnalysisAssets(account, backup.analyses, mode, migration, maintenanceOwner);
+  checkOwner();
+  const updateCustom = maintenanceOwner ? <T>(change: (data: CustomDiscoveryData) => T) => transactBackupRestore(account, maintenanceOwner, change)
+    : <T>(change: (data: CustomDiscoveryData) => T) => transact(account, change);
+  if (backup.customDiscovery) await updateCustom(current => {
     const incoming = backup.customDiscovery!;
     if (mode === 'replace') {
       // Keep legacy completed analyses: this backup block contains channel history only.
@@ -156,6 +163,7 @@ export async function importDiscoveryWorkspaceBackup(account: string, payload: u
       current.builtinPreferences = { ...incoming.builtinPreferences, ...current.builtinPreferences };
     }
   });
+  checkOwner();
 }
 
 /** Also used by the coordinator's synchronous recovery fingerprint preview. */

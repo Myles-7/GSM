@@ -97,6 +97,7 @@ vi.mock('./BulkRestoreModal', () => ({
 }));
 
 type StoreState = {
+  categoryOrder: string[]; subcategories: never[]; subcategoryOrder: string[];
   user: { id: number };
   repositories: Repository[];
   githubToken: string | null;
@@ -172,6 +173,7 @@ beforeEach(() => {
   listeners.clear();
   mocks.confirm.mockResolvedValue(true);
   storeState = {
+    categoryOrder: [], subcategories: [], subcategoryOrder: [],
     user: { id: 1 }, repositories: [],
     githubToken: 'github-token',
     aiConfigs: [{ id: 'ai-config', baseUrl: 'https://ai.example.com', apiKey: 'api-key', model: 'test-model', concurrency: 1 }],

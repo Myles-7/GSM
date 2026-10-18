@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { defaultSettings, type ReadingSettings } from '../lib/html-reading/model';
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, custom: {} as unknown,
@@ -11,6 +11,7 @@ vi.mock('./githubApiFactory', () => ({ createGitHubApiService: () => ({ getMostP
 const repo = { id: 7, full_name: 'acme/project', owner: { login: 'acme' }, topics: [], description: '真实取数夹具', stargazers_count: 200, pushed_at: '2026-10-01', channel: 'most-popular' };
 const settings = (patch: Partial<ReadingSettings> = {}): ReadingSettings => ({ ...defaultSettings, repositories: false, channelIds: ['most-popular'], perChannel: 1, ...patch });
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T12:00:00Z'));
   vi.resetModules(); vi.stubGlobal('indexedDB', new IDBFactory());
   for (const fn of [mocks.popular, mocks.trending, mocks.topic, mocks.search, mocks.saved, mocks.hot]) fn.mockReset();
   mocks.saved.mockResolvedValue(null);
@@ -19,6 +20,7 @@ beforeEach(() => {
     discoveryPlatform: 'all', discoverySearchQuery: '', discoveryLanguage: '', discoverySortBy: 'stars', discoverySortOrder: 'desc', discoverySelectedTopic: null,
     trendingTimeRange: 'daily', customCategories: [], releases: [], language: 'zh', setDiscoveryRepos: vi.fn(), setDiscoveryLastRefresh: vi.fn() };
 });
+afterEach(() => vi.useRealTimers());
 async function generator() { return (await import('./htmlReading')).generatePreparedReadingSnapshot; }
 describe('HTML prepares discovery independently from opening desktop channels', () => {
   it('reuses the durable source after a module restart and does not register previews', async () => {

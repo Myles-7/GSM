@@ -148,6 +148,7 @@ function createPluginManager({
   catalog = createPluginCatalog(),
   webSearch = searchSearxng,
   hostOperations = null,
+  recordDiagnostic,
 }) {
   if (typeof pluginsRoot !== 'string' || pluginsRoot.trim() === '') {
     throw new TypeError('pluginsRoot must be a non-empty string');
@@ -223,11 +224,11 @@ function createPluginManager({
     }
     let release;
     try {
-      release = pageSessions.acquire(request);
+      if (request.networkTicket === undefined) release = pageSessions.acquire(request);
       const isCurrent = () => pageSessions.current(request) && stateFor(validated.pluginId).enabled;
       const router = createCapabilityRouter({
         storage: createPluginStorage({ dataRoot: resolvedDataRoot, pluginId: validated.pluginId }),
-        logger: createPluginLogger({ logsRoot: resolvedLogsRoot, pluginId: validated.pluginId }),
+        logger: createPluginLogger({ logsRoot: resolvedLogsRoot, pluginId: validated.pluginId, recordDiagnostic }),
         catalog,
         hostOperations: hostOperations && Object.fromEntries(Object.entries(hostOperations).map(([name, handler]) =>
           [name, (args) => handler({ ...args, isCurrent })])),
@@ -235,6 +236,13 @@ function createPluginManager({
       let value = await router.handle(plugin.manifest.permissions, validated);
       if (execute) value = await execute();
       if (!isCurrent()) throw Object.assign(new Error('Plugin page session expired'), { code: 'PLUGIN_PAGE_CLOSED' });
+      if (request.method === 'network.request') {
+        if (request.networkTicket !== undefined) pageSessions.complete(request);
+        else {
+          value = { networkTicket: pageSessions.hold(request, release) };
+          release = undefined;
+        }
+      }
       return { success: true, value };
     } catch (error) {
       return { success: false, error: safeError(error) };
@@ -253,7 +261,7 @@ function createPluginManager({
       const permissions = plugin.manifest.permissions;
       const capabilityRouter = createCapabilityRouter({
         storage: createPluginStorage({ dataRoot: resolvedDataRoot, pluginId }),
-        logger: createPluginLogger({ logsRoot: resolvedLogsRoot, pluginId }),
+        logger: createPluginLogger({ logsRoot: resolvedLogsRoot, pluginId, recordDiagnostic }),
         catalog,
       });
       const runtime = runtimeFactory({
@@ -460,6 +468,71 @@ function createPluginManager({
         return { success: false, error: safeError(error, 'PLUGIN_INSTALL_FAILED') };
       }
     },
+    async replaceFromDirectory(sourceDirectory) {
+      if (typeof sourceDirectory !== 'string' || sourceDirectory.trim() === '') {
+        return { success: false, error: { code: 'PLUGIN_INSTALL_SOURCE_INVALID', message: 'Plugin source directory is invalid' } };
+      }
+      let inspected;
+      try {
+        inspected = inspectPluginSource(sourceDirectory);
+      } catch (error) {
+        return { success: false, error: safeError(error, 'PLUGIN_INSTALL_SOURCE_INVALID') };
+      }
+      const pluginId = inspected.manifest.id;
+      return runLifecycle(pluginId, async () => {
+        pageSessions.revoke(pluginId);
+        const existing = (scanCache || scan()).plugins.find((plugin) => plugin.manifest.id === pluginId);
+        if (!existing) return this.installFromDirectory(sourceDirectory);
+
+        const previousState = stateFor(pluginId);
+        const wasEnabled = previousState.enabled === true;
+        const previousDirectory = path.join(resolvedRoot, existing.directoryName);
+        const backupDirectory = path.join(resolvedRoot, `.replacing-${pluginId}-${process.pid}-${Date.now()}`);
+        const targetDirectory = path.join(resolvedRoot, pluginId);
+        const stopRuntime = async () => {
+          const runtime = runtimes.get(pluginId);
+          try { if (runtime) await runtime.deactivate(); }
+          catch { runtime?.terminate(); }
+          finally { runtimes.delete(pluginId); }
+        };
+        const rollback = async () => {
+          if (!fs.existsSync(backupDirectory)) return;
+          await stopRuntime();
+          if (fs.existsSync(targetDirectory)) fs.rmSync(targetDirectory, { recursive: true, force: true });
+          fs.renameSync(backupDirectory, previousDirectory);
+          scanCache = null;
+          state.plugins[pluginId] = { ...previousState };
+          saveState();
+          if (wasEnabled) {
+            try { await activatePlugin(findPlugin(pluginId)); }
+            catch (error) { recordError(pluginId, error); }
+          }
+        };
+        try {
+          await stopRuntime();
+          fs.renameSync(previousDirectory, backupDirectory);
+          scanCache = null;
+          const installed = this.installFromDirectory(sourceDirectory);
+          if (!installed.success) { await rollback(); return installed; }
+          const permissionsUnchanged = samePermissions(inspected.manifest.permissions, previousState.grantedPermissions);
+          if (wasEnabled && permissionsUnchanged) await activatePlugin(findPlugin(pluginId));
+          state.plugins[pluginId] = {
+            enabled: wasEnabled && permissionsUnchanged,
+            grantedPermissions: permissionsUnchanged ? [...previousState.grantedPermissions] : [],
+          };
+          saveState();
+          // Keep the recovery directory until both activation and state persistence succeed.
+          try { fs.rmSync(backupDirectory, { recursive: true, force: true }); } catch {}
+          scanCache = null;
+          return { success: true, pluginId, permissionsChanged: !permissionsUnchanged,
+            keptEnabled: wasEnabled && permissionsUnchanged };
+        } catch (error) {
+          try { await rollback(); }
+          catch { return { success: false, error: { code: 'PLUGIN_REPLACE_RECOVERY_REQUIRED', message: 'Plugin update recovery requires review' } }; }
+          return { success: false, error: safeError(error, 'PLUGIN_REPLACE_FAILED') };
+        }
+      });
+    },
     async enable(pluginId, grantedPermissions) {
       return runLifecycle(pluginId, async () => {
         const plugin = findPlugin(pluginId);
@@ -628,10 +701,13 @@ function createPluginManager({
         return { success: false, error: { code: 'PLUGIN_NOT_ACTIVE', message: 'Plugin is not active' } };
       }
       try {
-        const result = await runtimes.get(validated.pluginId).runAction({
+        const actionRuntime = runtimes.get(validated.pluginId);
+        const isCurrent = () => stateFor(validated.pluginId).enabled && runtimes.get(validated.pluginId) === actionRuntime;
+        const result = await actionRuntime.runAction({
           actionId: validated.actionId,
           repositories: validated.repositories,
         });
+        if (!isCurrent()) return { success: false, error: { code: 'PLUGIN_NOT_ACTIVE', message: 'Plugin is not active' } };
         if (result.type === 'open-external' && !plugin.manifest.permissions.includes('external:open')) {
           return {
             success: false,
@@ -647,6 +723,17 @@ function createPluginManager({
             success: false,
             error: { code: 'PLUGIN_PERMISSION_DENIED', message: "Permission 'clipboard:write' is required" },
           };
+        }
+        if (result.type === 'text' && result.suggestedAction === 'save') {
+          if (!plugin.manifest.permissions.includes('downloads:create')) {
+            return { success: false, error: { code: 'PLUGIN_PERMISSION_DENIED', message: "Permission 'downloads:create' is required" } };
+          }
+          if (!hostOperations?.saveFile) return { success: false, error: { code: 'PLUGIN_CAPABILITY_UNAVAILABLE', message: 'System output is unavailable' } };
+          if (!isCurrent()) return { success: false, error: { code: 'PLUGIN_NOT_ACTIVE', message: 'Plugin is not active' } };
+          try {
+            const saved = await hostOperations.saveFile({ fileName: 'plugin-output.txt', buffer: Buffer.from(result.content, 'utf8'), isCurrent });
+            return { success: true, result: { type: 'notice', level: 'info', message: saved?.canceled ? 'Save canceled' : 'Plugin output saved' } };
+          } catch (error) { return { success: false, error: safeError(error) }; }
         }
         return { success: true, result };
       } catch (error) {
@@ -790,3 +877,4 @@ function createPluginManager({
 }
 
 module.exports = { createPluginManager };
+

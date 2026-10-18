@@ -1,8 +1,20 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { initializeIdentityMigration, previewIdentityMigration, applyIdentityMigration, restoreIdentityMigration } from '../../src/services/repositoryIdentity.js';
+import { initializeIdentityMigration, previewIdentityMigration, applyIdentityMigration, restoreIdentityMigration, translateIdentityData } from '../../src/services/repositoryIdentity.js';
+import policyVectors from '../../../tests/fixtures/organization-identity-policy.json';
 import { initializeSyncV2, bootstrapWorkspace, getWorkspace, getRecord, pushOperations, writeCanonicalRecord } from '../../src/services/syncV2.js';
 import { initializeSchema } from '../../src/db/schema.js';
+
+it.each(policyVectors.cases)('server identity policy: $name', vector => {
+  expect(translateIdentityData('proposals', { ownerId: '42', operations: [], organization: vector.input }, policyVectors.mappings)?.organization).toEqual(vector.expected);
+});
+it('translates canonical purpose/technology ordering and mutable release source repository identities', () => {
+  const mappings = policyVectors.mappings, oldId = mappings[0].oldId, newId = mappings[0].newId;
+  const source = { repositoryOrder: [oldId], classificationSchemes: { purpose: { repositoryOrder: [oldId] }, technology: { repositoryOrder: [oldId] } }, releaseSourceSettings: { watchCustomReleaseRepos: [{ id: oldId, full_name: 'owner/repo' }], customReleaseRepos: [{ id: oldId, full_name: 'owner/repo' }] } };
+  const result = translateIdentityData('organization', source, mappings)!;
+  expect(result).toEqual({ repositoryOrder: [newId], classificationSchemes: { purpose: { repositoryOrder: [newId] }, technology: { repositoryOrder: [newId] } }, releaseSourceSettings: { watchCustomReleaseRepos: [{ id: newId, full_name: 'owner/repo' }], customReleaseRepos: [{ id: newId, full_name: 'owner/repo' }] } });
+  expect(source.repositoryOrder).toEqual([oldId]);
+});
 
 describe('confirmed canonical repository identity migration', () => {
   let db: Database.Database;
@@ -174,6 +186,46 @@ describe('confirmed canonical repository identity migration', () => {
     expect(getRecord(db, 'evidence', 'evidence')).toEqual(evidence);
     expect(getRecord(db, 'discovery_editions', 'edition')).toEqual(edition);
   });
+  it('rekeys mutable v3 dual organization references in both classification schemes', () => {
+    const snapshot = (repositoryId: number) => ({ repositoryOrder: [repositoryId], marker: 'keep' });
+    const entry = (repositoryId: number) => ({ repositoryId, status: 'success' });
+    const member = (repositoryId: number) => ({ repositoryId, before: { categoryId: null, subcategoryId: null, locked: false } });
+    const scheme = {
+      entries: [entry(oldId)], before: snapshot(oldId), after: snapshot(oldId), members: [member(oldId)],
+      structureOperations: [{ entriesBefore: [entry(oldId)], members: [member(oldId)] }],
+      application: { repositoryIds: [oldId], before: snapshot(oldId), after: snapshot(oldId), membersAfter: [member(oldId)] },
+    };
+    const organization = {
+      status: 'ready', scope: { repositoryIds: [oldId] }, entries: [], batches: [],
+      dual: {
+        understanding: [{ repositoryId: oldId }], summaries: [{ repositoryIds: [oldId] }],
+        verificationIds: [oldId], errors: [{ repositoryIds: [oldId] }],
+        schemes: { purpose: scheme, technology: structuredClone(scheme) },
+      },
+    };
+    const data = { ownerId: '42', organization };
+    writeCanonicalRecord(db, { collection: 'proposals', id: 'dual', data, deleted: false });
+    apply();
+    const migrated = getRecord(db, 'proposals', 'dual')?.data?.organization as typeof organization;
+    expect(migrated.scope.repositoryIds).toEqual([newId]);
+    expect(migrated.dual.understanding[0].repositoryId).toBe(newId);
+    expect(migrated.dual.summaries[0].repositoryIds).toEqual([newId]);
+    expect(migrated.dual.verificationIds).toEqual([newId]);
+    expect(migrated.dual.errors[0].repositoryIds).toEqual([newId]);
+    for (const schemeId of ['purpose', 'technology'] as const) {
+      const migratedScheme = migrated.dual.schemes[schemeId];
+      expect(migratedScheme.entries[0].repositoryId).toBe(newId);
+      expect(migratedScheme.before.repositoryOrder).toEqual([newId]);
+      expect(migratedScheme.after.repositoryOrder).toEqual([newId]);
+      expect(migratedScheme.members[0].repositoryId).toBe(newId);
+      expect(migratedScheme.structureOperations[0].entriesBefore[0].repositoryId).toBe(newId);
+      expect(migratedScheme.structureOperations[0].members[0].repositoryId).toBe(newId);
+      expect(migratedScheme.application.repositoryIds).toEqual([newId]);
+      expect(migratedScheme.application.before.repositoryOrder).toEqual([newId]);
+      expect(migratedScheme.application.after.repositoryOrder).toEqual([newId]);
+      expect(migratedScheme.application.membersAfter[0].repositoryId).toBe(newId);
+    }
+  });
   it.each([
     ['sessions', { repoId: newId, workbench: { selectedRepositories: [repository()] } }],
     ['proposals', { operations: [{ status: 'proposed', repository: repository() }] }],
@@ -192,7 +244,7 @@ describe('confirmed canonical repository identity migration', () => {
     apply();
     const data = {
       operations: [{ status: 'success', repository: repository() }],
-      organization: { status: 'applied', scope: { repositoryIds: [oldId] }, entries: [{ status: 'success', repositoryId: oldId }] },
+      organization: { status: 'restored', scope: { repositoryIds: [oldId] }, entries: [{ status: 'restored', repositoryId: oldId }] },
     };
     const result = pushOperations(db, { ...input(), clientId: 'history', operations: [
       { opId: 'history', collection: 'proposals', id: 'history', kind: 'put', baseVersion: 0, data },
@@ -200,7 +252,7 @@ describe('confirmed canonical repository identity migration', () => {
     expect(result.results[0].status).toBe('applied');
     expect(getRecord(db, 'proposals', 'history')?.data).toEqual(data);
   });
-  it('preserves completed organization entries and batches inside a mutable draft', () => {
+  it('rekeys successful restore inputs while retaining completed batch evidence inside a mutable draft', () => {
     const data = {
       operations: [],
       organization: {
@@ -212,7 +264,7 @@ describe('confirmed canonical repository identity migration', () => {
     writeCanonicalRecord(db, { collection: 'proposals', id: 'draft', data, deleted: false });
     apply();
     expect(getRecord(db, 'proposals', 'draft')?.data).toEqual({
-      ...data, organization: { ...data.organization, scope: { repositoryIds: [newId] } },
+      ...data, organization: { ...data.organization, scope: { repositoryIds: [newId] }, entries: [{ repositoryId: newId, status: 'success' }] },
     });
   });
   it('rejects a pending organization entry colliding with retained completed evidence', () => {

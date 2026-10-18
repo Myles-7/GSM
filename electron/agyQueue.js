@@ -5,6 +5,11 @@ class AgyQueue {
     this.running = new Set(); this.pending = []; this.closed = false;
     this.limit = limit; this.effective = limit; this.featureLimits = {};
     this.cooldownUntil = 0; this.lastLimited = 0; this.successes = 0; this.interactiveStreak = 0;
+    this.quarantined = false;
+    this.suspects = new Set();
+    this.timeouts = 0;
+    this.producerTurns = new Map(); this.turn = 0;
+    this.onTaskFailure = null;
   }
   get active() { return this.running.values().next().value || null; }
   configure(limit, featureLimits = {}) {
@@ -14,27 +19,37 @@ class AgyQueue {
     this.featureLimits = featureLimits;
     this.drain();
   }
+  recover() {
+    if (this.closed || this.running.size || this.pending.length) throw new AgyError('BUSY');
+    if (this.suspects.size) throw new AgyError('RECOVERY_REQUIRED');
+    this.quarantined = false; this.effective = this.limit; this.timeouts = 0; this.successes = 0;
+    this.drain();
+  }
   state() {
     const features = {};
     for (const task of [...this.running, ...this.pending]) {
       const entry = features[task.feature] ||= { running: 0, queued: 0, limit: Math.min(this.limit, this.featureLimits[task.feature] || this.limit) };
       entry[this.running.has(task) ? 'running' : 'queued']++;
     }
-    return { running: this.running.size, queued: this.pending.length, limit: this.limit, effective: this.effective, cooldownUntil: this.cooldownUntil, features };
+    return { running: this.running.size, queued: this.pending.length, suspect: this.suspects.size, limit: this.limit, effective: this.quarantined ? 0 : Math.max(0, this.effective - this.suspects.size), cooldownUntil: this.cooldownUntil, features, quarantined: this.quarantined };
   }
   eligible(task) {
     return [...this.running].filter(item => item.feature === task.feature).length < (this.featureLimits[task.feature] || this.limit);
   }
+  choose(available, turns = this.producerTurns) {
+    const foreground = available.filter(task => task.priority === 'interactive');
+    return foreground.reduce((best, task) => !best || (turns.get(task.producer) || 0) < (turns.get(best.producer) || 0) ? task : best, null)
+      || available[0];
+  }
   drain() {
-    if (this.closed || Date.now() < this.cooldownUntil) { this.notifyPositions(); return; }
-    while (this.running.size < this.effective) {
+    if (this.closed || this.quarantined || Date.now() < this.cooldownUntil) { this.notifyPositions(); return; }
+    while (this.running.size + this.suspects.size < this.effective) {
       const available = this.pending.filter(task => this.eligible(task));
-      const interactive = available.find(task => task.priority === 'interactive');
-      const background = available.find(task => task.priority !== 'interactive');
-      const task = this.interactiveStreak >= 3 ? background || interactive : interactive || background;
+      const task = this.choose(available);
       if (!task) break;
       this.interactiveStreak = task.priority === 'interactive' ? this.interactiveStreak + 1 : 0;
       this.pending.splice(this.pending.indexOf(task), 1);
+      this.producerTurns.set(task.producer, ++this.turn);
       void this.execute(task);
     }
     this.notifyPositions();
@@ -42,33 +57,35 @@ class AgyQueue {
 
   notifyPositions() {
     const remaining = [...this.pending];
-    let streak = this.interactiveStreak, position = 1;
+    let turn = this.turn, position = 1;
+    const turns = new Map(this.producerTurns);
     while (remaining.length) {
       const eligible = remaining.filter(task => this.eligible(task));
       const candidates = eligible.length ? eligible : remaining;
-      const foreground = candidates.find(task => task.priority === 'interactive');
-      const background = candidates.find(task => task.priority !== 'interactive');
-      const task = streak >= 3 ? background || foreground : foreground || background;
+      const task = this.choose(candidates, turns);
       remaining.splice(remaining.indexOf(task), 1);
       task.onQueued(position++);
-      streak = task.priority === 'interactive' ? streak + 1 : 0;
+      turns.set(task.producer, ++turn);
     }
     this.onChange?.(this.state());
   }
 
-  run(owner, id, work, { maxQueued = 0, waitMs = 180000, onQueued = () => {}, feature = 'other', priority = 'background' } = {}) {
+  run(owner, id, work, { maxQueued = 0, maxFeatureQueued = Infinity, waitMs = 180000, onQueued = () => {}, onDeferred = () => {}, deferOnTimeout = false, feature = 'other', priority = 'background', producer = id } = {}) {
     if (this.closed) return Promise.reject(new AgyError('CANCELED'));
+    if (this.quarantined) return Promise.reject(new AgyError('CLEANUP_TIMEOUT'));
     if (typeof id !== 'string' || !/^[\w-]{1,80}$/.test(id)) return Promise.reject(new AgyError('INVALID_REQUEST'));
     if ([...this.running, ...this.pending].some(task => task.owner === owner && task.id === id)) return Promise.reject(new AgyError('DUPLICATE_REQUEST'));
-    const immediate = this.running.size < this.effective && this.eligible({ feature }) && Date.now() >= this.cooldownUntil;
-    if (!immediate && this.pending.length >= maxQueued) return Promise.reject(new AgyError('BUSY'));
+    const immediate = this.running.size + this.suspects.size < this.effective && this.eligible({ feature }) && Date.now() >= this.cooldownUntil;
+    if (!immediate && (this.pending.length >= maxQueued || this.pending.filter(t => t.feature === feature).length >= maxFeatureQueued)) return Promise.reject(new AgyError(deferOnTimeout ? 'RESOURCE_DEFERRED' : 'BUSY', { sent: false, retryAfterMs: 500 }));
     return new Promise((resolve, reject) => {
-      const task = { owner, id, work, resolve, reject, feature, priority, controller: new AbortController(), timer: null, onQueued };
+      const task = { owner, id, work, resolve, reject, feature, priority, producer: `${owner}:${producer}`, controller: new AbortController(), timer: null, onQueued };
       {
         task.timer = setTimeout(() => {
+          if (!this.pending.includes(task)) return;
           this.pending = this.pending.filter(item => item !== task);
+          if (deferOnTimeout) onDeferred();
           this.notifyPositions();
-          reject(new AgyError('QUEUE_TIMEOUT'));
+          reject(new AgyError(deferOnTimeout ? 'RESOURCE_DEFERRED' : 'QUEUE_TIMEOUT', { sent: false, retryAfterMs: 1000 }));
         }, waitMs);
         this.pending.push(task);
         this.drain();
@@ -82,12 +99,27 @@ class AgyQueue {
     clearTimeout(task.timer);
     try {
       const result = await task.work(task.controller.signal);
+      if (result?.cleanupSettled) {
+        const suspect = { owner: task.owner, id: task.id }; this.suspects.add(suspect);
+        void result.cleanupSettled.then(() => { this.suspects.delete(suspect); this.drain(); }, () => {});
+      }
       if (task.controller.signal.aborted) throw new AgyError('CANCELED');
       if (++this.successes >= 5 && Date.now() - this.lastLimited >= 60000 && this.effective < this.limit) {
         this.effective++; this.successes = 0;
       }
+      this.timeouts = 0;
       task.resolve(result);
     } catch (error) {
+      if (['TIMEOUT', 'INIT_TIMEOUT'].includes(error.code) && ++this.timeouts >= 2) {
+        this.effective = Math.max(1, this.effective - 1); this.lastLimited = Date.now(); this.successes = 0; this.timeouts = 0;
+      }
+      // A cleanup failure belongs to this request/worker. Do not turn one
+      // uncertain child into a generation-wide outage or abort healthy siblings.
+      if (error.code === 'CLEANUP_TIMEOUT' || error.cleanupSettled) {
+        const suspect = { owner: task.owner, id: task.id }; this.suspects.add(suspect);
+        if (error.cleanupSettled) void error.cleanupSettled.then(() => { this.suspects.delete(suspect); this.drain(); }, () => {});
+        this.onTaskFailure?.(task, error);
+      }
       if (error.code === 'RATE_LIMIT') {
         this.effective = Math.max(1, Math.floor(this.effective / 2));
         this.lastLimited = Date.now(); this.successes = 0;
@@ -99,6 +131,7 @@ class AgyQueue {
     }
     finally {
       this.running.delete(task);
+      if (![...this.running, ...this.pending].some(item => item.producer === task.producer)) this.producerTurns.delete(task.producer);
       this.drain();
     }
   }

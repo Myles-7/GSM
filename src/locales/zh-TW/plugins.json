@@ -74,7 +74,8 @@
     "opened-in-browser": "已在瀏覽器中開啟",
     "plugin-result-copied": "插件結果已複製",
     "plugin-result-saved": "插件結果已儲存",
-    "plugin-action-completed": "插件操作完成"
+    "plugin-action-completed": "插件操作完成",
+    "save-requires-host": "请通过宿主的保存对话框保存插件输出。"
   },
   "usePluginAI": {
     "custom-endpoint": "自訂服務",

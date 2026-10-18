@@ -10,8 +10,10 @@ async function setup(t, overrides = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gsm-agy-test-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const service = createAgyDesktop({ userDataPath: directory, platform: 'win32',
+    safeStorage: { isEncryptionAvailable: () => true, encryptString: text => Buffer.from(text).reverse(), decryptString: bytes => Buffer.from(bytes).reverse().toString() },
     defaultExecutable: 'main-owned-path', selectExecutable: async () => 'native-picker-path',
     inspect: async candidate => ({ path: candidate, name: 'agy.exe', fingerprint: 'abc' }), ...overrides });
+  for (let owner = 0; owner < 10; owner++) service.setAccount(owner, 'fixture-account');
   return { service, directory };
 }
 
@@ -21,6 +23,40 @@ test('validates all prefs and rejects executable, prompt or unknown fields', () 
     { model: '--agent=evil' }, { mode: 'shell' }, { effort: 'auto' }, { maxQueued: 51 }, { timeoutSeconds: 0 }]) {
     assert.equal(Boolean(validPrefs({ ...DEFAULT_PREFS, ...patch })), false);
   }
+});
+
+test('recovery requires every owned process to be closed and does not call the model', async t => {
+  let processCount = 1; let calls = 0; let close; const cleanupSettled = new Promise(resolve => { close = resolve; });
+  const { service } = await setup(t, { processCount: () => processCount, runtime: async () => {
+    if (++calls > 1) throw Object.assign(new AgyError('CLEANUP_TIMEOUT', { originalCode: 'TIMEOUT' }), { cleanupSettled });
+    return { text: '{"answer":"连接成功","missing":[]}', usage: {} };
+  } });
+  await service.detect(1, 'detect'); await service.probe(1, 'probe');
+  await service.save(1, 'save', { ...DEFAULT_PREFS, enabled: true });
+  const prefs = (await service.getState()).prefs;
+  const request = { system: 'fixture', user: 'fixture', model: prefs.model, effort: prefs.effort };
+  assert.equal((await service.generate(1, 'failed', request)).code, 'CLEANUP_TIMEOUT');
+  assert.equal((await service.recover(1, 'blocked')).code, 'RECOVERY_REQUIRED');
+  assert.equal((await service.getState()).pool.effective, 4);
+  processCount = 0; close(); await Promise.resolve();
+  const recovered = await service.recover(1, 'recover');
+  assert.equal(recovered.ok, true); assert.equal(recovered.value.pool.effective, 5);
+  assert.equal(recovered.value.enabled, true); assert.equal(calls, 2);
+  await service.shutdown();
+});
+
+test('workspace cleanup IO failure does not discard valid output or leak private paths', async t => {
+  const events = [];
+  const { service } = await setup(t, { cleanupWorkspace: async () => { throw Object.assign(new Error('secret path'), { code: 'EBUSY' }); },
+    runtime: async () => ({ text: '{"answer":"连接成功","missing":[]}', usage: {} }) });
+  await service.detect(1, 'detect'); await service.probe(1, 'probe');
+  await service.save(1, 'save', { ...DEFAULT_PREFS, enabled: true });
+  const prefs = (await service.getState()).prefs;
+  const result = await service.generate(1, 'r', { system: 'test', user: 'test', model: prefs.model, effort: prefs.effort }, event => events.push(event));
+  assert.equal(result.ok, true); assert.ok(result.value.text.includes('连接成功'));
+  assert.ok(events.some(event => event.type === 'warning' && event.code === 'CLEANUP_IO_FAILED'));
+  assert.equal(JSON.stringify(events).includes('secret path'), false);
+  await service.shutdown();
 });
 
 test('validates feature overrides and rejects malformed limits', () => {
@@ -44,6 +80,8 @@ test('production generation pool runs five calls, respects overrides and keeps o
     'repository-summary': { model: 'summary-model', effort: 'high', concurrency: 2, timeoutSeconds: 90 },
     'repository-details': { model: 'detail-model', effort: 'low', concurrency: 3 },
   } });
+  await service.probe(1, 'test-summary', 'repository-summary');
+  await service.probe(1, 'test-details', 'repository-details');
   probing = false;
   const revision = configured.value.revision;
   const requests = Array.from({ length: 5 }, (_, index) => service.generate(index, `r${index}`, {
@@ -88,6 +126,9 @@ test('retry profile overrides apply to one request without changing scheduler pr
   await service.detect(1, 'detect'); await service.probe(1, 'probe');
   await service.save(1, 'save', { ...DEFAULT_PREFS, enabled: true });
   const prefs = (await service.getState()).prefs;
+  await service.save(1, 'test-override', { ...prefs, featureOverrides: { 'repository-summary': { model: 'old-model', effort: 'max' } } });
+  await service.probe(1, 'probe-override', 'repository-summary');
+  await service.save(1, 'restore-prefs', prefs);
   const result = await service.generate(1, 'retry', { system: 'test', user: 'test', model: prefs.model, effort: prefs.effort, feature: 'repository-summary',
     profileOverride: { model: 'old-model', effort: 'max', timeoutSeconds: 55 } });
   assert.equal(result.ok, true);
@@ -201,7 +242,7 @@ test('native picker cancellation and IO errors do not leak file paths', async t 
   const { service } = await setup(t, { selectExecutable: async () => null,
     inspect: async () => { throw new Error('PRIVATE_PATH'); } });
   assert.deepEqual(await service.choose(1, 'choose'), { ok: false, code: 'CANCELED' });
-  assert.deepEqual(await service.detect(1, 'detect'), { ok: false, code: 'IO_FAILED' });
+  assert.deepEqual(await service.detect(1, 'detect'), { ok: false, code: 'IO_FAILED', details: { operation: 'unknown', systemCode: undefined } });
 });
 
 test('unsupported platforms never execute detection', async t => {

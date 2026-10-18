@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
-import MarkdownRenderer from '../components/MarkdownRenderer';
+import MarkdownRenderer, { MATH_PATTERN } from '../components/MarkdownRenderer';
 import mermaid from 'mermaid';
 
 vi.mock('../store/useAppStore', () => ({
@@ -23,6 +22,10 @@ vi.mock('mermaid', () => ({
     render: vi.fn().mockResolvedValue({ svg: '<svg>diagram</svg>' }),
   },
 }));
+
+const mathLoaderCalls = vi.hoisted(() => ({ remark: 0, rehype: 0 }));
+vi.mock('remark-math', async importOriginal => { mathLoaderCalls.remark++; return importOriginal(); });
+vi.mock('rehype-katex', async importOriginal => { mathLoaderCalls.rehype++; return importOriginal(); });
 
 describe('MarkdownRenderer', () => {
   beforeEach(() => {
@@ -99,6 +102,24 @@ describe('MarkdownRenderer', () => {
         <MarkdownRenderer content={'```javascript\nconsole.log("hello");\n```'} />
       );
       expect(container.querySelector('.language-javascript')).toBeInTheDocument();
+    });
+
+    it('should trim leading and trailing blank lines from code blocks', () => {
+      // 模型输出的围栏块常带首尾空行；不裁剪时代码块内部会出现大段空白。
+      const { container } = render(
+        <MarkdownRenderer content={'```\n\nconst a = 1;\n\n\n```'} />
+      );
+      const code = container.querySelector('pre code');
+      expect(code).not.toBeNull();
+      expect(code!.textContent).toBe('const a = 1;');
+    });
+
+    it('should keep interior blank lines inside code blocks', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'```\nconst a = 1;\n\nconst b = 2;\n```'} />
+      );
+      const code = container.querySelector('pre code');
+      expect(code!.textContent).toBe('const a = 1;\n\nconst b = 2;');
     });
 
     it('should render unordered lists', () => {
@@ -216,6 +237,24 @@ describe('MarkdownRenderer', () => {
       // No synthetic line-number column
       const pre = container.querySelector('pre');
       expect(pre?.querySelectorAll('span[aria-hidden="true"]')).toHaveLength(0);
+    });
+
+    it('should not nest the CodeBlock pre inside the outer markdown pre', () => {
+      // react-markdown v10 下 pre 收到的子元素 type 是覆写后的 code 组件；
+      // 握手失效时外层裸 <pre> 会包住 CodeBlock 自己的 <pre>（双份背景/内边距）。
+      const { container } = render(
+        <MarkdownRenderer content={'```javascript\nconst a = 1;\n```'} />
+      );
+      expect(container.querySelector('pre pre')).toBeNull();
+    });
+
+    it('should route language-less fenced blocks through CodeBlock (copy button + trim)', () => {
+      const { container } = render(
+        <MarkdownRenderer content={'```\n\nplain fenced text\n\n```'} />
+      );
+      expect(container.querySelector('pre pre')).toBeNull();
+      expect(container.querySelector('button[aria-label="复制代码"]')).toBeInTheDocument();
+      expect(container.querySelector('pre code')!.textContent).toBe('plain fenced text');
     });
 
     it('should provide a hover copy button for code blocks', () => {
@@ -395,9 +434,17 @@ describe('MarkdownRenderer', () => {
 
   describe('Math (KaTeX)', () => {
     it('uses a Safari-compatible inline math detector', () => {
-      const source = readFileSync('src/components/MarkdownRenderer.tsx', 'utf8');
+      expect(MATH_PATTERN.source).not.toMatch(/\(\?<([=!])/);
+      for (const text of ['$$E=mc^2$$', '\\[display\\]', '\\(inline\\)', '$x^2$']) expect(MATH_PATTERN.test(text)).toBe(true);
+    });
 
-      expect(source).not.toContain('(?<!');
+    it('should not load math support for plain documents', async () => {
+      mathLoaderCalls.remark = 0; mathLoaderCalls.rehype = 0;
+      const { container } = render(<MarkdownRenderer content="Just $5 and text" />);
+      expect(MATH_PATTERN.test('Just $5 and text')).toBe(false);
+      for (let i = 0; i < 10; i++) await new Promise(resolve => setTimeout(resolve, 0));
+      expect(mathLoaderCalls.remark).toBe(0); expect(mathLoaderCalls.rehype).toBe(0);
+      expect(container.querySelector('.katex')).toBeNull();
     });
 
     it('should lazily load KaTeX and render display math', async () => {
@@ -407,12 +454,6 @@ describe('MarkdownRenderer', () => {
       }, { timeout: 5000 });
     }, 10000);
 
-    it('should not load math support for plain documents', async () => {
-      const { container } = render(<MarkdownRenderer content="Just $5 and text" />);
-      // Give the effect a tick; no katex nodes should ever appear
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(container.querySelector('.katex')).toBeNull();
-    });
   });
 });
 

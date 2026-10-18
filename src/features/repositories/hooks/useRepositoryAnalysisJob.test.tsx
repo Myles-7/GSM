@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   abort: vi.fn(),
   getStats: vi.fn(() => ({ averageResponseTime: 12 })),
   forceSyncToBackend: vi.fn(),
+  checkpointDesktopHomeRepository: vi.fn(),
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
@@ -32,6 +33,7 @@ vi.mock('../../../services/aiAnalysisOptimizer', () => ({
       pause: mocks.pause,
       resume: mocks.resume,
       abort: mocks.abort,
+      isAborted: vi.fn(() => mocks.abort.mock.calls.length > 0),
       isPaused: vi.fn(() => false),
       getStats: mocks.getStats,
     };
@@ -48,6 +50,10 @@ vi.mock('../../../services/githubApi', () => ({
 
 vi.mock('../../../services/autoSync', () => ({
   forceSyncToBackend: mocks.forceSyncToBackend,
+}));
+
+vi.mock('../../../home/desktop', () => ({
+  checkpointDesktopHomeRepository: mocks.checkpointDesktopHomeRepository,
 }));
 
 const repository = (id: number, overrides: Partial<Repository> = {}): Repository => ({
@@ -70,6 +76,7 @@ const repository = (id: number, overrides: Partial<Repository> = {}): Repository
 
 const createStoreState = () => ({
   repositories: [] as Repository[],
+  user: undefined as { id: number; login: string } | undefined,
   githubToken: 'github-token',
   aiConfigs: [{
     id: 'ai-config',
@@ -108,6 +115,7 @@ describe('useRepositoryAnalysisJob', () => {
     )) as typeof useAppStore);
     mocks.confirm.mockResolvedValue(true);
     mocks.forceSyncToBackend.mockResolvedValue(undefined);
+    mocks.checkpointDesktopHomeRepository.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -129,6 +137,7 @@ describe('useRepositoryAnalysisJob', () => {
 
   it('stores successful analysis results without syncing toolbar jobs', async () => {
     const target = repository(1, { custom_description: 'Keep me' });
+    storeState = { ...storeState, user: { id: 7, login: 'fixture' } };
     mocks.analyzeRepositoriesPipelined.mockImplementation(async (...args: unknown[]) => {
       const onProgress = args[5] as (current: number, total: number, concurrency: number) => void;
       const onResult = args[6] as (result: Record<string, unknown>) => void;
@@ -149,6 +158,7 @@ describe('useRepositoryAnalysisJob', () => {
       analysis_failed: false,
     }));
     expect(mocks.forceSyncToBackend).not.toHaveBeenCalled();
+    expect(mocks.checkpointDesktopHomeRepository).toHaveBeenCalledWith('7', target.id);
     expect(result.current).toMatchObject({ isRunning: false, isPaused: false, progress: { current: 0, total: 0 } });
   });
 
@@ -169,6 +179,26 @@ describe('useRepositoryAnalysisJob', () => {
     expect(storeState.updateRepository).toHaveBeenCalledTimes(2);
     expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({ id: failed.id, analysis_failed: true, analysis_error: 'model unavailable', custom_tags: ['user-tag'] }));
     expect(mocks.forceSyncToBackend).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a summary batch after a shared AGY configuration or capacity failure instead of failing every sibling', async () => {
+    const first = repository(1);
+    const sibling = repository(2);
+    mocks.analyzeRepositoriesPipelined.mockImplementation(async (...args: unknown[]) => {
+      const onResult = args[6] as (result: Record<string, unknown>) => void;
+      onResult({ success: false, repo: first, error: new Error('AGY_RESOURCE_DEFERRED') });
+      onResult({ success: false, repo: sibling, error: new Error('Analysis aborted') });
+    });
+    const { result } = renderJob();
+
+    await act(async () => {
+      await result.current.run(runOptions([first, sibling]));
+    });
+
+    expect(mocks.abort).toHaveBeenCalledTimes(1);
+    expect(storeState.updateRepository).toHaveBeenCalledTimes(1);
+    expect(storeState.updateRepository).toHaveBeenCalledWith(expect.objectContaining({ id: first.id, analysis_failed: true }));
+    expect(storeState.updateRepository).not.toHaveBeenCalledWith(expect.objectContaining({ id: sibling.id }));
   });
 
   it('pauses and resumes the active optimizer without starting a second job', async () => {

@@ -2,14 +2,14 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const redact = require('../redact');
 
 const MAX_LOG_BYTES = 1024 * 1024;
 const MAX_LOG_MESSAGE_LENGTH = 4000;
 const SENSITIVE_KEY_RE = /(?:authorization|api[-_]?key|token|secret|password|credential)/i;
-const TOKEN_RE = /(?:Bearer\s+)[^\s"']+|(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+/gi;
 
 function sanitizeText(value) {
-  return String(value).slice(0, MAX_LOG_MESSAGE_LENGTH).replace(TOKEN_RE, '[REDACTED]');
+  return String(redact.sanitizeForLog(String(value))).slice(0, MAX_LOG_MESSAGE_LENGTH);
 }
 
 function sanitizeMetadata(value, depth = 0) {
@@ -24,7 +24,7 @@ function sanitizeMetadata(value, depth = 0) {
   return typeof value === 'string' ? sanitizeText(value) : value;
 }
 
-function createPluginLogger({ logsRoot, pluginId }) {
+function createPluginLogger({ logsRoot, pluginId, recordDiagnostic = () => {} }) {
   const logPath = path.join(path.resolve(logsRoot), `${pluginId}.log`);
 
   return {
@@ -34,7 +34,7 @@ function createPluginLogger({ logsRoot, pluginId }) {
         at: new Date().toISOString(),
         level: normalizedLevel,
         message: sanitizeText(message),
-        ...(metadata === undefined ? {} : { metadata: sanitizeMetadata(metadata) }),
+        ...(metadata === undefined ? {} : { metadata: redact.sanitizeDiagnosticData(sanitizeMetadata(metadata)) }),
       };
       const line = `${JSON.stringify(entry)}\n`;
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -46,6 +46,8 @@ function createPluginLogger({ logsRoot, pluginId }) {
         }
       } catch {}
       fs.appendFileSync(logPath, line, { encoding: 'utf8', mode: 0o600 });
+      try { recordDiagnostic({ source: 'plugins', level: normalizedLevel === 'warning' ? 'warn' : normalizedLevel,
+        module: `plugin.${pluginId}`, message: entry.message, data: entry.metadata }); } catch { /* logging is ancillary */ }
     },
   };
 }

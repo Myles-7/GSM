@@ -250,6 +250,29 @@ describe('identity migration coordinator', () => {
     expect(patch.searchResults?.[0].id).toBe(123);
     expect(patch.repositories?.[0].category_id).toBe('category');
   });
+
+  it('maps both live and parked classification repository orders', () => {
+    fixture.state.classificationSchemes = {
+      purpose: { initialized: true, customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [oldId], categoryListIdMap: {} },
+      technology: { initialized: true, customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [oldId], categoryListIdMap: {} },
+    } as never;
+    fixture.state.accountWorkspaces['42'] = {
+      ...fixture.state.accountWorkspaces['42'],
+      repositories: [repo()],
+      classificationSchemes: fixture.state.classificationSchemes,
+    } as never;
+    const patch = remapIdentityStoreSnapshot(fixture.state, mappings);
+    expect(patch.classificationSchemes?.purpose?.repositoryOrder).toEqual([123]);
+    const parked = remapIdentityStoreSnapshot(fixture.state.accountWorkspaces['42'] as never, mappings);
+    expect(parked.classificationSchemes?.technology?.repositoryOrder).toEqual([123]);
+  });
+  it('maps Release source repositories with identity/name checks in live and parked workspaces', () => {
+    fixture.state.releaseSourceSettings = { enabledSourceIds: ['custom-release'], watchCustomReleaseRepos: [], customReleaseRepos: [{ id: oldId, full_name: 'owner/repo', name: 'repo', html_url: '', owner: { login: 'owner', avatar_url: '' } }] };
+    const patch = remapIdentityStoreSnapshot(fixture.state, mappings);
+    expect(patch.releaseSourceSettings?.customReleaseRepos[0].id).toBe(123);
+    fixture.state.releaseSourceSettings.customReleaseRepos[0].full_name = 'other/repo';
+    expect(() => remapIdentityStoreSnapshot(fixture.state, mappings)).toThrow('NAME_CONFLICT');
+  });
 });
 
 describe('identity coordinator across real participant databases', () => {
@@ -270,7 +293,19 @@ describe('identity coordinator across real participant databases', () => {
     const workspace = await import('../features/discovery/workspace/storage');
     const assets = await import('./repositoryAnalysisAssets');
     const customStorage = await import('../features/discovery/custom/storage');
+    const reading = await import('../lib/html-reading/storage');
+    const { emptyReadingState } = await import('../lib/html-reading/model');
     for (const account of ['42', '43']) {
+      await reading.readingTransaction(account, data => {
+        data.states[String(oldId)] = { ...emptyReadingState(), read: true, candidate: true, note: 'Keep reading note' };
+        data.names[String(oldId)] = 'owner/repo';
+        const source = { repoId: oldId, operationId: 'reading-operation', fileName: 'reading.html', snapshotId: 'reading-snapshot', importedAt: '2026-10-01T00:00:00Z', importId: 'reading-import' };
+        data.projectSources = { [oldId]: source }; data.candidateSources = { [oldId]: source };
+        data.snapshots['reading-snapshot'] = { base: { [oldId]: { ...emptyReadingState(), note: 'Keep snapshot' } }, allowed: data.settings.operations, views: { repositories: [oldId] } };
+        data.positions = { repositories: { id: 'position', viewId: 'repositories', repoId: oldId, revision: 3, sequence: 1, snapshotId: 'reading-snapshot' } };
+        data.applied = { 'reading-receipt': 'receipt-digest' }; data.positionReceipts = { 'position-receipt': 'position-digest' };
+        data.starBatches = { batch: { id: 'batch', accountId: account, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', status: 'paused', rows: [{ repoId: oldId, name: 'owner/repo', sourceFingerprint: 'fingerprint', status: 'local-pending' }] } };
+      }, { includeCandidates: true, includeStarBatches: true });
       await workbench.saveSession(session(account));
       await workspace.saveBrowsePage(account, { key: 'reading', channelId: 'most-popular', signature: '',
         items: [repo()], mode: 'replace', nextPage: 4, hasMore: true, totalCount: 60 });
@@ -289,7 +324,7 @@ describe('identity coordinator across real participant databases', () => {
     fixture.restore.mockImplementation(participants.restoreParticipantIdentities);
     fixture.workbench.mockImplementation(participants.migrateWorkbenchRepositoryIdentities);
     fixture.custom.mockImplementation(participants.migrateCustomDiscoveryRepositoryIdentities);
-    return { participants, workbench, workspace, assets, customStorage };
+    return { participants, workbench, workspace, assets, customStorage, reading };
   }
 
   async function expectIdentities(databases: Awaited<ReturnType<typeof seedDatabases>>, id: number) {
@@ -299,9 +334,20 @@ describe('identity coordinator across real participant databases', () => {
     expect(workspace.anchors[0]).toMatchObject({ itemKey: `repo:${id}`, offset: 72 });
     expect(workspace.projects[0].value.id).toBe(id);
     expect((await databases.assets.exportRepositoryAnalysisAssets('42')).assets[0]).toMatchObject({ repositoryId: id, details });
+    const reading = await databases.reading.loadReadingData('42', { readOnly: true, includeCandidates: true, includeStarBatches: true });
+    expect(Object.keys(reading.states)).toEqual([String(id)]);
+    expect(reading.states[id]).toMatchObject({ read: true, candidate: true, note: 'Keep reading note' });
+    expect(reading.projectSources?.[id].repoId).toBe(id);
+    expect(reading.candidateSources?.[id].repoId).toBe(id);
+    expect(reading.snapshots['reading-snapshot'].views?.repositories).toEqual([id]);
+    expect(reading.snapshots['reading-snapshot'].base[id].note).toBe('Keep snapshot');
+    expect(reading.positions?.repositories).toMatchObject({ repoId: id, revision: 3 });
+    expect(reading.starBatches?.batch.rows[0].repoId).toBe(id);
+    expect(reading.applied).toEqual({ 'reading-receipt': 'receipt-digest' });
+    expect(reading.positionReceipts).toEqual({ 'position-receipt': 'position-digest' });
   }
 
-  const interruptions = ['workbench', 'workspace', 'analyses', 'custom'] as const;
+  const interruptions = ['workbench', 'workspace', 'analyses', 'reading', 'custom'] as const;
   async function interruptAfter(phase: typeof interruptions[number], databases: Awaited<ReturnType<typeof seedDatabases>>) {
     if (phase === 'workbench') vi.spyOn(databases.workspace, 'migrateDiscoveryWorkspaceIdentities').mockRejectedValueOnce(new Error('after workbench commit'));
     if (phase === 'workspace') vi.spyOn(databases.assets, 'migrateRepositoryAnalysisAssetIdentities').mockRejectedValueOnce(new Error('after workspace commit'));
@@ -313,6 +359,13 @@ describe('identity coordinator across real participant databases', () => {
       await databases.participants.migrateCustomDiscoveryRepositoryIdentities(...args);
       throw new Error('after custom commit before ACK');
     });
+    if (phase === 'reading') {
+      const original = databases.reading.readingTransaction;
+      vi.spyOn(databases.reading, 'readingTransaction').mockImplementationOnce(async (account, mutate, options) => {
+        await original(account, mutate, options);
+        throw new Error('after reading commit before ACK');
+      });
+    }
     await expect(runRepositoryIdentityMigration(mappings)).rejects.toThrow(`after ${phase} commit`);
     const journal = await readRepositoryIdentityJournal('42');
     expect(journal?.phase).toBe('applying');

@@ -74,7 +74,8 @@
     "opened-in-browser": "Im Browser geöffnet",
     "plugin-result-copied": "Plugin-Ergebnisse kopiert",
     "plugin-result-saved": "Plugin-Ergebnisse gespeichert",
-    "plugin-action-completed": "Plug-in-Vorgang abgeschlossen"
+    "plugin-action-completed": "Plug-in-Vorgang abgeschlossen",
+    "save-requires-host": "Save plugin output through the host save dialog."
   },
   "usePluginAI": {
     "custom-endpoint": "Maßgeschneiderte Dienstleistungen",

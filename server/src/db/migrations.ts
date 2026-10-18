@@ -17,7 +17,18 @@ const migrations: Record<number, (db: Database.Database) => void> = {
     initializeTasks(db);
   },
   4: initializeIdentityMigration,
+  // v4 databases can already have schema_version=4 while missing columns that
+  // were added later through initializeSchema(). Keep this additive migration
+  // explicit so existing databases do not silently skip those columns.
+  5: (db) => {
+    initializeSchema(db);
+  },
+  6: (db) => {
+    initializeSyncV2(db);
+    initializeTasks(db);
+  },
 };
+export const CURRENT_SCHEMA_VERSION = Math.max(...Object.keys(migrations).map(Number));
 
 export function runMigrations(db: Database.Database): void {
   // Ensure schema_version table exists first
@@ -33,7 +44,7 @@ export function runMigrations(db: Database.Database): void {
     .get() as { version: number | null } | undefined;
 
   const currentVersion = currentVersionRow?.version ?? 0;
-  const targetVersion = Math.max(...Object.keys(migrations).map(Number));
+  const targetVersion = CURRENT_SCHEMA_VERSION;
 
   if (currentVersion >= targetVersion) {
     return;

@@ -5,6 +5,9 @@ import { AlertTriangle, FolderPlus, Loader2, Plug, RefreshCw, ShieldAlert, Trash
 import { useDialog } from '../../hooks/useDialog';
 import { pluginClient } from '../../plugins/pluginClient';
 import { pluginRegistry } from '../../plugins/pluginRegistry';
+import { buildPluginEnablePrompt } from '../../plugins/pluginEnablePrompt';
+import { PluginMarketplaceDialog } from './PluginMarketplaceDialog';
+import { pluginMarketplaceService } from '../../services/pluginMarketplaceService';
 import { PluginPageViewer } from '../PluginPageViewer';
 import { PluginRegistrySection } from './PluginRegistrySection';
 import type { InstalledPlugin } from '../../plugins/types';
@@ -32,6 +35,7 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
     pluginRegistry.getSnapshot
   );
   const { confirm, toast } = useDialog();
+  const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyPluginId, setBusyPluginId] = useState<string | null>(null);
   const [selectedPage, setSelectedPage] = useState<{ pluginId: string; pageId: string } | null>(null);
@@ -74,18 +78,8 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
 
   const enable = async (plugin: InstalledPlugin) => {
     const permissions = plugin.manifest.permissions;
-    const permissionText = permissions.length > 0
-      ? permissions.map((permission) => `• ${permission}`).join('\n')
-      : t('pluginSettingsPanel.no-additional-host-permissions');
-    const repositoryDataNotice = permissions.some((permission) =>
-      permission === 'repositories:read' || permission === 'privateRepositories:read')
-      ? t('pluginSettingsPanel.note-repository-read-access-includes-metadata-of')
-      : '';
-    const approved = await confirm(
-      t('pluginSettingsPanel.enable-v1', { v1: plugin.manifest.name }),
-      `${t('pluginSettingsPanel.local-plugins-with-worker-js-have-node-js-access')}\n\n${t('pluginSettingsPanel.requested-permissions')}\n${permissionText}${repositoryDataNotice}`,
-      { confirmText: t('pluginSettingsPanel.confirm-and-enable'), type: 'warning' }
-    );
+    const prompt = buildPluginEnablePrompt(t, plugin.manifest);
+    const approved = await confirm(prompt.title, prompt.message, { confirmText: prompt.confirmText, type: 'warning' });
     if (!approved) return;
 
     setBusyPluginId(plugin.manifest.id);
@@ -195,6 +189,10 @@ export const PluginSettingsPanel: React.FC<PluginSettingsPanelProps> = ({ t }) =
           </Button>
         </div>
       </div>
+      {pluginMarketplaceService.isAvailable() && <Button type="button" onClick={() => setMarketplaceOpen(true)}>
+        {t('pluginSettingsPanel.browse-plugins')}
+      </Button>}
+      <PluginMarketplaceDialog isOpen={marketplaceOpen} onClose={() => setMarketplaceOpen(false)} t={t} />
       {/* 社区插件注册表（开发守则 §17）：只读对照，不下载也不安装 */}
       <PluginRegistrySection plugins={snapshot.plugins} t={t} onDisable={disable} />
 

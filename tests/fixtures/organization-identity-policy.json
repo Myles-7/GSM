@@ -1,0 +1,25 @@
+{
+  "mappings": [{ "oldId": 1700000000001, "newId": 123, "fullName": "owner/repo", "evidence": "confirmed fixture" }],
+  "cases": [
+    {
+      "name": "applied draft still supplies executable rollback references",
+      "input": {
+        "version": 1, "status": "applied", "scope": { "repositoryIds": [1700000000001] },
+        "entries": [{ "repositoryId": 1700000000001, "status": "success" }],
+        "batches": [{ "repositoryIds": [1700000000001], "status": "complete" }],
+        "structureOperations": [{ "members": [{ "repositoryId": 1700000000001 }], "before": { "repositoryOrder": [1700000000001] }, "after": { "repositoryOrder": [1700000000001] } }]
+      },
+      "expected": {
+        "version": 1, "status": "applied", "scope": { "repositoryIds": [123] },
+        "entries": [{ "repositoryId": 123, "status": "success" }],
+        "batches": [{ "repositoryIds": [1700000000001], "status": "complete" }],
+        "structureOperations": [{ "members": [{ "repositoryId": 123 }], "before": { "repositoryOrder": [123] }, "after": { "repositoryOrder": [123] } }]
+      }
+    },
+    {
+      "name": "restored draft and completed batch are historical evidence",
+      "input": { "version": 1, "status": "restored", "scope": { "repositoryIds": [1700000000001] }, "entries": [{ "repositoryId": 1700000000001, "status": "restored" }], "batches": [] },
+      "expected": { "version": 1, "status": "restored", "scope": { "repositoryIds": [1700000000001] }, "entries": [{ "repositoryId": 1700000000001, "status": "restored" }], "batches": [] }
+    }
+  ]
+}

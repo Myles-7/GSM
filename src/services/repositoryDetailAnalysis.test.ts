@@ -1,6 +1,8 @@
+import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, Repository } from '../types';
 import { analyzeRepositoryDetails, readRepositoryDetails, repositoryDetailContentSchema } from './repositoryDetailAnalysis';
+import { clearDetailResponseCheckpoint, readDetailResponseCheckpoint } from './repositoryDetailCheckpoint';
 
 const mocks = vi.hoisted(() => ({ generate: vi.fn(), readme: vi.fn() }));
 vi.mock('./aiService', () => ({ AIService: class { generateChatText = mocks.generate; } }));
@@ -13,6 +15,37 @@ const repository = { full_name: 'owner/repo', html_url: 'https://github.com/owne
 const options = { repository, accountId: 1, aiConfig: { model: 'mock-model' } as AIConfig, githubToken: 'mock-token', language: 'en' };
 
 describe('repository detail analysis evidence and validation', () => {
+  it('repairs a retained response using original evidence without network or another provider call', async () => {
+    const localOptions = { ...options, repository: { ...repository, id: 71 } };
+    mocks.readme.mockResolvedValue({ content: 'npm install --ignore-scripts', retrievedAt: '2026-09-01T00:00:00Z' });
+    mocks.generate.mockResolvedValue('{invalid');
+    await expect(analyzeRepositoryDetails(localOptions)).rejects.toThrow('INVALID_OUTPUT_RETAINED');
+    expect((await readDetailResponseCheckpoint(1, 71))?.response).toBe('{invalid');
+    mocks.readme.mockClear(); mocks.generate.mockClear();
+    const repaired = await analyzeRepositoryDetails({ ...localOptions, localResponse: JSON.stringify({ ...content,
+      quickstart: [{ description: 'Verified', command: 'npm install --ignore-scripts' }, { description: 'Unknown', command: 'rm -rf /' }] }) });
+    expect(repaired.model).toBe('mock-model');
+    expect(repaired.quickstart.map(item => item.command)).toEqual(['npm install --ignore-scripts', null]);
+    expect(mocks.readme).not.toHaveBeenCalled(); expect(mocks.generate).not.toHaveBeenCalled();
+    // Retain the original until the caller confirms persistence.
+    expect(await readDetailResponseCheckpoint(1, 71)).toBeDefined();
+    await expect(analyzeRepositoryDetails({ ...localOptions, language: 'zh', localResponse: JSON.stringify(content) })).rejects.toThrow('CHECKPOINT_STALE');
+    await expect(analyzeRepositoryDetails({ ...localOptions, repository: { ...localOptions.repository, full_name: 'other/repo' }, localResponse: JSON.stringify(content) })).rejects.toThrow('CHECKPOINT_STALE');
+    await clearDetailResponseCheckpoint(1, 71);
+  });
+  it('deduplicates and bounds lists locally, recording adjustments without another model call', async () => {
+    mocks.generate.mockResolvedValue(JSON.stringify({ ...content, platforms: ['Linux', 'Linux', ...Array.from({ length: 12 }, (_, i) => `runtime-${i}`)] }));
+    const result = await analyzeRepositoryDetails(options);
+    expect(result.platforms).toHaveLength(10);
+    expect(result.adjustments).toContainEqual({ field: 'platforms', originalCount: 14, retainedCount: 10 });
+    expect(mocks.generate).toHaveBeenCalledTimes(1);
+    expect(mocks.generate.mock.calls[0][0].system).toContain('"platforms":10');
+    expect(readRepositoryDetails(result)).toEqual(result);
+  });
+  it('still rejects invalid list values even beyond the retained prefix', async () => {
+    mocks.generate.mockResolvedValue(JSON.stringify({ ...content, platforms: [...Array.from({ length: 10 }, (_, i) => `runtime-${i}`), 123] }));
+    await expect(analyzeRepositoryDetails(options)).rejects.toThrow();
+  });
   it('rejects command prefixes that omit documented flags or chained steps', async () => {
     mocks.readme.mockResolvedValue({ content: '```sh\nnpm install --ignore-scripts\nnpm build && npm test\n```', retrievedAt: '2026-09-01T00:00:00Z' });
     mocks.generate.mockResolvedValue(JSON.stringify({ ...content, quickstart: [

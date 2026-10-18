@@ -6,6 +6,7 @@ import { createGitHubApiService } from './githubApiFactory';
 import { logger } from './logger';
 import type { Repository } from '../types';
 import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
+import { classificationExport } from '../store/helpers/classificationSchemes';
 import { flushDesktopHome, getDesktopHomeSync } from '../home/desktop';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
 import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
@@ -294,9 +295,11 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
 
   const doSync = async () => {
   const startTime = Date.now();
-  const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'sync', [{ id: 'pull', label: 'Backend → Device' }], undefined, undefined,
-    { trigger: options.force ? 'manual' : 'automatic', target: { view: 'settings', tab: 'backend' } });
-  task.item('pull', 'running');
+  const owner = String(useAppStore.getState().user?.id ?? '');
+  let activityChanged = false;
+  let task: ReturnType<typeof aiTaskJournal.begin> | null = null;
+  const ensureTask = () => task ??= aiTaskJournal.begin(owner, 'sync', [{ id: 'pull', label: 'Backend → Device' }], undefined, undefined,
+    { trigger: options.force ? 'manual' : 'automatic', target: { view: 'settings', tab: 'backend' }, phase: 'reconciling' });
   try {
     const repositoriesBeforeFetch = useAppStore.getState().repositories;
     const [reposResult, releasesResult, aiResult, webdavResult, embeddingResult, vectorSearchResult, settingsResult] = await Promise.allSettled([
@@ -309,7 +312,7 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       backend.fetchSettings(),
     ]);
     const pullFailures = [reposResult, releasesResult, aiResult, webdavResult, embeddingResult, vectorSearchResult, settingsResult].filter(result => result.status === 'rejected');
-    if (pullFailures.length) { task.error(pullFailures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; ')); task.item('pull', 'failed'); }
+    if (pullFailures.length) { const currentTask = ensureTask(); currentTask.error(pullFailures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; ')); currentTask.item('pull', 'failed'); }
 
     // Local edits made during the fetch must be pushed before applying the
     // stale snapshot. The fetched repositories still matter: the queued full
@@ -424,6 +427,10 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
       _isSyncingFromBackendActive = false;
       return;
     }
+
+    activityChanged = true;
+    const currentTask = ensureTask();
+    currentTask.phase('reconciling');
 
     _isSyncingFromBackend = true;
     if (changed.repos || changed.releases) {
@@ -583,11 +590,20 @@ export async function syncFromBackend(options: { force?: boolean } = {}): Promis
 
     logger.info('sync.pullFromBackend', 'Synced from backend (data changed)', { ...changed, durationMs: Date.now() - startTime });
   } catch (err) {
-    task.item('pull', 'failed', err);
+    const currentTask = ensureTask();
+    currentTask.metadata({ failureCode: 'SYNC_PULL_FAILED' });
+    currentTask.item('pull', 'failed', err);
     logger.errorFromError('sync.pullFromBackend', 'Failed to sync from backend', err, { durationMs: Date.now() - startTime });
   } finally {
-    if (!aiTaskJournal.snapshot().find(record => record.id === task.id)?.items.some(item => item.state === 'failed')) task.item('pull', 'complete');
-    task.finish();
+    const finalTask = task as ReturnType<typeof aiTaskJournal.begin> | null;
+    if (finalTask) {
+      const failed = !!aiTaskJournal.snapshot().find(record => record.id === finalTask.id)?.items.some(item => item.state === 'failed');
+      if (!failed) finalTask.item('pull', 'complete');
+      finalTask.finish();
+
+    }
+    const failed = !!finalTask && !!aiTaskJournal.snapshot().find(record => record.id === finalTask.id)?.items.some(item => item.state === 'failed');
+    aiTaskJournal.noteActivity(owner, { changed: activityChanged, failed, noChange: !activityChanged && !failed });
     setRepositorySyncVisualState(false);
     _isSyncingFromBackend = false;
     _isSyncingFromBackendActive = false;
@@ -654,9 +670,11 @@ export async function syncToBackend(): Promise<boolean> {
  * for the next push.
  */
 async function pushToBackend(): Promise<boolean> {
-  const task = aiTaskJournal.begin(String(useAppStore.getState().user?.id ?? ''), 'sync', [{ id: 'push', label: 'Device → Backend' }], undefined, undefined,
-    { trigger: 'automatic', target: { view: 'settings', tab: 'backend' } });
-  task.item('push', 'running');
+  const owner = String(useAppStore.getState().user?.id ?? '');
+  let task: ReturnType<typeof aiTaskJournal.begin> | undefined;
+  let changed = false, failed = false;
+  const ensureTask = () => task ??= aiTaskJournal.begin(owner, 'sync', [{ id: 'push', label: 'Device → Backend' }], undefined, undefined,
+    { trigger: 'automatic', phase: 'committing', target: { view: 'settings', tab: 'backend' } });
   _isPushingToBackend = true;
   _hasPendingPush = false;
   _hasPendingLocalChanges = false;
@@ -665,6 +683,16 @@ async function pushToBackend(): Promise<boolean> {
   try {
     const state = useAppStore.getState();
 
+    changed = _lastHash.repos !== quickHash(stripLocalRepositoryFields(state.repositories))
+      || _lastHash.releases !== quickHash(state.releases) || _lastHash.ai !== quickHash(httpAIConfigs(state.aiConfigs))
+      || _lastHash.webdav !== quickHash(state.webdavConfigs) || _lastHash.embedding !== quickHash(state.embeddingConfigs)
+      || _lastHash.vectorSearch !== vectorSearchFingerprint(state.vectorSearchConfig) || _lastHash.settings !== quickHash({
+        classificationSchemes: classificationExport(state), activeWebDAVConfig: state.activeWebDAVConfig, activeEmbeddingConfig: state.activeEmbeddingConfig,
+        hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds, categoryOrder: state.categoryOrder, subcategories: state.subcategories,
+        subcategoryOrder: state.subcategoryOrder, repositoryOrder: state.repositoryOrder, customCategories: state.customCategories, assetFilters: state.assetFilters,
+        defaultCategoryOverrides: state.defaultCategoryOverrides, releaseSourceSettings: state.releaseSourceSettings, collapsedSidebarCategoryCount: state.collapsedSidebarCategoryCount,
+      });
+    if (changed) ensureTask().item('push', 'running');
     const results = await Promise.allSettled([
       backend.syncRepositories(state.repositories),
       backend.syncReleases(state.releases),
@@ -673,6 +701,7 @@ async function pushToBackend(): Promise<boolean> {
       backend.syncEmbeddingConfigs(state.embeddingConfigs),
       backend.syncVectorSearchConfig(state.vectorSearchConfig),
       backend.syncSettings({
+        classificationSchemes: classificationExport(state),
         activeWebDAVConfig: state.activeWebDAVConfig,
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
@@ -691,11 +720,11 @@ async function pushToBackend(): Promise<boolean> {
 
     const failures = results.filter(r => r.status === 'rejected');
     if (failures.length > 0) {
-      task.item('push', 'failed', failures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; '));
+      failed = true; ensureTask().item('push', 'failed', failures.map(result => result.status === 'rejected' ? String(result.reason) : '').join('; '));
       logger.warn('sync.pushToBackend', `Synced to backend with ${failures.length} error(s)`, { failureCount: failures.length, durationMs: Date.now() - pushStartTime });
       _hasPendingLocalChanges = true;
     } else {
-      task.item('push', 'complete');
+      task?.item('push', 'complete');
       logger.info('sync.pushToBackend', 'Synced to backend', { durationMs: Date.now() - pushStartTime });
     }
 
@@ -711,6 +740,7 @@ async function pushToBackend(): Promise<boolean> {
     if (vectorSearchSync.status === 'fulfilled') _lastHash.vectorSearch = vectorSearchFingerprint(state.vectorSearchConfig);
     if (settingsSync.status === 'fulfilled') {
       _lastHash.settings = quickHash({
+        classificationSchemes: classificationExport(state),
         activeWebDAVConfig: state.activeWebDAVConfig,
         activeEmbeddingConfig: state.activeEmbeddingConfig,
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
@@ -727,12 +757,13 @@ async function pushToBackend(): Promise<boolean> {
     }
     return failures.length === 0;
   } catch (err) {
-    task.item('push', 'failed', err);
+    failed = true; ensureTask().item('push', 'failed', err);
     logger.errorFromError('sync.pushToBackend', 'Failed to sync to backend', err, { durationMs: Date.now() - pushStartTime });
     _hasPendingLocalChanges = true;
     return false;
   } finally {
-    task.finish();
+    task?.finish();
+    aiTaskJournal.noteActivity(owner, { changed, failed, noChange: !changed && !failed });
     setRepositorySyncVisualState(false);
     _isPushingToBackend = false;
   }
@@ -806,6 +837,7 @@ export function startAutoSync(): () => void {
       state.subcategoryOrder !== prevState.subcategoryOrder ||
       state.repositoryOrder !== prevState.repositoryOrder ||
       state.customCategories !== prevState.customCategories ||
+      state.classificationSchemes !== prevState.classificationSchemes ||
       state.assetFilters !== prevState.assetFilters ||
       state.defaultCategoryOverrides !== prevState.defaultCategoryOverrides ||
       state.releaseSourceSettings !== prevState.releaseSourceSettings ||

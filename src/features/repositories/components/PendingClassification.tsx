@@ -5,6 +5,7 @@ import { useT } from '../../../i18n/useT';
 import { useDialog } from '../../../hooks/useDialog';
 import { Button } from '../../../components/ui/button';
 import { assignConfirmedCategory } from './repositoryCategoryAssignment';
+import { useAppStore } from '../../../store/useAppStore';
 
 interface Props {
   repositories: Repository[];
@@ -48,7 +49,8 @@ export function PendingClassification({
       ) {
         return;
       }
-      selected.forEach(repo => assignConfirmedCategory(repo.id, targets[repo.id] || categoryId));
+      const schemeId = useAppStore.getState().activeClassificationScheme ?? 'purpose';
+      selected.forEach(repo => assignConfirmedCategory(repo.id, targets[repo.id] || categoryId, schemeId));
       setTargets({});
       onAssigned();
     } finally {

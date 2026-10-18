@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-17",
+  "timeZone": "Asia/Shanghai",
+  "status": "validated-local-source",
+  "formalRelease": false,
+  "sourceSnapshot": {
+    "tag": "recovery/v0.8.6-final-20261017",
+    "commit": "60a08e4c2ad17c216fba95ba9d2dfe431fe89d8a",
+    "branch": "codex/local-agent-organization-20261007",
+    "branchHead": "6b30a966126f5993defc55b63a53e64772c45903",
+    "userIndexAndHeadMoved": false
+  },
+  "selection": {
+    "tag": "v0.8.6",
+    "commit": "6a69d60a7486eaea580e0b0e40260f43773b73de",
+    "fullMerge": false,
+    "completeUpstreamBaseline": "0.8.4",
+    "prs": [
+      423,
+      424,
+      426,
+      427,
+      428,
+      429,
+      430,
+      431,
+      432,
+      433,
+      434,
+      435
+    ],
+    "laterPrsConsumed": false
+  },
+  "gates": {
+    "frontend": {
+      "typecheck": true,
+      "lint": true,
+      "build": true,
+      "bundleKiB": 2182.32,
+      "budgetKiB": 3000,
+      "fullTestChain": true,
+      "vitest": {
+        "files": 341,
+        "passed": 3677
+      },
+      "boundaries": true,
+      "i18n": true,
+      "pluginRegistry": true,
+      "workerBundle": true
+    },
+    "server": {
+      "build": true,
+      "files": 43,
+      "passed": 429
+    },
+    "electron": {
+      "total": 489,
+      "passed": 488,
+      "skipped": 1,
+      "failed": 0
+    },
+    "pluginsAfterWindowsLockFix": {
+      "total": 185,
+      "passed": 184,
+      "skipped": 1
+    },
+    "worker": {
+      "typecheck": true,
+      "files": 1,
+      "passed": 36
+    },
+    "nativeWebdav": {
+      "passed": 15,
+      "electron": "44.4.5"
+    },
+    "nativeOfficialPlugins": {
+      "languages": 10,
+      "charts": 5,
+      "pngCopy": true,
+      "pngSave": true,
+      "htmlCopy": true,
+      "resizeMinimizeRestore": true,
+      "consoleErrors": 0
+    },
+    "nativePluginPlatform": {
+      "preloadMainFrameOnly": true,
+      "csp": true,
+      "sessionRevocation": true,
+      "replayDenied": true,
+      "workerExporter": true
+    }
+  },
+  "data": {
+    "storeVersion": 17,
+    "shardFormat": 1,
+    "shards": 9,
+    "serverMigration": {
+      "from": 4,
+      "to": 5,
+      "backup": true
+    },
+    "monolithicMigrationCanonicalEquality": true,
+    "separateProcessReloadCanonicalEquality": true,
+    "coldReloadMs": 443.2,
+    "largeShardCooldownBytes": 5242880,
+    "largeShardCoreIndependence": true,
+    "accountRoundtrip": true,
+    "editRoundtrip": true,
+    "readingReturn": true,
+    "originalProfileModified": false
+  },
+  "performance": {
+    "scope": "instrumented real App over an isolated copy of the same stopped profile; before uses entry source with current dependencies; timings are double-rAF/flush measurements, not INP",
+    "before": [
+      {
+        "name": "modal-open-close",
+        "samples": 3,
+        "bytesMedian": 3949266,
+        "fullStoreSerializations": 3,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 6.200000002980232,
+        "paintOpportunityMsMedian": 18.100000008940697,
+        "flushMsMedian": 50.70000000298023
+      },
+      {
+        "name": "repository-grid-list",
+        "samples": 3,
+        "bytesMedian": 3949266,
+        "fullStoreSerializations": 3,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 5.9000000059604645,
+        "paintOpportunityMsMedian": 6.0999999940395355,
+        "flushMsMedian": 39.79999999701977
+      },
+      {
+        "name": "settings-tab",
+        "samples": 3,
+        "bytesMedian": 3949266,
+        "fullStoreSerializations": 3,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 6.300000011920929,
+        "paintOpportunityMsMedian": 16.200000002980232,
+        "flushMsMedian": 53.900000005960464
+      }
+    ],
+    "after": [
+      {
+        "name": "modal-open-close",
+        "samples": 3,
+        "bytesMedian": 0,
+        "fullStoreSerializations": 0,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 0,
+        "paintOpportunityMsMedian": 16.30000001192093,
+        "flushMsMedian": 16.30000001192093
+      },
+      {
+        "name": "repository-grid-list",
+        "samples": 3,
+        "bytesMedian": 7509,
+        "fullStoreSerializations": 0,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 0,
+        "paintOpportunityMsMedian": 2.7999999970197678,
+        "flushMsMedian": 3.8999999910593033
+      },
+      {
+        "name": "settings-tab",
+        "samples": 3,
+        "bytesMedian": 0,
+        "fullStoreSerializations": 0,
+        "repositoryShardWrites": 0,
+        "stringifyMsMedian": 0,
+        "paintOpportunityMsMedian": 16,
+        "flushMsMedian": 16
+      }
+    ]
+  },
+  "realProfile": {
+    "copied": true,
+    "repositories": 369,
+    "business": {
+      "accountRoundtrip": true,
+      "editRoundtrip": true,
+      "readingReturn": true
+    },
+    "mcp": "status IPC reachable; autostart blocked by fixture",
+    "webdav": "No saved configuration in copied real profile; live endpoint probe not applicable; native read-only fixture passed",
+    "marketplace": "Pinned-v0.8.6 synthetic catalog over real main/preload; two directory installs, enable/page/disable/uninstall passed",
+    "diagnostics": {
+      "bundleVersion": 2,
+      "entries": 2,
+      "checkedSensitiveValues": 4,
+      "clean": true,
+      "inspection": "Environment and two main entries inspected; no prompt/private-body payloads; private bundle retained only in ignored output"
+    },
+    "containment": "Network blocked except fixed-SHA fixture responses; no Star, paid AI, mail, DAV mutation, external navigation or MCP start"
+  },
+  "security": {
+    "beforeRoot": {
+      "critical": 1,
+      "high": 6,
+      "moderate": 3,
+      "low": 5,
+      "total": 15
+    },
+    "root": {
+      "info": 0,
+      "low": 5,
+      "moderate": 3,
+      "high": 5,
+      "critical": 0,
+      "total": 13
+    },
+    "runtime": {
+      "info": 0,
+      "low": 5,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 5
+    },
+    "server": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "worker": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "newHighOrCritical": false,
+    "httpCacheSemantics": "absent",
+    "remainingDebt": "Existing Tailwind 3 development graph has five high advisories; three moderate toolchain and five low runtime advisories remain. Major Tailwind 4/math-stack changes deferred outside this selective migration."
+  },
+  "evidence": {
+    "privateDirectory": "output/v086-continuation/",
+    "fullRoot": "stage5-root-full-accepted.log",
+    "server": "stage5-server-full-final.log",
+    "electron": "stage5-electron-full.log",
+    "plugins": "stage5-plugins-final.log",
+    "worker": "stage5-worker-tests.log",
+    "nativeWebdav": "stage5-native-webdav.log",
+    "nativeOfficialPlugins": "stage4-native-official.log",
+    "nativePluginPlatform": "stage3-native-smoke.log",
+    "profileBefore": "stage5-profile-before-final.log",
+    "profileAfter": "stage5-profile-app-accepted.log",
+    "profileCanonical": "profile-migration.json"
+  },
+  "limits": [
+    "Source validation only; no deployment, installer, push or formal release.",
+    "Windows symlink-only plugin test skipped.",
+    "Before source uses current dependencies; no claim of historical dependency reproduction.",
+    "Three-sample double-rAF and flush timings are not INP or general responsiveness guarantees.",
+    "Real profile has no WebDAV endpoint; no live DAV-server assertion.",
+    "No paid provider/remote Vectorize/Star/mail mutation performed."
+  ]
+}

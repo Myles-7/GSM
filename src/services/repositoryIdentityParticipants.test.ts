@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Repository } from '../types';
 import type { WorkbenchProject, WorkbenchProposal } from '../types/aiWorkbench';
 import type { RepositoryChatSession } from '../types/repositoryChat';
+import type { OrganizationDraft } from '../types/aiOrganization';
+import type { ReadingData } from '../lib/html-reading/storage';
+import policyVectors from '../../tests/fixtures/organization-identity-policy.json';
 type Participants = typeof import('./repositoryIdentityParticipants');
+import type { WorkbenchRepositoryIdentitySnapshot } from './repositoryIdentityParticipants';
 const migrateWorkbenchRepositoryIdentities = async (...args: Parameters<Participants['migrateWorkbenchRepositoryIdentities']>) =>
   (await import('./repositoryIdentityParticipants')).migrateWorkbenchRepositoryIdentities(...args);
 const migrateCustomDiscoveryRepositoryIdentities = async (...args: Parameters<Participants['migrateCustomDiscoveryRepositoryIdentities']>) =>
@@ -57,6 +61,20 @@ const proposal = (): WorkbenchProposal => ({
   },
 });
 
+const structureSnapshot = () => ({ customCategories: [{ id: 'cat', name: 'Category', icon: 'folder', keywords: [] }], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: ['cat'], subcategories: [], subcategoryOrder: [], repositoryOrder: [oldId], categoryListIdMap: {} });
+const organizationV3 = (): OrganizationDraft => {
+  const membership = { categoryId: null, subcategoryId: null, locked: false } as const;
+  const entry = { repositoryId: oldId, before: membership, categoryId: null, subcategoryId: null, reason: 'fixture', disposition: 'move' as const, selected: true, overrideLocked: false, manual: false, status: 'pending' as const };
+  const integrated = { id: 'integrated', kind: 'rename' as const, targetId: 'cat', sourceIds: [], parentId: null, name: 'Category', icon: 'folder', selected: true, status: 'pending' as const, categoriesBefore: [{ id: 'cat', name: 'Category', icon: 'folder', parentId: null, isNew: false }], entriesBefore: [entry], members: [{ repositoryId: oldId, before: membership }] };
+  const scheme = { selected: true, categories: [{ id: 'cat', name: 'Category', icon: 'folder', parentId: null, isNew: false }], entries: [entry], before: structureSnapshot(), after: structureSnapshot(), createdCategoryIds: [], ready: true, structureOperations: [integrated], members: [{ repositoryId: oldId, before: membership }], application: { status: 'prepared' as const, repositoryIds: [oldId], operationIds: ['integrated'], before: structureSnapshot(), after: structureSnapshot(), createdCategoryIds: [], membersAfter: [{ repositoryId: oldId, before: membership }] } };
+  return { version: 3, purpose: 'repositories', mode: 'reorganize', revision: 1, scope: { name: 'fixture', repositoryIds: [oldId] }, instruction: 'fixture', configId: 'model', maxNewSubcategories: 1, structureReady: true, categories: [{ id: 'cat', name: 'Category', icon: 'folder', parentId: null, isNew: false }], entries: [entry], batches: [{ repositoryIds: [oldId], status: 'pending' }], status: 'ready', createdCategoryIds: [], dual: { phase: 'review', understanding: [{ repositoryId: oldId, fingerprint: 'fixture', sourceMetadata: { name: 'owner/repo', description: '', summary: '', tags: [], language: '', details: '' }, status: 'understood', purpose: ['fixture'], technology: ['fixture'], sources: [{ kind: 'metadata', url: 'https://github.com/owner/repo', retrievedAt: '2026-10-01T00:00:00Z' }] }], summaries: [{ repositoryIds: [oldId], purpose: 'fixture', technology: 'fixture' }], verificationIds: [oldId], schemes: { purpose: structuredClone(scheme), technology: structuredClone(scheme) }, requests: {}, errors: [{ stage: 'fixture', repositoryIds: [oldId], message: 'fixture' }] } };
+};
+
+const readingFixture = (): ReadingData => ({
+  storageVersion: 2, settings: {} as never, states: { [oldId]: { read: true, interest: 'neutral', note: 'keep', candidate: true } }, names: { [oldId]: 'owner/repo' }, applied: {}, snapshots: { snap: { base: { [oldId]: { read: true, interest: 'neutral', note: 'keep', candidate: true } }, allowed: { read: true, interest: true, note: true, candidate: true }, views: { repositories: [oldId] }, viewNames: { repositories: 'Repositories' }, sequence: 1 } }, sequence: 1,
+  positions: { repositories: { snapshotId: 'snap', sequence: 1, id: '00000000-0000-4000-8000-000000000001', viewId: 'repositories', repoId: oldId, revision: 1 } }, activeView: { id: '00000000-0000-4000-8000-000000000002', viewId: 'repositories', revision: 1, snapshotId: 'snap', sequence: 1 }, projectSources: { [oldId]: { repoId: oldId, operationId: 'op', fileName: 'file', snapshotId: 'snap', importedAt: '2026-10-01T00:00:00Z', importId: 'import' } }, candidateSources: { [oldId]: { repoId: oldId, operationId: 'op', fileName: 'file', snapshotId: 'snap', importedAt: '2026-10-01T00:00:00Z', importId: 'import' } }, candidateRevisions: { [oldId]: 1 }, projectRevisions: { [oldId]: 1 }, processing: { [oldId]: { processed: false, updatedAt: '2026-10-01T00:00:00Z' } }, starObservations: { [oldId]: { starred: false, checkedAt: '2026-10-01T00:00:00Z' } }, starBatches: { batch: { id: 'batch', accountId: '42', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', status: 'paused', rows: [{ repoId: oldId, name: 'owner/repo', sourceFingerprint: 'fixture', status: 'local-pending' }] } }, latestImport: { id: 'import', importedAt: '2026-10-01T00:00:00Z', ids: [String(oldId)] }, positionReceipts: {}, candidateVersion: 4, artifactVersion: 3, workspaceVersion: 5,
+});
+
 async function seedWorkbench() {
   const { repositoryChatStorage: storage } = await import('./repositoryChatStorage');
   await storage.saveSession(session());
@@ -92,6 +110,70 @@ it('preserves compatibility by re-exporting the pure remapping implementations',
   expect(participants.assertRepositoryIdentityName).toBe(pure.assertRepositoryIdentityName);
   expect(participants.remapParticipantRepositoryIds).toBe(pure.remapParticipantRepositoryIds);
   expect(participants.remapParticipantRepositoryList).toBe(pure.remapParticipantRepositoryList);
+});
+
+it.each(['ready', 'applied'] as const)('remaps every mutable v3 dual-organization reference for %s and keeps the draft schema-valid', async status => {
+  const { remapWorkbench } = await import('./repositoryIdentityParticipants');
+  const draft = organizationV3();
+  draft.status = status;
+  const snapshot: WorkbenchRepositoryIdentitySnapshot = { sessions: [], projects: [], proposals: [{ ...proposal(), organization: draft }] };
+  remapWorkbench(snapshot, 'alice', mappings);
+  const migrated = snapshot.proposals[0].organization!;
+  expect(migrated.scope.repositoryIds).toEqual([newId]);
+  expect(migrated.entries[0].repositoryId).toBe(newId);
+  expect(migrated.batches[0].repositoryIds).toEqual([newId]);
+  expect(migrated.dual?.understanding[0].repositoryId).toBe(newId);
+  expect(migrated.dual?.summaries[0].repositoryIds).toEqual([newId]);
+  expect(migrated.dual?.verificationIds).toEqual([newId]);
+  expect(migrated.dual?.errors[0].repositoryIds).toEqual([newId]);
+  for (const scheme of Object.values(migrated.dual!.schemes)) {
+    expect(scheme.entries[0].repositoryId).toBe(newId);
+    expect(scheme.members?.[0].repositoryId).toBe(newId);
+    expect(scheme.before.repositoryOrder).toEqual([newId]);
+    expect(scheme.application?.repositoryIds).toEqual([newId]);
+    expect(scheme.application?.membersAfter[0].repositoryId).toBe(newId);
+    expect(scheme.structureOperations?.[0].members[0].repositoryId).toBe(newId);
+    expect(scheme.structureOperations?.[0].entriesBefore[0].repositoryId).toBe(newId);
+  }
+  const { organizationDraftSchema } = await import('./aiOrganizationSchema');
+  expect(() => organizationDraftSchema.parse(migrated)).not.toThrow();
+});
+
+it.each(policyVectors.cases)('client identity policy: $name', async vector => {
+  const { remapWorkbench } = await import('./repositoryIdentityParticipants');
+  const snapshot = { sessions: [], projects: [], proposals: [{ ownerId: '42', operations: [], organization: structuredClone(vector.input) }] } as unknown as WorkbenchRepositoryIdentitySnapshot;
+  remapWorkbench(snapshot, '42', policyVectors.mappings);
+  expect(snapshot.proposals[0].organization).toEqual(vector.expected);
+});
+
+it('remaps HTML Reading notes, candidates, snapshots, resume positions and star batches in place', async () => {
+  const { remapReadingRepositoryIdentityData } = await import('./repositoryIdentityParticipants');
+  const data = readingFixture();
+  expect(remapReadingRepositoryIdentityData(data, mappings, '42')).toEqual({ changed: expect.any(Number) });
+  expect(data.states[String(newId)]?.note).toBe('keep');
+  expect(data.projectSources?.[newId]?.repoId).toBe(newId);
+  expect(data.candidateSources?.[newId]?.repoId).toBe(newId);
+  expect(data.snapshots.snap.base[String(newId)]).toBeTruthy();
+  expect(data.snapshots.snap.views?.repositories).toEqual([newId]);
+  expect(data.positions?.repositories.repoId).toBe(newId);
+  expect(data.starBatches?.batch.rows[0].repoId).toBe(newId);
+  expect(data.latestImport?.ids).toEqual([String(newId)]);
+  expect(data.states[String(oldId)]).toBeUndefined();
+});
+
+it('rejects unseen and replayed returns from an HTML file carrying an obsolete identity', async () => {
+  const { remapReadingRepositoryIdentityData } = await import('./repositoryIdentityParticipants');
+  const { inspectReadingReturn } = await import('../lib/html-reading/storage');
+  const data = readingFixture();
+  const input = { format: 'gsm-reading-changes' as const, version: 1 as const, accountId: '42', snapshotId: 'snap', operations: [{ id: '00000000-0000-4000-8000-000000000010', repoId: oldId, field: 'note' as const, base: 'keep', value: 'stale' }] };
+  data.applied[input.operations[0].id] = JSON.stringify(input.operations[0]);
+  remapReadingRepositoryIdentityData(data, mappings, '42');
+  const before = structuredClone(data);
+  expect(() => inspectReadingReturn(data, '42', input)).toThrow('不匹配原始文件');
+  delete data.applied[input.operations[0].id];
+  expect(() => inspectReadingReturn(data, '42', input)).toThrow('不匹配原始文件');
+  expect(data.states).toEqual(before.states);
+  expect(data.applied).toEqual({});
 });
 
 describe('discovery workspace identity participant', () => {

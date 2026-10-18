@@ -17,13 +17,16 @@ export function LocalBackupRecoveryPanel() {
   if (!journal && !error) return null;
   const recover = async (undo: boolean) => {
     setBusy(true); setError('');
-    try { await recoverLocalBackupRestore(undo); setJournal(null); }
+    try {
+      const result = await recoverLocalBackupRestore(undo); setJournal(null);
+      if (result.configurationReviewRequired) setError(zh ? '业务资料已处理。敏感配置仅支持同会话补偿；中断后的 AI、WebDAV、代理、RPC 和后端凭据需要手动复核。' : 'Business recovery completed. Sensitive configuration supports same-session compensation only. Review AI, WebDAV, proxy, RPC and backend credentials after this interruption.');
+    }
     catch (err) { setError(String(err)); }
     finally { setBusy(false); refresh(); }
   };
   return <section className="rounded-lg border border-warning/40 p-4 space-y-3" aria-label={zh ? '备份恢复中断' : 'Interrupted backup restore'}>
     <p>{zh ? '上次安全恢复未完成。资料写入已暂停，请继续或撤回；账户或工作区发生变化时不会写入。' : 'An interrupted restore has paused data writes. Continue or undo it; account or workspace changes will block writes.'}</p>
-    {journal && <><p>{journal.summary}</p><div className="flex gap-2">
+    {journal && <><p>{journal.summary}</p>{journal.sessionConfiguration && <p role="alert">{zh ? '此次恢复包含敏感配置。继续或撤回可恢复业务资料，但无法在进程重启后重放或撤回凭据；完成后请复核连接设置。' : 'This restore includes sensitive configuration. Continue or undo recovers business data; credentials cannot be replayed or undone after restart. Review connection settings afterward.'}</p>}<div className="flex gap-2">
       <Button disabled={busy} onClick={() => recover(false)}>{zh ? '继续恢复' : 'Continue restore'}</Button>
       <Button variant="outline" disabled={busy} onClick={() => recover(true)}>{zh ? '撤回恢复' : 'Undo restore'}</Button>
     </div></>}

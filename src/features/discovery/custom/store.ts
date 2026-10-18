@@ -80,7 +80,7 @@ export async function clearCustomEditions(
     data.editions = data.editions.filter(e => e.channelId !== channelId || toKeep.has(e));
   });
 }
-export async function startCustomRun(ids: string[], retry?: { config?: AIConfig; parentId?: string }): Promise<void> {
+export async function startCustomRun(ids: string[], retry?: { config?: AIConfig; parentId?: string; automatic?: boolean }): Promise<void> {
   if (useCustomDiscovery.getState().busy) throw new Error('A subscription task is already running / 订阅任务正在运行，请完成后重试');
   const account = useCustomDiscovery.getState().account;
   useCustomDiscovery.setState({ busy: true, error: null });
@@ -89,7 +89,7 @@ export async function startCustomRun(ids: string[], retry?: { config?: AIConfig;
   const state = useAppStore.getState();
   const config = retry?.config ?? state.aiConfigs.find(item => item.id === state.activeAIConfig);
   const journal = account ? aiTaskJournal.begin(account, 'discovery', channels.map(channel => ({ id: channel.id, label: channel.name })), config?.id, undefined,
-    { parentId: retry?.parentId, ...(config ? { config: taskConfigSnapshot(config, 'discovery') } : {}) }) : null;
+    { parentId: retry?.parentId, trigger: retry?.automatic ? 'automatic' : 'manual', ...(config ? { config: taskConfigSnapshot(config, 'discovery') } : {}) }) : null;
   journal?.metadata({ title: channels.length === 1 ? channels[0].name : undefined, target: { view: 'subscription', id: channels[0]?.id } });
   const startedAt = Date.now();
   let stopped = false;
@@ -121,7 +121,7 @@ export async function startCustomRun(ids: string[], retry?: { config?: AIConfig;
         if (message) { journal?.item(id, 'running'); journal?.progress(message.current, message.total, message.phase); }
         else recordEdition(id);
       }
-    }, reloadCustomData, { config, task: journal ?? undefined });
+    }, reloadCustomData, { config, task: journal ?? undefined, automatic: retry?.automatic });
     if (useCustomDiscovery.getState().account === account) {
       channels.forEach(channel => recordEdition(channel.id));
     }

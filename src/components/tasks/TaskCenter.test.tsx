@@ -20,6 +20,13 @@ const record = (id: string, state: AITaskRecord['state'], extra: Partial<AITaskR
 beforeEach(() => vi.clearAllMocks());
 
 describe('unified task center', () => {
+  it('shows phase request totals separately from overall elapsed time', () => {
+    render(<TaskCenter tasks={[record('timings', 'complete', { usage: { phase_queue_wait_ms: 1200, phase_generating_ms: 3400 } })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^All$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Repository summaries · timings' }));
+    expect(screen.getByText('Waiting for execution slot · Request total')).toBeVisible();
+    expect(screen.getByText('1.20s')).toBeVisible(); expect(screen.getByText('3.40s')).toBeVisible();
+  });
   it('shows active and failures by default, with completed history behind its filter', () => {
     render(<TaskCenter tasks={[record('Active', 'running'), record('Failure', 'failed'), record('Done', 'complete')]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Repository summaries · Active' })).toBeVisible();

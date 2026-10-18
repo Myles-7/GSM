@@ -35,6 +35,26 @@ export interface PluginError {
   at?: string;
 }
 
+export interface PluginSource { id: string; url: string; name?: string; addedAt: string }
+export interface MarketplacePluginEntry { directoryName: string; manifest: PluginManifest }
+export interface MarketplaceSourceEntry {
+  source: PluginSource;
+  status: 'ok' | 'error' | 'pending';
+  plugins: MarketplacePluginEntry[];
+  warnings: string[];
+  error: PluginError | null;
+  fetchedAt: string | null;
+}
+export interface MarketplaceState { sources: PluginSource[]; entries: MarketplaceSourceEntry[] }
+export type MarketplaceMutationResult = { success: true; state: MarketplaceState } | { success: false; error: PluginError };
+export interface MarketplaceInstallRequest {
+  sourceId: string;
+  directoryName: string;
+  expectedPluginId: string;
+  expectedVersion: string;
+  replace?: boolean;
+}
+
 export interface InstalledPlugin {
   directoryName: string;
   manifest: PluginManifest;
@@ -107,11 +127,20 @@ export interface ElectronPluginAPI {
   requestPageCapability: (request: PluginPageCapabilitySession & {
     method: string;
     args: Record<string, unknown>;
+    networkTicket?: string;
   }) => Promise<{ success: true; value: unknown } | { success: false; error: PluginError }>;
   getSearchEndpoint: () => Promise<{ endpoint: string | null }>;
   configureWebSearch: (endpoint: string | null) => Promise<PluginOperationResult>;
   searchWeb: (request: PluginPageCapabilitySession & { args: { query: string; limit?: number } }) =>
     Promise<{ success: true; value: Array<{ title: string; url: string; snippet: string }> } | { success: false; error: PluginError }>;
+  marketplace: {
+    getState: () => Promise<MarketplaceState>;
+    addSource: (input: { url: string; name?: string }) => Promise<MarketplaceMutationResult>;
+    updateSource: (input: { id: string; url?: string; name?: string }) => Promise<MarketplaceMutationResult>;
+    removeSource: (input: { id: string }) => Promise<MarketplaceMutationResult>;
+    refresh: (options?: { sourceId?: string }) => Promise<MarketplaceMutationResult>;
+    install: (request: MarketplaceInstallRequest) => Promise<{ success: true; pluginId: string; permissionsChanged?: boolean; keptEnabled?: boolean } | { success: false; error: PluginError }>;
+  };
 }
 
 export interface PluginPageCapabilitySession {

@@ -18,6 +18,15 @@ const details: RepositoryDetailsAnalysis = { version: 1, generated_at: '2026-10-
 const repo={id:1,name:'tool',full_name:'acme/tool',html_url:'https://github.com/acme/tool',owner:{login:'acme',avatar_url:'SECRET'},category_id:'tools',stargazers_count:50,pushed_at:'2026-09-29',topics:['cli'],description:'description',ai_summary:'中文摘要',custom_description:'PRIVATE',apiKey:'API_SECRET',ai_details:{summary:'detail',features:['useful'],sources:[{label:'README',url:'https://github.com/acme/tool#readme'},{label:'local',url:'file:///C:/secret'}],generated_at:'2026-09-30'}};
 beforeEach(()=>{vi.stubGlobal('indexedDB',new IDBFactory());mocks.custom={channels:[],editions:[],analyses:{}};mocks.state={user:{id:42},isAuthenticated:true,repositories:[repo],discoveryRepos:{'most-popular':[repo]},discoveryLastRefresh:{'most-popular':'2026-09-29'},customCategories:[],releases:[],language:'zh',lastSync:'2026-09-29',githubToken:'TOKEN',setDiscoveryRepos:vi.fn(),setDiscoveryLastRefresh:vi.fn()};mocks.refresh.mockReset();mocks.hotRefresh.mockReset();});
 describe('reading snapshots use real desktop data',()=>{
+  it('exports account-scoped known Star state without inferring unstarred from absence',async()=>{
+    mocks.state.discoveryRepos={'most-popular':[repo,{...repo,id:2,name:'other',full_name:'acme/other',starred_at:'2026-10-01'}]};
+    const result=await generateReadingSnapshot({...defaultSettings,channelIds:['most-popular']});
+    expect(result.snapshot.items!['1'].starStatus).toBe('starred');
+    expect(result.snapshot.items!['1'].starStatusAt).toBe('2026-09-29');
+    expect(result.snapshot.items!['2'].starStatus).toBe('unknown');
+    expect(result.snapshot.items!['2'].starStatusAt).toBeUndefined();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
   it('hashes source analysis before projection and compares only the provided Gmail accepted baseline',async()=>{
     await saveRepositoryAnalysisAsset('42',repo as unknown as Repository,'zh',undefined,details);
     const first=await generateReadingSnapshot({...defaultSettings,discovery:false},[],undefined,{registerSnapshot:false});

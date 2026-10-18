@@ -83,6 +83,9 @@ sortOrder: state.gistSearchFilters.sortOrder,
 
   // 持久化自定义分类
   customCategories: state.customCategories,
+  classificationSchemes: state.classificationSchemes,
+  activeClassificationScheme: state.activeClassificationScheme,
+  classificationNavigation: state.classificationNavigation,
   hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
   categoryOrder: state.categoryOrder,
   subcategories: state.subcategories,

@@ -1,4 +1,4 @@
-import 'fake-indexeddb/auto';
+import { IDBFactory } from 'fake-indexeddb';
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeDatabase } from '../home/database';
@@ -9,20 +9,31 @@ import type { Repository } from '../types';
 import { planLocalBackupRestore } from './localBackupRestorePlan';
 import { executeLocalBackupRestore, recoverLocalBackupRestore, readLocalBackupRestoreJournal } from './localBackupRestore';
 import { assertRepositoryIdentityWritable, releaseRepositoryIdentityWrites, assertRepositoryMaintenanceOwner } from './repositoryIdentityGate';
-const f = vi.hoisted(() => ({ state: {} as AppStoreState, storage: new Map<string, string>(), failPhase: '', failPersist: false, workspace: null as string | null, active: null as null | { db: HomeDatabase; identity: { githubUserId: number; workspaceId: string } }, retained: null as unknown, switchAccount: false }));
+import { exportDiscoveryWorkspaceBackup } from './discoveryWorkspaceBackup';
+import { saveBrowsePage } from '../features/discovery/workspace/storage';
+import { planCloudBackupRestore, decodeCloudBackup } from './cloudBackupRestore';
+const f = vi.hoisted(() => ({ state: {} as AppStoreState, storage: new Map<string, string>(), failPhase: '', failPersist: false, failConfiguration: false, workspace: null as string | null, active: null as null | { db: HomeDatabase; identity: { githubUserId: number; workspaceId: string } }, retained: null as unknown, switchAccount: false, savedJournals: [] as string[] }));
 vi.mock('../store/useAppStore', () => ({ useAppStore: { getState: () => f.state }, setLocalBackupRestoreStoreState: (account: string, id: string, patch: Partial<AppStoreState>) => { assertRepositoryMaintenanceOwner(account, id); Object.assign(f.state, patch); } }));
 vi.mock('./indexedDbStorage', () => ({ indexedDBStorage: {
   getItem: async (key: string) => f.storage.get(key) ?? null,
   setItem: async (key: string, value: string) => {
+    if (key.startsWith('gsm-local-backup-journal:')) f.savedJournals.push(value);
     if (key.startsWith('gsm-local-backup-journal:') && JSON.parse(value).phase === f.failPhase) { f.failPhase = ''; throw new Error('CHECKPOINT_INTERRUPTION'); }
     f.storage.set(key, value);
     if (f.switchAccount) { f.switchAccount = false; f.state.user = { id: 43 } as never; }
   }, removeItem: async (key: string) => { f.storage.delete(key); },
 } }));
-vi.mock('../store/persistence/storage', () => ({ flushAppStorePersistence: async () => {
+vi.mock('../store/persistence/storage', () => ({
+  readFullPersistedSnapshot: async (name: string) => {
+    const raw = f.storage.get(name);
+    return raw ? JSON.parse(raw) : null;
+  },
+  flushAppStorePersistence: async () => {
+  if (f.failConfiguration && f.state.proxyConfig.password === 'new-private') { f.failConfiguration = false; throw new Error('CONFIGURATION_INTERRUPTION'); }
   if (f.failPersist) { f.failPersist = false; throw new Error('PERSIST_INTERRUPTION'); }
-  f.storage.set('github-stars-manager', JSON.stringify({ state: { ...f.state, releaseExpandedRepositories: [...f.state.releaseExpandedRepositories] } }));
-} }));
+  f.storage.set('github-stars-manager', JSON.stringify({ state: { ...f.state, releaseExpandedRepositories: [...f.state.releaseExpandedRepositories], releaseSubscriptions: [...f.state.releaseSubscriptions], readReleases: [...f.state.readReleases] } }));
+  },
+}));
 vi.mock('./autoSync', () => ({ waitForInFlightSync: vi.fn() }));
 vi.mock('./backendAdapter', () => ({ backend: { isAvailable: true, init: vi.fn() } }));
 vi.mock('../store/persistence/options', () => ({ appPersistenceOptions: { name: 'github-stars-manager' } }));
@@ -36,9 +47,9 @@ vi.mock('../home/desktop', () => ({
 const repo = (id: number): Repository => ({ id, name: `repo-${id}`, full_name: `fixture/repo-${id}`, description: '', html_url: '', stargazers_count: 1, forks_count: 0, forks: 0, language: null, created_at: '', updated_at: '', pushed_at: '', owner: { login: 'fixture', avatar_url: '' }, topics: [], category_id: null, subcategory_id: null });
 const backup = (data: LocalBackup['data']): LocalBackup => ({ version: '1.1', exportDate: '', appVersion: '', identity: { githubUserId: '42', workspaceId: f.workspace }, included: ['repositories', 'customCategories', 'uiSettings'], data });
 beforeEach(() => {
-  vi.stubGlobal('crypto', webcrypto); releaseRepositoryIdentityWrites('42'); localStorage.clear(); f.storage.clear();
+  vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('indexedDB', new IDBFactory()); releaseRepositoryIdentityWrites('42'); localStorage.clear(); f.storage.clear();
   f.state = { ...createInitialState(), user: { id: 42 }, repositories: [repo(1)], repositoryOrder: [1] } as AppStoreState;
-  f.workspace = null; f.active = null; f.retained = null; f.failPhase = ''; f.failPersist = false; f.switchAccount = false;
+  f.workspace = null; f.active = null; f.retained = null; f.failPhase = ''; f.failPersist = false; f.failConfiguration = false; f.switchAccount = false; f.savedJournals = [];
 });
 afterEach(() => { releaseRepositoryIdentityWrites('42'); vi.unstubAllGlobals(); });
 async function home() {
@@ -116,5 +127,59 @@ describe('backup journal and scoped Home recovery', () => {
     await expect(recoverLocalBackupRestore(true)).rejects.toThrow(/VERSION_DRIFT|DISPATCHED_OR_CHANGED/);
     expect((await db.list('repositories')).find(row => row.id === '2')?.version).toBe(1);
     expect(await readLocalBackupRestoreJournal()).not.toBeNull();
+  });
+  it('stages Release, subscription and read records in Home and restores Sets durably', async () => {
+    const db = await home();
+    await db.applyRemote([{ collection: 'releases', id: '9', version: 1, data: { id: 9 } }, { collection: 'subscriptions', id: '1', version: 1, data: { repoId: 1, subscribed: true } }], 2);
+    f.state.releaseSubscriptions = new Set([1]);
+    const prepared = await planCloudBackupRestore(f.state, decodeCloudBackup(JSON.stringify({ version: '1.2', identity: backup({}).identity, releases: [], releaseSubscriptions: [2], readReleases: [12] })), backup({}).identity!, false);
+    expect(await executeLocalBackupRestore(prepared.plan)).toEqual({ homePending: true });
+    expect(f.state.releaseSubscriptions).toEqual(new Set([2])); expect(f.state.readReleases).toEqual(new Set([12]));
+    expect((await db.pending()).map(op => `${op.collection}:${op.id}:${op.kind}`)).toEqual(expect.arrayContaining(['releases:9:delete', 'subscriptions:1:delete', 'subscriptions:2:put', 'release_reads:12:put']));
+    expect((await db.list('sessions'))[0].data).toEqual({ text: 'keep' });
+  });
+  it.each([false, true])('recovers discovery and Store after interruption following discovery commit; undo=%s', async undo => {
+    await saveBrowsePage('42', { key: 'queue', channelId: 'most-popular', signature: '', items: [{ id: 1, full_name: 'a/one' }], nextPage: 2, hasMore: false, totalCount: 1, mode: 'replace' });
+    await saveBrowsePage('43', { key: 'foreign', channelId: 'most-popular', signature: '', items: [{ id: 3, full_name: 'b/three' }], nextPage: 1, hasMore: false, totalCount: 1, mode: 'replace' });
+    const before = await exportDiscoveryWorkspaceBackup('42'), foreign = await exportDiscoveryWorkspaceBackup('43');
+    const incoming = structuredClone(before); incoming.workspace!.sessions[0].nextPage = 8;
+    const input = plan(); input.discovery = { before, after: incoming };
+    f.failPersist = true;
+    await expect(executeLocalBackupRestore(input)).rejects.toThrow('PERSIST_INTERRUPTION');
+    expect((await exportDiscoveryWorkspaceBackup('42')).workspace!.sessions[0].nextPage).toBe(8);
+    expect((await readLocalBackupRestoreJournal())?.discoveryReceipt).toBeDefined();
+    await recoverLocalBackupRestore(undo);
+    expect((await exportDiscoveryWorkspaceBackup('42')).workspace!.sessions[0].nextPage).toBe(undo ? 2 : 8);
+    expect(await exportDiscoveryWorkspaceBackup('43')).toEqual(foreign);
+    expect(f.state.repositories).toHaveLength(undo ? 1 : 2);
+  });
+  it('compensates configuration, discovery, App and staged Home when configuration persistence fails', async () => {
+    const db = await home();
+    await saveBrowsePage('42', { key: 'queue', channelId: 'most-popular', signature: '', items: [{ id: 1, full_name: 'a/one' }], nextPage: 2, hasMore: false, totalCount: 1, mode: 'replace' });
+    const before = await exportDiscoveryWorkspaceBackup('42'), incoming = structuredClone(before);
+    incoming.workspace!.sessions[0].nextPage = 99;
+    const input = plan(); input.discovery = { before, after: incoming };
+    f.state.proxyConfig.password = 'old-private';
+    const configuration = { before: { proxyConfig: { ...f.state.proxyConfig } }, after: { proxyConfig: { ...f.state.proxyConfig, password: 'new-private' } } };
+    f.failConfiguration = true;
+    await expect(executeLocalBackupRestore(input, { configuration, compensateOnFailure: true })).rejects.toThrow('CONFIGURATION_INTERRUPTION');
+    expect(f.state.proxyConfig.password).toBe('old-private');
+    expect(f.state.repositories).toHaveLength(1);
+    expect((await exportDiscoveryWorkspaceBackup('42')).workspace).toEqual(before.workspace);
+    expect(await db.pending()).toEqual([]);
+    expect(await readLocalBackupRestoreJournal()).toBeNull();
+    expect(() => assertRepositoryIdentityWritable()).not.toThrow();
+    expect(f.savedJournals.join('')).not.toMatch(/old-private|new-private|"password"/);
+  });
+  it('never journals credentials and explicitly requests configuration review after process recovery', async () => {
+    f.state.proxyConfig.password = 'old-private';
+    const configuration = { before: { proxyConfig: { ...f.state.proxyConfig } }, after: { proxyConfig: { ...f.state.proxyConfig, password: 'new-private' } } };
+    f.failPhase = 'committed';
+    await expect(executeLocalBackupRestore(plan(), { configuration })).rejects.toThrow('CHECKPOINT_INTERRUPTION');
+    expect((await readLocalBackupRestoreJournal())?.sessionConfiguration).toBe('applied');
+    expect(f.savedJournals.join('')).not.toMatch(/old-private|new-private|"password"/);
+    expect(await recoverLocalBackupRestore(true)).toEqual({ configurationReviewRequired: true });
+    expect(f.state.repositories).toHaveLength(1);
+    expect(f.state.proxyConfig.password).toBe('new-private'); // no fabricated cross-process credential rollback
   });
 });

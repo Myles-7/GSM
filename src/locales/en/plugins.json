@@ -74,7 +74,8 @@
     "opened-in-browser": "Opened in browser",
     "plugin-result-copied": "Plugin result copied",
     "plugin-result-saved": "Plugin result saved",
-    "plugin-action-completed": "Plugin action completed"
+    "plugin-action-completed": "Plugin action completed",
+    "save-requires-host": "Save plugin output through the host save dialog."
   },
   "usePluginAI": {
     "custom-endpoint": "Custom endpoint",

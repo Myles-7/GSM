@@ -19,6 +19,7 @@ vi.mock('../../services/xTweetService', () => ({ abortXTweetSync: vi.fn() }));
 vi.mock('../../services/telegramService', () => ({ abortTelegramSync: vi.fn() }));
 vi.mock('../../services/electronProxy', () => ({ clearEncryptedXAuthViaDesktop: vi.fn() }));
 vi.mock('../../services/indexedDbStorage', () => ({ indexedDBStorage: {} }));
+vi.mock('../../store/persistence/storage', () => ({ removePersistedSnapshot: vi.fn() }));
 vi.mock('./IncludeKeysToggle', () => ({ IncludeKeysToggle: () => null }));
 vi.mock('./RepositoryIdentityMigrationPanel', () => ({ RepositoryIdentityMigrationPanel: () => null }));
 vi.mock('../../services/localBackupRestore', () => ({ readLocalBackupRestoreJournal: async () => null, executeLocalBackupRestore: mocks.safeRestore, recoverLocalBackupRestore: vi.fn() }));

@@ -3,6 +3,7 @@ import type { OrganizationMembership, OrganizationTransaction } from '../../type
 import type { Repository } from '../../types';
 import { organizationCategories, organizationSnapshot } from './repositoryOrganization';
 import { stableStructure, structureSnapshot } from './organizationStructure';
+import { classificationProjection, commitClassificationProjection } from './classificationSchemes';
 
 export const membershipOf = (repository: Repository): OrganizationMembership => ({
   categoryId: repository.category_id ?? null, subcategoryId: repository.subcategory_id ?? null, locked: Boolean(repository.category_locked),
@@ -10,7 +11,19 @@ export const membershipOf = (repository: Repository): OrganizationMembership => 
 export const sameMembership = (a: OrganizationMembership, b: OrganizationMembership) =>
   a.categoryId === b.categoryId && a.subcategoryId === b.subcategoryId && a.locked === b.locked;
 
+export function validateOrganizationAssignment(repo: Repository | undefined, assignment: OrganizationTransaction['assignments'][number], mainIds: ReadonlySet<string>, subcategories: { id: string; parentId: string }[]) {
+  if (!repo || !sameMembership(membershipOf(repo), assignment.before)) throw new Error('Repository changed before apply');
+  if (assignment.after.locked !== assignment.before.locked) throw new Error('Cannot change lock state');
+  if (assignment.before.locked && assignment.before.categoryId !== assignment.after.categoryId && !assignment.overrideLocked) throw new Error('Locked category requires explicit confirmation');
+  if (assignment.after.categoryId && !mainIds.has(assignment.after.categoryId)) throw new Error('Target category disappeared');
+  if (assignment.after.subcategoryId && !subcategories.some(c => c.id === assignment.after.subcategoryId && c.parentId === assignment.after.categoryId)) throw new Error('Target subgroup disappeared');
+}
+
 export function organizationTransaction(state: AppStoreState, input: OrganizationTransaction): Partial<AppStoreState> {
+  if (input.schemeId === 'technology') {
+    const patch = organizationTransaction(classificationProjection(state, 'technology'), { ...input, schemeId: undefined });
+    return commitClassificationProjection(state, 'technology', patch);
+  }
   if (String(state.user?.id ?? '') !== input.ownerId) throw new Error('Account changed');
   if (input.structureChange) {
     const change = input.structureChange;
@@ -66,11 +79,7 @@ export function organizationTransaction(state: AppStoreState, input: Organizatio
   if (assignments.size !== input.assignments.length) throw new Error('Duplicate repository assignment');
   for (const assignment of assignments.values()) {
     const repo = state.repositories.find(r => r.id === assignment.repositoryId);
-    if (!repo || !sameMembership(membershipOf(repo), assignment.before)) throw new Error('Repository changed before apply');
-    if (assignment.after.locked !== assignment.before.locked) throw new Error('Cannot change lock state');
-    if (assignment.before.locked && assignment.before.categoryId !== assignment.after.categoryId && !assignment.overrideLocked) throw new Error('Locked category requires explicit confirmation');
-    if (assignment.after.categoryId && !mainIds.has(assignment.after.categoryId)) throw new Error('Target category disappeared');
-    if (assignment.after.subcategoryId && !subcategories.some(c => c.id === assignment.after.subcategoryId && c.parentId === assignment.after.categoryId)) throw new Error('Target subgroup disappeared');
+    validateOrganizationAssignment(repo, assignment, mainIds, subcategories);
   }
   const repositories = state.repositories.map(repo => {
     const assignment = assignments.get(repo.id);

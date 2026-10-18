@@ -2,6 +2,9 @@ import {
   emptyReadingState, defaultSettings, settingsSchema, snapshotItems, snapshotViews,
   type ReadingSettings, type ReadingState, type ReadingSnapshot, type ReadingReturn, type ReadingPosition,
 } from './model';
+import { rememberCandidateSource, type ReadingCandidateSource, type ReadingStarBatch, type ReadingImportMetadata } from './candidates';
+import { initializeReadingWorkspace, reconcileReadingProcessing, rememberProjectSource, rememberReadingImport, type ReadingProjectSource, type ReadingProcessing, type ReadingStarObservation, type ReadingLatestImport } from './workspace';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from '../../services/repositoryIdentityGate';
 
 export interface StoredSnapshot {
   base: Record<string, ReadingState>;
@@ -15,9 +18,14 @@ export interface StoredSnapshot {
 export interface StoredReadingPosition extends ReadingPosition { snapshotId: string; sequence: number }
 interface StoredActiveView { id: string; viewId: string; revision: number; snapshotId: string; sequence: number }
 export interface ReadingData {
+  workspaceVersion?: 5; workspaceBackupAt?: string; projectRevisions?: Record<string, number>;
+  projectSources?: Record<string, ReadingProjectSource>; processing?: Record<string, ReadingProcessing>;
+  starObservations?: Record<string, ReadingStarObservation>; latestImport?: ReadingLatestImport;
   generationFailures?: Array<{ at: string; bytes: number; limitMb: number }>;
   storageVersion?: 2; migrationBackupAt?: string;
   artifactVersion?: 3;
+  candidateVersion?: 4; candidateBackupAt?: string; candidateRevisions?: Record<string, number>;
+  candidateSources?: Record<string, ReadingCandidateSource>; starBatches?: Record<string, ReadingStarBatch>;
   settings: ReadingSettings; states: Record<string, ReadingState>; names: Record<string, string>;
   applied: Record<string, string>; snapshots: Record<string, StoredSnapshot>;
   sequence?: number; positions?: Record<string, StoredReadingPosition>; activeView?: StoredActiveView | null;
@@ -28,17 +36,20 @@ const empty = (): ReadingData => ({ storageVersion: 2, settings: structuredClone
 const backupKey = (account: string) => `${account}:before-v2`;
 const owns = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
 
-export function openReadingDb() {
+export function openReadingDb(readOnly = false) {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('gsm-html-reading', 3);
+    const req = indexedDB.open('gsm-html-reading', 5);
     req.onupgradeneeded = () => {
+      if (readOnly) { req.transaction!.abort(); return; }
       if (!req.result.objectStoreNames.contains('accounts')) req.result.createObjectStore('accounts');
       if (!req.result.objectStoreNames.contains('migration-backups')) req.result.createObjectStore('migration-backups');
       if (!req.result.objectStoreNames.contains('snapshots')) req.result.createObjectStore('snapshots').createIndex('account', 'accountId');
       if (!req.result.objectStoreNames.contains('discovery-cache')) req.result.createObjectStore('discovery-cache').createIndex('account', 'accountId');
+      if (!req.result.objectStoreNames.contains('candidate-sources')) req.result.createObjectStore('candidate-sources').createIndex('account', 'accountId');
+      if (!req.result.objectStoreNames.contains('star-batches')) req.result.createObjectStore('star-batches').createIndex('account', 'accountId');
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(readOnly && req.error?.name === 'AbortError' ? new Error('READING_SCHEMA_MIGRATION_REQUIRED') : req.error);
   });
 }
 function migrateData(data: ReadingData): ReadingData {
@@ -52,16 +63,45 @@ function migrateData(data: ReadingData): ReadingData {
   if (!Number.isSafeInteger(data.sequence) || data.sequence < 0) throw new Error('阅读快照序号无效，请恢复阅读资料备份。');
   return data;
 }
-export interface ReadingLoadOptions { includeSnapshots?: boolean; snapshotIds?: string[] | ((data: ReadingData) => string[]); validate?: () => void; signal?: AbortSignal }
+export interface ReadingLoadOptions {
+  includeSnapshots?: boolean; snapshotIds?: string[] | ((data: ReadingData) => string[]);
+  includeCandidates?: boolean; includeStarBatches?: boolean; validate?: () => void; signal?: AbortSignal;
+  /** Read paths may proceed during identity maintenance; writers must prove ownership. */
+  readOnly?: boolean;
+  identityMaintenance?: { account: string; journalId: string };
+}
 export async function readingTransaction<T>(account: string, mutate: (data: ReadingData) => T, options: ReadingLoadOptions = {}): Promise<T> {
   if (!/^\d+$/.test(account)) throw new Error('请先登录 GitHub 账户。');
-  const db = await openReadingDb();
-  try {
+  const validateTransaction = () => {
     options.validate?.();
+    if (options.readOnly) return;
+    if (options.identityMaintenance) {
+      if (options.identityMaintenance.account !== account) throw new Error('REPOSITORY_MAINTENANCE_OWNER_MISMATCH');
+      assertRepositoryMaintenanceOwner(account, options.identityMaintenance.journalId);
+    } else {
+      assertRepositoryIdentityWritable(account);
+    }
+  };
+  validateTransaction();
+  if (options.readOnly && !(await indexedDB.databases()).some(database => database.name === 'gsm-html-reading')) {
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('READING_ABORTED');
+    validateTransaction();
+    const data = migrateData(empty());
+    initializeReadingWorkspace(data);
+    Object.assign(data, { candidateRevisions: {}, artifactVersion: 3, candidateVersion: 4, workspaceVersion: 5,
+      ...(options.includeCandidates ? { candidateSources: {} } : {}), ...(options.includeStarBatches ? { starBatches: {} } : {}) });
+    return mutate(data);
+  }
+  const db = await openReadingDb(options.readOnly);
+  try {
+    validateTransaction();
     return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(['accounts', 'migration-backups', 'snapshots'], 'readwrite');
+      const stores = ['accounts', 'migration-backups', 'snapshots'];
+      if (options.includeCandidates) stores.push('candidate-sources');
+      if (options.includeStarBatches) stores.push('star-batches');
+      const tx = db.transaction(stores, options.readOnly ? 'readonly' : 'readwrite');
       let result: T; let error: unknown;
-      const abort = () => { try { options.validate?.(); } catch (cause) { error = cause; } error ??= options.signal?.reason; try { tx.abort(); } catch { /* Already settled. */ } };
+      const abort = () => { try { validateTransaction(); } catch (cause) { error = cause; } error ??= options.signal?.reason; try { tx.abort(); } catch { /* Already settled. */ } };
       options.signal?.addEventListener('abort', abort, { once: true });
       const timeout = setTimeout(() => tx.abort(), 15000);
       const cleanup = () => { clearTimeout(timeout); options.signal?.removeEventListener('abort', abort); };
@@ -71,8 +111,27 @@ export async function readingTransaction<T>(account: string, mutate: (data: Read
       const req = tx.objectStore('accounts').get(account);
       req.onsuccess = () => {
         const raw = req.result as ReadingData | undefined;
-        const finish = (backup?: ReadingMigrationBackup) => { try {
-          const data = raw ?? empty();
+        const finish = (backup?: ReadingMigrationBackup, candidateBackup?: ReadingMigrationBackup, workspaceBackup?: ReadingMigrationBackup) => { try {
+          if (options.readOnly && raw && (raw.workspaceVersion !== 5 || raw.candidateVersion !== 4 || raw.storageVersion !== 2 || raw.artifactVersion !== 3)) {
+            throw new Error('READING_SCHEMA_MIGRATION_REQUIRED');
+          }
+          const data = raw ? structuredClone(raw) : empty();
+          if (raw && raw.workspaceVersion !== 5) {
+            const savedAt = workspaceBackup?.savedAt ?? new Date().toISOString();
+            if (!workspaceBackup) tx.objectStore('migration-backups').add({ accountId: account, savedAt, data: structuredClone(raw) }, `${account}:before-workspace-v5`);
+            data.workspaceBackupAt = savedAt;
+          }
+          initializeReadingWorkspace(data);
+          if (raw && raw.workspaceVersion !== 5) for (const [id, state] of Object.entries(data.states)) {
+            if (state.interest === 'ignored' && !data.processing![id]) data.processing![id] = { processed: true, reason: 'ignored', updatedAt: data.workspaceBackupAt! };
+          }
+          // Keep the untouched v3 account and existing artifact store until the first v4 write commits.
+          if (raw && raw.candidateVersion !== 4) {
+            const savedAt = candidateBackup?.savedAt ?? new Date().toISOString();
+            if (!candidateBackup) tx.objectStore('migration-backups').add({ accountId: account, savedAt, data: structuredClone(raw) }, `${account}:before-candidates-v4`);
+            data.candidateBackupAt = savedAt;
+          }
+          data.candidateRevisions ??= {};
           if (raw && raw.storageVersion !== 2) {
             const savedAt = backup?.savedAt ?? new Date().toISOString();
             // The backup and first v2 write commit together; failures leave the old account intact.
@@ -87,16 +146,59 @@ export async function readingTransaction<T>(account: string, mutate: (data: Read
           }
           migrateData(data);
           const loaded: Record<string, StoredSnapshot> = Object.create(null) as Record<string, StoredSnapshot>;
-          const complete = () => { try {
-            options.validate?.();
+          const persist = () => { try {
+            validateTransaction();
             data.snapshots = loaded;
+            if (options.readOnly) {
+              // The callback receives a detached snapshot. Even an accidental
+              // mutation cannot persist, increment revisions or create receipts.
+              Object.assign(data, { artifactVersion: 3, candidateVersion: 4, workspaceVersion: 5 });
+              result = mutate(data);
+              return;
+            }
             const original = new Map(Object.entries(loaded).map(([id, snapshot]) => [id, JSON.stringify(snapshot)]));
+            const priorCandidates = new Map(Object.entries(data.states).map(([id, state]) => [id, state.candidate]));
+            const priorStates = structuredClone(data.states);
+            const priorProcessing = structuredClone(data.processing!);
+            const projectOriginal = new Map(Object.keys(data.states).map(id => [id, JSON.stringify([data.names[id], data.states[id], data.projectSources?.[id], data.processing?.[id]])]));
+            const sourceOriginal = new Map(Object.entries(data.candidateSources ?? {}).map(([id, source]) => [id, JSON.stringify(source)]));
+            const batchOriginal = new Map(Object.entries(data.starBatches ?? {}).map(([id, batch]) => [id, JSON.stringify(batch)]));
             result = mutate(data);
+            for (const id of options.identityMaintenance ? [] : new Set([...Object.keys(priorStates), ...Object.keys(data.states)])) {
+              if (JSON.stringify(priorProcessing[id]) === JSON.stringify(data.processing?.[id])) reconcileReadingProcessing(data, id, priorStates[id] ?? emptyReadingState(), data.states[id] ?? emptyReadingState());
+              if (projectOriginal.get(id) !== JSON.stringify([data.names[id], data.states[id], data.projectSources?.[id], data.processing?.[id]])) data.projectRevisions![id] = (data.projectRevisions![id] ?? 0) + 1;
+            }
+            for (const id of options.identityMaintenance ? [] : new Set([...priorCandidates.keys(), ...Object.keys(data.states)])) {
+              if ((priorCandidates.get(id) ?? false) !== (data.states[id]?.candidate ?? false)) data.candidateRevisions![id] = (data.candidateRevisions![id] ?? 0) + 1;
+            }
             for (const [id, snapshot] of Object.entries(data.snapshots)) if (original.get(id) !== JSON.stringify(snapshot)) artifacts.put({ accountId: account, snapshotId: id, data: snapshot }, [account, id]);
             for (const id of original.keys()) if (!owns(data.snapshots, id)) artifacts.delete([account, id]);
-            const record = Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'snapshots'));
-            tx.objectStore('accounts').put({ ...record, artifactVersion: 3 }, account);
+            const saveOptional = (storeName: string, values: Record<string, unknown>, before: Map<string, string>) => {
+              const store = tx.objectStore(storeName);
+              for (const [id, value] of Object.entries(values)) if (before.get(id) !== JSON.stringify(value)) store.put({ accountId: account, id, data: value }, [account, id]);
+              for (const id of before.keys()) if (!owns(values, id)) store.delete([account, id]);
+            };
+            if (options.includeCandidates) saveOptional('candidate-sources', data.candidateSources ?? {}, sourceOriginal);
+            if (options.includeStarBatches) {
+              if (Object.values(data.starBatches ?? {}).some(batch => batch.accountId !== account)) throw new Error('收藏批次属于其他 GitHub 账户。');
+              saveOptional('star-batches', data.starBatches ?? {}, batchOriginal);
+            }
+            const record = Object.fromEntries(Object.entries(data).filter(([key]) => !['snapshots', 'candidateSources', 'starBatches'].includes(key)));
+            tx.objectStore('accounts').put({ ...record, artifactVersion: 3, candidateVersion: 4, workspaceVersion: 5 }, account);
           } catch (e) { error = e; tx.abort(); } };
+          const complete = () => {
+            let pending = Number(!!options.includeCandidates) + Number(!!options.includeStarBatches);
+            if (!pending) { persist(); return; }
+            const loadOptional = (storeName: string, field: 'candidateSources' | 'starBatches') => {
+              const read = tx.objectStore(storeName).index('account').getAll(account);
+              read.onsuccess = () => {
+                Object.assign(data, { [field]: Object.fromEntries(read.result.map(record => [record.id, record.data])) });
+                if (--pending === 0) persist();
+              };
+            };
+            if (options.includeCandidates) loadOptional('candidate-sources', 'candidateSources');
+            if (options.includeStarBatches) loadOptional('star-batches', 'starBatches');
+          };
           const snapshotIds = typeof options.snapshotIds === 'function' ? options.snapshotIds(data) : options.snapshotIds;
           if (snapshotIds) {
             let pending = new Set(snapshotIds).size;
@@ -105,20 +207,32 @@ export async function readingTransaction<T>(account: string, mutate: (data: Read
           } else if (options.includeSnapshots === false) complete();
           else { const read = artifacts.index('account').getAll(account); read.onsuccess = () => { for (const record of read.result) loaded[record.snapshotId] = record.data; complete(); }; }
         } catch (e) { error = e; tx.abort(); } };
+        const prepareWorkspace = (backup?: ReadingMigrationBackup, candidateBackup?: ReadingMigrationBackup) => {
+          if (raw && raw.workspaceVersion !== 5) {
+            const saved = tx.objectStore('migration-backups').get(`${account}:before-workspace-v5`);
+            saved.onsuccess = () => finish(backup, candidateBackup, saved.result);
+          } else finish(backup, candidateBackup);
+        };
+        const begin = (backup?: ReadingMigrationBackup) => {
+          if (raw && raw.candidateVersion !== 4) {
+            const candidateBackup = tx.objectStore('migration-backups').get(`${account}:before-candidates-v4`);
+            candidateBackup.onsuccess = () => prepareWorkspace(backup, candidateBackup.result);
+          } else prepareWorkspace(backup);
+        };
         if (raw && raw.storageVersion !== 2) {
           const backup = tx.objectStore('migration-backups').get(backupKey(account));
-          backup.onsuccess = () => finish(backup.result);
-        } else finish();
+          backup.onsuccess = () => begin(backup.result);
+        } else begin();
       };
     });
   } finally { db.close(); }
 }
-export async function loadReadingMigrationBackup(account: string, version: 'v2' | 'artifacts-v3' = 'v2'): Promise<ReadingMigrationBackup | null> {
+export async function loadReadingMigrationBackup(account: string, version: 'v2' | 'artifacts-v3' | 'candidates-v4' | 'workspace-v5' = 'v2'): Promise<ReadingMigrationBackup | null> {
   if (!/^\d+$/.test(account)) throw new Error('请先登录 GitHub 账户。');
   const db = await openReadingDb();
   try {
     return await new Promise((resolve, reject) => {
-      const req = db.transaction('migration-backups', 'readonly').objectStore('migration-backups').get(version === 'v2' ? backupKey(account) : `${account}:before-artifacts-v3`);
+      const req = db.transaction('migration-backups', 'readonly').objectStore('migration-backups').get(version === 'v2' ? backupKey(account) : `${account}:before-${version}`);
       req.onsuccess = () => resolve(req.result ?? null); req.onerror = () => reject(req.error);
     });
   } finally { db.close(); }
@@ -255,19 +369,33 @@ export function inspectReadingPositions(data: ReadingData, account: string, inpu
   if (input.activeView) addRow('active', input.activeView);
   return rows;
 }
-export const applyReadingReturn = (account: string, input: ReadingReturn, choices: Record<string, 'phone' | 'desktop'>, expected?: ImportRow[], expectedPositions?: ImportPositionRow[]) => readingTransaction(account, data => {
+export const applyReadingReturn = (account: string, input: ReadingReturn, choices: Record<string, 'phone' | 'desktop'>, expected?: ImportRow[], expectedPositions?: ImportPositionRow[], metadata: ReadingImportMetadata = {}) => readingTransaction(account, data => {
   const rows = inspectReadingReturn(data, account, input); const positions = inspectReadingPositions(data, account, input);
-  let applied = 0, duplicate = 0, kept = 0;
+  const importId = metadata.importId ?? crypto.randomUUID(); const importedAt = new Date().toISOString();
+  const acceptedIds = new Set<string>();
+  let applied = 0, duplicate = 0, kept = 0, unchanged = 0;
   if (expected && rows.some(row => row.status !== 'duplicate' && row.current !== expected.find(prior => prior.op.id === row.op.id)?.current)) throw new Error('电脑记录在预览后发生变化，请重新预览。');
   if (expectedPositions && positions.some(row => row.status !== 'duplicate' && row.current !== expectedPositions.find(prior => prior.id === row.id && prior.kind === row.kind)?.current)) throw new Error('继续阅读位置在预览后发生变化，请重新预览。');
   for (const row of rows) {
     if (row.status === 'duplicate') { duplicate++; continue; }
     if (row.status === 'conflict' && !choices[row.op.id]) throw new Error('请处理所有冲突后再导入。');
     if (choices[row.op.id] === 'desktop') kept++;
-    else { const state = data.states[row.op.repoId] ?? emptyReadingState(); Object.assign(state, { [row.op.field]: row.op.value }); data.states[row.op.repoId] = state; applied++; }
+    else {
+      if (row.current === row.op.value) unchanged++;
+      else {
+        const state = data.states[row.op.repoId] ?? emptyReadingState(); Object.assign(state, { [row.op.field]: row.op.value }); data.states[row.op.repoId] = state; applied++;
+      }
+      data.states[row.op.repoId] ??= emptyReadingState();
+      acceptedIds.add(String(row.op.repoId));
+      rememberProjectSource(data, { repoId: row.op.repoId, operationId: row.op.id, fileName: metadata.fileName ?? '粘贴回传', snapshotId: input.snapshotId, generatedAt: data.snapshots[input.snapshotId].generatedAt, importedAt, importId });
+      if (row.op.field === 'candidate' && row.op.value === true) {
+        rememberCandidateSource(data, { repoId: row.op.repoId, operationId: row.op.id, fileName: metadata.fileName ?? '粘贴回传', snapshotId: input.snapshotId, generatedAt: data.snapshots[input.snapshotId].generatedAt, importedAt, importId });
+      }
+    }
     data.applied[row.op.id] = JSON.stringify(row.op);
   }
-  if (input.version === 1) return { applied, duplicate, kept };
+  rememberReadingImport(data, importId, importedAt, acceptedIds);
+  if (input.version === 1) return { applied, duplicate, kept, ...(unchanged ? { unchanged } : {}), ...(acceptedIds.size ? { importId } : {}) };
   let positionApplied = 0, positionStale = 0, positionDuplicate = 0;
   const sequence = data.snapshots[input.snapshotId].sequence!;
   for (const row of positions) {
@@ -281,5 +409,5 @@ export const applyReadingReturn = (account: string, input: ReadingReturn, choice
     }
     data.positionReceipts![row.id] = receiptSignature(input.snapshotId, row.kind, value);
   }
-  return { applied, duplicate, kept, positionApplied, positionStale, positionDuplicate };
-}, { snapshotIds: [input.snapshotId] });
+  return { applied, duplicate, kept, positionApplied, positionStale, positionDuplicate, ...(unchanged ? { unchanged } : {}), ...(acceptedIds.size ? { importId } : {}) };
+}, { snapshotIds: [input.snapshotId], includeCandidates: true });

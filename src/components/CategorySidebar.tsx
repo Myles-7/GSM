@@ -8,13 +8,14 @@ import {
   EyeOff,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Undo2,
   Inbox,
   Search,
   Plug,
 } from 'lucide-react';
 import { Category, Repository } from '../types';
-import { useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useClassificationStore';
 import { useRepositoryDragStore } from '../store/useRepositoryDragStore';
 import { useShallow } from 'zustand/react/shallow';
 import { CategoryEditModal } from './CategoryEditModal';
@@ -25,6 +26,8 @@ import { assignConfirmedCategory } from '../features/repositories/components/rep
 import { isElectron } from '../services/electronProxy';
 import { useLocalVectorPendingCount } from '../features/settings/hooks/useLocalVectorPendingCount';
 import { VectorPendingBadge } from './settings/VectorPendingBadge';
+import { ClassificationSchemeSwitch } from './ClassificationSchemeSwitch';
+import { ClassificationSidebarChildren } from './ClassificationSidebarChildren';
 
 interface CategorySidebarProps {
   repositories: Repository[];
@@ -41,6 +44,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     customCategories,
     hiddenDefaultCategoryIds,
     defaultCategoryOverrides,
+    classificationContext,
     categoryOrder,
     collapsedSidebarCategoryCount,
     categoryMatchMode,
@@ -52,10 +56,15 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     isSidebarCollapsed,
     setSidebarCollapsed,
     setCurrentView,
+    subcategories,
+    classificationNavigation,
+    activeClassificationScheme,
+    setClassificationExpanded,
   } = useAppStore(useShallow((state) => ({
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    classificationContext: state.classificationContext,
     categoryOrder: state.categoryOrder,
     collapsedSidebarCategoryCount: state.collapsedSidebarCategoryCount,
     categoryMatchMode: state.categoryMatchMode,
@@ -67,6 +76,10 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     isSidebarCollapsed: state.isSidebarCollapsed,
     setSidebarCollapsed: state.setSidebarCollapsed,
     setCurrentView: state.setCurrentView,
+    subcategories: state.subcategories,
+    classificationNavigation: state.classificationNavigation,
+    activeClassificationScheme: state.activeClassificationScheme ?? 'purpose',
+    setClassificationExpanded: state.setClassificationExpanded,
   })));
 
   const { toast, confirm } = useDialog();
@@ -198,11 +211,11 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
   }, [toggleSidebar, isMobile]);
 
   const allCategories = useMemo(() => {
-    const categories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides);
+    const categories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext);
     const sorted = sortCategoriesByOrder(categories, categoryOrder);
     const pending: Category = { id: 'pending', name: organizationT('organization.pending'), icon: '', keywords: [] };
     return [...sorted.filter(category => category.id === 'all'), pending, ...sorted.filter(category => category.id !== 'all')];
-  }, [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, categoryOrder, organizationT]);
+  }, [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext, categoryOrder, organizationT]);
 
   const repositoryMap = useMemo(() => new Map(repositories.map(repo => [String(repo.id), repo])), [repositories]);
 
@@ -218,6 +231,29 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     }
     return counts;
   }, [repositories, allCategories, categoryMatchMode]);
+
+  const expanded = classificationNavigation?.[activeClassificationScheme]?.expanded ?? [];
+  const parentIds = new Set((subcategories ?? []).map(group => group.parentId));
+  useEffect(() => {
+    const parent = subcategories?.find(group => group.id === selectedCategory)?.parentId;
+    if (!parent) return;
+    const current = useAppStore.getState().classificationNavigation?.[activeClassificationScheme]?.expanded ?? [];
+    if (!current.includes(parent)) setClassificationExpanded(activeClassificationScheme, [...current, parent]);
+  }, [selectedCategory, activeClassificationScheme, subcategories, setClassificationExpanded]);
+
+  const toggleCategory = (categoryId: string) => {
+    if (justDroppedRef.current || !parentIds.has(categoryId)) return;
+    setClassificationExpanded(activeClassificationScheme, expanded.includes(categoryId)
+      ? expanded.filter(id => id !== categoryId) : [...expanded, categoryId]);
+  };
+  const renderCategoryToggle = (category: Category) => parentIds.has(category.id) ? (
+    <Button variant="ghost" size="icon" className="absolute left-0 top-0.5 z-10 h-8 w-6" title={organizationT(expanded.includes(category.id) ? 'dualOrganization.collapse' : 'dualOrganization.expand', { name: category.name })}
+      aria-label={organizationT(expanded.includes(category.id) ? 'dualOrganization.collapse' : 'dualOrganization.expand', { name: category.name })}
+      aria-expanded={expanded.includes(category.id)} aria-controls={expanded.includes(category.id) ? `category-children-${category.id}` : undefined}
+      onClick={event => { event.stopPropagation(); toggleCategory(category.id); }}>
+      {expanded.includes(category.id) ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+    </Button>
+  ) : null;
 
   const getCategoryCount = useCallback((category: Category) => {
     return categoryCounts.get(category.id) ?? 0;
@@ -319,7 +355,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     )) return;
 
     const originalRepo = { ...repository };
-    assignConfirmedCategory(repository.id, targetId);
+    assignConfirmedCategory(repository.id, targetId, useAppStore.getState().activeClassificationScheme ?? 'purpose');
     try {
       await forceSyncToBackend();
     } catch {
@@ -331,6 +367,10 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
   const handleCategoryClick = (categoryId: string) => {
     if (justDroppedRef.current) {
       return;
+    }
+    if (parentIds.has(categoryId)) {
+      if (selectedCategory === categoryId) toggleCategory(categoryId);
+      else setClassificationExpanded(activeClassificationScheme, [...new Set([...expanded, categoryId])]);
     }
     onCategorySelect(categoryId);
   };
@@ -378,6 +418,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
       {/* 移动端：始终显示完整侧栏 */}
       {isMobile ? (
         <div className="w-full overflow-hidden rounded-md border border-border bg-card p-3 sm:p-4">
+          <ClassificationSchemeSwitch />
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold text-card-foreground">
               {t('categorySidebar.categories')}
@@ -394,7 +435,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
             </Button>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="max-h-[50vh] space-y-1 overflow-y-auto pb-1">
             {allCategories.map(category => {
               const count = getCategoryCount(category);
               const isSelected = selectedCategory === category.id;
@@ -405,7 +446,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
               return (
                 <div
                   key={category.id}
-                  className="group shrink-0"
+                  className="group relative min-w-0"
                   onDragOver={(event) => {
                     event.preventDefault();
                     setDragOverCategoryId(category.id);
@@ -417,11 +458,12 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                   }}
                   onDrop={(event) => handleDropOnCategory(event, category)}
                 >
+                  {renderCategoryToggle(category)}
                   <Button
                     variant="ghost"
                     onClick={() => handleCategoryClick(category.id)}
                     size="sm"
-                    className={`relative flex min-w-[140px] items-center justify-between rounded-md text-left transition-colors ${
+                    className={`relative flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md pl-7 text-left transition-colors ${
                       isDragTarget
                         ? isUncategorizeHotspot
                           ? 'bg-warning/10 text-warning ring-1 ring-warning/40'
@@ -460,6 +502,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                       {count}
                     </span>
                   </Button>
+                  <ClassificationSidebarChildren categoryId={category.id} onCategorySelect={onCategorySelect} />
                 </div>
               );
             })}
@@ -474,7 +517,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
               className={`linear-sidebar relative overflow-visible transition-all duration-200 ease-out ${
               isSidebarCollapsed
                 ? 'w-14 p-2'
-                : 'w-64 p-4'
+                : 'w-72 p-4'
             }`}
             style={{
               maxHeight: isSidebarCollapsed ? 'calc(100vh - 8rem)' : 'calc(100vh - 8rem)',
@@ -613,6 +656,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                   className={`-mr-4 max-h-[calc(100vh-12rem)] min-w-0 overflow-y-auto category-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}
                 >
                   <div className="space-y-1 pr-3">
+                  <ClassificationSchemeSwitch />
                   {allCategories.map((category, index) => {
                     const count = getCategoryCount(category);
                     const isSelected = selectedCategory === category.id;
@@ -638,12 +682,13 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                         }}
                         onDrop={(event) => handleDropOnCategory(event, category)}
                       >
+                        {renderCategoryToggle(category)}
                         <Button
                           variant="ghost"
                           onClick={() => handleCategoryClick(category.id)}
                           aria-pressed={isSelected}
                           size="sm"
-                          className={`flex h-9 w-full items-center justify-between rounded-md text-left transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out pr-3 ${
+                          className={`flex h-9 w-full items-center justify-between gap-2 rounded-md pl-7 text-left transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out ${category.id === 'all' || category.id === 'pending' ? 'pr-2' : 'pr-16'} ${
                             isDragTarget
                               ? isUncategorizeHotspot
                                 ? 'bg-warning/10 text-warning ring-1 ring-warning/40'
@@ -669,7 +714,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                             </span>
                           </div>
 
-                          {/* 数字 badge - 正常状态显示，hover/focus-within 时隐藏 */}
+                          {/* Counts retain a separate slot from category actions. */}
                           <span
                               className={`ml-auto flex min-w-8 shrink-0 justify-center rounded-md px-2 py-0.5 text-xs transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out ${
                               isDragTarget
@@ -681,15 +726,15 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                                   : isSelected
                                     ? 'bg-primary text-primary-foreground'
                                     : 'bg-muted text-muted-foreground'
-                            } ${showText ? 'opacity-100 scale-100' : 'opacity-0 scale-75'} group-hover:opacity-0 group-focus-within:opacity-0`}
+                            } ${showText ? 'opacity-100 scale-100' : 'opacity-0 scale-75'}`}
                           >
                             {count}
                           </span>
                         </Button>
 
-                        {/* 操作按钮 - 绝对定位，hover/focus-within 时显示，不占位 */}
+                        {/* Actions use the reserved trailing space, without covering counts. */}
                         {category.id !== 'all' && category.id !== 'pending' && (
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
+                          <div className="absolute right-0 top-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
                             <Button
                               variant="ghost"
                               onClick={(e) => {
@@ -734,6 +779,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
                             )}
                           </div>
                         )}
+                        <ClassificationSidebarChildren categoryId={category.id} onCategorySelect={onCategorySelect} />
                       </div>
                     );
                   })}

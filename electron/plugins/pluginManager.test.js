@@ -206,6 +206,49 @@ function createFakeRuntime(events, actionResult = { type: 'text', content: 'ok' 
   };
 }
 
+test('save suggestions require downloads permission and only invoke trusted host output', async t => {
+  const root = createWorkspace(t);
+  const saves = [];
+  for (const [id, permissions] of [['com.example.denied', ['repositories:read']], ['com.example.allowed', ['repositories:read', 'downloads:create']]]) {
+    writePlugin(root, id, validManifest(id, { permissions,
+      contributes: { repositoryActions: [{ id: 'save', title: 'Save', placement: 'bulk-toolbar' }] },
+    }), { 'worker.js': '' });
+  }
+  const manager = createPluginManager({ pluginsRoot: root, statePath: path.join(root, 'state.json'),
+    runtimeFactory: () => createFakeRuntime([], { type: 'text', content: 'export', suggestedAction: 'save' }),
+    hostOperations: { saveFile: async args => { assert.equal(args.isCurrent(), true); saves.push(args.buffer.toString()); } },
+  });
+  assert.equal((await manager.enable('com.example.denied', ['repositories:read'])).success, true);
+  assert.equal((await manager.runAction({ pluginId: 'com.example.denied', actionId: 'save', repositories: [] })).error.code, 'PLUGIN_PERMISSION_DENIED');
+  assert.deepEqual(saves, []);
+  assert.equal((await manager.enable('com.example.allowed', ['repositories:read', 'downloads:create'])).success, true);
+  const saved = await manager.runAction({ pluginId: 'com.example.allowed', actionId: 'save', repositories: [] });
+  assert.equal(saved.result.type, 'notice');
+  assert.deepEqual(saves, ['export']);
+  await manager.shutdown();
+});
+
+test('network page authorization holds main slots until completion and rejects revoked responses', async t => {
+  const root = createWorkspace(t);
+  const manifest = validManifest('com.example.network', { permissions: ['network:api.github.com'],
+    contributes: { pages: [{ id: 'dashboard', title: 'Network', entry: 'ui/index.html' }] } });
+  delete manifest.main;
+  writePlugin(root, 'network', manifest, { 'ui/index.html': '<!doctype html>' });
+  const manager = createPluginManager({ pluginsRoot: root, statePath: path.join(root, 'state.json') });
+  await manager.enable(manifest.id, manifest.permissions);
+  const sessionToken = manager.getPage(manifest.id, 'dashboard').sessionToken;
+  const request = { pluginId: manifest.id, pageId: 'dashboard', sessionToken, method: 'network.request', args: { host: 'api.github.com', path: '/users/a' } };
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => manager.requestPageCapability({ ...request, requestId: String(i) })));
+  assert.ok(results.every(r => r.success && r.value.networkTicket));
+  assert.equal((await manager.requestPageCapability({ ...request, requestId: 'next' })).error.code, 'PLUGIN_PAGE_RATE_LIMITED');
+  const finish = { ...request, requestId: '0', networkTicket: results[0].value.networkTicket };
+  assert.equal((await manager.requestPageCapability(finish)).success, true);
+  assert.equal((await manager.requestPageCapability(finish)).error.code, 'PLUGIN_PAGE_CLOSED');
+  await manager.disable(manifest.id);
+  assert.equal((await manager.requestPageCapability({ ...request, requestId: '1', networkTicket: results[1].value.networkTicket })).success, false);
+  await manager.shutdown();
+});
+
 test('requires exact permission confirmation before enabling and persists lifecycle state', async (t) => {
   const root = createWorkspace(t);
   const statePath = path.join(root, '..', `${path.basename(root)}-state.json`);

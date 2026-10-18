@@ -174,13 +174,39 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
     }
   }, []);
 
+  const scrollRafRef = useRef<number | null>(null);
+  const scrollFrameUsesRafRef = useRef(false);
+
+  // 进度条读取 scrollHeight/clientHeight 会强制布局，用 rAF 合帧避免滚动时反复重排。
   const handleScroll = useCallback(() => {
-    if (!contentRef.current) return;
-    const container = contentRef.current;
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const progress = scrollHeight <= clientHeight ? 0 : (scrollTop / (scrollHeight - clientHeight)) * 100;
-    setScrollProgress(Math.min(100, Math.max(0, progress)));
-    setShowBackToTop(scrollTop > 300);
+    if (scrollRafRef.current !== null) return;
+    const run = () => {
+      scrollRafRef.current = null;
+      if (!contentRef.current) return;
+      const container = contentRef.current;
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const progress = scrollHeight <= clientHeight ? 0 : (scrollTop / (scrollHeight - clientHeight)) * 100;
+      setScrollProgress(Math.min(100, Math.max(0, progress)));
+      setShowBackToTop(scrollTop > 300);
+    };
+    // 记录本次调度用的 API：取消时按同一 API 取消，避免环境变化后错配 id 类型。
+    if (typeof window.requestAnimationFrame === 'function') {
+      scrollFrameUsesRafRef.current = true;
+      scrollRafRef.current = window.requestAnimationFrame(run);
+    } else {
+      scrollFrameUsesRafRef.current = false;
+      scrollRafRef.current = window.setTimeout(run, 16) as unknown as number;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollRafRef.current === null) return;
+    if (scrollFrameUsesRafRef.current) {
+      window.cancelAnimationFrame(scrollRafRef.current);
+    } else {
+      window.clearTimeout(scrollRafRef.current);
+    }
+    scrollRafRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -443,14 +469,14 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({
       <DialogContent
         showClose={false}
         aria-describedby={undefined}
-        className="w-[calc(100%_-_2rem)] max-w-[1130px] min-w-0 overflow-hidden p-0"
+        className="flex h-[calc(100vh_-_2rem)] max-h-[calc(100vh_-_2rem)] w-[calc(100vw_-_2rem)] max-w-none min-w-0 flex-col overflow-hidden p-0"
         onCloseAutoFocus={(event) => {
           if (!onCloseAutoFocus) return;
           event.preventDefault();
           onCloseAutoFocus();
         }}
       >
-        <div className="relative flex max-h-[90vh] min-w-0 max-w-full w-full flex-col overflow-hidden bg-card dark:bg-card">
+        <div className="relative flex min-h-0 min-w-0 max-w-full w-full flex-1 flex-col overflow-hidden bg-card dark:bg-card">
           {readmeContent && !loading && (
             <div className="absolute top-0 left-0 right-0 h-0.5 bg-accent dark:bg-muted z-20 rounded-t-xl overflow-hidden">
               <div

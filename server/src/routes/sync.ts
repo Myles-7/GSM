@@ -1,8 +1,11 @@
 import { Router } from 'express';
+import { ZodError } from 'zod';
 import { getDb } from '../db/connection.js';
 import { encrypt, decrypt } from '../services/crypto.js';
 import { config } from '../config.js';
 import { writeRepositoryOrganization } from '../services/repositoryOrganization.js';
+import { assertLegacyClassificationWrite, CLASSIFICATION_FIELDS, classificationWasUpgraded, ClassificationCompatibilityError, parseClassificationJson, mergeStoredClassificationSchemes } from '../services/classificationCompatibility.js';
+import { assertStoredTechnologyMembershipReferences, ClassificationReferenceError, classificationSchemesSchema } from '../services/classificationValidation.js';
 
 const router = Router();
 
@@ -153,6 +156,13 @@ router.post('/api/sync/import', (req, res) => {
     }
 
     const importAll = db.transaction(() => {
+      const upgraded = classificationWasUpgraded(db);
+      const importSettings = data.settings as Record<string, unknown> | undefined;
+      if (importSettings?.classificationSchemes !== undefined) classificationSchemesSchema.parse(parseClassificationJson(importSettings.classificationSchemes));
+      if (importSettings && CLASSIFICATION_FIELDS.some(key => key in importSettings)) {
+        const previous = Object.fromEntries((db.prepare('SELECT key,value FROM settings').all() as { key: string; value: unknown }[]).map(row => [row.key, row.value]));
+        assertLegacyClassificationWrite(importSettings, previous, upgraded);
+      }
       // Repositories
       const repos = data.repositories as Record<string, unknown>[] | undefined;
       if (Array.isArray(repos) && repos.length > 0) {
@@ -168,6 +178,7 @@ router.post('/api/sync/import', (req, res) => {
         `);
         for (const r of repos) {
           const previous = db.prepare('SELECT * FROM repositories WHERE id = ?').get(r.id) as Record<string, unknown> | undefined;
+          if (previous) assertLegacyClassificationWrite(r, previous, upgraded || !!previous.classifications, !!importSettings?.classificationSchemes);
           // 验证必需的字段
           if (!r.id || typeof r.id !== 'number') {
             throw new Error(`Invalid repository data: missing or invalid id`);
@@ -371,7 +382,8 @@ router.post('/api/sync/import', (req, res) => {
       if (settings && typeof settings === 'object') {
         const settingsStmt = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
         let settingsCount = 0;
-        for (const [key, value] of Object.entries(settings)) {
+        for (const [key, rawValue] of Object.entries(settings)) {
+          const value = key === 'classificationSchemes' ? mergeStoredClassificationSchemes(db, rawValue) : rawValue;
           if (key === 'github_token' && typeof value === 'string' && value.startsWith('***')) {
             continue; // Skip masked token
           }
@@ -384,11 +396,15 @@ router.post('/api/sync/import', (req, res) => {
         }
         counts.settings = settingsCount;
       }
+      assertStoredTechnologyMembershipReferences(db);
     });
 
     importAll();
     res.json({ imported: counts });
   } catch (err) {
+    if (err instanceof ClassificationCompatibilityError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ClassificationReferenceError) { res.status(err.status).json({ error: err.message, code: err.code }); return; }
+    if (err instanceof ZodError) { res.status(400).json({ error: 'Invalid classification snapshot', code: 'INVALID_CLASSIFICATION_SNAPSHOT' }); return; }
     console.error('POST /api/sync/import error:', err);
     res.status(500).json({ error: 'Failed to import data', code: 'IMPORT_DATA_FAILED' });
   }

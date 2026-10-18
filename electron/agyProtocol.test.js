@@ -72,6 +72,12 @@ test('accepts validated structured output without a duplicate text response', ()
   assert.equal(parser.finish(0).text, '{"answer":"中文"}');
 });
 
+test('uses the validated artifact instead of accompanying prose', () => {
+  const parser = new AgyProtocol({ validate: value => value?.results?.length === 1 });
+  parser.push(encode(init, { event: 'result', result: {status:'SUCCESS',response:'Completed the requested plan.',num_turns:1,structured_output:{results:[{id:1}]}} }));
+  assert.equal(parser.finish(0).text,'{"results":[{"id":1}]}');
+});
+
 test('limits output and rejects malformed bytes and JSON', () => {
   assert.throws(() => new AgyProtocol({ maxBytes: 2 }).push(Buffer.from('abc')), /OUTPUT_LIMIT/);
   assert.throws(() => new AgyProtocol().push(Buffer.from([0xff])), /INVALID_UTF8/);

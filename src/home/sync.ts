@@ -70,16 +70,20 @@ export class HomeSync {
   }
   private async snapshot(forIdentityMaintenance = false): Promise<boolean> {
     let snapshotId = ''; let offset = 0; let more = true; let cursor = 0;
-    const rows: HomeRecord[] = [];
+    await this.db.clearSnapshotStage();
+    try {
     while (more) {
       if (this.stopped && !forIdentityMaintenance) return false;
       const page = await this.api.request<Page>(`/sync/v2/snapshot?${this.query}&limit=200&offset=${offset}${snapshotId ? `&snapshotId=${encodeURIComponent(snapshotId)}` : ''}`);
       if (this.stopped && !forIdentityMaintenance) return false;
-      rows.push(...page.records); cursor = page.cursor; snapshotId = page.snapshotId!; offset = page.nextOffset!; more = page.hasMore;
+      if(snapshotId&&snapshotId!==page.snapshotId||snapshotId&&cursor!==page.cursor)throw Error('HOME_SNAPSHOT_BOUNDARY_CHANGED');
+      await this.db.stageSnapshotPage(offset,page.records);
+      cursor = page.cursor; snapshotId = page.snapshotId!; offset = page.nextOffset!; more = page.hasMore;
     }
     // Only publish the complete fixed-boundary snapshot; interrupted downloads leave the old cache intact.
-    await this.db.applyRemote(rows, cursor, true);
+    await this.db.commitSnapshotStage(cursor);
     return true;
+    } finally { await this.db.clearSnapshotStage(); }
   }
   async reloadSnapshotForIdentityMaintenance(): Promise<void> {
     if (await this.db.metadata('inFlight') || (await this.db.pending()).length) throw new Error('IDENTITY_UNCONFIRMED_OPERATIONS');
@@ -88,13 +92,15 @@ export class HomeSync {
   private async perform() {
     if (this.stopped || (typeof navigator !== 'undefined' && navigator.onLine === false)) { this.publish({ status: 'offline' }); return; }
     this.publish({ status: 'syncing', error: undefined });
-    const task = aiTaskJournal.begin(String(this.identity.githubUserId), 'sync', [{ id: 'sync', label: 'Home sync' }], undefined, undefined,
-      { trigger: 'automatic', target: { view: 'settings', tab: 'backend' } });
-    task.item('sync', 'running');
+    let task: ReturnType<typeof aiTaskJournal.begin> | null = null;
+    const ensureTask = () => task ??= aiTaskJournal.begin(String(this.identity.githubUserId), 'sync', [{ id: 'sync', label: 'Home sync' }], undefined, undefined,
+      { trigger: 'automatic', target: { view: 'settings', tab: 'backend' }, phase: 'reconciling' });
+    let changed = false, failed = false;
     try {
       const initialized = await this.db.metadata('initialized');
       if (this.stopped) return;
       if (!initialized && !await this.snapshot()) return;
+      if (!initialized) changed = true;
       let more = true;
       while (more && !this.stopped) {
         const cursor = await this.db.metadata<number>('cursor') ?? 0;
@@ -106,15 +112,25 @@ export class HomeSync {
           throw error;
         }
         if (this.stopped) return;
-        await this.db.applyRemote(page.records, page.cursor); more = page.hasMore;
+        const applied = await this.db.applyRemote(page.records, page.cursor); changed ||= applied > 0; more = page.hasMore;
       }
       // Bound one turn while draining edits made during a request. Immutable in-flight batches
       // survive reload/network loss independently of the editable latest local version.
+      let repaired = false;
       for (let batchIndex = 0; batchIndex < 100 && !this.stopped; batchIndex++) {
-        const { clientId, operations } = await this.db.nextBatch();
+        const batch = await this.db.nextBatch();
+        const { clientId, operations } = batch;
         if (this.stopped) return;
         if (!operations.length) break;
-        const response = await this.api.request<{ results: Array<{ opId: string; status: string; record?: HomeRecord; conflict?: { current: HomeRecord | null; reason?: string } }> }>('/sync/v2/operations', { ...this.identity, clientId, operations });
+        changed = true;
+        let response: { results: Array<{ opId: string; status: string; record?: HomeRecord; conflict?: { current: HomeRecord | null; reason?: string } }> };
+        try { response = await this.api.request('/sync/v2/operations', { ...this.identity, clientId, operations }); }
+        catch (error) {
+          if (!this.stopped && !repaired && error instanceof HomeApiError && await this.db.repairRejectedRepositoryBatch(batch, error)) {
+            repaired = true; continue;
+          }
+          throw error;
+        }
         if (response.results.length !== operations.length || operations.some(op => !response.results.some(item => item.opId === op.opId))) throw new Error('服务器返回不完整的操作确认；稍后将安全重试');
         for (const item of response.results) {
           const sent = operations.find(op => op.opId === item.opId);
@@ -128,16 +144,33 @@ export class HomeSync {
       const remaining = await this.db.pending(); const conflicts = remaining.filter(item => item.conflict !== undefined || item.rejected).length;
       const lastSync = new Date().toISOString(); await this.db.setMetadata('lastSync', lastSync);
       this.failures = 0; this.nextAutomaticSync = 0;
+      await this.db.setMetadata('dataFailureTask', null);
       this.publish({ status: conflicts ? 'conflict' : remaining.length ? 'pending' : 'synced', pending: remaining.length, conflicts, lastSync });
-      task.item('sync', conflicts ? 'failed' : 'complete', conflicts ? `${conflicts} sync conflicts require review` : undefined);
+      if (conflicts || remaining.length || changed) {
+        const currentTask = ensureTask();
+        currentTask.item('sync', conflicts ? 'failed' : 'complete', conflicts ? `${conflicts} sync conflicts require review` : undefined);
+      }
     } catch (error) {
-      task.item('sync', 'failed', error);
+      failed = true;
+      const deterministic = error instanceof HomeApiError && error.status === 400 && error.code === 'PRIVATE_DATA_NOT_SYNCABLE';
+      if (deterministic) await aiTaskJournal.load(String(this.identity.githubUserId));
+      const previousId = deterministic ? await this.db.metadata<string>('dataFailureTask') : undefined;
+      const previous = aiTaskJournal.snapshot().find(record => record.id === previousId && record.owner === String(this.identity.githubUserId)
+        && record.kind === 'sync' && record.state === 'failed' && !record.archived);
+      if (previous) aiTaskJournal.patch(previous.id, { usage: { ...previous.usage, occurrences: (previous.usage?.occurrences ?? 1) + 1 }, endedAt: new Date().toISOString() });
+      else {
+        const currentTask = ensureTask();
+        currentTask.metadata({ failureCode: deterministic ? error.code : 'HOME_SYNC_FAILED' });
+        currentTask.item('sync', 'failed', error);
+        if (deterministic) await this.db.setMetadata('dataFailureTask', currentTask.id);
+      }
       const unauthorized = error instanceof HomeApiError && [401, 403].includes(error.status);
       this.failures += 1;
       this.nextAutomaticSync = unauthorized ? Infinity : Date.now() + Math.min(300_000, 15_000 * 2 ** Math.min(this.failures - 1, 5));
       this.publish({ status: unauthorized ? 'auth-required' : error instanceof TypeError ? 'offline' : 'error', error: error instanceof Error ? error.message : '同步失败' });
     } finally {
-      task.finish(this.stopped ? 'interrupted' : undefined);
+      if (task) task.finish(this.stopped ? 'interrupted' : undefined);
+      if (!this.stopped) aiTaskJournal.noteActivity(String(this.identity.githubUserId), { changed, failed: failed || this.view.status === 'conflict', noChange: !changed && !failed && this.view.status === 'synced', lastError: this.view.error });
     }
   }
 }

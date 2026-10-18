@@ -7,6 +7,7 @@ import type { ThemeTokens } from '../types/themeTokens';
 import type { RepositoryCardFields } from '../types/repositoryCardFields';
 import type { ThemePresetId } from '../constants/themePresets';
 import { validateCustomCategorySnapshot } from '../store/helpers/repositoryOrganization';
+import { classificationSchemesSchema } from './classificationSchema';
 export interface BackupIdentity { githubUserId: string | null; workspaceId: string | null }
 export interface LocalBackup {
   version: string;
@@ -20,6 +21,7 @@ export interface LocalBackup {
     aiConfigs?: AIConfig[];
     webdavConfigs?: WebDAVConfig[];
     customCategories?: Category[];
+    classificationSchemes?: import('../types/classification').ClassificationSchemes;
     subcategories?: RepositorySubcategory[];
     subcategoryOrder?: string[];
     repositoryOrder?: number[];
@@ -54,6 +56,7 @@ export interface LocalBackup {
     rpcDownloadConfig?: RpcDownloadConfig;
     backendApiSecret?: string | null;
     includeKeysInBackup?: boolean;
+    routeMode?: 'auto' | 'backend' | 'browser';
   };
 }
 
@@ -62,6 +65,7 @@ const object = z.record(z.string(), z.unknown());
 const idList = z.array(z.number().int().positive().safe());
 const strings = z.array(z.string());
 const dataSchema = z.object({
+  classificationSchemes: classificationSchemesSchema.optional(),
   repositories: z.array(z.object({ id: z.number().int().positive().safe(), full_name: z.string().regex(/^[^/\\\s]+\/[^/\\\s]+$/) }).passthrough()).optional(),
   releases: z.array(object).optional(), aiConfigs: z.array(object).optional(), webdavConfigs: z.array(object).optional(),
   customCategories: z.array(object).optional(), subcategories: z.array(z.object({ id: z.string().min(1), parentId: z.string().min(1), name: z.string().min(1), icon: z.string() })).optional(),
@@ -73,6 +77,7 @@ const dataSchema = z.object({
   releaseViewMode: z.enum(['timeline', 'repository']).optional(), releaseSelectedFilters: strings.optional(),
   releaseSearchQuery: z.string().optional(), releaseExpandedRepositories: idList.optional(),
   releaseSubscriptions: idList.optional(), readReleases: idList.optional(), includeKeysInBackup: z.boolean().optional(),
+  routeMode: z.enum(['auto', 'backend', 'browser']).optional(),
   assetFilters: z.array(object).optional(), subscriptionChannels: z.array(object).optional(),
   discoveryRepos: object.optional(), discoveryTotalCount: object.optional(), discoveryHasMore: object.optional(), discoveryNextPage: object.optional(),
   discoveryWorkspace: object.optional(), subscriptionRepos: object.optional(), subscriptionLastRefresh: object.optional(),
@@ -80,7 +85,7 @@ const dataSchema = z.object({
 }).passthrough();
 
 export const SAFE_BACKUP_TYPES = ['repositories', 'customCategories', 'uiSettings'] as const;
-export const ORGANIZATION_BACKUP_KEYS = ['customCategories', 'hiddenDefaultCategoryIds', 'defaultCategoryOverrides', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder'] as const;
+export const ORGANIZATION_BACKUP_KEYS = ['classificationSchemes', 'customCategories', 'hiddenDefaultCategoryIds', 'defaultCategoryOverrides', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder'] as const;
 export const PREFERENCE_BACKUP_KEYS = ['theme', 'themePreset', 'themeTokens', 'repositoryCardFields', 'repositoryViewMode', 'language', 'isSidebarCollapsed', 'releaseViewMode', 'releaseSelectedFilters', 'releaseSearchQuery', 'releaseExpandedRepositories'] as const;
 const aliases: Record<string, string> = { discoveryWorkspace: 'discoveryRepos', discoveryTotalCount: 'discoveryRepos', discoveryHasMore: 'discoveryRepos', discoveryNextPage: 'discoveryRepos', subscriptionChannels: 'subscriptionRepos', subscriptionLastRefresh: 'subscriptionRepos', releaseSourceSettings: 'releaseSubscriptions', readReleases: 'releaseSubscriptions' };
 export function localBackupTypes(data: LocalBackup['data']): string[] {

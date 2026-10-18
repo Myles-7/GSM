@@ -10,7 +10,7 @@ export type McpSnapshotState = Pick<
   | 'vectorSearchConfig'
   | 'embeddingConfigs'
   | 'activeEmbeddingConfig'
->;
+> & { user?: AppState['user'] };
 
 export function buildMcpDataSnapshot(
   state: McpSnapshotState,
@@ -22,6 +22,7 @@ export function buildMcpDataSnapshot(
     null;
 
   return {
+    ownerId: String(state.user?.id ?? ''),
     repositories: state.repositories,
     customCategories: state.customCategories,
     releases: state.releases,

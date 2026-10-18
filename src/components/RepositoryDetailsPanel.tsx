@@ -6,6 +6,7 @@ import { useT } from '../i18n/useT';
 import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
 import { RepositoryHealthPanel } from './RepositoryHealthPanel';
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
+import { RepositoryDetailRecovery } from './RepositoryDetailRecovery';
 import { useRepositoryDetailAnalysisJob } from '../features/repositories/hooks/useRepositoryDetailAnalysisJob';
 import { isRepeatedRepositoryProblem, repositoryDetailFields } from '../lib/repositoryReadingPresentation';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
@@ -138,6 +139,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
         <Button variant="outline" size="sm" asChild><a href={`${repository.html_url}/releases`} target="_blank" rel="noopener noreferrer"><ExternalLink className="mr-1.5 h-3.5 w-3.5" />Releases</a></Button>
       </div>
       {analysisAction ? analysisAction(repository) : <RepositoryDetailAnalysisAction repositories={[repository]} job={job} />}
+      {account !== undefined && <RepositoryDetailRecovery repository={repository} accountId={account} language={language} running={analyzing} repair={job.repair} retrySave={job.retrySave} />}
     </div>
     <div ref={scroller} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4" onScroll={(event) => scrollPositions.current.set(repository.id, event.currentTarget.scrollTop)}>
       <TabsContent value={detailTab} className="space-y-5">
@@ -147,6 +149,9 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
         <p className="whitespace-pre-wrap break-words text-sm">{summary}</p>
       </section>}
       {copyFailed && <p role="alert" className="text-sm text-destructive">{t('details.copyFailed')}</p>}
+      {!!details?.adjustments?.length && <p role="status" className="text-xs text-muted-foreground">{language.startsWith('zh')
+        ? '部分列表已在本机去重并截取到上限，未重新调用模型。'
+        : 'Some lists were deduplicated and limited locally without another model call.'} {details.adjustments.map(item => `${item.field}: ${item.originalCount} → ${item.retainedCount}`).join(' · ')}</p>}
       {analyzing && !details && <div role="status" aria-busy="true" className="space-y-3">
         <p className="text-xs text-muted-foreground">{stage === 'readme' ? 'README' : stage === 'validation' ? (language.startsWith('zh') ? '校验分析结果' : 'Validating analysis') : (language.startsWith('zh') ? 'AI 分析中' : 'AI analyzing')}</p>
         {[0, 1, 2].map(i => <div key={i} className="space-y-2"><div className="h-4 w-1/3 animate-pulse rounded bg-muted" /><div className="h-3 w-full animate-pulse rounded bg-muted" /><div className="h-3 w-4/5 animate-pulse rounded bg-muted" /></div>)}

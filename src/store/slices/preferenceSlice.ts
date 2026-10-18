@@ -3,6 +3,7 @@ import type { AppStoreSlice } from '../types';
 import { REQUIRED_HEADER_MENU_IDS } from '../schema';
 import { normalizeThemeTokens } from '../../utils/themeTokens';
 import { normalizeRepositoryCardFields } from '../../utils/repositoryCardFields';
+import { blockReadingNavigation } from '../../components/reading/readingNavigation';
 
 export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setTheme'
@@ -36,7 +37,7 @@ export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppAct
   | 'setReleaseIsRefreshing'
   | 'setIncludePreRelease'
   | 'setIncludeKeysInBackup'
->> = (set) => ({
+>> = (set, get) => ({
       // UI actions
       setTheme: (theme) => set({ theme }),
       setThemePreset: (themePreset) => set({ themePreset }),
@@ -45,7 +46,9 @@ export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppAct
       updateThemeTokens: (patch) => set((state) => ({
         themeTokens: normalizeThemeTokens({ ...state.themeTokens, ...patch }),
       })),
-      setCurrentView: (currentView) => set({ currentView }),
+      setCurrentView: (currentView) => {
+        if (!blockReadingNavigation(get().currentView, currentView)) set({ currentView });
+      },
       setSelectedCategory: (selectedCategory) => set({ selectedCategory }),
       setLanguage: (language) => set({ language }),
       setPageTranslationEnabled: (pageTranslationEnabled) => set({ pageTranslationEnabled }),

@@ -5,7 +5,8 @@ import { readingAccount, readingCatalog, generatePreparedReadingSnapshot, downlo
 import { defaultSettings, parseReadingReturn, settingsSchema, type ReadingReturn, type ReadingSettings, type ReadingSnapshot, snapshotItems } from '../../../lib/html-reading/model';
 import { applyReadingReturn, inspectReadingReturn, inspectReadingPositions, loadReadingData, readingTransaction, saveReadingSettings, type ImportRow, type ImportPositionRow, type ReadingData } from '../../../lib/html-reading/storage';
 import type { MailStatus } from '../../../lib/html-reading/desktopApi';
-import { createGitHubApiService } from '../../../services/githubApiFactory';
+import { useReadingCandidates } from './useReadingCandidates';
+import { useReadingProjects } from './useReadingProjects';
 import { previewReadingReturnBatch, applyReadingReturnBatch, type ReadingBatchPreview } from '../../../lib/html-reading/batch';
 import { readingCacheStatistics } from '../../../lib/html-reading/cacheManagement';
 
@@ -31,6 +32,8 @@ export function useHtmlReading() {
   const [batch,setBatch]=useState<ReadingBatchPreview|null>(null);
   const [batchChoices,setBatchChoices]=useState<Record<string,string>>({});
   const [fileErrors,setFileErrors]=useState<Array<{name:string;error:string}>>([]);
+  const [lastImportId,setLastImportId]=useState('');
+  const [lastImportSummary,setLastImportSummary]=useState<{applied:number;duplicate:number;kept:number;positionApplied:number;positionStale:number;positionDuplicate:number;unchanged?:number;candidates:number;projects:number}|null>(null);
   const [cacheStats,setCacheStats]=useState({entries:0,bytes:0});
   const [sizeDiagnostic,setSizeDiagnostic]=useState<ReadingSizeError['diagnostic']|undefined>();
   const activeAccount=useRef(account);activeAccount.current=account;
@@ -46,9 +49,28 @@ export function useHtmlReading() {
   const [preview,setPreview]=useState<{html:string;bytes:number;count:number;uniqueCount?:number;sections?:Array<{id:string;title:string;count:number;target?:number;available?:number;warning?:string}>}|null>(null);
   const [incoming,setIncoming]=useState<ReadingReturn|null>(null);const [importRows,setImportRows]=useState<ImportRow[]>([]);const [positionRows,setPositionRows]=useState<ImportPositionRow[]>([]);const [choices,setChoices]=useState<Record<string,'phone'|'desktop'>>({});
   const reload=useCallback(async()=>{if(!account)return;const [reading,available,status]=await Promise.all([loadReadingData(account,{includeSnapshots:false}),readingCatalog(),window.electronAPI?.htmlReading?.status()??{}]);if(readingAccount()!==account)return;setData(reading);setCatalog(available);setMail(status);if(loadedAccount!==account){setSettings(reading.settings);setSaved(reading.settings);setLoadedAccount(account);}},[account,loadedAccount]);
+  const candidates=useReadingCandidates(account,reload);
+  const projects=useReadingProjects(account,reload);
+  useEffect(()=>{setLastImportId('');setLastImportSummary(null);},[account]);
   useEffect(()=>{let alive=true;setLoadedAccount('');setData(null);setMail({});setCatalog({categories:[],channels:[]});setIncoming(null);setImportRows([]);setPositionRows([]);setPreview(null);setGenerationReport(null);setError('');setBatch(null);setBatchChoices({});setFileErrors([]);setReportSettings('');setSizeDiagnostic(undefined);if(account)void Promise.all([loadReadingData(account,{includeSnapshots:false}),readingCatalog(),window.electronAPI?.htmlReading?.status()??{}]).then(([reading,available,status])=>{if(alive){setSettings(reading.settings);setSaved(reading.settings);setData(reading);setCatalog(available);setMail(status);setLoadedAccount(account);}}).catch(()=>{if(alive)setError('读取设置失败，请重试。');});return()=>{alive=false;};},[account]);
-  const run=async(fn:()=>Promise<void>)=>{if(running.current)return;running.current=true;setBusy(true);setError('');setMessage('');setSizeDiagnostic(undefined);try{await fn();}catch(e){if(activeAccount.current===account){if(e instanceof ReadingSizeError)setSizeDiagnostic(e.diagnostic);setError(e instanceof ZodError?'填写内容的范围或格式不正确，请检查标题、数量、日期及回传格式。':e instanceof Error?e.message:'操作失败');}}finally{running.current=false;setBusy(false);setProgress('');}};
-  const persistSettings=async(next:ReadingSettings)=>{await saveReadingSettings(account,next);if(readingAccount()!==account)throw Error('账户已变化');setSaved(next);const result=await window.electronAPI?.htmlReading?.configure({accountId:account,enabled:next.scheduleEnabled,time:next.sendTime,retryMode:next.retryMode,artifactRetentionDays:next.artifactRetentionDays});if(result?.success===false)throw Error(result.error);};
+  const run=async(fn:()=>Promise<void>)=>{if(running.current)return false;let success=false;running.current=true;setBusy(true);setError('');setMessage('');setSizeDiagnostic(undefined);try{await fn();success=true;}catch(e){if(activeAccount.current===account){if(e instanceof ReadingSizeError)setSizeDiagnostic(e.diagnostic);setError(e instanceof ZodError?'填写内容的范围或格式不正确，请检查标题、数量、日期及回传格式。':e instanceof Error?e.message:'操作失败');}}finally{running.current=false;setBusy(false);setProgress('');}return success;};
+  const persistSettings=async(next:ReadingSettings)=>{
+    const previous=(await loadReadingData(account,{includeSnapshots:false})).settings;
+    if(readingAccount()!==account)throw Error('账户已变化');
+    await saveReadingSettings(account,next);
+    try {
+      if(readingAccount()!==account)throw Error('账户已变化');
+      const result=await window.electronAPI?.htmlReading?.configure({accountId:account,enabled:next.scheduleEnabled,time:next.sendTime,retryMode:next.retryMode,artifactRetentionDays:next.artifactRetentionDays});
+      if(result?.success===false)throw Error(result.error || '定时服务配置未保存，请重试。');
+      if(readingAccount()!==account)throw Error('账户已变化');
+      setSaved(next);
+    } catch(cause) {
+      // The scheduler reads these settings from disk. A rejected save must not
+      // make the form draft become the configuration used by automatic mail.
+      await saveReadingSettings(account,previous);
+      throw cause;
+    }
+  };
   const save=()=>run(async()=>{const next=settingsSchema.parse(settings);if(!next.repositories&&!next.discovery)throw Error('至少开启一个阅读页面。');await persistSettings(next);setMessage('设置已保存；定时邮件将使用已保存配置。');});
   const generate=(mode:'preview'|'export'|'send',forceRefresh=false,configuration:'current'|'saved'|'save'='current')=>run(async()=>{
     const current=settingsSchema.parse(configuration==='saved'?saved:settings);
@@ -89,30 +111,13 @@ export function useHtmlReading() {
     if(errors.length){setMessage('存在无效文件；请移除后重新预览，本次未修改资料。');return;}
     const result=await previewReadingReturnBatch(account,parsed);if(readingAccount()!==account)throw Error('账户已变化，请重新预览。');setBatch(result);setMessage(`已校验 ${files.length} 份独立回传文件，请检查汇总与冲突。`);inspected=true;
   });return inspected;};
-  const applyBatch=()=>run(async()=>{if(!batch||fileErrors.length)throw Error('请先完成文件校验。');if(readingAccount()!==account)throw Error('账户已变化');const result=await applyReadingReturnBatch(account,batch,batchChoices);setBatch(null);setBatchChoices({});await reload();setMessage(`已应用 ${result.applied} 项，重复 ${result.duplicate} 项，保留电脑或未选修改 ${result.kept} 项；位置保存 ${result.positionApplied} 项、过期 ${result.positionStale} 项、重复 ${result.positionDuplicate} 项。收藏候选未执行 Star。`);});
+  const applyBatch=()=>run(async()=>{if(!batch||fileErrors.length)throw Error('请先完成文件校验。');if(readingAccount()!==account)throw Error('账户已变化');const result=await applyReadingReturnBatch(account,batch,batchChoices);if(result.importId)setLastImportId(result.importId);setLastImportSummary({...result,candidates:batch.rows.filter(row=>row.field==='candidate'&&row.status!=='duplicate'&&batchChoices[row.key]!=='desktop'&&row.sources.some(source=>source.op.value===true&&(row.status!=='conflict'||source.op.id===batchChoices[row.key]))).length,projects:new Set(batch.rows.map(row=>row.repoId)).size});setBatch(null);setBatchChoices({});await reload();await candidates.refresh();await projects.refresh();setMessage(`已应用 ${result.applied} 项，重复 ${result.duplicate} 项，保留电脑或未选修改 ${result.kept} 项；位置保存 ${result.positionApplied} 项、过期 ${result.positionStale} 项、重复 ${result.positionDuplicate} 项。收藏候选未执行 Star。`);});
   const saveMail=(from:string,to:string,password:string)=>run(async()=>{const api=window.electronAPI?.htmlReading;if(!api)throw Error('请在更新后的桌面程序中配置邮箱。');const result=await api.saveMail({accountId:account,from,to,password});if(result.success===false)throw Error(result.error);setMail(result);setMessage('邮箱授权已加密保存在本机，不进入 HTML 或业务同步。');});
   const verifyMail=()=>run(async()=>{const result=await window.electronAPI?.htmlReading?.verify(account);if(!result?.success)throw Error(result?.error??'请在桌面程序中测试连接。');setMessage('Gmail SMTP 认证通过；尚未发送邮件。');});
   const clearMail=()=>run(async()=>{const result=await window.electronAPI?.htmlReading?.clearMail();if(result?.success===false)throw Error(result.error);setMail(result??{});setMessage('邮箱授权已清除，定时发送暂停。');});
-  const inspect=(text:string)=>run(async()=>{setIncoming(null);setImportRows([]);setPositionRows([]);setChoices({});const parsed=parseReadingReturn(text);const current=await loadReadingData(account,{snapshotIds:[parsed.snapshotId]});if(readingAccount()!==account)throw Error('账户已变化，请重新预览。');const rows=inspectReadingReturn(current,account,parsed);const positions=inspectReadingPositions(current,account,parsed);setIncoming(parsed);setImportRows(rows);setPositionRows(positions);setMessage(`识别 ${rows.length} 项操作${positions.length?`、${positions.length} 项继续阅读位置`:''}，确认预览后再导入。`);});
-  const apply=()=>run(async()=>{if(!incoming)throw Error('请先预览回传内容。');if(readingAccount()!==account)throw Error('账户已变化，请重新预览。');const result=await applyReadingReturn(account,incoming,choices,importRows,positionRows);setIncoming(null);setImportRows([]);setPositionRows([]);await reload();const positionMessage='positionApplied'in result?`继续阅读位置已保存 ${result.positionApplied} 项，过期跳过 ${result.positionStale} 项，重复 ${result.positionDuplicate} 项。`:'';setMessage(`已应用 ${result.applied} 项，重复跳过 ${result.duplicate} 项，保留桌面 ${result.kept} 项。${positionMessage}收藏候选尚未执行 Star。`);});
-  const setLocal=(repoId:string,field:'read'|'interest'|'note'|'candidate',value:string|boolean)=>run(async()=>{await readingTransaction(account,current=>{const state=current.states[repoId];if(state)Object.assign(state,{[field]:value});});await reload();setMessage('阅读记录已保存。');});
-  const star=(repoId:string)=>run(async()=>{
-    const state=useAppStore.getState();const name=data?.names[repoId];
-    if(!name||!state.githubToken)throw Error('找不到项目或 GitHub 凭据。');
-    if(!window.confirm(`确认使用当前 GitHub 账户 Star ${name}？`))return;
-    const api=createGitHubApiService(state.githubToken);const coordinates=name.split('/') as [string,string];
-    const repo=await api.getRepository(...coordinates);
-    if(String(repo.id)!==repoId)throw Error('项目标识已变化，请先在 GitHub 核对来源。');
-    if(readingAccount()!==account)throw Error('账户已变化');
-    await api.starRepository(...coordinates);
-    if(readingAccount()!==account)throw Error('账户已变化，请检查原账户的收藏状态。');
-    const current=useAppStore.getState();
-    if(!current.repositories.some(item=>item.id===repo.id)) {
-      const known=Object.values(current.discoveryRepos).flat().find(item=>item.id===repo.id);
-      current.addRepository({...repo,...(known?.ai_summary?{ai_summary:known.ai_summary}:{}),...(known?.ai_details?{ai_details:known.ai_details}:{}),...(known?.ai_tags?{ai_tags:known.ai_tags}:{})});
-    }
-    await readingTransaction(account,current=>{if(current.states[repoId])current.states[repoId].candidate=false;});
-    await reload();setMessage(`已 Star ${name}。`);
-  });
-  return{account,ready:loadedAccount===account,settings,setSettings,saved,data,catalog,mail,busy,progress,generationReport,reportStale:!!generationReport&&reportSettings!==JSON.stringify(settings),canCancel:busy&&!!generation.current,cancelGeneration,error,message,preview,setPreview,retryLoad:()=>run(async()=>{await reload();}),save,generate,saveMail,verifyMail,clearMail,reload,inspect,incoming,importRows,positionRows,choices,setChoices,apply,setLocal,star,resend,cleanup,batch,batchChoices,setBatchChoices,fileErrors,inspectFiles,applyBatch,cacheStats,clearCache,sizeDiagnostic};
+  const inspect=(text:string)=>run(async()=>{setBatch(null);setBatchChoices({});setFileErrors([]);setIncoming(null);setImportRows([]);setPositionRows([]);setChoices({});const parsed=parseReadingReturn(text);const current=await loadReadingData(account,{snapshotIds:[parsed.snapshotId]});if(readingAccount()!==account)throw Error('账户已变化，请重新预览。');const rows=inspectReadingReturn(current,account,parsed);const positions=inspectReadingPositions(current,account,parsed);setIncoming(parsed);setImportRows(rows);setPositionRows(positions);setMessage(`识别 ${rows.length} 项操作${positions.length?`、${positions.length} 项继续阅读位置`:''}，确认预览后再导入。`);});
+  const apply=()=>run(async()=>{if(!incoming)throw Error('请先预览回传内容。');if(readingAccount()!==account)throw Error('账户已变化，请重新预览。');const result=await applyReadingReturn(account,incoming,choices,importRows,positionRows);if(result.importId)setLastImportId(result.importId);setLastImportSummary({...result,positionApplied:'positionApplied'in result?result.positionApplied:0,positionStale:'positionStale'in result?result.positionStale:0,positionDuplicate:'positionDuplicate'in result?result.positionDuplicate:0,candidates:importRows.filter(row=>row.op.field==='candidate'&&row.op.value===true&&row.status!=='duplicate'&&(row.status!=='conflict'||choices[row.op.id]==='phone')).length,projects:new Set(importRows.map(row=>row.op.repoId)).size});setIncoming(null);setImportRows([]);setPositionRows([]);await reload();await candidates.refresh();await projects.refresh();const positionMessage='positionApplied'in result?`继续阅读位置已保存 ${result.positionApplied} 项，过期跳过 ${result.positionStale} 项，重复 ${result.positionDuplicate} 项。`:'';setMessage(`已应用 ${result.applied} 项，重复跳过 ${result.duplicate} 项，保留桌面 ${result.kept} 项。${positionMessage}收藏候选尚未执行 Star。`);});
+  const setLocal=async(repoId:string,field:'read'|'interest'|'note'|'candidate',value:string|boolean)=>{let success=false;await run(async()=>{await readingTransaction(account,current=>{if(readingAccount()!==account)throw Error('账户已变化');const state=current.states[repoId];if(state)Object.assign(state,{[field]:value});});await reload();await candidates.refresh();await projects.refresh();setMessage('阅读记录已保存。');success=true;});return success;};
+  const star=async(repoId:string)=>{if(window.confirm(`确认使用当前 GitHub 账户 Star ${data?.names[repoId]??repoId}？`))await candidates.start([repoId]);};
+  return{account,ready:loadedAccount===account,settings,setSettings,saved,data,catalog,mail,busy,progress,generationReport,reportStale:!!generationReport&&reportSettings!==JSON.stringify(settings),canCancel:busy&&!!generation.current,cancelGeneration,error,message,preview,setPreview,retryLoad:()=>run(async()=>{await reload();}),save,generate,saveMail,verifyMail,clearMail,reload,inspect,incoming,importRows,positionRows,choices,setChoices,apply,setLocal,star,resend,cleanup,batch,batchChoices,setBatchChoices,fileErrors,inspectFiles,applyBatch,cacheStats,clearCache,sizeDiagnostic,candidates,projects,lastImportId,lastImportSummary};
 }

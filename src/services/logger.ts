@@ -2,7 +2,7 @@
  * Frontend Logger — ring-buffer in-memory, write-time sanitization, console forwarding.
  */
 
-import { sanitizeForLog, sanitizeError } from '../utils/logSanitizer';
+import { sanitizeForLog, sanitizeError, sanitizeDiagnosticData } from '../utils/logSanitizer';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -13,7 +13,8 @@ export interface LogEntry {
   module: string;
   message: string;
   data?: unknown;
-  source: 'frontend';
+  source: 'frontend' | 'backend' | 'main' | 'plugins';
+  repeatCount?: number;
 }
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
@@ -33,7 +34,7 @@ class Logger {
 
     // Sanitize at write time — buffer never contains secrets
     const sanitizedMessage = typeof message === 'string' ? sanitizeForLog(message) as string : String(message);
-    const sanitizedData = data !== undefined ? sanitizeForLog(data) : undefined;
+    const sanitizedData = data !== undefined ? sanitizeDiagnosticData(data) : undefined;
 
     const entry: LogEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

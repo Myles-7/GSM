@@ -7,28 +7,15 @@
  * 原因，好的照常返回。字段与取值域与 `registry/schemas/*.schema.json` 保持一致。
  */
 
-const PLUGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,126}[A-Za-z0-9]$/;
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const PLUGIN_ID_RE = /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/;
+const SEMVER_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const HOST_RE = /^[a-z0-9.-]+$/;
+const { BASE_PERMISSIONS: PLUGIN_PERMISSIONS, validatePermission, isNetworkHost } = require('./permissionPolicy');
 const SUPPORTED_API_VERSIONS = new Set(['1']);
 
 /** 与 manifestSchema 的权限枚举保持一致；注册表里出现未知权限就拒绝该条。 */
-const PLUGIN_PERMISSIONS = new Set([
-  'repositories:read',
-  'repositories:write',
-  'privateRepositories:read',
-  'releases:read',
-  'gists:read',
-  'storage',
-  'clipboard:write',
-  'external:open',
-  'ai:invoke',
-  'web:search',
-  'downloads:create',
-  'network:fetch',
-]);
+
 
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -46,6 +33,10 @@ const isHttpsGitHubUrl = (value) => {
  * 校验一条插件注册记录。
  * @returns {{ ok: true, value: object } | { ok: false, code: string, message: string }}
  */
+function validDate(value) {
+  return typeof value === 'string' && DATE_RE.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+}
+
 function validateRegistryEntry(value) {
   if (!isPlainObject(value)) return { ok: false, code: 'REGISTRY_ENTRY_INVALID', message: 'Entry is not an object' };
 
@@ -58,27 +49,37 @@ function validateRegistryEntry(value) {
   if (typeof value.apiVersion !== 'string' || !SUPPORTED_API_VERSIONS.has(value.apiVersion)) {
     return { ok: false, code: 'REGISTRY_API_VERSION_UNSUPPORTED', message: "Field 'apiVersion' is not supported" };
   }
-  if (!isHttpsGitHubUrl(value.source)) {
+  if (!isHttpsGitHubUrl(value.source) || !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/?$/.test(value.source)) {
     return { ok: false, code: 'REGISTRY_SOURCE_INVALID', message: "Field 'source' must be an https github.com URL" };
   }
-  if (!isHttpsGitHubUrl(value.releaseUrl)) {
+  if (!isHttpsGitHubUrl(value.releaseUrl) || !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/releases\/download\/[^/?#]+\/[^/?#]+$/.test(value.releaseUrl)) {
     return { ok: false, code: 'REGISTRY_RELEASE_URL_INVALID', message: "Field 'releaseUrl' must be an https github.com URL" };
   }
   if (typeof value.sha256 !== 'string' || !SHA256_RE.test(value.sha256)) {
     return { ok: false, code: 'REGISTRY_SHA256_INVALID', message: "Field 'sha256' must be a lowercase hex digest" };
   }
-  if (!Array.isArray(value.permissions) || !value.permissions.every((permission) => PLUGIN_PERMISSIONS.has(permission))) {
+  if (!Array.isArray(value.permissions) || !value.permissions.every((permission) => validatePermission(permission))) {
     return { ok: false, code: 'REGISTRY_PERMISSIONS_INVALID', message: "Field 'permissions' contains an unknown permission" };
   }
-  if (!Array.isArray(value.networkTargets) || !value.networkTargets.every((host) => typeof host === 'string' && HOST_RE.test(host))) {
+  if (!Array.isArray(value.networkTargets) || !value.networkTargets.every((host) => isNetworkHost(host))) {
     return { ok: false, code: 'REGISTRY_NETWORK_TARGETS_INVALID', message: "Field 'networkTargets' contains an invalid host" };
+  }
+  const declared = value.networkTargets;
+  const targets = value.permissions.filter(p => p.startsWith('network:')).map(p => p.slice(8));
+  if (new Set(value.permissions).size !== value.permissions.length || new Set(declared).size !== declared.length ||
+    targets.length !== declared.length || targets.some(host => !declared.includes(host))) {
+    return { ok: false, code: 'REGISTRY_NETWORK_TARGETS_INVALID', message: 'Network targets must match unique network permissions' };
+  }
+  if (Object.keys(value).some(key => !['id', 'version', 'apiVersion', 'source', 'releaseUrl', 'sha256', 'permissions', 'networkTargets', 'dataUsage', 'review'].includes(key))) {
+    return { ok: false, code: 'REGISTRY_ENTRY_INVALID', message: 'Unknown registry field' };
   }
   if (typeof value.dataUsage !== 'string' || value.dataUsage.trim().length < 10) {
     return { ok: false, code: 'REGISTRY_DATA_USAGE_INVALID', message: "Field 'dataUsage' must explain what leaves the device" };
   }
   if (!isPlainObject(value.review)
+    || Object.keys(value.review).some(key => !['status', 'date', 'commit'].includes(key))
     || value.review.status !== 'approved'
-    || typeof value.review.date !== 'string' || !DATE_RE.test(value.review.date)
+    || typeof value.review.date !== 'string' || !validDate(value.review.date)
     || typeof value.review.commit !== 'string' || !/^[0-9a-f]{40}$/.test(value.review.commit)) {
     return { ok: false, code: 'REGISTRY_REVIEW_INVALID', message: "Field 'review' must record an approved review with date and commit" };
   }

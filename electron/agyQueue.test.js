@@ -1,7 +1,94 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { AgyQueue } = require('./agyQueue');
+
+test('cancellation racing a validated result still holds suspect capacity until the child exits', async () => {
+  const queue = new AgyQueue(1); let deliver, close;
+  const cleanupSettled = new Promise(resolve => { close = resolve; });
+  const first = queue.run('a', 'canceled-artifact', () => new Promise(resolve => { deliver = resolve; }));
+  queue.cancel('a', 'canceled-artifact');
+  deliver({ text: 'late', cleanupSettled });
+  await assert.rejects(first, { code: 'CANCELED' });
+  assert.equal(queue.state().effective, 0);
+  let started = false;
+  const next = queue.run('a', 'next-artifact', async () => { started = true; return 'ok'; }, { maxQueued: 1 });
+  assert.equal(started, false); close(); assert.equal(await next, 'ok'); await queue.shutdown();
+});
+
+test('background fills actual spare capacity even while a foreground feature is capped', async () => {
+  const queue = new AgyQueue(3); queue.configure(3, { details: 1 });
+  let release; const order = [];
+  const first = queue.run('a', 'manual-one', () => new Promise(resolve => { release = resolve; }), { feature: 'details', priority: 'interactive' });
+  const pending = queue.run('a', 'manual-two', async () => order.push('manual'), { feature: 'details', priority: 'interactive', maxQueued: 3 });
+  await queue.run('a', 'auto', async () => order.push('auto'), { feature: 'discovery', maxQueued: 3 });
+  assert.deepEqual(order, ['auto']); release(); await Promise.all([first, pending]);
+  assert.deepEqual(order, ['auto', 'manual']); await queue.shutdown();
+});
+
+test('round robins three foreground producers without starving the last batch', async () => {
+  const queue = new AgyQueue(1); let release;
+  const active = queue.run('a', 'active', () => new Promise(resolve => { release = resolve; }));
+  const order = [], pending = [];
+  for (const producer of ['one', 'two', 'three']) for (let i = 0; i < 3; i++) {
+    pending.push(queue.run('a', `${producer}-${i}`, async () => order.push(producer), { maxQueued: 20, priority: 'interactive', producer }));
+  }
+  release(); await Promise.all([active, ...pending]);
+  assert.deepEqual(order, ['one', 'two', 'three', 'one', 'two', 'three', 'one', 'two', 'three']);
+  assert.equal(queue.producerTurns.size, 0); await queue.shutdown();
+});
+
+test('limits organization backlog separately from other features', async () => {
+  const queue = new AgyQueue(1); let release;
+  const first = queue.run('a', 'active-org', () => new Promise(resolve => { release = resolve; }), { feature: 'organization' });
+  const second = queue.run('a', 'waiting-org', async () => 'ok', { feature: 'organization', maxQueued: 10, maxFeatureQueued: 1 });
+  await assert.rejects(queue.run('a', 'excess-org', async () => assert.fail('must not start'), { feature: 'organization', maxQueued: 10, maxFeatureQueued: 1 }), { code: 'BUSY' });
+  const chat = queue.run('b', 'chat', async () => 'chat', { feature: 'repository-chat', maxQueued: 10 });
+  release(); await Promise.all([first, second, chat]); await queue.shutdown();
+});
+
+test('holds suspect capacity until the exact child exits, then automatically drains', async () => {
+  const queue = new AgyQueue(1); let release;
+  let confirmExit; const cleanupSettled = new Promise(resolve => { confirmExit = resolve; });
+  const first = queue.run('a', 'r1', () => new Promise((_resolve, reject) => { release = reject; })).catch(error => error);
+  const waiting = queue.run('a', 'r2', async () => 'ok', { maxQueued: 1 });
+  release(Object.assign(new Error('uncertain'), { code: 'CLEANUP_TIMEOUT', cleanupSettled }));
+  assert.equal((await first).code, 'CLEANUP_TIMEOUT');
+  assert.equal(queue.state().effective, 0); assert.equal(queue.state().queued, 1);
+  confirmExit(); assert.equal(await waiting, 'ok');
+  assert.equal(queue.state().quarantined, false);
+  assert.equal(await queue.run('a', 'r3', async () => 'ok'), 'ok');
+  await queue.shutdown();
+});
+
+test('delivers completed artifacts while holding capacity for their unconfirmed cleanup', async () => {
+  const queue = new AgyQueue(1); let close;
+  const cleanupSettled = new Promise(resolve => { close = resolve; });
+  const artifact = { text: 'complete' }; Object.defineProperty(artifact, 'cleanupSettled', { value: cleanupSettled });
+  assert.equal(await queue.run('a', 'done', async () => artifact), artifact);
+  assert.equal(queue.state().effective, 0);
+  let started = false;
+  const next = queue.run('b', 'next', async () => { started = true; return 'next'; }, { maxQueued: 1 });
+  assert.equal(started, false); close(); assert.equal(await next, 'next');
+  assert.equal(queue.state().effective, 1); await queue.shutdown();
+});
 const { AgyError } = require('./agyProtocol');
+
+test('cleanup failure does not abort healthy sibling work', async () => {
+  const queue = new AgyQueue(2); let fail, close; const cleanupSettled = new Promise(resolve => { close = resolve; });
+  const first = queue.run('a', 'failed', () => new Promise((_resolve, reject) => { fail = reject; })).catch(error => error);
+  let abortObserved = false;
+  const sibling = queue.run('a', 'sibling', signal => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => { abortObserved = true; setTimeout(() => reject(new AgyError('CANCELED')), 5); });
+  })).catch(error => error);
+  fail(Object.assign(new AgyError('CLEANUP_TIMEOUT'), { cleanupSettled })); await first;
+  assert.equal(abortObserved, false);
+  assert.throws(() => queue.recover(), { code: 'BUSY' });
+  queue.cancel('a', 'sibling'); await sibling;
+  assert.equal(queue.state().quarantined, false); close(); await Promise.resolve(); queue.recover();
+  assert.equal(queue.state().effective, 2);
+  assert.equal(await queue.run('a', 'next', async () => 'ok'), 'ok');
+  await queue.shutdown();
+});
 
 test('enforces global and feature caps across owners without head-of-line blocking', async () => {
   const queue = new AgyQueue(5);
@@ -27,7 +114,7 @@ test('enforces global and feature caps across owners without head-of-line blocki
   await queue.shutdown();
 });
 
-test('prioritizes interactive requests but serves background after three', async () => {
+test('background uses spare capacity and never bypasses queued interactive work', async () => {
   const queue = new AgyQueue();
   let release;
   const first = queue.run(1, 'first', () => new Promise(resolve => { release = resolve; }));
@@ -35,7 +122,20 @@ test('prioritizes interactive requests but serves background after three', async
   const requests = [queue.run(1, 'background', async () => order.push('background'), { maxQueued: 10 })];
   for (let i = 0; i < 5; i++) requests.push(queue.run(2, `chat${i}`, async () => order.push(`chat${i}`), { maxQueued: 10, priority: 'interactive' }));
   release(); await first; await Promise.all(requests);
-  assert.deepEqual(order, ['chat0', 'chat1', 'chat2', 'background', 'chat3', 'chat4']);
+  assert.deepEqual(order, ['chat0', 'chat1', 'chat2', 'chat3', 'chat4', 'background']);
+});
+
+test('generation admission expires unsent and only an explicit new submission starts', async () => {
+  const queue = new AgyQueue(1); let release; let deferred = 0; let started = 0;
+  const active = queue.run('a', 'occupied', () => new Promise(resolve => { release = resolve; }));
+  const waiting = queue.run('b', 'waiting', async () => { started++; return 'ok'; },
+    { maxQueued: 1, waitMs: 5, deferOnTimeout: true, onDeferred: () => { deferred++; } }).catch(error => error);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(deferred, 1); assert.equal(started, 0); assert.equal(queue.state().queued, 0);
+  assert.equal((await waiting).code, 'RESOURCE_DEFERRED');
+  release(); await active; assert.equal(started, 0);
+  await queue.run('b', 'explicit-new', async () => { started++; }); assert.equal(started, 1);
+  await queue.shutdown();
 });
 
 test('reducing concurrency drains existing work without killing it', async () => {

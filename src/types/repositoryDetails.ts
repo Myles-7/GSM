@@ -1,4 +1,5 @@
 export interface RepositoryDetailsAnalysis {
+  adjustments?: { field: string; originalCount: number; retainedCount: number }[];
   summary?: string | null;
   tags?: string[];
   platforms?: string[];

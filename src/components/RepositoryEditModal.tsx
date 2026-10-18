@@ -8,7 +8,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { Save, X, Plus, Lock, Unlock, RotateCcw, Bot, Edit3, FileText, Tag, FolderOpen, Info, AlertTriangle } from 'lucide-react';
 import { Modal } from './Modal';
 import { Repository } from '../types';
-import { useAppStore, getAllCategories } from '../store/useAppStore';
+import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useCategorySyncActions } from '../features/repositories/hooks/useCategorySyncActions';
 import { computeCustomCategory, getAICategory, getDefaultCategory } from '../utils/categoryUtils';
@@ -65,12 +65,13 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
   onOutsideDismiss,
   repository
 }) => {
-  const { updateRepository, language, customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides } = useAppStore(useShallow((state) => ({
+  const { updateRepository, language, customCategories, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext } = useAppStore(useShallow((state) => ({
     updateRepository: state.updateRepository,
     language: state.language,
     customCategories: state.customCategories,
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
+    classificationContext: state.classificationContext,
   })));
   const { forceSyncToBackend } = useCategorySyncActions();
   const { confirm } = useDialog();
@@ -110,7 +111,7 @@ export const RepositoryEditModal: React.FC<RepositoryEditModalProps> = ({
   });
   const initializedRepositoryIdRef = useRef<number | null>(null);
 
-  const allCategories = useMemo(() => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides), [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides]);
+  const allCategories = useMemo(() => getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext), [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext]);
 
   // 获取仓库当前所属的分类
   const getCurrentCategory = useCallback((repo: Repository) => {

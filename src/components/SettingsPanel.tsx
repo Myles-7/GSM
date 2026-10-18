@@ -22,8 +22,8 @@ import {
   Cable,
   Star,
   Plug,
-  FileText,
 } from 'lucide-react';
+import { requestReadingConfiguration } from './reading/readingNavigation';
 import { useAppStore } from '../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { Button } from './ui/button';
@@ -49,7 +49,6 @@ import {
   VectorSearchSettings,
   McpSettingsPanel,
   PluginSettingsPanel,
-  HtmlReadingPanel,
 } from './settings';
 
 type SettingsTab = 'general' | 'appearance' | 'starSync' | 'ai' | 'webdav' | 'backup' | 'backend' | 'category' | 'menu' | 'data' | 'logs' | 'network' | 'vectorSearch' | 'mcp' | 'plugins' | 'htmlReading';
@@ -69,7 +68,7 @@ interface SettingsPanelProps {
 
 const SETTINGS_GROUPS: Array<{ key: string; ids: SettingsTab[] }> = [
   { key: 'basics', ids: ['general', 'appearance', 'menu'] },
-  { key: 'workflows', ids: ['ai', 'starSync', 'category', 'vectorSearch', 'htmlReading'] },
+  { key: 'workflows', ids: ['ai', 'starSync', 'category', 'vectorSearch'] },
   { key: 'storage', ids: ['backup', 'webdav', 'backend', 'data'] },
   { key: 'advanced', ids: ['network', 'plugins', 'mcp', 'logs'] },
 ];
@@ -193,9 +192,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   // Switching settings should respond immediately, including rapid repeated clicks.
   const handleTabChange = useCallback((tabId: SettingsTab) => {
+    if (tabId === 'htmlReading') { requestReadingConfiguration(); onClose?.(); setCurrentView('reading'); return; }
     setActiveTab(tabId);
     setDisplayTab(tabId);
-  }, []);
+  }, [onClose, setCurrentView]);
 
   // Valid SettingsTab values for runtime validation
   const VALID_TABS: ReadonlySet<string> = useMemo(
@@ -211,8 +211,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       sessionStorage.removeItem('gsm:pending-settings-tab');
       // Apply a pre-mount navigation synchronously. In React Strict Mode an
       // animation timer can be cleaned up during the development remount.
-      setActiveTab(stored as SettingsTab);
-      setDisplayTab(stored as SettingsTab);
+      if (stored === 'htmlReading') { requestReadingConfiguration(); onClose?.(); setCurrentView('reading'); }
+      else { setActiveTab(stored as SettingsTab); setDisplayTab(stored as SettingsTab); }
     } else if (stored) {
       sessionStorage.removeItem('gsm:pending-settings-tab');
     }
@@ -231,7 +231,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   }, [handleTabChange, VALID_TABS]);
 
   const tabs: SettingsTabItem[] = [
-    { id: 'htmlReading', label: '每日 HTML', icon: <FileText className="w-5 h-5" /> },
     {
       id: 'general',
       label: t('app:settingsPanel.general'),
@@ -320,7 +319,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     const content = (() => {
       switch (displayTab) {
         case 'htmlReading':
-          return <HtmlReadingPanel />;
+          return null;
         case 'general':
           return <GeneralPanel t={t} />;
         case 'appearance':

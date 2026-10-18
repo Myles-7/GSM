@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   isRepositoryStarred: vi.fn(),
   forceSyncToBackend: vi.fn(),
   updateRepository: vi.fn(),
+  updateClassificationRepository: vi.fn(),
   deleteRepository: vi.fn(),
   setRepositories: vi.fn(),
   moveRepositoryToSubcategory: vi.fn(),
@@ -146,6 +147,7 @@ describe('aiWorkbenchOperations', () => {
       githubToken: 'github-token',
       user: { id: 1, login: 'octocat', name: 'Octo', avatar_url: '', email: null },
       repositories: [],
+      searchResults: [],
       aiConfigs: [{ id: 'ai', name: 'AI', baseUrl: 'https://ai.example.com/v1', apiKey: 'key', model: 'model', isActive: true }],
       activeAIConfig: 'ai',
       repositoryChatSettings: { chatConfigId: null },
@@ -155,6 +157,7 @@ describe('aiWorkbenchOperations', () => {
       hiddenDefaultCategoryIds: [],
       defaultCategoryOverrides: {},
       updateRepository: mocks.updateRepository,
+      updateClassificationRepository: mocks.updateClassificationRepository,
       deleteRepository: mocks.deleteRepository,
       setRepositories: mocks.setRepositories,
       moveRepositoryToSubcategory: mocks.moveRepositoryToSubcategory,
@@ -201,6 +204,28 @@ describe('aiWorkbenchOperations', () => {
     expect(proposal.operations[1]).toMatchObject({ kind: 'update', selected: true, overrideLocked: false });
     expect(proposal.operations[1].after.category_locked).toBe(true);
     expect(mocks.saved.get(proposal.id)?.operations).toHaveLength(2);
+  });
+  it('binds a technology proposal and its restore independently of subsequent view changes', async () => {
+    const original = repo(1, { category_id: 'keep', category_locked: true, classifications: { technology: { categoryId: null, subcategoryId: null, locked: false } } });
+    setRepositories([original]);
+    mocks.state.activeClassificationScheme = 'technology';
+    mocks.state.classificationSchemes = { technology: { initialized: true, customCategories: [category('framework', 'Frameworks')], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], categoryListIdMap: {} } };
+    mocks.updateClassificationRepository.mockImplementation((id: 'technology', value: Repository) => {
+      setRepositories((mocks.state.repositories as Repository[]).map(current => current.id === value.id ? { ...current, classifications: { ...current.classifications, [id]: { categoryId: value.category_id ?? null, subcategoryId: value.subcategory_id ?? null, locked: !!value.category_locked } } } : current));
+    });
+    mocks.generateChatText.mockResolvedValue('{"operations":[{"repositoryId":1,"reason":"Technical domain","categoryId":"framework"}]}');
+    const proposal = await proposeWorkbenchOperations({ question: 'Organize by technical domain', sessionId: 'session-1', signal: new AbortController().signal });
+    expect(proposal.operations[0].classificationSchemeId).toBe('technology');
+    expect(proposal.operations[0].selected).toBe(true);
+    mocks.state.activeClassificationScheme = 'purpose';
+    const applied = await executeWorkbenchProposal(proposal, new AbortController().signal, async () => {});
+    expect(applied.operations[0].status).toBe('success');
+    expect((mocks.state.repositories as Repository[])[0].category_id).toBe('keep');
+    expect((mocks.state.repositories as Repository[])[0].classifications?.technology?.categoryId).toBe('framework');
+    const restored = await restoreWorkbenchProposal(applied, new AbortController().signal, async () => {});
+    expect(restored.operations[0].status).toBe('restored');
+    expect((mocks.state.repositories as Repository[])[0].classifications?.technology?.categoryId).toBeNull();
+    expect(mocks.updateRepository).not.toHaveBeenCalled();
   });
 
   it('rejects AI operations that escape the repository or category allowlists', async () => {

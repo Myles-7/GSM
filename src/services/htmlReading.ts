@@ -142,7 +142,8 @@ export async function generateReadingSnapshot(settings: ReadingSettings, warning
       }
     }
     return { id: repo.id, name: repo.full_name, url: `https://github.com/${repo.full_name}`, categoryId:includes('category')?categoryId:'', category: includes('category')?category:'',
-      summary, hasSourceAnalysis,
+      summary, hasSourceAnalysis, starStatus: saved ? 'starred' : 'unknown',
+      starStatusAt: saved ? [state.lastSync, saved.starred_at].filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))).sort((a,b) => Date.parse(b)-Date.parse(a))[0] : undefined,
       description: (includes('description') || includes('summary') && !summary) && text(repo.description)!==summary?text(repo.description):'',
       tags: includes('tags')?[...new Set((repo.custom_tags?.length?repo.custom_tags:repo.ai_tags?.length?repo.ai_tags:repo.topics??[]).map(text).filter(Boolean))].slice(0,10):[], language:includes('language')?text(repo.language):'', stars:includes('stars')?repo.stargazers_count:0, updated:includes('updated')?text(repo.pushed_at):'',
       analysis: blocks, sources:includes('sources')&&Array.isArray(analysis?.sources)?analysis.sources.filter(x=>x&&safeSourceUrl(x.url)).map(x=>({label:text(x.label),url:safeSourceUrl(x.url)})):[], generatedAt:includes('sources')?text(analysis?.generated_at)||text(repo.analyzed_at):'', reason:'',

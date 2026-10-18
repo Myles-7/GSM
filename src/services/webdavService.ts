@@ -147,47 +147,40 @@ export class WebDAVService {
       // 构建用于测试的目录URL（优先测试配置中的 path）
       const dirUrl = `${this.config.url}${this.config.path}`;
 
-      // 先尝试 HEAD 请求检测基本可达性（某些服务器对 PROPFIND/OPTIONS 支持较差）
+      // PROPFIND is the normal DAV probe; HEAD is a bounded compatibility fallback.
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+      const deadline = Date.now() + 10000;
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       const abort = () => controller.abort();
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) controller.abort();
-
+      const probe = async (method: 'PROPFIND' | 'HEAD'): Promise<Response> => {
+        controller.signal.throwIfAborted();
+        const remaining = deadline - Date.now();
+        if (remaining <= (supportsDesktopDav() ? 1000 : 0)) throw new DOMException('DAV probe timed out', 'AbortError');
+        return this.fetchDav(dirUrl, { method, signal: controller.signal,
+          headers: { Authorization: this.getAuthHeader(), ...(method === 'PROPFIND' ? { Depth: '0' } : {}) } }, remaining);
+      };
       try {
-        const headResponse = await this.fetchDav(dirUrl, {
-          method: 'HEAD',
-          headers: {
-            'Authorization': this.getAuthHeader(),
-          },
-          signal: controller.signal,
-        }, 10000);
-
-        if (headResponse.ok) return true;
-
-        // HEAD 不可用时，尝试 PROPFIND（不少服务器返回 207 Multi-Status 表示成功）
-        const propfindResponse = await this.fetchDav(dirUrl, {
-          method: 'PROPFIND',
-          headers: {
-            'Authorization': this.getAuthHeader(),
-            'Depth': '0',
-          },
-          signal: controller.signal,
-        }, 10000);
-
-        return propfindResponse.ok || propfindResponse.status === 207;
-      } catch (fetchError: unknown) {
-        clearTimeout(timeoutId);
-        
-        if (signal?.aborted) throw fetchError;
-        if ((fetchError as Error).name === 'AbortError') {
-          throw new Error('连接超时。请检查WebDAV服务器是否可访问。');
+        let response: Response;
+        try { response = await probe('PROPFIND'); }
+        catch (error) {
+          if (isAbortError(error) || controller.signal.aborted) throw error;
+          response = await probe('HEAD');
+          const ok = response.ok; void response.body?.cancel().catch(() => {}); return ok;
         }
-        
-        throw fetchError;
+        const status = response.status, ok = response.ok;
+        void response.body?.cancel().catch(() => {});
+        if (ok || status === 207) return true;
+        if (![405, 501].includes(status)) return false;
+        response = await probe('HEAD');
+        const headOk = response.ok; void response.body?.cancel().catch(() => {}); return headOk;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (isAbortError(error)) throw new Error('连接超时。请检查WebDAV服务器是否可访问。');
+        throw error;
       } finally {
-        clearTimeout(timeoutId);
-        signal?.removeEventListener('abort', abort);
+        clearTimeout(timeoutId); signal?.removeEventListener('abort', abort);
       }
     } catch (error: unknown) {
       return this.handleNetworkError(error, '连接测试');

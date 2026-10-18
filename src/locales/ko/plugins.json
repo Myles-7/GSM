@@ -74,7 +74,8 @@
     "opened-in-browser": "브라우저에서 열림",
     "plugin-result-copied": "플러그인 결과가 복사되었습니다.",
     "plugin-result-saved": "플러그인 결과가 저장되었습니다.",
-    "plugin-action-completed": "플러그인 작업 완료"
+    "plugin-action-completed": "플러그인 작업 완료",
+    "save-requires-host": "Save plugin output through the host save dialog."
   },
   "usePluginAI": {
     "custom-endpoint": "맞춤형 서비스",

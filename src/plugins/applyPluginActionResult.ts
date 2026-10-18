@@ -28,13 +28,8 @@ export async function applyPluginActionResult(
     return;
   }
   if (result.suggestedAction === 'save') {
-    const url = URL.createObjectURL(new Blob([result.content], { type: 'text/plain;charset=utf-8' }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'plugin-output.txt';
-    anchor.click();
-    URL.revokeObjectURL(url);
-    toast(t('applyPluginActionResult.plugin-result-saved'), 'success');
+    // Only the trusted main-process output handler may act on a save suggestion.
+    toast(t('applyPluginActionResult.save-requires-host'), 'error');
     return;
   }
   const preview = result.content.length > 500 ? `${result.content.slice(0, 500)}…` : result.content;

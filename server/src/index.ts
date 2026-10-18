@@ -1,3 +1,4 @@
+import { startWorkspaceBindingAudit } from './services/homeBinding.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -8,7 +9,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { logger, morganLoggerStream } from './services/logger.js';
 import { mountStaticFrontend } from './services/staticFrontend.js';
 import { getDb, closeDb } from './db/connection.js';
-import { runMigrations } from './db/migrations.js';
+import { runStartupMigrations } from './db/startupMigrations.js';
 import healthRouter from './routes/health.js';
 import repositoriesRouter from './routes/repositories.js';
 import releasesRouter from './routes/releases.js';
@@ -29,7 +30,7 @@ import syncV2Router, { legacySyncV2Guard } from './routes/syncV2.js';
 import tasksRouter from './routes/tasks.js';
 import discoveryRouter from './routes/discovery.js';
 import { initializeTasks, startTaskRunner, stopTaskRunner } from './services/taskRunner.js';
-import { backupBeforeMigration, startBackupScheduler } from './services/backups.js';
+import { startBackupScheduler } from './services/backups.js';
 
 // Origins the SPA is allowed to call directly from the browser. 'self' covers
 // the backend proxy; the rest support the "browser direct" route mode
@@ -147,14 +148,10 @@ async function startServer(): Promise<void> {
   // Initialize database
   const db = getDb();
   const backupDir = path.join(config.dataDir, 'backups');
-  const hasExistingSchema = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
-  if (hasExistingSchema) {
-    const version = (db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number }).version;
-    if (version < 3) await backupBeforeMigration(db, backupDir);
-  }
-  runMigrations(db);
+  await runStartupMigrations(db, backupDir);
   initializeTasks(db);
   startTaskRunner(db);
+  const stopBindingAudit=startWorkspaceBindingAudit(db);
   const stopBackups = startBackupScheduler(db, backupDir, error => logger.errorFromError('backup', 'Scheduled backup failed', error));
   logger.info('server.init', 'Database initialized');
 
@@ -175,6 +172,7 @@ async function startServer(): Promise<void> {
     logger.info('server.shutdown', 'Shutting down...');
     // Stop new submissions first, then settle task writes and online backups before closing SQLite.
     server.close();
+    await stopBindingAudit();
     await stopTaskRunner();
     await stopBackups();
     server.closeAllConnections();

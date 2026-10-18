@@ -8,6 +8,8 @@ import { normalizeThemeTokens } from '../utils/themeTokens';
 import { normalizeRepositoryCardFields } from '../utils/repositoryCardFields';
 import { isThemePresetId } from '../constants/themePresets';
 import { isAppLanguage } from '../i18n/languages';
+import type { ClassificationScheme, ClassificationSchemes } from '../types/classification';
+import type { DiscoveryWorkspaceBackup } from './discoveryWorkspaceBackup';
 
 export type SafeBackupType = 'repositories' | 'customCategories' | 'uiSettings';
 export interface LocalRestorePlan {
@@ -17,7 +19,9 @@ export interface LocalRestorePlan {
   before: Record<string, unknown>;
   after: Record<string, unknown>;
   summary: string;
+  discovery?: { before: DiscoveryWorkspaceBackup; after: DiscoveryWorkspaceBackup };
 }
+export const RELEASE_BACKUP_KEYS = ['releases', 'releaseSubscriptions', 'releaseSourceSettings', 'readReleases'] as const;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 export function restoreScopeSnapshot(state: Partial<AppStoreState>, keys: readonly string[]): Record<string, unknown> {
   return clone(Object.fromEntries(keys.map(key => {
@@ -26,7 +30,11 @@ export function restoreScopeSnapshot(state: Partial<AppStoreState>, keys: readon
   })));
 }
 export function restoreStorePatch(value: Record<string, unknown>): Partial<AppStoreState> {
-  return { ...value, ...('releaseExpandedRepositories' in value ? { releaseExpandedRepositories: new Set(value.releaseExpandedRepositories as number[]) } : {}) } as Partial<AppStoreState>;
+  const patch = { ...value };
+  for (const key of ['releaseExpandedRepositories', 'releaseSubscriptions', 'readReleases']) {
+    if (key in patch) patch[key] = new Set(patch[key] as number[]);
+  }
+  return patch as Partial<AppStoreState>;
 }
 export function compatibilityBackupData(data: LocalBackup['data']): LocalBackup['data'] {
   const omit = new Set<string>(['repositories', ...ORGANIZATION_BACKUP_KEYS, ...PREFERENCE_BACKUP_KEYS]);
@@ -38,6 +46,29 @@ export function safeBackupTypes(data: LocalBackup['data']): SafeBackupType[] {
 const repositoryShape = z.object({ id: z.number().int().positive().safe(), name: z.string().min(1), full_name: z.string().regex(/^[^/\\\s]+\/[^/\\\s]+$/), description: z.string().nullable(), html_url: z.string(), stargazers_count: z.number().nonnegative(), forks_count: z.number().nonnegative(), forks: z.number().nonnegative(), language: z.string().nullable(), created_at: z.string(), updated_at: z.string(), pushed_at: z.string(), owner: z.object({ login: z.string().min(1), avatar_url: z.string() }), topics: z.array(z.string()), category_id: z.string().nullable().optional(), subcategory_id: z.string().nullable().optional() }).passthrough();
 const themeTokensShape = z.object({ accentColor: z.string().regex(/^#[0-9a-f]{6}$/i).nullable(), fontScale: z.number().min(0.75).max(1.5), radius: z.enum(['default', 'none', 'small', 'medium', 'large']), animation: z.enum(['normal', 'reduced']) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function mergeClassificationBackup(current: ClassificationSchemes, incoming: ClassificationSchemes): ClassificationSchemes {
+  const result = { ...current };
+  for (const id of ['purpose', 'technology'] as const) {
+    const source = incoming[id];
+    if (!source) continue;
+    const target = current[id];
+    if (!target) { result[id] = source; continue; }
+    const rows = <T extends { id: string }>(before: T[], after: T[]) => {
+      const existing = new Set(before.map(row => row.id));
+      return [...before, ...after.filter(row => !existing.has(row.id))];
+    };
+    const order = <T extends string | number>(before: T[], after: T[]) => [...new Set([...before, ...after])];
+    result[id] = { initialized: target.initialized || source.initialized,
+      customCategories: rows(target.customCategories, source.customCategories), subcategories: rows(target.subcategories, source.subcategories),
+      defaultCategoryOverrides: { ...source.defaultCategoryOverrides, ...target.defaultCategoryOverrides },
+      categoryListIdMap: { ...source.categoryListIdMap, ...target.categoryListIdMap },
+      hiddenDefaultCategoryIds: order(target.hiddenDefaultCategoryIds, source.hiddenDefaultCategoryIds),
+      categoryOrder: order(target.categoryOrder, source.categoryOrder), subcategoryOrder: order(target.subcategoryOrder, source.subcategoryOrder),
+      repositoryOrder: order(target.repositoryOrder, source.repositoryOrder),
+    } satisfies ClassificationScheme;
+  }
+  return result;
+}
 function validateReferences(state: AppStoreState) {
   const categories = new Set(organizationCategories(state).map(row => row.id));
   const groups = new Map(state.subcategories.map(row => [row.id, row]));
@@ -76,7 +107,8 @@ export function planLocalBackupRestore(state: AppStoreState, backup: LocalBackup
   if (selected.includes('customCategories')) {
     for (const key of ORGANIZATION_BACKUP_KEYS) {
       const input = data[key]; if (input === undefined) continue;
-      if (mode === 'replace') patch[key] = input;
+      if (key === 'classificationSchemes') patch[key] = mode === 'replace' ? { ...state.classificationSchemes, ...input } : mergeClassificationBackup(state.classificationSchemes ?? {}, input as ClassificationSchemes);
+      else if (mode === 'replace') patch[key] = input;
       else if (key === 'customCategories' || key === 'subcategories') {
         const rows = state[key]; const ids = new Set(rows.map(row => row.id));
         patch[key] = [...rows, ...(input as typeof rows).filter(row => !ids.has(row.id))];

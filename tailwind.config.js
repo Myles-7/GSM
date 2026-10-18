@@ -69,6 +69,9 @@ export default {
           foreground: 'hsl(var(--destructive-foreground) / <alpha-value>)',
         },
         border: 'hsl(var(--border) / <alpha-value>)',
+        // Stronger line for borders that must stay visible when --border is
+        // close to --muted (e.g. dark mode user bubbles, evidence rows).
+        'border-strong': 'hsl(var(--border-strong) / <alpha-value>)',
         input: 'hsl(var(--input) / <alpha-value>)',
         ring: 'hsl(var(--ring) / <alpha-value>)',
         overlay: {

@@ -43,6 +43,8 @@ export const LoginScreen: React.FC = () => {
     repositories, gists, starredGists, releases, forks,
     customCategories, categoryOrder, hiddenDefaultCategoryIds,
     defaultCategoryOverrides, categoryListIdMap,
+    classificationSchemes, classificationNavigation, subcategories, subcategoryOrder, repositoryOrder,
+    discoveryChannels,
     lastSync, accountWorkspaces, language, setLanguage, theme, setTheme,
   } = useAppStore(useShallow((state) => ({
     setUser: state.setUser,
@@ -59,6 +61,12 @@ export const LoginScreen: React.FC = () => {
     hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds,
     defaultCategoryOverrides: state.defaultCategoryOverrides,
     categoryListIdMap: state.categoryListIdMap,
+    classificationSchemes: state.classificationSchemes,
+    classificationNavigation: state.classificationNavigation,
+    subcategories: state.subcategories,
+    subcategoryOrder: state.subcategoryOrder,
+    repositoryOrder: state.repositoryOrder,
+    discoveryChannels: state.discoveryChannels,
     lastSync: state.lastSync,
     accountWorkspaces: state.accountWorkspaces,
     language: state.language,
@@ -175,6 +183,12 @@ export const LoginScreen: React.FC = () => {
         hiddenDefaultCategoryIds,
         defaultCategoryOverrides,
         categoryListIdMap,
+        classificationSchemes,
+        classificationNavigation,
+        subcategories,
+        subcategoryOrder,
+        repositoryOrder,
+        externalDiscoveryChannels: (discoveryChannels ?? []).filter(channel => channel.id.startsWith('external:')),
       };
       const localHasData = workspaceHasData(currentWorkspace) || workspaceHasData(parkedWorkspace);
 

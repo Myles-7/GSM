@@ -83,15 +83,16 @@ describe('Settings navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
     expect(screen.getAllByRole('tab', { name: 'Plugin Management' })).toHaveLength(2);
   });
-  it('adds Appearance without removing HTML Reading or AI/AGY and renames plugin management', () => {
+  it('retains Appearance and AI/AGY while relocating HTML settings and redirecting old navigation', () => {
     render(<SettingsPanel />);
     expect(screen.getAllByRole('tab', { name: 'Appearance' })).toHaveLength(2);
-    expect(screen.getAllByRole('tab', { name: '每日 HTML' })).toHaveLength(2);
+    expect(screen.queryByRole('tab', { name: '每日 HTML' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('tab', { name: 'Plugin Management' })).toHaveLength(2);
     changeTab('appearance');
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Appearance controls');
     changeTab('htmlReading');
-    expect(screen.getByRole('tabpanel')).toHaveTextContent('HTML reading controls');
+    expect(mocks.setCurrentView).toHaveBeenCalledWith('reading');
+    expect(sessionStorage.getItem('gsm:pending-reading-page')).toBe('settings');
     changeTab('ai');
     expect(screen.getByRole('tabpanel')).toHaveTextContent('AI and AGY controls');
   });

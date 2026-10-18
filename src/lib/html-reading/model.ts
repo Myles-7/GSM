@@ -78,6 +78,8 @@ export interface ReadingAnalysisBlock {
 }
 export interface ReadingRelease { tag: string; date: string; text: string; url: string }
 export interface ReadingItem {
+  /** Account-scoped desktop knowledge at export, never a live GitHub lookup. */
+  starStatus?: 'starred' | 'unknown'; starStatusAt?: string;
   id: number; name: string; url: string; categoryId: string; category: string; summary: string; description: string; tags: string[]; language: string; stars: number; updated: string;
   analysis: ReadingAnalysisBlock[]; sources: Array<{ label: string; url: string }>; generatedAt: string; reason: string; release?: ReadingRelease;
   state: ReadingState;

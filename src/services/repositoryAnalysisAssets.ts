@@ -9,7 +9,7 @@ import { transact } from '../features/discovery/custom/storage';
 import { clearRepositoryDetailReadmeCache } from './repositoryDetailReadme';
 import { repositoryDetailsSchema } from '../utils/repositoryDetailsSchema';
 import { validateRepositoryIdentityMappings, type RepositoryIdentityMapping } from '../utils/repositoryIdentity';
-import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
+import { assertRepositoryIdentityWritable, assertRepositoryMaintenanceOwner } from './repositoryIdentityGate';
 import { useAppStore } from '../store/useAppStore';
 
 export type { RepositoryIdentityMapping } from '../utils/repositoryIdentity';
@@ -168,12 +168,14 @@ async function openDatabase(): Promise<IDBDatabase> {
 
 // Each write touches only changed asset rows and small account metadata.
 async function transaction<T>(account: string, change: (assets: Record<string, RepositoryAnalysisAsset>, state: MigrationState) => T,
-  write = true, migration = false, repositoryIds?: readonly number[]): Promise<T> {
+  write = true, migration = false, repositoryIds?: readonly number[], maintenanceOwner?: string): Promise<T> {
   accountRequired(account);
-  if (write && !migration) assertRepositoryIdentityWritable(account);
+  const assertWritable = () => { if (maintenanceOwner) assertRepositoryMaintenanceOwner(account, maintenanceOwner); else if (!migration) assertRepositoryIdentityWritable(account); };
+  if (write) assertWritable();
   const fallbackKey = `gsm-repository-analysis-assets-v1:${encodeURIComponent(account)}`;
   if (typeof indexedDB === 'undefined') {
     const work = () => {
+      if (write) assertWritable();
       const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(fallbackKey);
       const { assets, migration: state } = raw ? readSnapshot(account, JSON.parse(raw)) : {
         assets: { ...accounts.get(account) }, migration: metadataSchema.parse(migrationStates.get(account) ?? {}),
@@ -190,6 +192,7 @@ async function transaction<T>(account: string, change: (assets: Record<string, R
   const db = await openDatabase();
   try {
     return await new Promise<T>((resolve, reject) => {
+      if (write) assertWritable();
       const tx = db.transaction(['assets', 'metadata'], write ? 'readwrite' : 'readonly');
       let result: T;
       let assets: Record<string, RepositoryAnalysisAsset>;
@@ -229,7 +232,7 @@ async function transaction<T>(account: string, change: (assets: Record<string, R
           const previousMetadata = JSON.stringify(state);
           result = change(assets, state);
           if (write) {
-            if (!migration) assertRepositoryIdentityWritable(account);
+            assertWritable();
             for (const [key, asset] of Object.entries(before)) if (!assets[key]) assetStore.delete(storageKey(asset));
             for (const [key, asset] of Object.entries(assets)) if (asset !== before[key]) assetStore.put(asset);
             if (rawMetadata === undefined || JSON.stringify(state) !== previousMetadata) metadataStore.put(state, account);
@@ -395,7 +398,7 @@ export function validateRepositoryAnalysisAssets(account: string, payload: unkno
   const parsed = z.object({ version: z.literal(1), accountId: z.literal(account), assets: z.array(assetSchema) }).strict().parse(payload);
   return { version: 1, accountId: account, assets: Object.values(normalizeAssets(account, parsed.assets)) };
 }
-export async function importRepositoryAnalysisAssets(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false): Promise<void> {
+export async function importRepositoryAnalysisAssets(account: string, payload: unknown, mode: 'merge' | 'replace', migration = false, maintenanceOwner?: string): Promise<void> {
   const incoming = validateRepositoryAnalysisAssets(account, payload);
   if (mode !== 'merge' && mode !== 'replace') throw new Error('INVALID_ANALYSIS_ASSET_IMPORT_MODE');
   await transaction(account, (assets, state) => {
@@ -407,7 +410,7 @@ export async function importRepositoryAnalysisAssets(account: string, payload: u
       if (!migration) state.deletedRepositoryIds = state.deletedRepositoryIds.filter(id => id !== asset.repositoryId);
       put(assets, asset);
     }
-  }, true, migration, mode === 'merge' ? incoming.assets.map(asset => asset.repositoryId) : undefined);
+  }, true, migration, mode === 'merge' ? incoming.assets.map(asset => asset.repositoryId) : undefined, maintenanceOwner);
 }
 export async function migrateRepositoryAnalysisAssetIdentities(account: string, mappings: readonly RepositoryIdentityMapping[]): Promise<{ changed: number }> {
   validateRepositoryIdentityMappings(mappings);

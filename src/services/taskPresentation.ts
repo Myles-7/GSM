@@ -33,8 +33,15 @@ const phases: Record<string, [string, string]> = {
   requirements: ['整理需求', 'Preparing requirements'], overview: ['整理项目概览', 'Preparing project overview'],
   execution: ['执行整理', 'Applying organization'], restore: ['恢复资料', 'Restoring data'],
   saving: ['保存结果', 'Saving results'], completed: ['已完成', 'Complete'], resume: ['恢复任务', 'Resuming task'],
+  queue_wait: ['等待执行槽位', 'Waiting for execution slot'], initializing: ['初始化执行器', 'Initializing executor'], cleanup: ['清理执行器', 'Cleaning up executor'], reconciling: ['核对远端状态', 'Reconciling remote state'],
 };
 export const taskPhaseLabel = (phase: string | undefined, zh: boolean) => phase ? phases[phase]?.[zh ? 0 : 1] ?? phase : (zh ? '未记录' : 'Not recorded');
+export const taskExecutorLabel = (executor: AITaskRecord['executor'], zh: boolean) => executor === 'server-provider' ? (zh ? 'Server · Provider' : 'Server · Provider') : executor === 'agy-device' ? 'AGY · Device' : (zh ? '本机／同步任务' : 'Device / sync task');
+export const taskOutcomeLabel = (task: AITaskRecord, zh: boolean) => task.commitStatus === 'conflict'
+  ? (zh ? '分析完成，保存冲突' : 'Analysis complete; save conflict')
+  : task.providerOutcome === 'unknown' ? (zh ? `${task.items.length > 1 ? '部分子项' : ''}模型结果未知` : `${task.items.length > 1 ? 'Some item' : 'Provider'} result unknown`)
+    : task.state === 'interrupted' && task.items.some(item => item.state === 'complete')
+      ? (zh ? '部分已完成，其余待处理' : 'Partially complete; remaining items pending') : taskStateLabel(taskDisplayState(task), zh);
 export const taskTitle = (task: AITaskRecord, zh: boolean) => task.title ? `${taskKindLabel(task.kind, zh)} · ${task.title}` : taskKindLabel(task.kind, zh);
 export function taskElapsed(task: AITaskRecord, at = Date.now()): string {
   if (!task.startedAt) return '—';
@@ -46,7 +53,7 @@ export function taskReport(tasks: AITaskRecord[], format: 'json' | 'markdown', z
   // Conversation titles may be derived from the user's prompt.
   const conversations = new Set<AITaskKind>(['chat', 'research', 'organization']);
   const safe = tasks.map(task => ({ id: task.id, title: conversations.has(task.kind) ? taskKindLabel(task.kind, zh) : taskError(taskTitle(task, zh)), kind: task.kind, state: taskDisplayState(task),
-    startedAt: task.startedAt, endedAt: task.endedAt, elapsed: taskElapsed(task), phase: task.phase ? taskError(taskPhaseLabel(task.phase, zh)) : undefined, config: task.config,
+    startedAt: task.startedAt, endedAt: task.endedAt, elapsed: taskElapsed(task), phase: task.phase ? taskError(taskPhaseLabel(task.phase, zh)) : undefined, executor: taskExecutorLabel(task.executor, zh), commitStatus: task.commitStatus, providerOutcome: task.providerOutcome, failureCode: task.failureCode, config: task.config,
     error: task.error ? taskError(task.error) : undefined, parentId: task.parentId, items: task.items.map(({ label, state, error, phase }, index) => ({ label: conversations.has(task.kind) ? `${taskKindLabel(task.kind, zh)} #${index + 1}` : taskError(label), state, error: error ? taskError(error) : undefined, phase: phase ? taskError(taskPhaseLabel(phase, zh)) : undefined })) }));
   if (format === 'json') return JSON.stringify(safe, null, 2);
   return safe.map(task => `## ${task.title}\n\n${taskStateLabel(task.state, zh)} · ${task.elapsed}\n\n${task.config ? JSON.stringify(task.config) : ''}\n\n${task.error ?? ''}\n\n`

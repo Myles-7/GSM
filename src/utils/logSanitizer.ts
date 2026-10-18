@@ -8,15 +8,20 @@ const SENSITIVE_FIELD_NAMES = new Set([
   'apiKey', 'api_key', 'api_key_encrypted', 'password', 'password_encrypted',
   'secret', 'token', 'githubToken', 'accessToken', 'authorization',
   'x-api-key', 'credentials', 'passwd', 'pwd', 'backendApiSecret',
-  'mcp_token', 'mcpToken', 'authToken', 'auth_token',
+  'cookie', 'set-cookie', 'mcp_token', 'mcpToken', 'authToken', 'auth_token', 'auth_token_encrypted', 'ct0',
 ]);
 
 // URL query param keys to redact
-const SENSITIVE_URL_PARAMS = ['key', 'api_key', 'apikey', 'token', 'access_token', 'secret', 'client_secret', 'password', 'auth'];
+const SENSITIVE_URL_PARAMS = [
+  'key', 'api_key', 'apikey', 'token', 'access_token', 'secret', 'client_secret',
+  'password', 'auth', 'auth_token', 'ct0', 'cookie', 'set-cookie',
+];
 
 // Patterns for token/key detection
-const GITHUB_TOKEN_RE = /^ghp_[a-zA-Z0-9]{36}$/;
+const GITHUB_TOKEN_RE = /^gh[pousr]_[a-zA-Z0-9]{20,}$/;
+const GITHUB_PAT_RE = /^github_pat_[a-zA-Z0-9_]{20,}$/;
 const GENERIC_SECRET_RE = /^[a-zA-Z0-9+/=_-]{20,}$/; // long base64-ish strings
+const COMMIT_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
 /**
  * Mask a secret string: show only last 4 chars.
@@ -44,6 +49,8 @@ export function maskEmail(email: string): string {
 export function redactUrl(url: string): string {
   try {
     const parsed = new URL(url);
+    if (parsed.username || parsed.password) { parsed.username = '***'; parsed.password = '***'; }
+    parsed.hash = '';
     for (const [key] of parsed.searchParams) {
       if (SENSITIVE_URL_PARAMS.includes(key.toLowerCase())) {
         parsed.searchParams.set(key, '***');
@@ -89,6 +96,9 @@ function isGitHubToken(value: string): boolean {
  * Only flags if it's 20+ chars of alphanumeric/special chars.
  */
 function looksLikeSecret(value: string): boolean {
+  // Full Git object IDs are safe diagnostic identifiers. Keeping this narrow
+  // avoids turning an arbitrary long hex identifier into a secret allowlist.
+  if (COMMIT_SHA_RE.test(value)) return false;
   return value.length >= 20 && GENERIC_SECRET_RE.test(value);
 }
 
@@ -122,6 +132,7 @@ export function sanitizeForLog(input: unknown, seen: WeakSet<object> = new WeakS
 function sanitizeString(value: string): string {
   // GitHub token pattern
   if (isGitHubToken(value)) return maskSecret(value);
+  if (GITHUB_PAT_RE.test(value)) return maskSecret(value);
 
   // MCP bearer tokens (gsm_mcp_…)
   if (value.startsWith('gsm_mcp_')) return maskSecret(value);
@@ -148,11 +159,7 @@ function sanitizeString(value: string): string {
     return value.slice(0, 6) + '***';
   }
 
-  return value
-    .replace(/\b(?:gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]+|sk-[a-zA-Z0-9_-]{16,}|gsm_mcp_[a-zA-Z0-9_-]+)/g, '[redacted]')
-    .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*["']?)[^\s"';,]+/gi, '$1[redacted]')
-    .replace(/\b(Bearer)\s+[a-zA-Z0-9._~+/-]+=*/gi, '$1 [redacted]')
-    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[redacted private key]');
+  return redactInline(value);
 }
 
 function sanitizeObject(obj: Record<string, unknown>, seen: WeakSet<object>): Record<string, unknown> {
@@ -183,6 +190,11 @@ function sanitizeObject(obj: Record<string, unknown>, seen: WeakSet<object>): Re
     }
 
     // Recurse into nested objects/arrays
+    // Safe identifiers are allowed only in a declared repository field; credential keys were handled above.
+    if (['full_name', 'fullName', 'repository', 'repo'].includes(key) && typeof value === 'string'
+        && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(value)) {
+      result[key] = value; continue;
+    }
     result[key] = sanitizeForLog(value, seen);
   }
   return result;
@@ -192,8 +204,10 @@ function sanitizeHeaders(headers: Record<string, unknown>, seen: WeakSet<object>
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(headers)) {
     const lowerKey = key.toLowerCase();
-    if (lowerKey === 'authorization' || lowerKey === 'x-api-key') {
-      result[key] = typeof value === 'string' ? sanitizeString(value) : '****';
+    if (lowerKey === 'cookie' || lowerKey === 'set-cookie') {
+      result[key] = '***';
+    } else if (lowerKey === 'authorization' || lowerKey === 'x-api-key') {
+      result[key] = typeof value === 'string' && /^(Bearer|Basic) /i.test(value) ? sanitizeString(value) : typeof value === 'string' ? maskSecret(value) : '****';
     } else {
       result[key] = sanitizeForLog(value, seen);
     }
@@ -205,13 +219,44 @@ function sanitizeHeaders(headers: Record<string, unknown>, seen: WeakSet<object>
  * Sanitize an Error object for logging.
  * Extracts message and stack, sanitizes any embedded secrets.
  */
+const MAX_STACK_LENGTH = 8000;
+const MAX_NAME_LENGTH = 120;
+
 export function sanitizeError(err: unknown): { message: string; stack?: string; name?: string } {
-  if (!(err instanceof Error)) {
-    return { message: sanitizeString(String(err)) };
-  }
+  const isErrorLike = err instanceof Error
+    || (typeof DOMException !== 'undefined' && err instanceof DOMException);
+  if (!isErrorLike) return { message: redactInline(sanitizeString(String(err))) };
+  const { name, message, stack } = err as Error;
   return {
-    name: err.name,
-    message: sanitizeString(err.message),
-    stack: err.stack ? sanitizeString(err.stack) : undefined,
+    name: redactInline(sanitizeString(String(name ?? ''))).slice(0, MAX_NAME_LENGTH),
+    message: redactInline(sanitizeString(String(message ?? ''))),
+    stack: stack ? redactInline(sanitizeString(String(stack))).slice(0, MAX_STACK_LENGTH) : undefined,
   };
+}
+
+/** Substring-level redaction for free-form messages and stack traces. */
+export function redactInline(text: string): string {
+  return String(text)
+    .replace(/https?:\/\/[^\s"'<>]+/g, (url) => redactUrl(url))
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, (value) => maskSecret(value))
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, (value) => maskSecret(value))
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, (value) => maskSecret(value))
+    .replace(/\bgsm_mcp_\S+/g, (value) => maskSecret(value))
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[redacted private key]')
+    .replace(/((?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|ct0|password|secret)\s*[:=]\s*["']?)[^\s"';,]+/gi, '$1[redacted]')
+    .replace(/[^@\s"'<>]+@[^@\s"'<>]+\.[A-Za-z]{2,}/g, (value) => maskEmail(value));
+}
+
+/** Privacy boundary for diagnostic persistence/export: project bodies are never journaled. */
+export function sanitizeDiagnosticData(input: unknown): unknown {
+  const clean = sanitizeForLog(input);
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !/^(requestBody|responseBody|body|payload|prompt|messages|stdout|stdin|html|attachments?|embeddings?|vectors?|content|note|notes)$/i.test(key))
+      .map(([key, item]) => [key, walk(item)]));
+    return value;
+  };
+  return walk(clean);
 }

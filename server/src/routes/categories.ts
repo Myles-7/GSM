@@ -1,7 +1,18 @@
 import { Router } from 'express';
 import { getDb } from '../db/connection.js';
+import { classificationWasUpgraded, ClassificationCompatibilityError } from '../services/classificationCompatibility.js';
 
 const router = Router();
+router.use('/api/categories', (req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  try {
+    if (classificationWasUpgraded(getDb())) throw new ClassificationCompatibilityError();
+    next();
+  } catch (error) {
+    if (error instanceof ClassificationCompatibilityError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
+    next(error);
+  }
+});
 
 function parseJsonColumn(value: unknown): unknown[] {
   if (typeof value !== 'string' || !value) return [];
