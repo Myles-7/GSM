@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Repository } from '../../../types';
@@ -7,8 +7,14 @@ import { useRepositoryDragStore } from '../../../store/useRepositoryDragStore';
 import { RepositoryGroups } from './RepositoryGroups';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../../components/ui/dropdown-menu';
 
-const mocks = vi.hoisted(() => ({ confirm: vi.fn() }));
-vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm }) }));
+const mocks = vi.hoisted(() => ({ confirm: vi.fn(), toast: vi.fn(), assign: vi.fn(), edit: vi.fn() }));
+vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm, toast: mocks.toast }) }));
+vi.mock('./classificationEditActions', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  captureClassificationEdit: () => ({ schemeId: 'purpose', expectedAccountId: null, expectedToken: 'snapshot' }),
+  assignClassificationRepositories: mocks.assign,
+  performClassificationEdit: mocks.edit,
+}));
 vi.mock('../../../i18n/useT', () => ({ useT: () => (key: string) => key }));
 const repo = (id: number, group: string | null = 'a', categoryId = 'main') => ({
   id, name: `repo-${id}`, full_name: `owner/repo-${id}`, category_id: categoryId, subcategory_id: group,
@@ -41,7 +47,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.classificationNavigation = {};
   mocks.confirm.mockResolvedValue(true);
+  mocks.assign.mockResolvedValue(true);
+  mocks.edit.mockResolvedValue(true);
   vi.mocked(useAppStore).mockImplementation(((selector: (s: typeof state) => unknown) => selector(state)) as typeof useAppStore);
+  Object.assign(useAppStore, { getState: () => state });
 });
 
 describe('RepositoryGroups', () => {
@@ -81,7 +90,7 @@ describe('RepositoryGroups', () => {
     renderGroups({ customSort: false });
     useRepositoryDragStore.getState().startDrag();
     fireEvent.drop(section('Beta'), { dataTransfer: transfer('1') });
-    expect(state.moveRepositoryToSubcategory).toHaveBeenCalledWith(1, 'b');
+    expect(mocks.assign).toHaveBeenCalledWith([1], { categoryId: 'main', subcategoryId: 'b' }, expect.anything(), expect.objectContaining({ expectedToken: 'snapshot' }));
     expect(state.reorderRepositories).not.toHaveBeenCalled();
     expect(useRepositoryDragStore.getState().isDragging).toBe(false);
     fireEvent.drop(screen.getByTestId('repo-2'), { dataTransfer: transfer('1') });
@@ -98,7 +107,7 @@ describe('RepositoryGroups', () => {
     fireEvent.drop(screen.getByTestId('repo-2'), { dataTransfer: transfer('1') });
     expect(state.reorderRepositories).not.toHaveBeenCalled();
     fireEvent.drop(section('Beta'), { dataTransfer: transfer('1') });
-    expect(state.moveRepositoryToSubcategory).toHaveBeenCalledWith(1, 'b');
+    expect(mocks.assign).toHaveBeenCalledWith([1], { categoryId: 'main', subcategoryId: 'b' }, expect.anything(), expect.anything());
     expect(state.reorderRepositories).not.toHaveBeenCalled();
   });
 
@@ -116,7 +125,7 @@ describe('RepositoryGroups', () => {
   it('ignores repositories outside the current main category', () => {
     renderGroups();
     fireEvent.drop(section('Beta'), { dataTransfer: transfer('5') });
-    expect(state.moveRepositoryToSubcategory).not.toHaveBeenCalled();
+    expect(mocks.assign).not.toHaveBeenCalled();
   });
 
   it('creates a named group with an icon and writes nothing on cancel', async () => {
@@ -126,26 +135,25 @@ describe('RepositoryGroups', () => {
     await user.type(screen.getByLabelText('organization.groupName'), 'New group');
     await user.click(screen.getByRole('button', { name: 'organization.icon.code' }));
     await user.click(screen.getByRole('button', { name: 'organization.cancel' }));
-    expect(state.addSubcategory).not.toHaveBeenCalled();
+    expect(mocks.edit).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'organization.createGroup' }));
     await user.type(screen.getByLabelText('organization.groupName'), ' New group ');
     await user.click(screen.getByRole('button', { name: 'organization.icon.book' }));
     await user.click(screen.getByRole('button', { name: 'organization.save' }));
-    expect(state.addSubcategory).toHaveBeenCalledWith({ parentId: 'main', name: 'New group', icon: 'book' });
+    expect(mocks.edit).toHaveBeenCalledWith({ type: 'create', parentId: 'main', name: 'New group', icon: 'book' }, expect.anything(), expect.objectContaining({ expectedToken: 'snapshot' }));
   });
 
-  it('requires confirmation to delete a group', async () => {
+  it('routes group deletion through the shared guarded confirmation action', async () => {
     const user = userEvent.setup();
-    mocks.confirm.mockResolvedValue(false);
+    mocks.edit.mockResolvedValue(false);
     renderGroups();
     await user.click(within(section('Alpha')).getByRole('button', { name: 'organization.groupActions' }));
     await user.click(screen.getByRole('menuitem', { name: 'organization.deleteGroup' }));
-    expect(mocks.confirm).toHaveBeenCalledOnce();
-    expect(state.deleteSubcategory).not.toHaveBeenCalled();
-    mocks.confirm.mockResolvedValue(true);
+    expect(mocks.edit).toHaveBeenCalledWith({ type: 'delete', id: 'a' }, expect.objectContaining({ confirm: mocks.confirm }), expect.objectContaining({ expectedToken: 'snapshot' }));
+    mocks.edit.mockResolvedValue(true);
     await user.click(within(section('Alpha')).getByRole('button', { name: 'organization.groupActions' }));
     await user.click(screen.getByRole('menuitem', { name: 'organization.deleteGroup' }));
-    expect(state.deleteSubcategory).toHaveBeenCalledWith('a');
+    expect(mocks.edit).toHaveBeenCalledTimes(2);
   });
 
   it('adds only explicitly selected existing repositories in the current category', async () => {
@@ -156,9 +164,30 @@ describe('RepositoryGroups', () => {
     expect(screen.queryByRole('checkbox', { name: 'owner/repo-5' })).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'owner/repo-3' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: 'owner/repo-1' }));
-    expect(state.moveRepositoryToSubcategory).not.toHaveBeenCalled();
+    expect(mocks.assign).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'organization.addSelected' }));
-    expect(state.moveRepositoryToSubcategory).toHaveBeenCalledWith(1, 'b');
+    expect(mocks.assign).toHaveBeenCalledWith([1], { categoryId: 'main', subcategoryId: 'b' }, expect.anything(), expect.objectContaining({ expectedToken: 'snapshot' }));
     expect(state.reorderRepositories).toHaveBeenCalledWith([3, 2, 4, 5, 1]);
+  });
+
+  it('keeps the edit dialog open and shows stale or duplicate-name errors', async () => {
+    const user = userEvent.setup();
+    mocks.edit.mockRejectedValue(new Error('Classification changed'));
+    renderGroups();
+    await user.click(screen.getByRole('button', { name: 'organization.createGroup' }));
+    await user.type(screen.getByLabelText('organization.groupName'), 'Alpha');
+    await user.click(screen.getByRole('button', { name: 'organization.save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Classification changed');
+    expect(screen.getByLabelText('organization.groupName')).toHaveValue('Alpha');
+  });
+
+  it('moves a dragged selection as one action and skips changes after cancellation', async () => {
+    renderGroups();
+    fireEvent.drop(section('Beta'), { dataTransfer: transfer('[1,2]', 'application/x-gsm-repository-ids') });
+    await waitFor(() => expect(mocks.assign).toHaveBeenCalledWith([1, 2], { categoryId: 'main', subcategoryId: 'b' }, expect.anything(), expect.anything()));
+    mocks.assign.mockResolvedValue(false);
+    fireEvent.drop(section('Beta'), { dataTransfer: transfer('1') });
+    await waitFor(() => expect(mocks.assign).toHaveBeenCalledTimes(2));
+    expect(state.reorderRepositories).not.toHaveBeenCalled();
   });
 });

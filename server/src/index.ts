@@ -7,7 +7,7 @@ import { config } from './config.js';
 import { authMiddleware } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger, morganLoggerStream } from './services/logger.js';
-import { mountStaticFrontend } from './services/staticFrontend.js';
+import { mountStaticFrontend, staticFrontendScriptHashes } from './services/staticFrontend.js';
 import { getDb, closeDb } from './db/connection.js';
 import { runStartupMigrations } from './db/startupMigrations.js';
 import healthRouter from './routes/health.js';
@@ -69,6 +69,7 @@ export function createApp(): express.Express {
       contentSecurityPolicy: {
         directives: {
           'connect-src': buildConnectSrc(),
+          'script-src': ["'self'", ...staticFrontendScriptHashes()],
           'img-src': ["'self'", 'data:', 'https:'],
         },
       },

@@ -1,4 +1,5 @@
 {
+  "shell": { "loading": "加载中…" },
   "localAgentMcp": {
     "backendTitle": "后端资料连接",
     "title": "桌面整理连接",

@@ -12,6 +12,7 @@ import { retryTaskConfig, type TaskRetryParameters } from '../services/taskExecu
 import { watchRemoteTasks } from '../services/taskRemoteAdapter';
 import { getDesktopHomeSync } from '../home/desktop';
 import { Button } from './ui/button';
+import { taskDetailsTarget } from '../services/taskDetailsNavigation';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet';
 
 export function AITaskPanel() {
@@ -20,6 +21,17 @@ export function AITaskPanel() {
   const tasks = useSyncExternalStore(aiTaskJournal.subscribe, aiTaskJournal.snapshot);
   const scheduler = useSyncExternalStore(agySchedulerStatus.subscribe, agySchedulerStatus.snapshot);
   const [open, setOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  useEffect(() => setSelectedTaskId(null), [owner]);
+  useEffect(() => {
+    const openDetails = () => {
+      const target = taskDetailsTarget(owner);
+      if (!target || !aiTaskJournal.snapshot().some(task => task.owner === owner && task.id === target.id)) return;
+      setSelectedTaskId(target.id); setOpen(false); useAppStore.getState().setCurrentView('tasks');
+    };
+    window.addEventListener('gsm:open-task-details', openDetails);
+    return () => window.removeEventListener('gsm:open-task-details', openDetails);
+  }, [owner]);
   const trigger = useRef<HTMLButtonElement>(null);
   const details = useRepositoryDetailAnalysisJob();
   const store = useAppStore.getState();
@@ -36,6 +48,7 @@ export function AITaskPanel() {
   const retry = async (task: AITaskRecord, failedOnly: boolean, configId = task.configId, parameters?: TaskRetryParameters) => {
     const state = useAppStore.getState();
     if (String(state.user?.id ?? '') !== task.owner) return;
+    if (task.kind === 'exploration') { await (await import('../services/explorationRuntime')).retryExplorationTask(task, configId, parameters, false, failedOnly); return; }
     const ids = task.items.filter(item => !item.recovery && (failedOnly ? item.state === 'failed' : item.state !== 'complete')).map(item => item.id);
     if (!ids.length) return;
     if (['summary', 'details', 'gists'].includes(task.kind) && aiTaskJournal.busy(task.owner, task.kind))
@@ -74,7 +87,8 @@ export function AITaskPanel() {
   };
   const retrySave = async (task: AITaskRecord) => {
     const state = useAppStore.getState(); if (String(state.user?.id ?? '') !== task.owner) return;
-    if (task.kind === 'details') await details.retrySave(state.repositories, task);
+    if (task.kind === 'exploration') await (await import('../services/explorationRuntime')).retryExplorationTask(task, task.configId, undefined, true);
+    else if (task.kind === 'details') await details.retrySave(state.repositories, task);
     else if (task.kind === 'discovery-analysis') {
       await (await import('../features/discovery/custom/analysis')).retryAnalysisSave(task);
     } else if (task.kind === 'organization') await (await import('../services/aiOrganizationResultRecovery')).retryOrganizationTaskSave(task);
@@ -88,6 +102,7 @@ export function AITaskPanel() {
   const currentView = useAppStore(state => state.currentView);
   const title = chinese ? '任务中心' : 'Task center';
   const navigate = (task: AITaskRecord) => {
+    if (task.kind === 'exploration') useAppStore.getState().setRepositoryViewMode('cluster');
     const view = task.target?.view ?? (task.kind === 'gists' ? 'gists' : task.kind.startsWith('discovery') ? 'subscription'
       : task.kind === 'research' || task.kind === 'organization' ? 'ai' : task.kind === 'release' ? 'releases'
       : ['index', 'plugins', 'backup', 'restore', 'import', 'export', 'sync'].includes(task.kind) ? 'settings' : 'repositories');
@@ -107,14 +122,14 @@ export function AITaskPanel() {
       title={title} aria-label={`${title}${active ? ` · ${active}` : ''}`}><ListTodo className="h-5 w-5" />
       {active > 0 && <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] text-primary-foreground">{active}</span>}
       {attention > 0 && <span aria-label={chinese ? '任务待处理' : 'Tasks need attention'} className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full bg-destructive" />}</Button>
-    {currentView === 'tasks' && createPortal(<div data-task-scroll className="fixed inset-x-0 bottom-0 top-14 z-40 overflow-y-auto bg-background"><div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">{scheduler && <p className="mb-4 text-xs text-muted-foreground" role="status">AGY {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}</p>}<TaskCenter tasks={owned} chinese={chinese} retry={retry} retrySave={retrySave} discardResults={discardResults} onNavigate={navigate} /></div></div>, document.body)}
+    {currentView === 'tasks' && createPortal(<div data-task-scroll className="fixed inset-x-0 bottom-0 top-14 z-40 overflow-y-auto bg-background"><div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">{scheduler && <p className="mb-4 text-xs text-muted-foreground" role="status">AGY {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}</p>}<TaskCenter tasks={owned} chinese={chinese} selectedTaskId={selectedTaskId} retry={retry} retrySave={retrySave} discardResults={discardResults} onNavigate={navigate} /></div></div>, document.body)}
     <Sheet open={open} onOpenChange={setOpen}><SheetContent className="w-full gap-0 p-0 sm:max-w-lg" closeLabel={chinese ? '关闭' : 'Close'}
       onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
       <SheetHeader className="shrink-0 border-b border-border p-5 pr-12"><SheetTitle>{title}</SheetTitle></SheetHeader>
       {scheduler && <p className="shrink-0 border-b border-border px-5 py-3 text-xs text-muted-foreground" role="status">AGY: {scheduler.running}/{scheduler.effective} · {chinese ? '等待' : 'Queued'} {scheduler.queued}
         {scheduler.cooldownUntil > Date.now() && ` · ${chinese ? '限流冷却至' : 'Cooling down until'} ${new Date(scheduler.cooldownUntil).toLocaleTimeString()}`}</p>}
       <div data-task-scroll className="min-h-0 flex-1 overflow-y-auto p-5"><TaskCenter tasks={owned} chinese={chinese} compact retry={retry} retrySave={retrySave} discardResults={discardResults} onNavigate={navigate}
-        onOpenCenter={() => { useAppStore.getState().setCurrentView('tasks'); setOpen(false); }} /></div>
+        onOpenCenter={taskId => { setSelectedTaskId(taskId ?? null); useAppStore.getState().setCurrentView('tasks'); setOpen(false); }} /></div>
     </SheetContent></Sheet>
   </>;
 }

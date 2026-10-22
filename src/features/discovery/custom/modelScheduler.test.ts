@@ -24,3 +24,27 @@ it('serializes model calls, prioritizes screening, observes RPM, and cancels que
     expect(events).toEqual(['first', 'screen', 'detail']);
   } finally { vi.useRealTimers(); }
 });
+
+it('lets native AGY admit concurrent requests without a hidden renderer slot', async () => {
+  const events: string[] = [];
+  const signal = new AbortController().signal;
+  let releaseFirst!: () => void;
+  let startedFirst!: () => void;
+  const firstStarted = new Promise<void>(resolve => { startedFirst = resolve; });
+  const first = scheduleModel(() => new Promise<void>(resolve => {
+    events.push('first');
+    startedFirst();
+    releaseFirst = resolve;
+  }), signal, 0, 0, true);
+
+  await firstStarted;
+  expect(events).toEqual(['first']);
+
+  const detail = scheduleModel(async () => { events.push('detail'); }, signal, 0, 0, true);
+  const screen = scheduleModel(async () => { events.push('screen'); }, signal, 0, 1, true);
+
+  await Promise.all([detail, screen]);
+  expect(events).toEqual(['first', 'detail', 'screen']);
+  releaseFirst();
+  await first;
+});

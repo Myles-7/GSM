@@ -13,6 +13,7 @@ import {
   Inbox,
   Search,
   Plug,
+  MoreHorizontal,
 } from 'lucide-react';
 import { Category, Repository } from '../types';
 import { useClassificationStore as useAppStore, getAllCategories, sortCategoriesByOrder } from '../store/useClassificationStore';
@@ -22,17 +23,35 @@ import { CategoryEditModal } from './CategoryEditModal';
 import { useCategorySyncActions } from '../features/repositories/hooks/useCategorySyncActions';
 import { matchesCategory } from '../utils/categoryUtils';
 import { useDialog } from '../hooks/useDialog';
-import { assignConfirmedCategory } from '../features/repositories/components/repositoryCategoryAssignment';
+import { assignClassificationRepositories, captureClassificationEdit, repositoryIdsFromDrop } from '../features/repositories/components/classificationEditActions';
+import { SubcategoryManagementDialog } from './SubcategoryManagementDialog';
+import { subcategoryManagementRequest, type SubcategoryManagementRequest } from './subcategoryManagementRequest';
 import { isElectron } from '../services/electronProxy';
 import { useLocalVectorPendingCount } from '../features/settings/hooks/useLocalVectorPendingCount';
 import { VectorPendingBadge } from './settings/VectorPendingBadge';
 import { ClassificationSchemeSwitch } from './ClassificationSchemeSwitch';
 import { ClassificationSidebarChildren } from './ClassificationSidebarChildren';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 
 interface CategorySidebarProps {
   repositories: Repository[];
   selectedCategory: string;
   onCategorySelect: (category: string) => void;
+}
+
+const AI_CATEGORY_EMOJIS: Record<string, string> = {
+  ai: '🤖', developer: '🛠️', devtools: '🧰', data: '📊', web: '🌐', productivity: '⚡', knowledge: '📚',
+  infrastructure: '🏗️', cloud: '☁️', security: '🛡️', media: '🎨', desktop: '🖥️', mobile: '📱',
+  education: '🔬', game: '🎮', business: '🤝', open: '🔗', protocol: '🔗', runtime: '💻',
+  retrieval: '🔎', storage: '🗄️', other: '📁', unclassified: '🧭',
+};
+
+function categoryIcon(category: Category): React.ReactNode {
+  if (category.source === 'ai') {
+    const root = category.sourceKey?.split('/')[0] ?? '';
+    return AI_CATEGORY_EMOJIS[root] ?? '📁';
+  }
+  return category.icon === 'folder' ? '📁' : category.icon;
 }
 
 export const CategorySidebar: React.FC<CategorySidebarProps> = ({
@@ -52,7 +71,6 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     hideDefaultCategory,
     showDefaultCategory,
     language,
-    updateRepository,
     isSidebarCollapsed,
     setSidebarCollapsed,
     setCurrentView,
@@ -72,7 +90,6 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     hideDefaultCategory: state.hideDefaultCategory,
     showDefaultCategory: state.showDefaultCategory,
     language: state.language,
-    updateRepository: state.updateRepository,
     isSidebarCollapsed: state.isSidebarCollapsed,
     setSidebarCollapsed: state.setSidebarCollapsed,
     setCurrentView: state.setCurrentView,
@@ -91,6 +108,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
   const isRepoDragging = useRepositoryDragStore((state) => state.isDragging);
 
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [subcategoryRequest, setSubcategoryRequest] = useState<SubcategoryManagementRequest | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [isCreatingCategory, setIsCreatingCategory] = useState(false);
   const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
@@ -102,6 +120,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     if (typeof window === 'undefined') return false;
     return window.innerWidth < 1024;
   });
+  const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
   // 控制文字显示的状态：等侧栏展开动效完成后再显示文字
   const [showText, setShowText] = useState(!isSidebarCollapsed);
 
@@ -214,10 +233,9 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     const categories = getAllCategories(customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext);
     const sorted = sortCategoriesByOrder(categories, categoryOrder);
     const pending: Category = { id: 'pending', name: organizationT('organization.pending'), icon: '', keywords: [] };
-    return [...sorted.filter(category => category.id === 'all'), pending, ...sorted.filter(category => category.id !== 'all')];
+    return [...sorted.filter(category => category.id === 'all'), ...sorted.filter(category => category.id !== 'all' && category.id !== 'pending'), pending];
   }, [customCategories, language, hiddenDefaultCategoryIds, defaultCategoryOverrides, classificationContext, categoryOrder, organizationT]);
 
-  const repositoryMap = useMemo(() => new Map(repositories.map(repo => [String(repo.id), repo])), [repositories]);
 
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -226,11 +244,23 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     
     for (const category of allCategories) {
       if (category.id === 'all' || category.id === 'pending') continue;
-      const count = repositories.filter(repo => matchesCategory(repo, category, categoryMatchMode)).length;
+      const isAICategory = category.source === 'ai';
+      const count = isAICategory
+        ? repositories.filter(repo => activeClassificationScheme === 'technology'
+          ? repo.classifications?.technology?.categoryId === category.id
+          : repo.category_id === category.id).length
+        : repositories.filter(repo => matchesCategory(repo, category, categoryMatchMode)).length;
       counts.set(category.id, count);
     }
     return counts;
-  }, [repositories, allCategories, categoryMatchMode]);
+  }, [repositories, allCategories, categoryMatchMode, activeClassificationScheme]);
+
+  useEffect(() => {
+    const list = categoryListRef.current;
+    if (!list) return;
+    if (typeof list.scrollTo === 'function') list.scrollTo({ top: 0, behavior: 'auto' });
+    else list.scrollTop = 0;
+  }, [activeClassificationScheme]);
 
   const expanded = classificationNavigation?.[activeClassificationScheme]?.expanded ?? [];
   const parentIds = new Set((subcategories ?? []).map(group => group.parentId));
@@ -316,53 +346,19 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     setIsCreatingCategory(false);
   };
 
-  const handleSyncError = (originalRepo: Repository) => {
-    updateRepository(originalRepo, { overrideCategoryLock: true });
-    setDragOverCategoryId(null);
-    toast(
-      t('categorySidebar.sync-failed-reverted'),
-      'error'
-    );
-  };
-
   const handleDropOnCategory = async (event: React.DragEvent<HTMLDivElement>, category: Category) => {
-    event.preventDefault();
-    setDragOverCategoryId(null);
-
-    // 设置标志防止拖拽后触发点击
+    event.preventDefault(); event.stopPropagation(); setDragOverCategoryId(null);
     justDroppedRef.current = true;
-    if (dropTimeoutRef.current) {
-      clearTimeout(dropTimeoutRef.current);
-    }
-    dropTimeoutRef.current = setTimeout(() => {
-      justDroppedRef.current = false;
-    }, 300);
-
-    // drop 先于 dragend 派发；若当前正处于某分类视图，源卡片即将因分类变更
-    // 从列表卸载，其 React dragend 将丢失，这里显式复位拖拽状态（issue #353）
+    if (dropTimeoutRef.current) clearTimeout(dropTimeoutRef.current);
+    dropTimeoutRef.current = setTimeout(() => { justDroppedRef.current = false; }, 300);
+    const ids = repositoryIdsFromDrop(event.dataTransfer);
+    const captured = captureClassificationEdit(activeClassificationScheme);
     useRepositoryDragStore.getState().endDrag();
-
-    const repoId = event.dataTransfer.getData('application/x-gsm-repository-id');
-    const repository = repositoryMap.get(repoId);
-    if (!repository) return;
-
-    const targetId = category.id === 'all' || category.id === 'pending' ? null : category.id;
-    if ((repository.category_id ?? null) === targetId) return;
-    if (repository.category_locked && !await confirm(
-      organizationT('organization.lockedTitle'),
-      organizationT('organization.lockedConfirm'),
-      { type: 'warning' },
-    )) return;
-
-    const originalRepo = { ...repository };
-    assignConfirmedCategory(repository.id, targetId, useAppStore.getState().activeClassificationScheme ?? 'purpose');
+    if (!ids.length) return;
     try {
-      await forceSyncToBackend();
-    } catch {
-      handleSyncError(originalRepo);
-    }
+      await assignClassificationRepositories(ids, { categoryId: category.id === 'all' || category.id === 'pending' ? null : category.id, subcategoryId: null }, { confirm, toast }, captured);
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), 'error'); }
   };
-
   // 处理分类点击，防止拖拽后立即触发
   const handleCategoryClick = (categoryId: string) => {
     if (justDroppedRef.current) {
@@ -373,6 +369,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
       else setClassificationExpanded(activeClassificationScheme, [...new Set([...expanded, categoryId])]);
     }
     onCategorySelect(categoryId);
+    if (isMobile) setMobileTreeOpen(false);
   };
 
   const renderSettingsShortcuts = (collapsed: boolean) => {
@@ -383,7 +380,7 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
       }] : []),
     ];
     return (
-      <nav aria-label={t('settingsPanel.settings-tabs')} className={`mt-3 border-t border-border pt-3 ${collapsed ? 'space-y-2' : 'flex flex-wrap gap-2 lg:block lg:space-y-1'}`}>
+      <nav aria-label={t('settingsPanel.settings-tabs')} className={`mt-3 shrink-0 border-t border-border pt-3 ${collapsed ? 'space-y-2' : 'flex flex-wrap gap-2 lg:block lg:space-y-1'}`}>
         {shortcuts.map(({ tab, label, icon: Icon }) => (
           <Button
             key={tab}
@@ -413,391 +410,70 @@ export const CategorySidebar: React.FC<CategorySidebarProps> = ({
     );
   };
 
-  return (
-    <>
-      {/* 移动端：始终显示完整侧栏 */}
-      {isMobile ? (
-        <div className="w-full overflow-hidden rounded-md border border-border bg-card p-3 sm:p-4">
-          <ClassificationSchemeSwitch />
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-card-foreground">
-              {t('categorySidebar.categories')}
-            </h2>
-            <Button
-              variant="ghost"
-              onClick={handleAddCategory}
-              size="icon"
-              className="h-8 w-8"
-              title={t('categorySidebar.add-category')}
-              aria-label={t('categorySidebar.add-category')}
-            >
-              <Plus className="w-4 h-4" />
-            </Button>
-          </div>
+  const collapsed = !isMobile && isSidebarCollapsed;
+  const visibleCategories = collapsed ? (() => {
+    const normal = allCategories.filter(category => category.id !== 'all' && category.id !== 'pending');
+    const shown = normal.slice(0, Math.max(1, collapsedSidebarCategoryCount - 2));
+    const selected = normal.find(category => category.id === selectedCategory);
+    if (selected && !shown.includes(selected)) shown[shown.length - 1] = selected;
+    return [...allCategories.filter(category => category.id === 'all'), ...shown, ...allCategories.filter(category => category.id === 'pending')];
+  })() : allCategories;
 
-          <div className="max-h-[50vh] space-y-1 overflow-y-auto pb-1">
-            {allCategories.map(category => {
-              const count = getCategoryCount(category);
+  const selectedSubgroup = (subcategories ?? []).find(group => group.id === selectedCategory);
+  const selectedCategoryRecord = allCategories.find(category => category.id === selectedCategory);
+  const selectedLabel = selectedSubgroup?.name ?? selectedCategoryRecord?.name ?? selectedCategory;
+  const selectedCount = selectedSubgroup ? repositories.filter(repo => repo.subcategory_id === selectedSubgroup.id && repo.category_id === selectedSubgroup.parentId).length : selectedCategoryRecord ? getCategoryCount(selectedCategoryRecord) : 0;
+  const mobileToggleLabel = language.startsWith('zh') ? (mobileTreeOpen ? '收起分类' : '浏览分类') : (mobileTreeOpen ? 'Hide categories' : 'Browse categories');
+  return <>
+    <div className="relative z-10 shrink-0 lg:sticky lg:top-16 lg:self-start">
+      <div data-classification-sidebar className={`linear-sidebar relative flex min-h-0 flex-col overflow-hidden ${isMobile ? 'w-full p-3' : collapsed ? 'w-14 p-2' : 'w-72 p-4'}`}
+        style={{ height: isMobile ? mobileTreeOpen ? 'min(24rem, calc(100dvh - 6rem))' : 'auto' : 'min(48rem, calc(100dvh - 8rem))' }}>
+        <div className={`flex shrink-0 items-center mb-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
+          {!collapsed && <h2 className="text-base font-semibold text-card-foreground">{t('categorySidebar.categories')}</h2>}
+          <div className="flex items-center gap-1">
+            {!collapsed && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleAddCategory} title={t('categorySidebar.add-category')} aria-label={t('categorySidebar.add-category')}><Plus className="h-4 w-4" /></Button>}
+            {!isMobile && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleSidebar} title={t(collapsed ? 'categorySidebar.expand-sidebar-ctrl-cmd-b' : 'categorySidebar.collapse-sidebar-ctrl-cmd-b')} aria-label={t(collapsed ? 'categorySidebar.expand-sidebar' : 'categorySidebar.collapse-sidebar')} aria-expanded={!collapsed}>{collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}</Button>}
+          </div>
+        </div>
+        {!collapsed && <div className="shrink-0"><ClassificationSchemeSwitch /></div>}
+        {isMobile && <Button type="button" variant="outline" className="mb-1 h-auto min-h-9 shrink-0 justify-between gap-2 px-2 py-2" aria-label={mobileToggleLabel} aria-expanded={mobileTreeOpen} aria-controls={mobileTreeOpen ? 'mobile-classification-tree' : undefined} onClick={() => setMobileTreeOpen(open => !open)}><span className="shrink-0 text-xs">{mobileToggleLabel}</span><span className="min-w-0 flex-1 line-clamp-2 break-words whitespace-normal text-left text-xs">{selectedLabel}</span><span className="shrink-0 text-xs tabular-nums">{selectedCount}</span>{mobileTreeOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}</Button>}
+        {(!isMobile || mobileTreeOpen) && <div id={isMobile ? 'mobile-classification-tree' : undefined} data-classification-scroll ref={categoryListRef} onScroll={handleCategoryScroll} className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden category-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}>
+          <div className="space-y-1">
+            {visibleCategories.map(category => {
               const isSelected = selectedCategory === category.id;
               const isDragTarget = dragOverCategoryId === category.id;
-              // 拖拽仓库时「全部分类」变为「取消分类」拖放热区
               const isUncategorizeHotspot = category.id === 'all' && isRepoDragging;
-
-              return (
-                <div
-                  key={category.id}
-                  className="group relative min-w-0"
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setDragOverCategoryId(category.id);
-                  }}
-                  onDragLeave={() => {
-                    if (dragOverCategoryId === category.id) {
-                      setDragOverCategoryId(null);
-                    }
-                  }}
-                  onDrop={(event) => handleDropOnCategory(event, category)}
-                >
-                  {renderCategoryToggle(category)}
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleCategoryClick(category.id)}
-                    size="sm"
-                    className={`relative flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md pl-7 text-left transition-colors ${
-                      isDragTarget
-                        ? isUncategorizeHotspot
-                          ? 'bg-warning/10 text-warning ring-1 ring-warning/40'
-                          : 'bg-success/10 text-success ring-1 ring-success/40'
-                        : isUncategorizeHotspot
-                          ? 'border border-dashed border-warning/50 bg-warning/5 text-warning'
-                          : isSelected
-                            ? 'bg-accent text-accent-foreground font-medium'
-                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                    }`}
-                    title={category.id !== 'all' ? t('categorySidebar.drag-hint', { name: category.name }) : (isUncategorizeHotspot ? t('categorySidebar.drop-here-to-remove-category') : undefined)}
-                    aria-pressed={isSelected}
-                    aria-current={isSelected ? 'page' : undefined}
-                  >
-                    <div className="flex items-center space-x-3 min-w-0 flex-1">
-                      <span className="text-base flex-shrink-0">
-                        {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
-                      </span>
-                      <span className="text-sm font-medium truncate">
-                        {isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}
-                      </span>
-                    </div>
-                    <span
-                      className={`shrink-0 rounded-md px-2 py-0.5 text-xs ${
-                        isDragTarget
-                          ? isUncategorizeHotspot
-                            ? 'bg-warning/10 text-warning'
-                            : 'bg-success/10 text-success'
-                          : isUncategorizeHotspot
-                            ? 'bg-warning/10 text-warning'
-                            : isSelected
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted text-muted-foreground'
-                      }`}
-                    >
-                      {count}
-                    </span>
+              const system = category.id === 'all' || category.id === 'pending';
+              return <div key={category.id} className="group relative min-w-0"
+                onDragOver={event => { event.preventDefault(); setDragOverCategoryId(category.id); }}
+                onDragLeave={() => { if (dragOverCategoryId === category.id) setDragOverCategoryId(null); }}
+                onDrop={event => handleDropOnCategory(event, category)}>
+                {!collapsed && renderCategoryToggle(category)}
+                <div className="flex min-w-0 items-start gap-0.5">
+                  <Button variant="ghost" size={collapsed ? 'icon' : 'sm'} onClick={() => handleCategoryClick(category.id)} aria-pressed={isSelected} aria-current={isSelected ? 'page' : undefined}
+                    aria-label={collapsed ? (isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name) : undefined}
+                    title={isUncategorizeHotspot ? t('categorySidebar.uncategorize-drop-here-to-remove-category') : category.name}
+                    className={`${collapsed ? 'h-8 w-8 text-lg mx-auto' : 'h-auto min-h-9 min-w-0 flex-1 justify-between gap-2 py-2 pl-7 pr-1 text-left'} ${isDragTarget ? 'bg-success/10 text-success ring-1 ring-success/40' : isUncategorizeHotspot ? 'border border-dashed border-warning/50 text-warning' : isSelected ? 'bg-accent text-accent-foreground font-medium' : 'text-muted-foreground hover:bg-accent'} ${!collapsed && !showText && !isMobile ? 'opacity-0' : ''}`}>
+                    {collapsed ? (isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : categoryIcon(category)) : <>
+                      <span className="flex min-w-0 flex-1 items-center gap-2"><span className="shrink-0 text-base">{isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : categoryIcon(category)}</span><span className="min-w-0 whitespace-normal break-words line-clamp-2 text-sm font-medium">{isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}</span></span>
+                      <span className={`shrink-0 min-w-6 rounded px-1.5 py-0.5 text-center text-xs tabular-nums ${isSelected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>{getCategoryCount(category)}</span>
+                    </>}
                   </Button>
-                  <ClassificationSidebarChildren categoryId={category.id} onCategorySelect={onCategorySelect} />
+                  {!collapsed && !system && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="mt-1 h-7 w-6 shrink-0" aria-label={`${category.name} ${language.startsWith('zh') ? '操作' : 'actions'}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setSubcategoryRequest(subcategoryManagementRequest('create', category.id))}><Plus className="mr-2 h-3.5 w-3.5" />{language.startsWith('zh') ? '添加二级分类' : 'Add subgroup'}</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => handleEditCategory(category)}><Edit3 className="mr-2 h-3.5 w-3.5" />{t('categorySidebar.edit-category')}</DropdownMenuItem>
+                    {category.isCustom ? <DropdownMenuItem onSelect={() => { void handleDeleteCategory(category); }}><Trash2 className="mr-2 h-3.5 w-3.5" />{t('categorySidebar.delete-category')}</DropdownMenuItem> : <DropdownMenuItem onSelect={() => { void handleHideDefaultCategory(category); }}><EyeOff className="mr-2 h-3.5 w-3.5" />{t('categorySidebar.hide-default-category')}</DropdownMenuItem>}
+                  </DropdownMenuContent></DropdownMenu>}
                 </div>
-              );
+                {!collapsed && <ClassificationSidebarChildren categoryId={category.id} onCategorySelect={id => { onCategorySelect(id); if (isMobile) setMobileTreeOpen(false); }} />}
+              </div>;
             })}
           </div>
-          {renderSettingsShortcuts(false)}
-        </div>
-      ) : (
-        /* 桌面端：可折叠侧栏 - sticky定位，滚动时保持可见 */
-        <div className="relative flex shrink-0 lg:sticky lg:top-16 lg:self-start z-10">
-          {/* 侧栏容器 */}
-          <div
-              className={`linear-sidebar relative overflow-visible transition-all duration-200 ease-out ${
-              isSidebarCollapsed
-                ? 'w-14 p-2'
-                : 'w-72 p-4'
-            }`}
-            style={{
-              maxHeight: isSidebarCollapsed ? 'calc(100vh - 8rem)' : 'calc(100vh - 8rem)',
-              transitionProperty: 'width, padding, max-height',
-            }}
-          >
-            {/* 折叠状态：简洁视图 */}
-            {isSidebarCollapsed ? (
-              <div className="flex flex-col items-center space-y-3 max-h-[calc(100vh-12rem)] overflow-y-auto scrollbar-hide">
-                {/* 展开按钮 - 放在折叠状态的顶部 */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={toggleSidebar}
-                  className="linear-icon-button w-8 h-8 flex items-center justify-center transition-colors duration-200"
-                  title={t('categorySidebar.expand-sidebar-ctrl-cmd-b')}
-                  aria-label={t('categorySidebar.expand-sidebar')}
-                  aria-expanded="false"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </Button>
-
-                <div className="h-px w-full bg-border" />
-
-                {/* 折叠状态下的分类图标列表 */}
-                <div className="flex flex-col items-center space-y-2">
-                  {(() => {
-                    // 确保选中分类在显示列表中
-                    const selectedIndex = allCategories.findIndex(c => c.id === selectedCategory);
-                    const isSelectedHidden = selectedIndex >= collapsedSidebarCategoryCount;
-                    let displayCategories = allCategories.slice(0, collapsedSidebarCategoryCount);
-                    if (isSelectedHidden && selectedIndex !== -1) {
-                      // 用选中分类替换最后一个
-                      displayCategories = [...allCategories.slice(0, collapsedSidebarCategoryCount - 1), allCategories[selectedIndex]];
-                    }
-                    return displayCategories.map((category) => {
-                      const isSelected = selectedCategory === category.id;
-                      const isDragTarget = dragOverCategoryId === category.id;
-                      const isUncategorizeHotspot = category.id === 'all' && isRepoDragging;
-                      return (
-                        <div
-                          key={category.id}
-                          className="group relative"
-                          onDragOver={(event) => {
-                            event.preventDefault();
-                            setDragOverCategoryId(category.id);
-                          }}
-                          onDragLeave={() => {
-                            if (dragOverCategoryId === category.id) {
-                              setDragOverCategoryId(null);
-                            }
-                          }}
-                          onDrop={(event) => handleDropOnCategory(event, category)}
-                        >
-                          <Button
-                            variant="ghost"
-                            onClick={() => handleCategoryClick(category.id)}
-                            aria-pressed={isSelected}
-                            size="icon"
-                            className={`h-8 w-8 rounded-md text-lg transition-all duration-200 ${
-                              isDragTarget
-                                ? isUncategorizeHotspot
-                                  ? 'bg-warning/10 text-warning outline outline-dashed outline-1 outline-warning/50'
-                                  : 'bg-success/10 text-success ring-1 ring-success/40'
-                                : isUncategorizeHotspot
-                                  ? 'text-warning outline outline-dashed outline-1 outline-warning/50'
-                                  : isSelected
-                                    ? 'bg-accent text-accent-foreground font-medium'
-                                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                            }`}
-                            title={category.id !== 'all' ? t('categorySidebar.drag-hint', { name: category.name }) : (isUncategorizeHotspot ? t('categorySidebar.uncategorize-drop-here-to-remove-category') : category.name)}
-                            aria-label={isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}
-                          >
-                            {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
-                          </Button>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-
-                {/* 添加分类按钮 */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAddCategory}
-                  className="linear-icon-button w-8 h-8 flex items-center justify-center"
-                  title={t('categorySidebar.add-category')}
-                  aria-label={t('categorySidebar.add-category')}
-                >
-                  <Plus className="w-4 h-4" />
-                </Button>
-              </div>
-            ) : (
-              /* 展开状态：完整视图 */
-              <div>
-                {/* 头部 - 包含折叠按钮 */}
-                <div className="flex items-center justify-between mb-4">
-                  <h2
-                      className={`text-base font-semibold text-card-foreground transition-all duration-200 ease-out ${
-                      showText ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
-                    }`}
-                  >
-                    {t('categorySidebar.categories')}
-                  </h2>
-                  <div className="flex items-center gap-1 pr-3">
-                    <Button
-                      variant="ghost"
-                      onClick={handleAddCategory}
-                      size="icon"
-              className="h-8 w-8"
-                      title={t('categorySidebar.add-category')}
-                      aria-label={t('categorySidebar.add-category')}
-                    >
-                      <Plus className="w-4 h-4" />
-                    </Button>
-                    {/* 折叠按钮 - 放在标题栏右侧 */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={toggleSidebar}
-                      className="h-8 w-8 rounded-md bg-muted text-muted-foreground transition-colors duration-200"
-                      title={t('categorySidebar.collapse-sidebar-ctrl-cmd-b')}
-                      aria-label={t('categorySidebar.collapse-sidebar')}
-                      aria-expanded="true"
-                    >
-                      <ChevronLeft className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-
-                {/* 分类列表 */}
-                <div
-                  ref={categoryListRef}
-                  onScroll={handleCategoryScroll}
-                  className={`-mr-4 max-h-[calc(100vh-12rem)] min-w-0 overflow-y-auto category-scrollbar ${isScrolling ? 'is-scrolling' : ''}`}
-                >
-                  <div className="space-y-1 pr-3">
-                  <ClassificationSchemeSwitch />
-                  {allCategories.map((category, index) => {
-                    const count = getCategoryCount(category);
-                    const isSelected = selectedCategory === category.id;
-                    const isDragTarget = dragOverCategoryId === category.id;
-                    // 拖拽仓库时「全部分类」变为「取消分类」拖放热区
-                    const isUncategorizeHotspot = category.id === 'all' && isRepoDragging;
-
-                    return (
-                      <div
-                        key={category.id}
-                        className="group relative"
-                        style={{
-                          transitionDelay: showText ? `${Math.min(index * 30, 300)}ms` : '0ms',
-                        }}
-                        onDragOver={(event) => {
-                          event.preventDefault();
-                          setDragOverCategoryId(category.id);
-                        }}
-                        onDragLeave={() => {
-                          if (dragOverCategoryId === category.id) {
-                            setDragOverCategoryId(null);
-                          }
-                        }}
-                        onDrop={(event) => handleDropOnCategory(event, category)}
-                      >
-                        {renderCategoryToggle(category)}
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleCategoryClick(category.id)}
-                          aria-pressed={isSelected}
-                          size="sm"
-                          className={`flex h-9 w-full items-center justify-between gap-2 rounded-md pl-7 text-left transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out ${category.id === 'all' || category.id === 'pending' ? 'pr-2' : 'pr-16'} ${
-                            isDragTarget
-                              ? isUncategorizeHotspot
-                                ? 'bg-warning/10 text-warning ring-1 ring-warning/40'
-                                : 'bg-success/10 text-success ring-1 ring-success/40'
-                              : isUncategorizeHotspot
-                                ? 'border border-dashed border-warning/50 bg-warning/5 text-warning'
-                                : isSelected
-                                  ? 'bg-accent text-accent-foreground font-medium'
-                                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                          } ${showText ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-3'}`}
-                          title={category.id !== 'all' ? t('categorySidebar.drag-hint', { name: category.name }) : (isUncategorizeHotspot ? t('categorySidebar.uncategorize-drop-here-to-remove-category') : undefined)}
-                        >
-                          <div className="flex items-center space-x-3 min-w-0 flex-1">
-                            <span className="text-base flex-shrink-0">
-                              {isUncategorizeHotspot ? <Undo2 className="h-4 w-4" /> : category.id === 'pending' ? <Inbox className="h-4 w-4" /> : category.icon}
-                            </span>
-                            <span
-                              className={`text-sm font-medium truncate transition-[opacity,transform] duration-200 ease-out ${
-                                showText ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2'
-                              }`}
-                            >
-                              {isUncategorizeHotspot ? t('categorySidebar.uncategorize') : category.name}
-                            </span>
-                          </div>
-
-                          {/* Counts retain a separate slot from category actions. */}
-                          <span
-                              className={`ml-auto flex min-w-8 shrink-0 justify-center rounded-md px-2 py-0.5 text-xs transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out ${
-                              isDragTarget
-                                ? isUncategorizeHotspot
-                                  ? 'bg-warning/20 text-warning'
-                                  : 'bg-success/20 text-success'
-                                : isUncategorizeHotspot
-                                  ? 'bg-warning/20 text-warning'
-                                  : isSelected
-                                    ? 'bg-primary text-primary-foreground'
-                                    : 'bg-muted text-muted-foreground'
-                            } ${showText ? 'opacity-100 scale-100' : 'opacity-0 scale-75'}`}
-                          >
-                            {count}
-                          </span>
-                        </Button>
-
-                        {/* Actions use the reserved trailing space, without covering counts. */}
-                        {category.id !== 'all' && category.id !== 'pending' && (
-                          <div className="absolute right-0 top-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto group-focus-within:pointer-events-auto">
-                            <Button
-                              variant="ghost"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditCategory(category);
-                              }}
-                              size="icon"
-                              className="h-7 w-7"
-                              title={t('categorySidebar.edit-category')}
-                              aria-label={t('categorySidebar.edit-category')}
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </Button>
-                            {category.isCustom ? (
-                              <Button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void handleDeleteCategory(category);
-                                }}
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-muted-foreground"
-                                title={t('categorySidebar.delete-category')}
-                                aria-label={t('categorySidebar.delete-category')}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
-                            ) : (
-                              <Button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void handleHideDefaultCategory(category);
-                                }}
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-muted-foreground"
-                                title={t('categorySidebar.hide-default-category')}
-                                aria-label={t('categorySidebar.hide-default-category')}
-                              >
-                                <EyeOff className="w-3.5 h-3.5" />
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                        <ClassificationSidebarChildren categoryId={category.id} onCategorySelect={onCategorySelect} />
-                      </div>
-                    );
-                  })}
-                  </div>
-                </div>
-              </div>
-            )}
-            {renderSettingsShortcuts(isSidebarCollapsed)}
-          </div>
-        </div>
-      )}
-
-      <CategoryEditModal
-        isOpen={editModalOpen}
-        onClose={handleCloseModal}
-        category={editingCategory}
-        isCreating={isCreatingCategory}
-      />
-    </>
-  );
+        </div>}
+        {renderSettingsShortcuts(collapsed)}
+      </div>
+    </div>
+    {subcategoryRequest && <SubcategoryManagementDialog key={`${subcategoryRequest.type}-${subcategoryRequest.parentId}`} request={subcategoryRequest} onClose={() => setSubcategoryRequest(null)} />}
+    <CategoryEditModal isOpen={editModalOpen} onClose={handleCloseModal} category={editingCategory} isCreating={isCreatingCategory} />
+  </>;
 };

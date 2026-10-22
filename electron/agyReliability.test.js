@@ -9,6 +9,33 @@ const { AgyQueue } = require('./agyQueue');
 const { AgyError } = require('./agyProtocol');
 const { createAgyDesktop, DEFAULT_PREFS } = require('./agyDesktop');
 const secure = { isEncryptionAvailable: () => true, encryptString: text => Buffer.from(text).reverse(), decryptString: bytes => Buffer.from(bytes).reverse().toString() };
+
+test('a Windows lock on an exited request directory does not block fresh isolated requests', async t => {
+  const cwd = await createAgyWorkspace(); let blocked = true; const directories = [];
+  const worker = createAgyWorker({ executable: 'fixture', cwd,
+    runtime: async options => { directories.push(options.cwd); return { text: 'done', usage: {} }; },
+    removeDirectory: async directory => {
+      if (directory === directories[0] && blocked) throw Object.assign(Error('busy'), { code: 'EBUSY' });
+      await fs.rm(directory, { recursive: true, force: true });
+    } });
+  t.after(async () => { blocked = false; await worker.close(); });
+  assert.equal((await worker.request({ requestId: 'first' })).text, 'done');
+  assert.equal(worker.state().degraded, true);
+  assert.equal((await worker.request({ requestId: 'second' })).text, 'done');
+  assert.notEqual(directories[0], directories[1]);
+  assert.equal(worker.state().pendingCleanup, 1);
+});
+
+test('a worker preserves the original cleanup failure and retains the exact process lease', async t => {
+  const cwd = await createAgyWorkspace(); let settle;
+  const cleanupSettled = new Promise(resolve => { settle = resolve; });
+  const worker = createAgyWorker({ executable: 'fixture', cwd, runtime: async () => {
+    throw Object.assign(new AgyError('CLEANUP_TIMEOUT'), { cleanupSettled });
+  } });
+  t.after(async () => { settle(); await new Promise(resolve => setTimeout(resolve, 20)); await worker.close(); });
+  await assert.rejects(worker.request({ requestId: 'failed' }), { code: 'CLEANUP_TIMEOUT' });
+  assert.equal(worker.state().suspect, 1);
+});
 test('one failed recycle is retryable; no poisoned maintenance promise or forgotten directory', async t => {
   const cwd = await createAgyWorkspace(); let blocked = true, calls = 0;
   const worker = createAgyWorker({ executable: 'fixture', cwd, runtime: async () => { calls++; return { text: 'done', usage: {} }; },

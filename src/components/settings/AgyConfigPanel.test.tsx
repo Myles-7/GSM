@@ -41,6 +41,21 @@ beforeEach(() => {
 afterEach(() => { Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined }); });
 
 describe('AGY device settings', () => {
+  it('saves global and project map limits near the controls and restores them after remount without testing the model',async()=>{
+    let latest:AgyDeviceState={...detected,enabled:true,prefs:{...initial.prefs,enabled:true,concurrency:5},revision:1};
+    api.getState=vi.fn().mockImplementation(async()=>latest);
+    api.save=vi.fn().mockImplementation(async(_id,prefs)=>({ok:true,value:latest={...latest,prefs,revision:(latest.revision??0)+1}}));
+    const view=render(<AgyConfigPanel/>);
+    fireEvent.change(await screen.findByLabelText('全局并发上限'),{target:{value:'3'}});
+    fireEvent.change(screen.getByLabelText('settingsUx.features.organization 并发上限'),{target:{value:'2'}});
+    fireEvent.click(screen.getByRole('button',{name:'保存并发'}));
+    await screen.findByText(/并发设置已保存/);
+    expect(useAppStore.getState().aiConfigs[0]).toMatchObject({concurrency:3,agyFeatureOverrides:{organization:{concurrency:2}}});
+    expect(api.probe).not.toHaveBeenCalled();expect(api.start).not.toHaveBeenCalled();
+    view.unmount();render(<AgyConfigPanel/>);
+    expect(await screen.findByLabelText('全局并发上限')).toHaveValue('3');
+    expect(screen.getByLabelText('settingsUx.features.organization 并发上限')).toHaveValue('2');
+  });
   it('allows disabling an enabled provider even after its probe expires', async () => {
     api.getState = vi.fn().mockResolvedValue({ ...detected, enabled: true, prefs: { ...initial.prefs, enabled: true } });
     render(<AgyConfigPanel />);
@@ -56,7 +71,8 @@ describe('AGY device settings', () => {
     render(<AgyConfigPanel />);
     fireEvent.change(await screen.findByLabelText('全局并发上限'), { target: { value: '3' } });
     fireEvent.change(screen.getByLabelText('仓库摘要 并发上限'), { target: { value: '2' } });
-    expect(document.querySelectorAll('select[id^="agy-batch-"]')).toHaveLength(5);
+    expect(document.querySelectorAll('select[id^="agy-batch-"]')).toHaveLength(6);
+    expect(document.querySelector('#agy-batch-organization')).toBeInTheDocument();
     expect(screen.queryByLabelText('仓库摘要 模型')).toBeNull();
     fireEvent.click(screen.getByText('agy.save'));
     await screen.findByText('agy.saved');

@@ -9,6 +9,7 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { DialogProvider } from './hooks/useDialog';
 import { TooltipProvider } from './components/ui/tooltip';
 import { logger } from './services/logger';
+import { installGlobalErrorHandlers } from './services/globalErrorHandlers';
 import { ensureThemeStyleTag } from './lib/themePresets';
 import { useAppStore } from './store/useAppStore';
 import { ensureLanguageLoaded, FALLBACK_LANGUAGE } from './i18n';
@@ -30,7 +31,8 @@ import '@fontsource/merriweather';
 import '@fontsource/lora';
 import '@fontsource/playfair-display';
 
-logger.info('app', 'Main.tsx loading');
+installGlobalErrorHandlers();
+logger.debug('app', 'Main.tsx loading');
 
 const bootstrap = async (): Promise<void> => {
   try {
@@ -45,14 +47,14 @@ const bootstrap = async (): Promise<void> => {
       ensureLanguageLoaded(initialLanguage),
       ensureLanguageLoaded(FALLBACK_LANGUAGE),
     ]);
-    logger.info('app', 'Initial language pack loaded', { initialLanguage });
+    logger.debug('app', 'Initial language pack loaded', { initialLanguage });
 
     const rootElement = document.getElementById('root');
     if (!rootElement) {
       throw new Error('Root element not found');
     }
 
-    logger.info('app', 'Root element found, creating React root');
+    logger.debug('app', 'Root element found, creating React root');
 
     const root = createRoot(rootElement);
     root.render(
@@ -67,7 +69,7 @@ const bootstrap = async (): Promise<void> => {
       </StrictMode>
     );
 
-    logger.info('app', 'React app rendered');
+    logger.debug('app', 'React app rendered');
   } catch (error) {
   logger.error('app', 'Failed to render React app', error);
   const strings = (() => {

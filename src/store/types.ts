@@ -56,6 +56,14 @@ export interface AppActions {
   setClassificationCollapsedGroups: (id: import('../types/classification').ClassificationSchemeId, collapsedGroups: string[]) => void;
   mutateClassification: (id: import('../types/classification').ClassificationSchemeId, command: import('./classificationActions').ClassificationCommand) => void;
   updateClassificationRepository: (id: import('../types/classification').ClassificationSchemeId, repo: Repository, options?: { overrideCategoryLock?: boolean; restoreSubcategory?: boolean }) => void;
+  setClassificationGeneration: (updates: Partial<import('../types/classification').ClassificationGenerationState>) => void;
+  replaceAIClassification: (input: {
+    purpose: import('../types/classification').ClassificationScheme;
+    technology: import('../types/classification').ClassificationScheme;
+    assignments: Record<string, { purpose: import('../types/aiOrganization').OrganizationMembership; technology: import('../types/aiOrganization').OrganizationMembership }>;
+    sourceFingerprint: string;
+    insights?: Record<string, Partial<Record<import('../types/classification').ClassificationSchemeId, import('../types/classification').ClassificationInsight>>>;
+  }) => void;
   addExternalDiscoveryChannel: (name: string, sourceUrl: string, kind?: ExternalFeedKind, expectedAccountId?: number) => boolean;
   removeExternalDiscoveryChannel: (id: DiscoveryChannelId) => void;
   // Auth actions
@@ -161,6 +169,7 @@ export interface AppActions {
   markAllForksAsRead: () => void;
 
   // Category actions
+  applyClassificationEdit: (schemeId: import('../types/classification').ClassificationSchemeId, command: import('./helpers/classificationEdits').ClassificationEditCommand) => void;
   addSubcategory: (subcategory: { parentId: string; name: string; icon: string }) => void;
   applyAIOrganization: (transaction: OrganizationTransaction) => void;
   updateSubcategory: (id: string, updates: { name?: string; icon?: string }) => void;
@@ -221,7 +230,10 @@ export interface AppActions {
   setRpcDownloadConfig: (updates: Partial<RpcDownloadConfig>) => void;
 
   // Repository list view actions
-  setRepositoryViewMode: (mode: 'grid' | 'list') => void;
+  setRepositoryViewMode: (mode: import('../types').RepositoryViewMode) => void;
+  setClusterDisplayMode: (mode: import('../types').ClusterDisplayMode) => void;
+  setClusterPreset: (preset: import('../types').ClusterPresetId) => void;
+  setClusterQuery: (query: string) => void;
 
   // Release Timeline View actions
   setReleaseViewMode: (mode: 'timeline' | 'repository') => void;

@@ -201,7 +201,7 @@
     "features": {
       "repository-summary": "Repository summaries",
       "repository-details": "Repository details",
-      "organization": "Organization",
+      "organization": "Project map / AI organization",
       "gist-summary": "Gist summaries",
       "release-summary": "Release summaries",
       "query-expansion": "Query expansion",

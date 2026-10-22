@@ -18,6 +18,24 @@ async function fixture() {
   return { api, sync, watchRemoteTasks, projectRemoteTask, journal: aiTaskJournal };
 }
 describe('authoritative remote task projection', () => {
+  it('routes persistent dispatch pause and continuation separately from failure recovery', async () => {
+    const f=await fixture();
+    const capable={...remote(),input:{repositories:['owner/one','owner/two']},capabilities:{pause:true,cancel:true,resume:'unsupported' as const}};
+    f.api.request.mockResolvedValue({tasks:[capable]});dispose=f.watchRemoteTasks(()=>f.sync,'7');await vi.advanceTimersByTimeAsync(0);
+    const id=f.journal.snapshot()[0].id;expect(f.journal.supports(id,'pause')).toBe(true);
+    f.api.request.mockResolvedValueOnce({...capable,pauseRequested:true});f.journal.control(id,'pause');await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.request).toHaveBeenLastCalledWith('/tasks/original-server-id/pause',f.sync.identity,expect.any(AbortSignal));expect(f.journal.snapshot()[0].state).toBe('pausing');
+    f.api.request.mockResolvedValue({tasks:[{...capable,status:'paused',pauseRequested:true}]});await vi.advanceTimersByTimeAsync(5000);
+    expect(f.journal.snapshot()[0].state).toBe('paused');expect(f.journal.supports(id,'resume')).toBe(true);expect(f.journal.supports(id,'stop')).toBe(true);
+    f.api.request.mockResolvedValueOnce({...capable,status:'queued',pauseRequested:false});f.journal.control(id,'resume');await vi.advanceTimersByTimeAsync(0);
+    expect(f.api.request).toHaveBeenLastCalledWith('/tasks/original-server-id/continue',f.sync.identity,expect.any(AbortSignal));expect(f.api.request.mock.calls.some(([url])=>url.endsWith('/resume'))).toBe(false);
+  });
+  it('preserves existing repository request and recovery references when refreshing server state',async()=>{
+    const f=await fixture();const original=f.projectRemoteTask(f.sync,remote());
+    f.journal.patch(original.id,{items:[{...original.items[0],requestId:'provider-request',recovery:{requestId:'recovery'},validationStatus:'passed'}]});
+    const projected=f.projectRemoteTask(f.sync,{...remote('completed'),result:{content:'actual',data:{summary:'actual'}}});
+    expect(projected.items[0]).toMatchObject({requestId:'provider-request',recovery:{requestId:'recovery'},validationStatus:'passed',state:'complete'});expect(projected.units).toEqual({items:'repositories',repositories:1});
+  });
   it('requires conflict review before rebasing a commit and never calls resume', async () => {
     const f = await fixture();
     const conflict = { ...remote('completed'), commitStatus: 'conflict' as const, providerOutcome: 'succeeded' as const };

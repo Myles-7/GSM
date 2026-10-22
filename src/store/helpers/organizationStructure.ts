@@ -4,7 +4,7 @@ import { normalizeOrder } from './repositoryOrganization';
 
 export function structureSnapshot(state: AppStoreState): OrganizationStructureSnapshot {
   return JSON.parse(JSON.stringify({ customCategories: state.customCategories, defaultCategoryOverrides: state.defaultCategoryOverrides,
-    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds, categoryOrder: state.categoryOrder,
+    hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds.filter(id => id !== 'all' && id !== 'pending'), categoryOrder: state.categoryOrder.filter(id => id !== 'all' && id !== 'pending'),
     subcategories: state.subcategories, subcategoryOrder: state.subcategoryOrder, repositoryOrder: normalizeOrder(state.repositoryOrder, state.repositories.map(r => r.id)), categoryListIdMap: state.categoryListIdMap }));
 }
 export function stableStructure(value: unknown): string {

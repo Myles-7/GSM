@@ -23,6 +23,7 @@ vi.mock('./backendAdapter', () => ({
     syncEmbeddingConfigs: vi.fn().mockResolvedValue(undefined),
     syncVectorSearchConfig: vi.fn().mockResolvedValue(undefined),
     syncSettings: vi.fn().mockResolvedValue(undefined),
+    importData: vi.fn().mockResolvedValue({}),
   },
 }));
 
@@ -631,5 +632,52 @@ describe('backend pushes requested during another sync', () => {
     const pushed = pushedCalls[pushedCalls.length - 1][0];
     expect(pushed.map(repo => repo.full_name)).toContain('owner/repo-2');
     expect(useAppStore.getState().repositories.map(repo => repo.full_name)).toContain('owner/repo-2');
+  });
+});
+
+describe('classification push receipts', () => {
+  let previousState: ReturnType<typeof useAppStore.getState>;
+  beforeEach(() => {
+    previousState = useAppStore.getState();
+    vi.mocked(backend.syncRepositories).mockReset().mockResolvedValue(undefined);
+    vi.mocked(backend.syncSettings).mockReset().mockResolvedValue(undefined);
+    vi.mocked(backend.importData).mockReset().mockResolvedValue({});
+    useAppStore.setState({ user: { id: 42 } as never, repositories: [createRepository(1)], classificationSchemes: { generation: { status: 'ready', generation: 4, queuedRepositoryIds: [], sourceFingerprint: 'current', syncPending: true } } });
+  });
+  afterEach(() => { useAppStore.setState(previousState); });
+  it('clears pending after atomic import succeeds despite an unrelated ordinary shard failure', async () => {
+    vi.mocked(backend.syncReleases).mockRejectedValueOnce(new Error('releases unavailable'));
+    expect(await syncToBackend()).toBe(false);
+    expect(useAppStore.getState().classificationSchemes!.generation!.syncPending).toBe(false);
+    expect(backend.importData).toHaveBeenCalledWith(expect.objectContaining({ isFullRepositorySync: true, repositories: [expect.objectContaining({ owner_login: 'owner' })], settings: expect.objectContaining({ classificationSchemes: expect.not.objectContaining({ generation: expect.anything() }) }) }));
+    expect(await syncToBackend()).toBe(true);
+    expect(useAppStore.getState().classificationSchemes!.generation!.syncPending).toBe(false);
+  });
+  it('retains pending and avoids split writes after atomic classification import fails', async () => {
+    vi.mocked(backend.importData).mockRejectedValueOnce(new Error('snapshot rejected'));
+    expect(await syncToBackend()).toBe(false);
+    expect(useAppStore.getState().classificationSchemes!.generation!.syncPending).toBe(true);
+    expect(backend.syncRepositories).not.toHaveBeenCalled();
+    expect(backend.syncSettings).not.toHaveBeenCalled();
+    expect(await syncToBackend()).toBe(true);
+    expect(useAppStore.getState().classificationSchemes!.generation!.syncPending).toBe(false);
+  });
+  it('does not enqueue a backend push for local generation progress or delivery flags', async () => {
+    vi.useFakeTimers();
+    const unsubscribe = startAutoSync();
+    try {
+      useAppStore.getState().setClassificationGeneration({ status: 'running', syncPending: true, queuedRepositoryIds: [1], error: 'SYNC_PENDING:offline' });
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(backend.importData).not.toHaveBeenCalled();
+      expect(backend.syncRepositories).not.toHaveBeenCalled();
+    } finally { stopAutoSync(unsubscribe); vi.useRealTimers(); }
+  });
+  it('does not use the previous account acknowledgement for the newly logged-in account', async () => {
+    let finish: () => void = () => {};
+    vi.mocked(backend.importData).mockReturnValueOnce(new Promise<Record<string, unknown>>(resolve => { finish = () => resolve({}); }));
+    const pushing = syncToBackend();
+    useAppStore.setState({ user: { id: 99 } as never });
+    finish(); await pushing;
+    expect(useAppStore.getState().classificationSchemes!.generation!.syncPending).toBe(true);
   });
 });

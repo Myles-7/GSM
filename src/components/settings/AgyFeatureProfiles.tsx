@@ -2,7 +2,7 @@ import { AGY_FEATURES, type AgyDevicePrefs, type AgyFeature } from '../../types/
 import { useT } from '../../i18n/useT';
 import { Button } from '../ui/button';
 
-const AGY_BATCH_FEATURES: AgyFeature[] = ['repository-summary', 'repository-details', 'gist-summary', 'release-summary', 'discovery'];
+const AGY_BATCH_FEATURES: AgyFeature[] = ['repository-summary', 'repository-details', 'organization', 'gist-summary', 'release-summary', 'discovery'];
 
 /** Keep batch limits visible; preserve old model/effort overrides until explicitly reset. */
 export function AgyFeatureProfiles({ draft, update, testFeature }: {

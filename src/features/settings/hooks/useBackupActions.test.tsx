@@ -19,7 +19,7 @@ vi.mock('../../../services/localBackupRestore', () => ({ executeLocalBackupResto
 vi.mock('../../../services/localBackupScope', () => ({ getLocalBackupIdentity: () => ({ githubUserId: '42', workspaceId: null }) }));
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.state = { user: { id: 42 }, language: 'zh', repositories: [], releases: [], customCategories: [], hiddenDefaultCategoryIds: [],
+  mocks.state = { user: { id: 42 }, language: 'zh', repositories: [], releases: [], customCategories: [], hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], defaultCategoryOverrides: {},
     aiConfigs: [], webdavConfigs: [{ id: 'dav', name: 'Backup', password: 'secret' }], activeWebDAVConfig: 'dav',
     proxyConfig: {}, rpcDownloadConfig: {}, releaseSubscriptions: new Set(), readReleases: new Set(), routeMode: 'auto', setRouteMode: vi.fn(),
     includeKeysInBackup: false, setLastBackup: vi.fn(), setReleases: vi.fn() };

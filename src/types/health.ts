@@ -1,7 +1,7 @@
 /**
  * Repository Health Core —— 客观事实模型。
  *
- * 设计边界（见 docs/plans/2026-09-17-product-roadmap.md §4）：
+ * 设计边界（见 docs/architecture.md）：
  * - Core 只提供**可验证的事实**与保守状态，不提供 0–100 健康总分，也不做主观结论。
  * - 「最近没有提交」不等于「不健康」：成熟稳定项目长期不更新是正常状态，
  *   因此本模块只输出中性观测（例如 `no-recent-activity`），由 UI/插件决定如何解释。

@@ -1,13 +1,14 @@
 const { AgyError } = require('./agyProtocol');
 
 class AgyQueue {
-  constructor(limit = 1) {
+  constructor(limit = 1, { suspectTimeoutMs = 15000 } = {}) {
     this.running = new Set(); this.pending = []; this.closed = false;
     this.limit = limit; this.effective = limit; this.featureLimits = {};
     this.cooldownUntil = 0; this.lastLimited = 0; this.successes = 0; this.interactiveStreak = 0;
     this.quarantined = false;
     this.suspects = new Set();
     this.timeouts = 0;
+    this.suspectTimeoutMs = suspectTimeoutMs;
     this.producerTurns = new Map(); this.turn = 0;
     this.onTaskFailure = null;
   }
@@ -24,6 +25,23 @@ class AgyQueue {
     if (this.suspects.size) throw new AgyError('RECOVERY_REQUIRED');
     this.quarantined = false; this.effective = this.limit; this.timeouts = 0; this.successes = 0;
     this.drain();
+  }
+  addSuspect(task, cleanupSettled) {
+    const suspect = { owner: task.owner, id: task.id };
+    this.suspects.add(suspect);
+    let settled = false;
+    let timer;
+    const release = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (this.suspects.delete(suspect)) this.drain();
+    };
+    timer = setTimeout(release, this.suspectTimeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    if (cleanupSettled && typeof cleanupSettled.then === 'function') {
+      void cleanupSettled.then(release, release);
+    }
   }
   state() {
     const features = {};
@@ -100,8 +118,8 @@ class AgyQueue {
     try {
       const result = await task.work(task.controller.signal);
       if (result?.cleanupSettled) {
-        const suspect = { owner: task.owner, id: task.id }; this.suspects.add(suspect);
-        void result.cleanupSettled.then(() => { this.suspects.delete(suspect); this.drain(); }, () => {});
+        this.addSuspect(task, result.cleanupSettled);
+
       }
       if (task.controller.signal.aborted) throw new AgyError('CANCELED');
       if (++this.successes >= 5 && Date.now() - this.lastLimited >= 60000 && this.effective < this.limit) {
@@ -116,8 +134,8 @@ class AgyQueue {
       // A cleanup failure belongs to this request/worker. Do not turn one
       // uncertain child into a generation-wide outage or abort healthy siblings.
       if (error.code === 'CLEANUP_TIMEOUT' || error.cleanupSettled) {
-        const suspect = { owner: task.owner, id: task.id }; this.suspects.add(suspect);
-        if (error.cleanupSettled) void error.cleanupSettled.then(() => { this.suspects.delete(suspect); this.drain(); }, () => {});
+        this.addSuspect(task, error.cleanupSettled);
+
         this.onTaskFailure?.(task, error);
       }
       if (error.code === 'RATE_LIMIT') {

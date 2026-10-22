@@ -15,10 +15,10 @@ test('intent and terminal survive restart; duplicate ids never become fresh disp
   const { directory, registry } = await fixture(t);
   assert.equal((await registry.reserve('42', 'req', input)).existing, false);
   await registry.sent('42', 'req');
-  const restarted = createAgyCallRegistry({ directory, safeStorage: secure });
-  assert.equal((await restarted.list('42')).records[0].providerOutcome, 'unknown');
-  assert.equal((await restarted.reserve('42', 'req', input)).existing, true);
   await registry.succeed('42', 'req', { text: 'private-result-sentinel', usage: {} });
+  const restarted = createAgyCallRegistry({ directory, safeStorage: secure });
+  assert.equal((await restarted.list('42')).records[0].providerOutcome, 'succeeded');
+  assert.equal((await restarted.reserve('42', 'req', input)).existing, true);
   const result = await restarted.read('42', 'req');
   assert.equal(result.result.text, 'private-result-sentinel');
   assert.equal(result.context.readme, 'original evidence');
@@ -111,4 +111,44 @@ test('success and staged commits retain quota until an idempotent consumption re
   await restarted.ack('42', 'one', saved.record.resultDigest);
   await restarted.reserve('42', 'two', input);
   assert.equal((await restarted.read('42', 'one')).result, undefined);
+});
+
+test('restart releases abandoned in-flight reservations without dropping evidence or retrying calls', async t => {
+  const { directory, registry } = await fixture(t, { maxBytes: 20000, reservationBytes: 12000 });
+  await registry.reserve('42', 'interrupted', input); await registry.sent('42', 'interrupted');
+  await assert.rejects(registry.reserve('42', 'blocked-live', input), /RECOVERY_STORAGE_FULL/);
+  const restarted = createAgyCallRegistry({ directory, safeStorage: secure, maxBytes: 20000, reservationBytes: 12000 });
+  await restarted.reserve('42', 'new-request', input);
+  const saved = await restarted.read('42', 'interrupted');
+  assert.equal(saved.record.providerOutcome, 'unknown');
+  assert.equal(saved.context.readme, 'original evidence');
+  assert.ok(saved.record.bytes < 12000);
+  assert.equal((await restarted.reserve('42', 'interrupted', input)).existing, true);
+});
+
+test('restart preserves successful unconsumed results and releases only unsent abandoned reservations', async t => {
+  const { directory, registry } = await fixture(t, { maxBytes: 30000, reservationBytes: 12000 });
+  await registry.reserve('42', 'success', input); await registry.sent('42', 'success');
+  await registry.succeed('42', 'success', { text: 'keep this result', usage: {} });
+  await registry.reserve('42', 'unsent', input);
+  const restarted = createAgyCallRegistry({ directory, safeStorage: secure, maxBytes: 30000, reservationBytes: 12000 });
+  await restarted.reserve('42', 'fresh', input);
+  const saved = await restarted.read('42', 'success'); assert.equal(saved.result.text, 'keep this result'); assert.equal(saved.record.bytes, 12000);
+  const unsent = await restarted.read('42', 'unsent'); assert.equal(unsent.record.providerOutcome, 'not_started'); assert.ok(unsent.record.bytes < 12000);
+  await restarted.sent('42', 'fresh');
+  await restarted.list('42');
+  assert.equal((await restarted.read('42', 'fresh')).record.bytes, 12000);
+});
+
+test('default quota recovers from five interrupted calls plus one unconsumed result', async t => {
+  const { directory, registry } = await fixture(t);
+  for (let index = 0; index < 5; index++) { await registry.reserve('42', `old-${index}`, input); await registry.sent('42', `old-${index}`); }
+  await registry.reserve('42', 'retained', input); await registry.sent('42', 'retained'); await registry.succeed('42', 'retained', { text: 'preserve paid result', usage: {} });
+  await assert.rejects(registry.reserve('42', 'project-map', input), /RECOVERY_STORAGE_FULL/);
+  const restarted = createAgyCallRegistry({ directory, safeStorage: secure });
+  await restarted.reserve('42', 'project-map', input); await restarted.sent('42', 'project-map');
+  await restarted.succeed('42', 'project-map', { text: '{"projects":[]}', usage: {} });
+  const result = await restarted.read('42', 'project-map'); await restarted.ack('42', 'project-map', result.record.resultDigest);
+  assert.equal((await restarted.read('42', 'retained')).result.text, 'preserve paid result');
+  assert.equal((await restarted.list('42')).records.filter(row => row.providerOutcome === 'unknown').length, 5);
 });

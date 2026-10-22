@@ -60,12 +60,15 @@ const DEFAULT_CONFIG: OptimizerConfig = {
 
 function isTransientAnalysisError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
-  const e = error as { name?: string; status?: number; statusCode?: number; code?: string; message?: string };
+  const e = error as { name?: string; status?: number; statusCode?: number; code?: string; message?: string; providerOutcome?: string;
+    details?: { providerOutcome?: string; sent?: boolean } };
   if (e.name === 'AbortError') return false;
+  if (['unknown', 'in_flight', 'succeeded'].includes(e.providerOutcome ?? e.details?.providerOutcome ?? '') || e.details?.sent === true) return false;
   const status = e.status ?? e.statusCode;
   if (typeof status === 'number') return [408, 429, 500, 502, 503, 504].includes(status);
   const message = e.message ?? '';
-  if (message.startsWith('AGY_')) return /^AGY_(?:BUSY|RATE_LIMIT|TIMEOUT|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(message);
+  if (message.startsWith('AGY_')) return /^AGY_(?:BUSY|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(message)
+    || message === 'AGY_RATE_LIMIT' && e.details?.sent === false;
   if (/\b(?:cancelled|canceled|aborted|unauthorized|forbidden|authentication|invalid api key)\b/i.test(message)) return false;
   const httpStatus = message.match(/\b(?:HTTP|AI API error:?)\s*(\d{3})\b/i);
   if (httpStatus) return [408, 429, 500, 502, 503, 504].includes(Number(httpStatus[1]));

@@ -100,12 +100,12 @@ describe('task journal persistence and lifecycle', () => {
     expect((await taskJournalStorage.read('owner')).records).toEqual([]);
   });
 
-  it('caps successful automatic tasks while retaining unresolved attention tasks', async () => {
+  it('retains thirty-day automatic history without the old two-hundred task cap', async () => {
     const api = await journal();
     for (let i = 0; i < 240; i++) api.begin('owner', 'sync', [], undefined, undefined, { trigger: 'automatic' }).finish('complete');
     const attention = api.begin('owner', 'sync', [], undefined, undefined, { trigger: 'automatic' }); attention.finish('failed');
     await api.flush('owner');
-    expect(api.snapshot()).toHaveLength(201);
+    expect(api.snapshot()).toHaveLength(241);
     expect(api.snapshot().some(record => record.id === attention.id)).toBe(true);
   });
   it('keeps stable order and persists more than twenty active tasks', async () => {
@@ -164,6 +164,13 @@ describe('task journal persistence and lifecycle', () => {
     expect(api.snapshot()[0].state).toBe('paused'); task.state('committing'); api.control(task.id, 'stop'); expect(stop).not.toHaveBeenCalled();
   });
 
+  it('aggregates concurrent item phases instead of displaying the latest callback as the whole task',async()=>{
+    const api=await journal();const task=api.begin('owner','exploration',[{id:'a',label:'A'},{id:'b',label:'B'}]);
+    task.item('a','running');task.item('b','running');task.itemExecution('a',{phase:'generating'});task.itemExecution('b',{phase:'cleanup'});
+    expect(api.snapshot()[0].phase).toBe('generating');
+    task.itemExecution('a',{phase:'initializing'});expect(api.snapshot()[0].phase).toBe('initializing');
+  });
+
   it('never removes live records and preserves completed results on stop', async () => {
     const api = await journal(); const task = api.begin('owner', 'summary', [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }]);
     task.bind({ stop: vi.fn() }); task.item('a', 'complete'); api.archive([task.id], true); api.remove([task.id]); expect(api.snapshot()).toHaveLength(1);
@@ -177,10 +184,10 @@ describe('task journal persistence and lifecycle', () => {
     api.stopOwner('a'); expect(stops[0]).toHaveBeenCalledOnce(); expect(stops[1]).not.toHaveBeenCalled(); expect(stops[2]).not.toHaveBeenCalled();
   });
 
-  it('expires only unarchived successful and canceled history', async () => {
+  it('expires unprotected finished history after 30 days while preserving unresolved tasks', async () => {
     const api = await journal(); const old = new Date(Date.now() - 40 * 86400000).toISOString();
     for (const state of ['complete', 'failed', 'interrupted', 'unconfirmed', 'running'] as const) api.project({ id: state, owner: 'a', kind: 'sync', state, updatedAt: old, endedAt: state === 'running' ? undefined : old, items: [] });
-    await api.flush('a'); expect(api.snapshot().map(task => task.id)).toEqual(['failed', 'interrupted', 'unconfirmed', 'running']);
+    await api.flush('a'); expect(api.snapshot().map(task => task.id)).toEqual(['interrupted', 'unconfirmed', 'running']);
   });
 
   it('surfaces storage failures and redacts secrets in errors', async () => {

@@ -23,9 +23,26 @@ const { install } = await import('/scripts/fixtures/render-performance-renderer.
 install();
 await import('/src/main.tsx');
 await window.gsmDiagnostic.configure(100);
+if (new URLSearchParams(location.search).has('exploration')) {
+  const { configureExplorationAudit } = await import('/scripts/fixtures/exploration-audit.ts');
+  const count = Number(new URLSearchParams(location.search).get('exploration') || 368);
+  await configureExplorationAudit(Math.max(1, Math.min(1000, count)), new URLSearchParams(location.search).has('partialTask'), new URLSearchParams(location.search).has('searchAudit'));
+}
+if (new URLSearchParams(location.search).has('classification')) {
+  const { configureClassificationAudit } = await import('/scripts/fixtures/classification-audit.ts');
+  configureClassificationAudit();
+}
 if (new URLSearchParams(location.search).has('aiUx')) {
   const { configureAIUX } = await import('/scripts/fixtures/ai-ux-audit.ts');
   await configureAIUX(new URLSearchParams(location.search).get('aiUx'));
+}
+if (new URLSearchParams(location.search).has('agySettings')) {
+  const { configureAgySettingsAudit } = await import('/scripts/fixtures/agy-settings-audit.ts');
+  configureAgySettingsAudit();
+}
+if (new URLSearchParams(location.search).has('projectAudit')) {
+  const { configureProjectAudit } = await import('/scripts/fixtures/project-audit.ts');
+  await configureProjectAudit(new URLSearchParams(location.search));
 }
 `;
 const plugin = {
@@ -40,6 +57,15 @@ const plugin = {
     server.middlewares.use(async (request, response, next) => {
       const url = request.url?.split('?')[0];
       if (url !== '/') return next();
+      const query = new URL(request.url, 'http://127.0.0.1');
+      const viewport = query.searchParams.get('viewport');
+      if (viewport === 'mobile' || viewport === 'short' || viewport === 'desktop') {
+        const [width,height] = viewport === 'mobile' ? [390,844] : viewport === 'short' ? [1280,600] : [1600,1000];
+        query.searchParams.delete('viewport');
+        response.setHeader('Content-Type','text/html; charset=utf-8');
+        response.end(`<!doctype html><meta charset="utf-8"><title>GSM ${width} × ${height} 隔离视口检查</title><style>body{margin:0;background:#e8e9eb;font:12px sans-serif}header{padding:8px}iframe{border:0;background:white;display:block;width:${width}px;height:${height}px}</style><header>合成数据视口检查 · ${width} × ${height} · <a href="/?exploration=368&viewport=mobile">移动端</a> · <a href="/?exploration=368&viewport=short">短窗口</a> · <a href="/?exploration=368&viewport=desktop">桌面</a></header><iframe title="GSM ${width} × ${height}" src="${query.pathname}${query.search.replace(/&/g,'&amp;')}"></iframe>`);
+        return;
+      }
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       response.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:${port}; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'`);
       const html = '<!doctype html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GSM 离线界面审查</title></head><body><div id="root"></div><script type="module" src="/__gsm_audit_entry.js"></script></body></html>';

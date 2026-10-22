@@ -1,6 +1,6 @@
 
 import { TranslateFn } from '../../i18n/useT';
-import { classificationExport } from '../../store/helpers/classificationSchemes';
+import { classificationBackupExport } from '../../store/helpers/classificationSchemes';
 import { version } from '../../../package.json';
 import { decodeLocalBackup, assertLocalBackupIdentity, type LocalBackup } from '../../services/localBackup';
 import { getLocalBackupIdentity } from '../../services/localBackupScope';
@@ -610,7 +610,7 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
       }
       if (selectedTypes.includes('customCategories')) {
         exportDataObj.data.customCategories = store.customCategories;
-        exportDataObj.data.classificationSchemes = classificationExport(store);
+        exportDataObj.data.classificationSchemes = classificationBackupExport(store);
         exportDataObj.data.hiddenDefaultCategoryIds = store.hiddenDefaultCategoryIds;
         exportDataObj.data.defaultCategoryOverrides = store.defaultCategoryOverrides;
         exportDataObj.data.categoryOrder = store.categoryOrder;
@@ -648,6 +648,9 @@ export const DataManagementPanel: React.FC<DataManagementPanelProps> = ({ t }) =
         exportDataObj.data.themeTokens = store.themeTokens;
         exportDataObj.data.repositoryCardFields = store.repositoryCardFields;
         exportDataObj.data.repositoryViewMode = store.repositoryViewMode;
+        exportDataObj.data.clusterDisplayMode = store.clusterDisplayMode;
+        exportDataObj.data.clusterPreset = store.clusterPreset;
+        exportDataObj.data.clusterQuery = store.clusterQuery;
         exportDataObj.data.language = store.language;
         exportDataObj.data.isSidebarCollapsed = store.isSidebarCollapsed;
         exportDataObj.data.releaseViewMode = store.releaseViewMode;

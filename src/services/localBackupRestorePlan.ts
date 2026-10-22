@@ -47,7 +47,7 @@ const repositoryShape = z.object({ id: z.number().int().positive().safe(), name:
 const themeTokensShape = z.object({ accentColor: z.string().regex(/^#[0-9a-f]{6}$/i).nullable(), fontScale: z.number().min(0.75).max(1.5), radius: z.enum(['default', 'none', 'small', 'medium', 'large']), animation: z.enum(['normal', 'reduced']) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function mergeClassificationBackup(current: ClassificationSchemes, incoming: ClassificationSchemes): ClassificationSchemes {
-  const result = { ...current };
+  const result = { ...incoming, ...current };
   for (const id of ['purpose', 'technology'] as const) {
     const source = incoming[id];
     if (!source) continue;
@@ -131,7 +131,7 @@ export function planLocalBackupRestore(state: AppStoreState, backup: LocalBackup
     // Membership changes are dependent repository writes, visible in the preview.
     const next = { ...state, ...restoreStorePatch(patch) };
     validateReferences(next);
-    const organization = incomingOrganizationSnapshot(state, patch, next.repositories);
+    const organization = incomingOrganizationSnapshot(state, patch, next.repositories, { restoreGeneration: true });
     for (const key of ['repositories', ...ORGANIZATION_BACKUP_KEYS] as const) {
       if (organization[key] !== undefined && (key === 'repositories' || key in patch || !same(state[key], organization[key]))) {
         patch[key] = organization[key]; if (!keys.includes(key)) keys.push(key);

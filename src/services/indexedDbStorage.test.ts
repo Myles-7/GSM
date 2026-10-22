@@ -40,7 +40,7 @@ describe('transactional IndexedDB and fallback authority', () => {
     await writeEntriesToFallbackStorage(name, [[keys[1], 'meta'], [keys[2], 'core']]);
     const before = localStorage.getItem(`${name}#fallback`);
     const original = localStorage.setItem.bind(localStorage);
-    vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => { if (key === `${name}#fallback`) throw Error('quota'); original(key, value); });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key, value) => { if (key === `${name}#fallback`) throw Error('quota'); original(key, value); });
     await expect(writeEntriesToFallbackStorage(name, [[keys[1], 'must-not-commit'], [keys[2], 'must-not-commit']])).rejects.toThrow('quota');
     expect(localStorage.getItem(`${name}#fallback`)).toBe(before);
   });
@@ -82,7 +82,7 @@ describe('transactional IndexedDB and fallback authority', () => {
     expect(await indexedDBStorage.getItem('gsm-identity-journal:42')).toBe('keep');
   });
   it('rejects unreadable localStorage authority rather than interpreting it as missing', async () => {
-    vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw Error('storage denied'); });
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw Error('storage denied'); });
     await expect(getStorageEntriesStrict(name, keys)).rejects.toThrow('storage denied');
   });
   it('atomically fences a stale guarded writer after another tab clears and advances generation', async () => {

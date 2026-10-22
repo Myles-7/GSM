@@ -5,7 +5,7 @@ export interface VersionInfo {
   downloadUrl: string;
 }
 
-import { PROJECT_REPO_URL } from '../constants/project';
+import { UPSTREAM_REPO_URL } from '../constants/project';
 import { version } from '../../package.json';
 import { logger } from './logger';
 import { withDeadline } from '../utils/requestDeadline';
@@ -17,7 +17,7 @@ export const UPDATE_POLICY = {
   requestTimeoutMs: 10_000,
 } as const;
 
-const REPO_OWNER = PROJECT_REPO_URL.split('/').slice(-2).join('/');
+const REPO_OWNER = UPSTREAM_REPO_URL.split('/').slice(-2).join('/');
 const VERSION_INFO_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/main/versions/version-info.xml`;
 
 export interface UpdateCheckResult {

@@ -325,7 +325,7 @@ router.patch('/api/repositories/:id', (req, res) => {
       }
     }
 
-    const organizationFields = ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details', 'classifications'];
+    const organizationFields = ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details', 'classifications', 'classificationInsights'];
     if (setClauses.length === 0 && !organizationFields.some(key => key in updates)) {
       res.status(400).json({ error: 'No valid fields to update', code: 'NO_VALID_FIELDS' });
       return;

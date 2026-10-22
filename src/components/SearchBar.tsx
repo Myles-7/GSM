@@ -4,6 +4,7 @@
 
 import { getIntlLocale } from '../i18n/format';
 import { useT } from '../i18n/useT';
+import { logger } from '../services/logger';
 import { Input } from './ui/input';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2, MoreHorizontal } from 'lucide-react';
@@ -366,7 +367,7 @@ export const SearchBar: React.FC = () => {
     setSearchResults(finalFiltered);
 
     const endTime = performance.now();
-    console.log(`Real-time search completed in ${(endTime - startTime).toFixed(2)}ms`);
+    logger.debug('search', 'Real-time search completed', { durationMs: endTime - startTime });
   };
 
   const performBasicFilter = () => {
@@ -394,7 +395,7 @@ export const SearchBar: React.FC = () => {
         { releaseSubscriptions, allCategories, repositoryOrder }
       );
       if (withoutLock.length > 0) {
-        console.log('分类锁定筛选导致结果为空，自动清除该筛选条件');
+        logger.debug('search', 'Clearing lock filter because it hides all matching results');
         setSearchFilters({ isCategoryLocked: undefined });
         return sortRepositories(
           withoutLock,

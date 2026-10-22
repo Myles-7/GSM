@@ -24,6 +24,9 @@ export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppAct
   | 'setRouteMode'
   | 'setRpcDownloadConfig'
   | 'setRepositoryViewMode'
+  | 'setClusterDisplayMode'
+  | 'setClusterPreset'
+  | 'setClusterQuery'
   | 'setRepositoryCardField'
   | 'setReleaseViewMode'
   | 'setReleaseShowMode'
@@ -81,6 +84,9 @@ export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppAct
         repositoryCardFields: normalizeRepositoryCardFields({ ...state.repositoryCardFields, [id]: visible }),
       })),
       setRepositoryViewMode: (repositoryViewMode) => set({ repositoryViewMode }),
+      setClusterDisplayMode: (clusterDisplayMode) => set({ clusterDisplayMode }),
+      setClusterPreset: (clusterPreset) => set({ clusterPreset }),
+      setClusterQuery: (clusterQuery) => set({ clusterQuery }),
 
       // Release Timeline View actions
       setReleaseViewMode: (releaseViewMode) => set({ releaseViewMode }),

@@ -33,6 +33,7 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
       (profile.timeoutSeconds === undefined || Number.isInteger(profile.timeoutSeconds) && profile.timeoutSeconds >= 20 && profile.timeoutSeconds <= 600) &&
       (profile.concurrency === undefined || Number.isInteger(profile.concurrency) && profile.concurrency >= 1 && profile.concurrency <= 5));
   const dirty = draft && JSON.stringify(draft) !== JSON.stringify(state?.prefs);
+  const concurrencyValid = !!draft && Number.isInteger(draft.concurrency ?? 5) && (draft.concurrency ?? 5)>=1 && (draft.concurrency ?? 5)<=5 && Object.values(draft.featureOverrides??{}).every(profile=>profile?.concurrency===undefined || Number.isInteger(profile.concurrency)&&profile.concurrency>=1&&profile.concurrency<=5);
   const probe = state?.lastProbe;
   const errorKey = (code: string) => ['AUTH_REQUIRED', 'CANCELED', 'BUSY', 'EXECUTABLE_CHANGED', 'TIMEOUT', 'INIT_TIMEOUT', 'NOT_FOUND', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'QUEUE_TIMEOUT', 'PERMISSION_DENIED'].includes(code)
     ? `agy.errors.${code}` : 'agy.error';
@@ -100,9 +101,10 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
           </div>
           <div className="min-w-0 space-y-1">
             <label className="text-sm font-medium" htmlFor="agy-concurrency">{t('settingsUx.globalConcurrency')}</label>
-            <select id="agy-concurrency" className={selectClass} value={draft.concurrency ?? 5} onChange={event => agy.update({ concurrency: Number(event.target.value) })}>
+            <div className="flex items-center gap-2"><select id="agy-concurrency" className={selectClass} value={draft.concurrency ?? 5} onChange={event => agy.update({ concurrency: Number(event.target.value) })}>
               {[1, 2, 3, 4, 5].map(value => <option key={value}>{value}</option>)}
-            </select>
+            </select><Button variant="outline" className="shrink-0" disabled={!concurrencyValid || !agy.concurrencyDirty} onClick={agy.saveConcurrency}>{zh?'保存并发':'Save limits'}</Button></div>
+            <p className="text-xs leading-relaxed text-muted-foreground">{zh?`已保存上限 ${state?.prefs.concurrency??5} · 当前有效 ${pool?.effective??state?.prefs.concurrency??5}。限流与恢复状态可能降低有效并发。仅保存并发不调用或测试模型，正在执行的请求不会强行中断。`:`Saved limit ${state?.prefs.concurrency??5} · Effective ${pool?.effective??state?.prefs.concurrency??5}. Rate limits and recovery may lower the effective limit. Saving limits does not call or test the model, or interrupt running requests.`}</p>
           </div>
           <details className="min-w-0 sm:col-span-2">
             <summary className="cursor-pointer text-sm font-medium">{t('agy.advanced')}</summary>
@@ -147,6 +149,7 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
         </div>
       </fieldset>}
       {(busy || agy.notice) && <p role="status" className="text-sm text-muted-foreground">{busy ? t('agy.working') : agy.notice === 'SAVED' ? t('agy.saved')
+        : agy.notice === 'CONCURRENCY_SAVED' ? zh ? '并发设置已保存；其余未保存的修改仍保留在表单中。' : 'Concurrency limits saved. Other unsaved edits remain in the form.'
         : agy.notice === 'RECOVERY_REPAIRED' ? zh ? '恢复记录已处理；AGY 新调用已解除对应阻断。' : 'Recovery record repaired; the corresponding AGY call block is cleared.'
         : `${errorText(agy.notice!)} (${agy.notice})`}</p>}
       <p className="text-xs leading-relaxed text-muted-foreground">{t('agy.privacy')}</p>

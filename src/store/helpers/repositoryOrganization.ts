@@ -5,7 +5,7 @@ import { matchesCategory } from '../../utils/categoryUtils';
 import { builtinCategoryNameVariants } from '../../constants/categoryI18n';
 import { getAllCategories } from './categoryHelpers';
 import { defaultCategories } from '../schema';
-import { classificationSchemesSchema, classificationMembershipSchema } from '../../services/classificationSchema';
+import { classificationSchemesSchema, classificationMembershipSchema, repositoryClassificationInsightsSchema } from '../../services/classificationSchema';
 
 export function normalizeOrder<T extends string | number>(input: unknown, validIds: T[]): T[] {
   const valid = new Set(validIds);
@@ -144,6 +144,7 @@ export function normalizeRepositoryOrganization(
 export function normalizeRepositoryUpdate(incoming: Repository, previous: Repository | undefined, state: AppStoreState, explicit = false, overrideCategoryLock = false, restoreSubcategory = false): Repository {
   const categories = organizationCategories(state);
   const repo = { ...incoming };
+  if (previous?.classificationInsights) repo.classificationInsights = { ...previous.classificationInsights, ...incoming.classificationInsights };
   if (previous?.classifications) repo.classifications = { ...previous.classifications, ...incoming.classifications };
   if (repo.ai_details === undefined && previous?.ai_details !== undefined) repo.ai_details = previous.ai_details;
   for (const key of ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy'] as const) {
@@ -178,11 +179,14 @@ export function normalizeRepositoryUpdate(incoming: Repository, previous: Reposi
   return normalizeRepositoryMembership(repo, categories, state.subcategories);
 }
 
-export function incomingOrganizationSnapshot(state: AppStoreState, input: Record<string, unknown>, repositories?: Repository[]): Partial<AppStoreState> {
+export function incomingOrganizationSnapshot(state: AppStoreState, input: Record<string, unknown>, repositories?: Repository[], options?: { restoreGeneration?: boolean }): Partial<AppStoreState> {
   if ('customCategories' in input) validateCustomCategorySnapshot(input.customCategories);
   const patch: Partial<AppStoreState> = {};
   if (input.classificationSchemes && typeof input.classificationSchemes === 'object' && !Array.isArray(input.classificationSchemes)) {
-    patch.classificationSchemes = { ...state.classificationSchemes, ...classificationSchemesSchema.parse(input.classificationSchemes) };
+    const schemes = classificationSchemesSchema.parse(input.classificationSchemes);
+    patch.classificationSchemes = { ...state.classificationSchemes,
+      ...(schemes.purpose ? { purpose: schemes.purpose } : {}), ...(schemes.technology ? { technology: schemes.technology } : {}),
+      ...(options?.restoreGeneration && schemes.generation ? { generation: schemes.generation } : {}) };
   }
   for (const key of ['customCategories', 'hiddenDefaultCategoryIds', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder'] as const) {
     if (Array.isArray(input[key])) Object.assign(patch, { [key]: input[key] });
@@ -197,6 +201,8 @@ export function incomingOrganizationSnapshot(state: AppStoreState, input: Record
       const previous = existing.get(repo.id);
       const next = { ...repo };
       if (repo.classifications?.technology) classificationMembershipSchema.parse(repo.classifications.technology);
+      if (repo.classificationInsights !== undefined) repositoryClassificationInsightsSchema.parse(repo.classificationInsights);
+      if (previous?.classificationInsights) next.classificationInsights = { ...previous.classificationInsights, ...repo.classificationInsights };
       if (previous?.classifications) next.classifications = { ...previous.classifications, ...repo.classifications };
       for (const key of ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details'] as const) {
         if (repo[key] === undefined && previous?.[key] !== undefined) Object.assign(next, { [key]: previous[key] });
@@ -207,7 +213,9 @@ export function incomingOrganizationSnapshot(state: AppStoreState, input: Record
       return next;
     });
   }
-  const normalized = organizationSnapshot(state, patch);
+  if (patch.hiddenDefaultCategoryIds) patch.hiddenDefaultCategoryIds = patch.hiddenDefaultCategoryIds.filter(id => id !== 'all' && id !== 'pending');
+  if (patch.categoryOrder) patch.categoryOrder = patch.categoryOrder.filter(id => id !== 'all' && id !== 'pending');
+  const normalized = organizationSnapshot({ ...state, classificationContext: 'purpose' }, patch);
   const technology = (patch.classificationSchemes ?? state.classificationSchemes)?.technology;
   if (technology) for (const repo of normalized.repositories ?? []) {
     const member = repo.classifications?.technology;

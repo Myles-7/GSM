@@ -10,6 +10,17 @@ import { generateAgyText } from './agyClient';
 import { isAgyConfig } from '../utils/aiConfig';
 import { recallGists, selectAnalysisContext } from './analysisContext';
 import { withDeadline } from '../utils/requestDeadline';
+import { taskForSignal, taskItemForSignal, runTrackedTask, bindTaskItemSignal } from './taskExecution';
+import { aiTaskJournal, type AITaskKind } from './aiTaskJournal';
+import { taskObservability } from './taskObservability';
+import { useAppStore } from '../store/useAppStore';
+
+interface HttpCapture {
+  sent(): void;
+  response(data: unknown): void;
+  stream(payload: string): void;
+  answer(text: string): void;
+}
 
 interface OpenAIResponseContentPart {
   text?: string;
@@ -137,9 +148,10 @@ export class AIStreamInterruptedError extends Error {
   }
 }
 
-function createStreamReader(apiType: AIApiType, extractDelta: (payload: string) => string, onChunk: (delta: string) => void) {
+function createStreamReader(apiType: AIApiType, extractDelta: (payload: string) => string, onChunk: (delta: string) => void, onPayload?: (payload: string) => void) {
   let full = '', completed = false;
   const accept = (payload: string) => {
+    onPayload?.(payload);
     const delta = extractDelta(payload);
     if (delta) { full += delta; onChunk(delta); }
     if (payload.trim() === '[DONE]') { completed = true; return; }
@@ -527,7 +539,114 @@ export class AIService {
     }
   }
 
-  private async requestText(options: {
+  /** Observe the existing transport without altering prompts, retries or callbacks. */
+  private withProviderTask<T>(signal: AbortSignal | undefined, feature: import('../types/agy').AgyFeature | undefined,
+    action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+    if (taskForSignal(signal)) return action(signal);
+    const owner = typeof useAppStore.getState === 'function' ? useAppStore.getState().user?.id : undefined;
+    if (owner === undefined || owner === null || String(owner).trim() === '') return action(signal);
+    const resolved = feature ?? (isAgyConfig(this.config) ? this.config.agyFeature : undefined);
+    const kinds: Partial<Record<import('../types/agy').AgyFeature, AITaskKind>> = {
+      'repository-summary': 'summary', 'repository-details': 'details', 'gist-summary': 'gists', 'release-summary': 'release',
+      'query-expansion': 'search', 'repository-rerank': 'search', 'gist-rerank': 'search', 'repository-chat': 'chat',
+      organization: 'organization', discovery: 'discovery', plugin: 'plugins', workbench: 'research',
+    };
+    const kind = resolved ? kinds[resolved] ?? 'research' : 'research';
+    return runTrackedTask({ owner: String(owner), kind, label: resolved ?? this.config.name, signal,
+      config: isAgyConfig(this.config) && resolved ? { ...this.config, agyFeature: resolved } : this.config }, (requestSignal, task) => {
+      bindTaskItemSignal(requestSignal, task, 'operation');
+      return action(requestSignal);
+    });
+  }
+
+  private async observeHttp<T>(signal: AbortSignal | undefined, mode: 'stream' | 'final',
+    action: (capture: HttpCapture) => Promise<T>, answer: (result: T) => string): Promise<T> {
+    const task = taskForSignal(signal), itemId = taskItemForSignal(signal);
+    const record = task ? aiTaskJournal.snapshot().find(value => value.id === task.id) : undefined;
+    const owner = record?.owner ?? (task ? String(useAppStore.getState().user?.id ?? '') : '');
+    const requestId = crypto.randomUUID();
+    const safe = (text: string) => this.config.apiKey ? text.split(this.config.apiKey).join('[REDACTED]') : text;
+    let dispatched = false, closed = false;
+    const usage: Record<string, number> = {};
+    if (task) taskObservability.begin({ owner, taskId: task.id, requestId, itemId,
+      label: record?.items.find(item => item.id === itemId)?.label ?? record?.kind ?? 'HTTP', source: 'http',
+      model: this.config.model, effort: this.config.reasoningEffort, mode });
+    const carries={answer:'',reasoning:''};
+    const append = (channel: 'answer' | 'reasoning', text: unknown) => {
+      if(closed||!task||typeof text!=='string'||!text)return;
+      const pending=carries[channel]+text,key=this.config.apiKey;
+      let cut=pending.length;
+      // Hold a possible key prefix so fragmented credentials never reach the cache.
+      if(key)for(let size=1;size<key.length&&size<=pending.length;size++)if(pending.endsWith(key.slice(0,size)))cut=pending.length-size;
+      carries[channel]=pending.slice(cut);
+      if(cut)taskObservability.append(owner,task.id,requestId,channel,safe(pending.slice(0,cut)));
+    };
+    const tokenUsage = (data: Record<string, unknown>) => {
+      const raw = (data.usage ?? data.usageMetadata) as Record<string, unknown> | undefined;
+      for (const key of ['input_tokens', 'output_tokens', 'total_tokens', 'prompt_tokens', 'completion_tokens', 'thinking_tokens',
+        'promptTokenCount', 'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount']) {
+        const value = raw?.[key]; if (typeof value === 'number' && Number.isFinite(value) && value >= 0) usage[key] = value;
+      }
+    };
+    const setOutcome=(providerOutcome:'in_flight'|'succeeded'|'failed'|'unknown'|'not_started',phase?:string)=>{
+      if(itemId&&record?.items.some(item=>item.id===itemId))task?.itemExecution(itemId,{providerOutcome,requestId,phase,...(providerOutcome==='unknown'?{failureCode:'unknown_provider_outcome'}:{})});
+      else if(task&&aiTaskJournal.snapshot().find(row=>row.id===task.id)?.providerOutcome!=='unknown')task.providerOutcome(providerOutcome,providerOutcome==='unknown'?'unknown_provider_outcome':undefined);
+    };
+    const capture: HttpCapture = {
+      sent: () => { dispatched = true; if (!closed && task) {taskObservability.phase(owner, task.id, requestId, 'generating', undefined, 'http');setOutcome('in_flight','generating');} },
+      answer: text => append('answer', text),
+      response: data => {
+        if (closed || !data || typeof data !== 'object') return;
+        const typed = data as { choices?: { message?: { reasoning_content?: string } }[];
+          content?: { type?: string; thinking?: string }[]; candidates?: { content?: { parts?: { thought?: boolean; text?: string }[] } }[];
+          output?: { type?: string; summary?: { type?: string; text?: string }[] }[] };
+        append('reasoning', typed.choices?.[0]?.message?.reasoning_content);
+        for (const block of Array.isArray(typed.content) ? typed.content : []) if (block?.type === 'thinking') append('reasoning', block.thinking);
+        const parts = typed.candidates?.[0]?.content?.parts;
+        for (const part of Array.isArray(parts) ? parts : []) if (part?.thought === true) append('reasoning', part.text);
+        for (const item of Array.isArray(typed.output) ? typed.output : []) if (item?.type === 'reasoning') for (const part of Array.isArray(item.summary) ? item.summary : []) if (part?.type === 'summary_text') append('reasoning', part.text);
+        tokenUsage(data as Record<string, unknown>);
+      },
+      stream: payload => {
+        if (closed) return;
+        let event: { type?: string; delta?: unknown; choices?: { delta?: { reasoning_content?: string } }[];
+          candidates?: { content?: { parts?: { thought?: boolean; text?: string }[] } }[]; response?: Record<string, unknown> };
+        try { event = JSON.parse(payload); } catch { return; }
+        append('reasoning', event.choices?.[0]?.delta?.reasoning_content);
+        const delta = event.delta as { type?: string; thinking?: string } | undefined;
+        if (event.type === 'content_block_delta' && delta?.type === 'thinking_delta') append('reasoning', delta.thinking);
+        if (['response.reasoning_text.delta', 'response.reasoning_summary_text.delta'].includes(event.type ?? '')) append('reasoning', event.delta);
+        const parts = event.candidates?.[0]?.content?.parts;
+        for (const part of Array.isArray(parts) ? parts : []) if (part?.thought === true) append('reasoning', part.text);
+        tokenUsage(event as Record<string, unknown>); if (event.response) tokenUsage(event.response);
+      },
+    };
+    try {
+      const result = await action(capture);
+      setOutcome('succeeded');
+      if (task) taskObservability.complete(owner, task.id, requestId, { outcome: 'succeeded', answer: safe(answer(result)), usage });
+      return result;
+    } catch (error) {
+      const status = (error as { status?: number; statusCode?: number } | null)?.status ?? (error as { statusCode?: number } | null)?.statusCode;
+      const rejected = error instanceof AIToolCallUnsupportedError || (typeof status === 'number' && status >= 400 && status < 500 && status !== 408);
+      const outcome = dispatched && !rejected ? 'unknown' : isAbortError(error) ? 'canceled' : 'failed';
+      setOutcome(outcome==='canceled'?'not_started':outcome);
+      if (outcome === 'unknown' && error instanceof Error && Object.isExtensible(error)) Object.assign(error, { providerOutcome: 'unknown' });
+      if (task) taskObservability.complete(owner, task.id, requestId, { outcome, error: safe(error instanceof Error ? error.message : 'HTTP_REQUEST_FAILED'), usage });
+      throw error;
+    } finally { closed = true; }
+  }
+
+  private async requestText(options: Parameters<AIService['requestTextUnobserved']>[0]): Promise<string> {
+    return this.withProviderTask(options.signal, options.feature, signal => {
+      const request = { ...options, signal };
+      if (isAgyConfig(this.config)) return generateAgyText(this.config, request);
+      return this.observeHttp(signal, 'final', capture => this.requestTextUnobserved({ ...request, capture }), text => text);
+    });
+  }
+
+  private async requestTextUnobserved(options: {
+    capture?: HttpCapture;
     recovery?: import('../types/agy').AgyRecoveryOptions;
     feature?: import('../types/agy').AgyFeature;
     system: string;
@@ -590,6 +709,7 @@ export class AIService {
       let responseBodyPreview: string | undefined;
       let responseStatus: number | undefined;
 
+      options.capture?.sent();
       if (backend.isAvailable) {
         // Note: backend proxy does not return HTTP-level details (headers, body preview).
         // httpDetails will contain only url/requestHeaders/requestBody; response fields stay undefined.
@@ -633,6 +753,7 @@ export class AIService {
         data = await response.json();
       }
 
+      options.capture?.response(data);
       validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
         url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
@@ -707,6 +828,7 @@ export class AIService {
       let responseBodyPreview: string | undefined;
       let responseStatus: number | undefined;
 
+      options.capture?.sent();
       if (backend.isAvailable) {
         // Note: backend proxy does not return HTTP-level details (headers, body preview).
         data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal);
@@ -750,6 +872,7 @@ export class AIService {
         data = await response.json();
       }
 
+      options.capture?.response(data);
       validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
         url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
@@ -808,6 +931,7 @@ ${options.user}` : options.user;
     let responseBodyPreview: string | undefined;
     let responseStatus: number | undefined;
 
+    options.capture?.sent();
     if (backend.isAvailable) {
       // Note: backend proxy does not return HTTP-level details (headers, body preview).
       data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal);
@@ -849,6 +973,7 @@ ${options.user}` : options.user;
       data = await response.json();
     }
 
+    options.capture?.response(data);
     validateResponseCompletion(apiType, data);
     const httpDetails = logger.isDebugMode() ? {
       url: maskedUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
@@ -891,11 +1016,16 @@ ${options.user}` : options.user;
     signal?: AbortSignal;
     onChunk: (delta: string) => void;
   }): Promise<string> {
-    if (isAgyConfig(this.config)) return generateAgyText(this.config, options);
-    return withDeadline(signal => this.requestTextStreamWithinDeadline({ ...options, signal }), 600000, options.signal);
+    return this.withProviderTask(options.signal, options.feature, signal => {
+      if (isAgyConfig(this.config)) return generateAgyText(this.config, { ...options, signal });
+      return this.observeHttp(signal, 'stream', capture => withDeadline(requestSignal => this.requestTextStreamWithinDeadline({ ...options, signal: requestSignal, capture,
+        onChunk: text => { capture.answer(text); options.onChunk(text); },
+      }), 600000, signal), text => text);
+    });
   }
 
   private async requestTextStreamWithinDeadline(options: {
+    capture?: HttpCapture;
     feature?: import('../types/agy').AgyFeature;
     system: string; user: string; temperature: number; maxTokens: number;
     signal?: AbortSignal; onChunk: (delta: string) => void;
@@ -993,6 +1123,7 @@ ${options.user}` : options.user;
     if (debugHeaders['x-api-key']) debugHeaders['x-api-key'] = '***';
     const maskedUrl = requestUrl.replace(/([?&]key=)[^&]+/, '$1***');
 
+    options.capture?.sent();
     const response = backend.isAvailable
       ? await backend.proxyAIRequestStream(this.config.id, this.config, body as object, options.signal)
       : await fetch(requestUrl, {
@@ -1040,7 +1171,7 @@ ${options.user}` : options.user;
         // "data:" 开头的行时继续走下方 JSON / 纯文本回退。
         const isProtocolStream = ssePayloads.some(payload => extractDelta(payload) || /"(?:type|error)"\s*:\s*(?:"(?:response\.|content_block_|message_|error)|\{)/.test(payload));
         if (isProtocolStream) {
-          const stream = createStreamReader(apiType, extractDelta, options.onChunk);
+          const stream = createStreamReader(apiType, extractDelta, options.onChunk, options.capture?.stream);
           ssePayloads.forEach(stream.accept);
           const full = stream.finish();
           this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: full.length }, { url: maskedUrl, streamed: true });
@@ -1050,7 +1181,8 @@ ${options.user}` : options.user;
 
       let text = '';
       try {
-        text = extractFullTextFromResponse(apiType, JSON.parse(raw));
+        const data = JSON.parse(raw); options.capture?.response(data);
+        text = extractFullTextFromResponse(apiType, data);
       } catch (error) {
         if (error instanceof AIStreamInterruptedError) throw error;
         text = raw;
@@ -1070,7 +1202,8 @@ ${options.user}` : options.user;
       const raw = await response.text();
       let text = '';
       try {
-        text = extractFullTextFromResponse(apiType, JSON.parse(raw));
+        const data = JSON.parse(raw); options.capture?.response(data);
+        text = extractFullTextFromResponse(apiType, data);
       } catch (error) {
         if (error instanceof AIStreamInterruptedError) throw error;
         text = raw;
@@ -1088,7 +1221,7 @@ ${options.user}` : options.user;
       this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'empty response body' }, { url: maskedUrl });
       throw new Error('No content received from AI service (empty body)');
     }
-    const stream = createStreamReader(apiType, extractDelta, options.onChunk);
+    const stream = createStreamReader(apiType, extractDelta, options.onChunk, options.capture?.stream);
     await consumeSseStream(response.body, stream.accept);
     const full = stream.finish();
 
@@ -1100,6 +1233,7 @@ ${options.user}` : options.user;
   }
 
   async generateChatText(options: {
+    feature?: import('../types/agy').AgyFeature;
     recovery?: import('../types/agy').AgyRecoveryOptions;
     system: string;
     user: string;
@@ -1112,6 +1246,7 @@ ${options.user}` : options.user;
     onSent?: () => void;
   }): Promise<string> {
     return await this.requestText({
+      feature: options.feature,
       recovery: options.recovery,
       system: options.system,
       user: options.user,
@@ -1127,6 +1262,7 @@ ${options.user}` : options.user;
 
   /** 流式版本的 generateChatText；不支持流式的通道抛 AIStreamUnsupportedError。 */
   async generateChatTextStream(options: {
+    feature?: import('../types/agy').AgyFeature;
     system: string;
     user: string;
     temperature?: number;
@@ -1135,6 +1271,7 @@ ${options.user}` : options.user;
     onChunk: (delta: string) => void;
   }): Promise<string> {
     return await this.requestTextStream({
+      feature: options.feature,
       system: options.system,
       user: options.user,
       temperature: options.temperature ?? 0.2,
@@ -1150,7 +1287,15 @@ ${options.user}` : options.user;
    * tool_calls 与工具结果追加进 messages 后再次调用。端点不支持 tools 时抛
    * AIToolCallUnsupportedError，调用方可降级到编排式循环。
    */
-  async generateWithTools(options: {
+  async generateWithTools(options: Parameters<AIService['generateWithToolsUnobserved']>[0]): Promise<{ content: string; toolCalls: AIToolCall[] }> {
+    if (isAgyConfig(this.config)) throw new AIToolCallUnsupportedError('AGY uses the GSM evidence loop');
+    return this.withProviderTask(options.signal, options.feature ?? 'repository-chat', signal =>
+      this.observeHttp(signal, 'final', capture => this.generateWithToolsUnobserved({ ...options, signal, capture }), result => result.content));
+  }
+
+  private async generateWithToolsUnobserved(options: {
+    feature?: import('../types/agy').AgyFeature;
+    capture?: HttpCapture;
     system: string;
     messages: AIToolLoopMessage[];
     tools: AIToolDefinition[];
@@ -1224,6 +1369,7 @@ ${options.user}` : options.user;
     let responseStatus: number | undefined;
     let data: Record<string, unknown>;
 
+    options.capture?.sent();
     if (backend.isAvailable) {
       // 代理整体透传请求体（含 tools 字段），响应仍由客户端解析。
       try {
@@ -1286,6 +1432,7 @@ ${options.user}` : options.user;
       url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
     } : undefined;
 
+    options.capture?.response(data);
     const message = (data as { choices?: OpenAIResponseChoice[] }).choices?.[0]?.message;
     const rawToolCalls = (message as { tool_calls?: unknown } | undefined)?.tool_calls;
     const toolCalls = Array.isArray(rawToolCalls)

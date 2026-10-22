@@ -45,10 +45,16 @@ export interface AgyRecoveryIssue {
 }
 export type AgyRecoveryRepairAction = 'discard-unsent' | 'abandon-unknown';
 export interface AgyRecoveryRepairResult extends AgyRecoveryIssue { action: AgyRecoveryRepairAction; }
+export type AgyPriority = 'interactive' | 'background';
 export interface AgyRecoveryOptions { context?: unknown; step?: string; requestId?: string; retryOf?: string; onResult?: (record: AgyRecoveryRecord) => void; }
 export interface AgyGenerationRequest { system: string; user: string; model: string; effort: AgyDevicePrefs['effort']; feature?: AgyFeature; revision?: number; priority?: 'interactive' | 'background'; profileOverride?: Pick<AgyProfile, 'model' | 'effort' | 'timeoutSeconds'>; taskId?: string; itemId?: string; step?: string; retryOf?: string; recoveryContext?: unknown; }
 export interface AgyGenerationResult { text: string; usage: Record<string, number>; cleanupStatus?: 'pending' | 'recovered'; recovery?: AgyRecoveryRecord; }
-export interface AgyEvent { requestId: string; session: string; type: 'queued' | 'running' | 'sent' | 'text' | 'scheduler' | 'initializing' | 'cleanup' | 'warning'; text?: string; code?: string; position?: number; pool?: AgyDeviceState['pool']; }
+export interface AgyPublicObservation {
+  event: 'init' | 'step_update' | 'result';
+  stepType?: 'agent_response' | 'thinking' | 'reasoning' | 'agent_reasoning';
+  stepIndex?: number; state?: string; time?: string | number; status?: string; usage?: Record<string, number>;
+}
+export interface AgyEvent { requestId: string; session: string; type: 'queued' | 'running' | 'sent' | 'text' | 'reasoning' | 'observation' | 'scheduler' | 'initializing' | 'cleanup' | 'warning'; text?: string; observation?: AgyPublicObservation; code?: string; position?: number; pool?: AgyDeviceState['pool']; }
 export type AgyResult<T> = { ok: true; value: T } | { ok: false; code: string; details?: { operation?: string; systemCode?: string; originalCode?: string; exitObserved?: boolean; retryAfterMs?: number; sent?: boolean; providerOutcome?: string } };
 export interface AgyDesktopAPI {
   chooseProject(requestId: string): Promise<AgyResult<AgyLocalProject>>;

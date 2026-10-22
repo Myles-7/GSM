@@ -44,6 +44,7 @@ export function taskConfigSnapshot(config: AIConfig, feature?: AgyFeature) {
 }
 export interface TaskRetryParameters { model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; timeoutSeconds?: number; }
 export const featureForTask: Partial<Record<AITaskKind, AgyFeature>> = { summary: 'repository-summary', details: 'repository-details',
+  exploration: 'organization',
   gists: 'gist-summary', 'discovery-analysis': 'repository-details', discovery: 'discovery', chat: 'repository-chat', research: 'workbench',
   organization: 'organization', release: 'release-summary', plugins: 'plugin', search: 'repository-rerank' };
 export function retryTaskConfig(current: AIConfig, previous: import('./aiTaskJournal').AITaskRecord, parameters?: TaskRetryParameters): AIConfig {

@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../../../
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../../components/ui/dropdown-menu';
 import { RepositoryGrid } from './RepositoryGrid';
 import { moveBefore, orderedIds, replaceGroupOrder } from './repositoryGroupOrder';
+import { assignClassificationRepositories, captureClassificationEdit, performClassificationEdit, repositoryIdsFromDrop, type ClassificationEditCapture } from './classificationEditActions';
 
 const REPOSITORY_MIME = 'application/x-gsm-repository-id';
 const GROUP_MIME = 'application/x-gsm-subcategory-id';
@@ -29,19 +30,16 @@ interface Props {
 
 export function RepositoryGroups({ categoryId, repositories, filtered, customSort, viewMode, renderRepository, filterKey = '' }: Props) {
   const t = useT('repositories');
-  const { confirm } = useDialog();
+  const dialogs = useDialog();
   const state = useAppStore(useShallow(s => ({
     subcategories: s.subcategories,
     subcategoryOrder: s.subcategoryOrder,
     repositoryOrder: s.repositoryOrder,
     allRepositories: s.repositories,
-    add: s.addSubcategory,
-    update: s.updateSubcategory,
-    remove: s.deleteSubcategory,
-    move: s.moveRepositoryToSubcategory,
     reorderGroups: s.reorderSubcategories,
     reorderRepos: s.reorderRepositories,
     scheme: s.activeClassificationScheme ?? 'purpose',
+    account: s.user?.id ?? null,
     navigation: s.classificationNavigation,
     setCollapsedGroups: s.setClassificationCollapsedGroups,
   })));
@@ -54,7 +52,10 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   const collapsed = new Set(state.navigation?.[state.scheme]?.collapsedGroups ?? []);
   const setCollapsed = (change: (previous: Set<string>) => Set<string>) => state.setCollapsedGroups(state.scheme, [...change(collapsed)]);
   const [active, setActive] = useState('');
-  const [editing, setEditing] = useState<{ id?: string; name: string; icon: string } | null>(null);
+  const [editing, setEditing] = useState<{ id?: string; name: string; icon: string; capture: ClassificationEditCapture } | null>(null);
+  const [editError, setEditError] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const addingCapture = useRef<ClassificationEditCapture | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [chosen, setChosen] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState('');
@@ -63,6 +64,14 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   const headingRefs = useRef(new Map<string, HTMLElement>());
   const canReorder = customSort && !filtered;
   const sections = [...groups.map(g => ({ ...g, key: g.id })), { id: null, key: `${UNGROUPED}:${categoryId}`, name: t('organization.ungrouped'), icon: '' }];
+  const startEditing = (input: { id?: string; name: string; icon: string }) => {
+    setEditError(''); setEditing({ ...input, capture: captureClassificationEdit(state.scheme) });
+  };
+  const startAdding = (id: string) => {
+    addingCapture.current = captureClassificationEdit(state.scheme);
+    setAddingTo(id); setChosen(new Set()); setQuery(''); setEditError('');
+  };
+  useEffect(() => { setEditing(null); setAddingTo(null); setEditError(''); }, [state.account, state.scheme, categoryId]);
 
   useEffect(() => {
     const updateActive = () => {
@@ -96,10 +105,12 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
     const global = orderedIds(state.subcategoryOrder ?? [], all.map(g => g.id));
     state.reorderGroups(replaceGroupOrder(global, moveBefore(groups.map(g => g.id), source, target)));
   };
-  const moveRepo = (repository: Repository, target: string | null, before?: number) => {
+  const moveRepo = async (repository: Repository, target: string | null, before?: number) => {
     const current = groups.some(g => g.id === repository.subcategory_id) ? repository.subcategory_id : null;
     if (current !== target) {
-      state.move(repository.id, target);
+      const captured = captureClassificationEdit(state.scheme);
+      if (!await assignClassificationRepositories([repository.id], { categoryId, subcategoryId: target }, dialogs, captured)) return;
+      if ((useAppStore.getState().user?.id ?? null) !== captured.expectedAccountId) return;
       // Cross-group moves append only in custom mode. Rule sorts never mutate saved order.
       if (canReorder) {
         const global = orderedIds(state.repositoryOrder ?? [], (state.allRepositories ?? repositories).map(r => r.id));
@@ -115,7 +126,10 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
       state.reorderRepos(replaceGroupOrder(global, moveBefore(members, repository.id, before)));
     }
   };
-  const drop = (event: DragEvent, target: string | null, before?: number) => {
+  const moveFromMenu = (repository: Repository, target: string | null, before?: number) => {
+    void moveRepo(repository, target, before).catch(error => dialogs.toast(error instanceof Error ? error.message : String(error), 'error'));
+  };
+  const drop = async (event: DragEvent, target: string | null, before?: number) => {
     setDropTarget(null);
     event.preventDefault();
     event.stopPropagation();
@@ -125,13 +139,15 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
       if (target && groups.some(g => g.id === group)) reorderGroup(group, target);
       return;
     }
-    const raw = event.dataTransfer.getData(REPOSITORY_MIME);
-    if (!raw) return;
-    const repository = allCurrent.find(r => String(r.id) === raw);
-    if (repository) moveRepo(repository, target, before);
+    const ids = repositoryIdsFromDrop(event.dataTransfer);
+    if (!ids.length || ids.some(id => !allCurrent.some(repository => repository.id === id))) return;
+    try {
+      if (ids.length === 1) await moveRepo(allCurrent.find(repository => repository.id === ids[0])!, target, before);
+      else await assignClassificationRepositories(ids, { categoryId, subcategoryId: target }, dialogs, captureClassificationEdit(state.scheme));
+    } catch (error) { dialogs.toast(error instanceof Error ? error.message : String(error), 'error'); }
   };
   const acceptDrag = (event: DragEvent) => {
-    if ([...event.dataTransfer.types].some(type => type === REPOSITORY_MIME || type === GROUP_MIME)) {
+    if ([...event.dataTransfer.types].some(type => type === REPOSITORY_MIME || type === 'application/x-gsm-repository-ids' || type === GROUP_MIME)) {
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
     }
@@ -148,7 +164,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
             </button>
           ))}
         </nav>
-        <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs shrink-0" onClick={() => setEditing({ name: '', icon: 'folder' })}>
+        <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs shrink-0" onClick={() => startEditing({ name: '', icon: '📁' })}>
           <Plus className="h-4 w-4" />{t('organization.createGroup')}
         </Button>
       </div>
@@ -180,16 +196,17 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
                 className="min-w-0 flex-1 scroll-mt-36 break-words text-sm font-semibold tracking-tight outline-none flex items-center gap-1.5">
                 <GroupIcon icon={section.icon} /><span>{section.name}</span> <span className="ml-1 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-normal tabular-nums text-muted-foreground">{members.length}</span>
               </h3>
-              {section.id && <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t('organization.addExisting')} title={t('organization.addExisting')} onClick={() => { setAddingTo(section.id); setChosen(new Set()); setQuery(''); }}><Plus className="h-4 w-4" /></Button>}
+              {section.id && <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t('organization.addExisting')} title={t('organization.addExisting')} onClick={() => startAdding(section.id!)}><Plus className="h-4 w-4" /></Button>}
               {section.id && <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t('organization.groupActions')} title={t('organization.groupActions')}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => { setAddingTo(section.id); setChosen(new Set()); setQuery(''); }}>{t('organization.addExisting')}</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setEditing({ id: section.id!, name: section.name, icon: section.icon })}>{t('organization.editGroup')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => startAdding(section.id!)}>{t('organization.addExisting')}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => startEditing({ id: section.id!, name: section.name, icon: section.icon })}>{t('organization.editGroup')}</DropdownMenuItem>
                   <DropdownMenuItem disabled={filtered || index === 0} onSelect={() => reorderGroup(section.id!, groups[index - 1].id)}>{t('organization.moveUp')}</DropdownMenuItem>
                   <DropdownMenuItem disabled={filtered || index >= groups.length - 1} onSelect={() => reorderGroup(groups[index + 1].id, section.id!)}>{t('organization.moveDown')}</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => void (async () => {
-                    if (await confirm(t('organization.deleteGroup'), t('organization.deleteGroupConfirm'), { type: 'danger' })) state.remove(section.id!);
+                    try { await performClassificationEdit({ type: 'delete', id: section.id! }, dialogs, captureClassificationEdit(state.scheme)); }
+                    catch (error) { dialogs.toast(error instanceof Error ? error.message : String(error), 'error'); }
                   })()}>{t('organization.deleteGroup')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>}
@@ -201,13 +218,13 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
                     <DropdownMenuSub>
                       <DropdownMenuSubTrigger>{t('organization.moveRepository')}</DropdownMenuSubTrigger>
                       <DropdownMenuSubContent>
-                        {sections.map(destination => <DropdownMenuItem key={destination.key} disabled={destination.id === section.id} onSelect={() => moveRepo(repo, destination.id)}>{destination.name}</DropdownMenuItem>)}
+                        {sections.map(destination => <DropdownMenuItem key={destination.key} disabled={destination.id === section.id} onSelect={() => moveFromMenu(repo, destination.id)}>{destination.name}</DropdownMenuItem>)}
                         <DropdownMenuItem disabled={!canReorder || ordered[0]?.id === repo.id}
-                          onSelect={() => moveRepo(repo, section.id, ordered[ordered.indexOf(repo) - 1]?.id)}>
+                          onSelect={() => moveFromMenu(repo, section.id, ordered[ordered.indexOf(repo) - 1]?.id)}>
                           <ArrowUp className="mr-2 h-3.5 w-3.5" />{t('organization.moveUp')}
                         </DropdownMenuItem>
                         <DropdownMenuItem disabled={!canReorder || ordered[ordered.length - 1]?.id === repo.id}
-                          onSelect={() => { const next = ordered[ordered.indexOf(repo) + 1]; if (next) moveRepo(next, section.id, repo.id); }}>
+                          onSelect={() => { const next = ordered[ordered.indexOf(repo) + 1]; if (next) moveFromMenu(next, section.id, repo.id); }}>
                           <ArrowDown className="mr-2 h-3.5 w-3.5" />{t('organization.moveDown')}
                         </DropdownMenuItem>
                       </DropdownMenuSubContent>
@@ -222,19 +239,24 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
         <DialogContent className="sm:max-w-sm">
           <DialogTitle>{t(editing?.id ? 'organization.editGroup' : 'organization.createGroup')}</DialogTitle>
           <DialogDescription className="sr-only">{t('organization.groupName')}</DialogDescription>
-          <form className="space-y-4" onSubmit={event => {
+          <form className="space-y-4" onSubmit={async event => {
             event.preventDefault();
-            if (!editing?.name.trim()) return;
-            if (editing.id) state.update(editing.id, { name: editing.name.trim(), icon: editing.icon });
-            else state.add({ parentId: categoryId, name: editing.name.trim(), icon: editing.icon });
-            setEditing(null);
+            if (!editing?.name.trim() || editBusy) return;
+            setEditBusy(true); setEditError('');
+            try {
+              const operation = editing.id ? { type: 'rename' as const, id: editing.id, name: editing.name.trim(), icon: editing.icon }
+                : { type: 'create' as const, parentId: categoryId, name: editing.name.trim(), icon: editing.icon };
+              if (await performClassificationEdit(operation, dialogs, editing.capture)) setEditing(null);
+            } catch (error) { setEditError(error instanceof Error ? error.message : String(error)); }
+            finally { setEditBusy(false); }
           }}>
             <label className="block text-sm">{t('organization.groupName')}<input autoFocus required maxLength={80} className="ui-field mt-1 w-full p-2" value={editing?.name ?? ''} onChange={event => setEditing(previous => previous && { ...previous, name: event.target.value })} /></label>
             <fieldset><legend className="mb-2 text-sm">{t('organization.groupIcon')}</legend>
               <div className="flex gap-2">{['folder', 'code', 'book', 'star', 'tool', 'archive'].map(icon => <Button key={icon} type="button" variant="outline" size="icon" title={t(`organization.icon.${icon}`)} aria-label={t(`organization.icon.${icon}`)} aria-pressed={editing?.icon === icon}
                 className={editing?.icon === icon ? 'border-primary bg-accent' : ''} onClick={() => setEditing(previous => previous && { ...previous, icon })}><GroupIcon icon={icon} /></Button>)}</div>
             </fieldset>
-            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setEditing(null)}>{t('organization.cancel')}</Button><Button type="submit" disabled={!editing?.name.trim()}>{t('organization.save')}</Button></div>
+            {editError && <p role="alert" className="text-xs text-destructive">{editError}</p>}
+            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" disabled={editBusy} onClick={() => setEditing(null)}>{t('organization.cancel')}</Button><Button type="submit" disabled={editBusy || !editing?.name.trim()}>{t('organization.save')}</Button></div>
           </form>
         </DialogContent>
       </Dialog>
@@ -248,14 +270,21 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
               <label key={repo.id} className="flex items-start gap-2 text-sm"><input type="checkbox" checked={chosen.has(repo.id)} onChange={() => setChosen(previous => { const next = new Set(previous); if (next.has(repo.id)) next.delete(repo.id); else next.add(repo.id); return next; })} /><span className="break-all">{repo.full_name}</span></label>
             ))}
           </div>
-          <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setAddingTo(null)}>{t('organization.cancel')}</Button><Button disabled={!chosen.size} onClick={() => {
+          {editError && <p role="alert" className="text-xs text-destructive">{editError}</p>}
+          <div className="flex justify-end gap-2"><Button variant="ghost" disabled={editBusy} onClick={() => setAddingTo(null)}>{t('organization.cancel')}</Button><Button disabled={editBusy || !chosen.size} onClick={async () => {
             const selected = allCurrent.filter(r => chosen.has(r.id));
-            selected.forEach(r => state.move(r.id, addingTo));
-            if (canReorder) {
-              const global = orderedIds(state.repositoryOrder ?? [], (state.allRepositories ?? repositories).map(r => r.id));
-              state.reorderRepos([...global.filter(id => !chosen.has(id)), ...selected.map(r => r.id)]);
-            }
-            setAddingTo(null);
+            if (!addingTo || !addingCapture.current || !selected.length) return;
+            setEditBusy(true); setEditError('');
+            try {
+              if (!await assignClassificationRepositories(selected.map(repo => repo.id), { categoryId, subcategoryId: addingTo }, dialogs, addingCapture.current)) return;
+              if ((useAppStore.getState().user?.id ?? null) !== addingCapture.current.expectedAccountId) return;
+              if (canReorder) {
+                const global = orderedIds(state.repositoryOrder ?? [], (state.allRepositories ?? repositories).map(r => r.id));
+                state.reorderRepos([...global.filter(id => !chosen.has(id)), ...selected.map(r => r.id)]);
+              }
+              setAddingTo(null);
+            } catch (error) { setEditError(error instanceof Error ? error.message : String(error)); }
+            finally { setEditBusy(false); }
           }}>{t('organization.addSelected', { count: chosen.size })}</Button></div>
         </DialogContent>
       </Dialog>

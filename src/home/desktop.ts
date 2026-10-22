@@ -12,6 +12,7 @@ import { hasPendingLocalBackupRestore } from '../services/localBackupRecoveryGat
 import { classificationExport } from '../store/helpers/classificationSchemes';
 import { incomingOrganizationSnapshot } from '../store/helpers/repositoryOrganization';
 import { repositoryHomeProjection } from './repositoryProjection';
+import { classificationSyncToken } from '../services/classificationSyncReceipt';
 
 type Seed = { collection: Collection; id: string; data: Record<string, unknown> };
 let active: HomeSync | null = null;
@@ -19,8 +20,11 @@ let cleanup: (() => void) | null = null;
 let projecting = false;
 let captureTail = Promise.resolve();
 let projectionTail = Promise.resolve();
+let classificationReceiptToken: string | null = null;
 const listeners = new Set<() => void>();
 export const getDesktopHomeSync = () => active;
+export const getDesktopClassificationReceiptToken = () => classificationReceiptToken;
+export const waitForDesktopHomeCapture = async () => { let observed: Promise<void>; do { observed = captureTail; await observed; } while (observed !== captureTail); };
 export const subscribeDesktopHome = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 const notify = () => listeners.forEach(listener => listener());
 export const desktopApi = () => new HomeApi(backend.backendUrl ?? backend.configuredUrl ?? '', () => useAppStore.getState().backendApiSecret ?? '');
@@ -119,6 +123,7 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
       if (active !== sync) return;
       const baseline = previous ?? (await sync.db.list()).filter(row => ['sessions','messages','evidence','projects','proposals'].includes(row.collection)).map(row => ({ ...row, data: row.data! }));
       const before = new Map(baseline.map(row => [recordKey(row), row]));
+      const edits: Parameters<typeof sync.db.editMany>[0] = [];
       for (const row of next) {
         const old = before.get(recordKey(row));
         if (JSON.stringify(old?.data) !== JSON.stringify(row.data)) {
@@ -128,12 +133,12 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
             data = mergeDesktopDiscoveryConfig(data, canonical, old?.data ?? undefined);
           }
           if (active !== sync) return;
-          await sync.db.edit(row.collection, row.id, data);
+          edits.push({ collection: row.collection, id: row.id, data });
         }
         before.delete(recordKey(row));
       }
-      if (previous) for (const row of before.values()) await sync.db.edit(row.collection, row.id, null);
-      sync.changed();
+      if (previous) for (const row of before.values()) edits.push({ collection: row.collection, id: row.id, data: null });
+      if (edits.length) { await sync.db.editMany(edits); sync.changed(); }
     }).catch(error => { console.error('[home-sync] Local persistence failed', error); notify(); });
   };
   const unstore = useAppStore.subscribe((state, previous) => {
@@ -201,8 +206,16 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   };
   window.addEventListener('gsm:custom-discovery-changed', onDiscovery);
   window.addEventListener('gsm:global-chat-history-changed', onChat);
+  let classificationRequestSnapshot: AppState | undefined;
   const unsubscribe = sync.subscribe(() => {
     notify();
+    if (sync.view.status === 'syncing') classificationRequestSnapshot = useAppStore.getState();
+    if (['synced', 'conflict'].includes(sync.view.status)) {
+      const snapshot = classificationRequestSnapshot;
+      if (snapshot) classificationReceiptToken = classificationSyncToken(snapshot);
+      if (snapshot?.classificationSchemes?.generation?.syncPending) void import('../services/classificationSync')
+        .then(({ acknowledgeDesktopClassification }) => acknowledgeDesktopClassification(snapshot)).catch(() => {});
+    }
     if(['synced','conflict'].includes(sync.view.status)) {
       // Deferred first activation must migrate discovery before its first
       // projection. Local edits have already been captured in the durable outbox.
@@ -220,7 +233,7 @@ export async function activateDesktopHome(caps?: Capabilities): Promise<boolean>
   performance.mark?.('gsm:home-initialized');
   return true;
 }
-export function stopDesktopHome() { active?.stop(); cleanup?.(); cleanup = null; active = null; notify(); }
+export function stopDesktopHome() { active?.stop(); cleanup?.(); cleanup = null; active = null; classificationReceiptToken = null; notify(); }
 export async function pauseDesktopHomeForIdentity(): Promise<HomeSync | null> {
   const sync = active;
   stopDesktopHome();

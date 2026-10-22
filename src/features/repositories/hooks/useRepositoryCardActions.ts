@@ -1,7 +1,7 @@
 
 import { useT } from '../../../i18n/useT';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { shallow } from 'zustand/shallow';
+import { useShallow } from 'zustand/react/shallow';
 import type { Category, Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
@@ -62,7 +62,7 @@ export const useRepositoryCardActions = ({
     aiConfigs,
     toggleReleaseSubscription: toggleStoreReleaseSubscription,
   } = useAppStore(
-    useCallback(
+    useShallow(
       (state) => ({
         githubToken: state.githubToken,
         activeAIConfig: state.activeAIConfig,
@@ -78,9 +78,7 @@ export const useRepositoryCardActions = ({
         aiConfigs: state.aiConfigs,
         toggleReleaseSubscription: state.toggleReleaseSubscription,
       }),
-      [],
     ),
-    shallow,
   );
   const { toast, confirm } = useDialog();
   const abortControllerRef = useRef<AbortController | null>(null);

@@ -25,7 +25,7 @@ const details = {
   version: 1 as const, generated_at: '2026-09-28T12:00:00Z', repository_pushed_at: '2026-09-01',
   model: 'test', sources: [], summary: 'Chinese overview', problem: null, features: [], scenarios: [],
   architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null,
-  software_forms: ['cli' as const], platforms: ['Windows'], tags: [], deployment_modes: [],
+  software_forms: ['cli' as const], platforms: ['Windows'], technologies: [], tags: [], deployment_modes: [],
 };
 beforeEach(async () => {
   vi.stubGlobal('indexedDB', new IDBFactory());

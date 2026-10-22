@@ -7,6 +7,7 @@ export const repositoryDetailContentSchema = z.object({
   summary: text.nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(80)).max(repositoryDetailLimits.tags).default([]),
   platforms: z.array(z.string().trim().min(1).max(40)).max(repositoryDetailLimits.platforms).default([]),
+  technologies: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   software_forms: z.array(z.enum(['cli', 'desktop', 'web', 'library', 'plugin', 'model', 'agent'])).max(7).default([]),
   deployment_modes: z.array(z.enum(['local', 'self-hosted', 'managed', 'container'])).max(4).default([]),
   problem: text.nullable(),

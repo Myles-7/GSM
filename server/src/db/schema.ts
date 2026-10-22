@@ -154,6 +154,7 @@ export function initializeSchema(db: Database.Database): void {
   addColumnIfMissing(db, 'repositories', 'category_candidates', 'TEXT');
   addColumnIfMissing(db, 'repositories', 'category_legacy', 'TEXT');
   addColumnIfMissing(db, 'repositories', 'classifications', 'TEXT');
+  addColumnIfMissing(db, 'repositories', 'classificationInsights', 'TEXT');
   addColumnIfMissing(db, 'repositories', 'ai_details', 'TEXT');
   addColumnIfMissing(db, 'releases', 'zipball_url', 'TEXT');
   addColumnIfMissing(db, 'releases', 'tarball_url', 'TEXT');

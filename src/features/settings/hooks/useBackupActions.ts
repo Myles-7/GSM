@@ -6,7 +6,7 @@ import type { WebDAVConfig } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { useDialog } from '../../../hooks/useDialog';
 import { WebDAVService } from '../../../services/webdavService';
-import { classificationExport } from '../../../store/helpers/classificationSchemes';
+import { classificationBackupExport } from '../../../store/helpers/classificationSchemes';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { exportDiscoveryWorkspaceBackup } from '../../../services/discoveryWorkspaceBackup';
 import { decodeCloudBackup, planCloudBackupRestore } from '../../../services/cloudBackupRestore';
@@ -84,7 +84,7 @@ export const useBackupActions = (): BackupActions => {
         repositories: state.repositories,
         releases: state.releases,
         customCategories: state.customCategories,
-        classificationSchemes: classificationExport(useAppStore.getState()),
+        classificationSchemes: classificationBackupExport(useAppStore.getState()),
         subcategories: useAppStore.getState().subcategories,
         subcategoryOrder: useAppStore.getState().subcategoryOrder,
         repositoryOrder: useAppStore.getState().repositoryOrder,

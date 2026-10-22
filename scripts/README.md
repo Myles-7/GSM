@@ -1,6 +1,6 @@
 # 开发与治理脚本
 
-从项目根目录执行。Node 使用与 CI 一致的受支持版本；最新验证机版本及限制见 [AI 体验交付报告](../docs/audit/2026-10-04-ai-ux-delivery.md)，综合治理背景见 [项目审查报告](../docs/audit/2026-10-03-project-audit-delivery.md)。
+从项目根目录执行。Node 与原生模块要求见 [项目说明](../README_zh.md)。`npm run check` 统一运行静态检查、fixture 类型与文档链接检查。
 
 | 用途 | 命令 | 范围 |
 | --- | --- | --- |
@@ -22,4 +22,4 @@ AI 专项状态：`/?aiUx=overview` 展示 24 个合成候选、资料不足/失
 
 `diagnose-startup.cjs`、`diagnose-render-performance.cjs` 及 `fixtures/` 保留作为专项诊断工具，按其参数与护栏使用。HTML、桌面、AGY、主题等专项脚本继续保留；不应把会访问真实服务的历史验证脚本当成匿名审查入口。
 
-九个无引用、固定浏览器路径/端口的旧截图脚本已退役。原文件与 SHA-256 清单位于 `output/project-audit-20261003/retired-files/` 与 `file-governance.json`，已跟踪版本也可从 Git 历史恢复。清理工具不删除 `data/`、`home-backend/`、`output/`、`dist/`、`.git/` 或依赖目录；证据与部署保留时间需另行制定。
+一次性迁移、旧翻译 codemod 和历史验收清理脚本已删除，可从 Git 历史查找。清理工具不删除运行资料、部署、产物或依赖目录。专项诊断脚本使用前需阅读参数，部分工具会连接真实服务；离线验收统一使用 `audit:ui`。

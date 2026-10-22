@@ -1,13 +1,14 @@
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { identityWriteNeedsConfirmation, identityWriteNeedsUpgrade } from './repositoryIdentity.js';
-import { assertTechnologyMembershipReferences, classificationSchemesSchema, repositoryClassificationsSchema } from './classificationValidation.js';
+import { assertTechnologyMembershipReferences, classificationSchemesSchema, repositoryClassificationsSchema, repositoryClassificationInsightsSchema } from './classificationValidation.js';
 
 export const COLLECTIONS = ['repositories', 'organization', 'releases', 'release_reads', 'subscriptions', 'sessions', 'messages', 'evidence', 'projects', 'proposals', 'discovery_config', 'discovery_subscriptions', 'discovery_reads', 'discovery_history', 'discovery_editions'] as const;
 export type Collection = typeof COLLECTIONS[number];
 export interface SyncRecord { collection: Collection; id: string; data: Record<string, unknown> | null; version: number; seq: number; deleted: boolean }
 export interface Operation { opId: string; collection: Collection; id: string; baseVersion: number; kind: 'put' | 'delete'; data?: Record<string, unknown>; source?: 'user' | 'ai' }
-export class SyncError extends Error { constructor(public code: string, public status = 400) { super(code); } }
+import { SyncError } from './syncErrors.js';
+export { SyncError };
 export function initializeSyncV2(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS sync_v2_workspace (id TEXT PRIMARY KEY, github_user_id INTEGER NOT NULL, initialized_at TEXT NOT NULL, floor_seq INTEGER NOT NULL DEFAULT 0);
@@ -109,6 +110,7 @@ export function validateOperation(op: Operation) {
     if (JSON.stringify(op.data).length > 2_000_000) throw new SyncError('RECORD_TOO_LARGE', 413);
     validateData(op.data);
     if (op.collection === 'organization') validateOrganization(op.data);
+    if (op.collection === 'repositories' && op.data.classificationInsights !== undefined && !repositoryClassificationInsightsSchema.safeParse(op.data.classificationInsights).success) throw new SyncError('INVALID_CLASSIFICATION_INSIGHTS');
     if (op.collection === 'repositories' && op.data.classifications !== undefined && !repositoryClassificationsSchema.safeParse(op.data.classifications).success) throw new SyncError('INVALID_CLASSIFICATION_MEMBERSHIP');
   }
 }
@@ -191,10 +193,40 @@ function validateFinalClassificationState(db: Database.Database): void {
 
 export function pushOperations(db: Database.Database, input: { workspaceId: string; githubUserId: number; clientId: string; operations: Operation[] }) {
   assertWorkspace(db, input.workspaceId, input.githubUserId);
-  if (!identifier(input.clientId) || !Array.isArray(input.operations) || input.operations.length > 500) throw new SyncError('INVALID_BATCH');
+  if (!identifier(input.clientId) || !Array.isArray(input.operations) || input.operations.length > 2000) throw new SyncError('INVALID_BATCH');
   input.operations.forEach(validateOperation);
   return db.transaction(() => {
-    const result = applyOperations(db, input);
+    const classificationBatch = input.operations.some(op => op.collection === 'organization' && op.kind === 'put' && op.data?.classificationSchemes)
+      && input.operations.some(op => op.collection === 'repositories');
+    // A taxonomy and its assignments form one dependency group. Roll back the
+    // provisional writes if any member conflicts, then expose conflicts for the
+    // entire group using the same idempotent response contract as ordinary puts.
+    const conflictMarker = new Error('CLASSIFICATION_BATCH_CONFLICT');
+    let result: ReturnType<typeof applyOperations>;
+    try {
+      result = db.transaction(() => {
+        const provisional = applyOperations(db, input);
+        if (classificationBatch && provisional.results.some(row => row.status === 'conflict')) throw conflictMarker;
+        return provisional;
+      })();
+    } catch (error) {
+      if (error !== conflictMarker) throw error;
+      const results = input.operations.map(op => {
+        const hash = digest(op);
+        const previous = db.prepare('SELECT digest,result FROM sync_v2_operations WHERE client_id=? AND op_id=?').get(input.clientId, op.opId) as { digest: string; result: string } | undefined;
+        if (previous) {
+          if (previous.digest !== hash) throw new SyncError('OPERATION_ID_REUSED', 409);
+          return JSON.parse(previous.result);
+        }
+        const current = getRecord(db, op.collection, op.id);
+        const conflict = { id: randomUUID(), reason: 'CLASSIFICATION_BATCH_CONFLICT', incoming: op, current };
+        db.prepare('INSERT INTO sync_v2_conflicts VALUES(?,?,?,?,?,?)').run(conflict.id, op.collection, op.id, JSON.stringify(op), JSON.stringify(current), Date.now());
+        const rejected = { opId: op.opId, status: 'conflict', conflict };
+        db.prepare('INSERT INTO sync_v2_operations VALUES(?,?,?,?)').run(input.clientId, op.opId, hash, JSON.stringify(rejected));
+        return rejected;
+      });
+      return { results, cursor: currentCursor(db) };
+    }
     validateFinalClassificationState(db);
     return result;
   }).immediate();
@@ -224,8 +256,8 @@ function applyOperations(db: Database.Database, input: { workspaceId: string; cl
         db.prepare('INSERT INTO sync_v2_conflicts VALUES(?,?,?,?,?,?)').run(conflict.id, op.collection, op.id, JSON.stringify(op), JSON.stringify(current), Date.now());
         result = { opId: op.opId, status: 'conflict', conflict };
       } else {
-        const data = { ...op.data, ...(oldClassificationWrite ? Object.fromEntries(['classifications', 'classificationSchemes', ...classificationKeys].filter(key => current?.data && key in current.data).map(key => [key, current!.data![key]])) : {}) };
-        for (const key of ['classifications', 'classificationSchemes']) if (current?.data?.[key] && op.data?.[key]) data[key] = { ...current.data[key] as Record<string, unknown>, ...op.data[key] as Record<string, unknown> };
+        const data = { ...op.data, ...(oldClassificationWrite ? Object.fromEntries(['classifications', 'classificationInsights', 'classificationSchemes', ...classificationKeys].filter(key => current?.data && key in current.data).map(key => [key, current!.data![key]])) : {}) };
+        for (const key of ['classifications', 'classificationInsights', 'classificationSchemes']) if (current?.data?.[key] && op.data?.[key]) data[key] = { ...current.data[key] as Record<string, unknown>, ...op.data[key] as Record<string, unknown> };
         const record = writeCanonicalRecord(db, { collection: op.collection, id: op.id, deleted: op.kind === 'delete', data: op.kind === 'delete' ? null : data });
         result = { opId: op.opId, status: 'applied', record };
       }

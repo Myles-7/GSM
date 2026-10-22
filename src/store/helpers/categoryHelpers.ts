@@ -9,12 +9,13 @@ export const sortCategoriesByOrder = (
   categoryOrder: string[]
 ): Category[] => {
   if (!categoryOrder || categoryOrder.length === 0) {
-    return categories;
+    return [...categories].sort((a, b) => Number(b.id === 'all') - Number(a.id === 'all'));
   }
 
   const orderMap = new Map(categoryOrder.map((id, index) => [id, index]));
 
   return [...categories].sort((a, b) => {
+    if (a.id === 'all' || b.id === 'all') return Number(b.id === 'all') - Number(a.id === 'all');
     const orderA = orderMap.get(a.id);
     const orderB = orderMap.get(b.id);
 
@@ -39,9 +40,9 @@ export const getAllCategories = (
   defaultCategoryOverrides: Record<string, Partial<Category>> = {}
 ): Category[] => {
   const translatedDefaults = defaultCategories
-    .filter(cat => !hiddenDefaultCategoryIds.includes(cat.id))
+    .filter(cat => cat.id === 'all' || !hiddenDefaultCategoryIds.includes(cat.id))
     .map(cat => {
-      const override = defaultCategoryOverrides[cat.id];
+      const override = cat.id === 'all' ? undefined : defaultCategoryOverrides[cat.id];
       const baseName = language === 'zh' ? cat.name : categoryName(cat.id, language);
       const baseKeywords = [...(cat.keywords ?? []), ...categoryExtraKeywords(cat.id, language)];
       return {

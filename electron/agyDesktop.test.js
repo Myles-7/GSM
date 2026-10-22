@@ -25,6 +25,33 @@ test('validates all prefs and rejects executable, prompt or unknown fields', () 
   }
 });
 
+test('bridges public observations and typed reasoning independently of answer text', async t => {
+  const events = [];
+  const { service } = await setup(t, { runtime: async options => {
+    options.onPromptSent?.(); options.onText?.('answer'); options.onReasoning?.('typed');
+    options.onObservation?.({ event: 'step_update', stepType: 'agent_reasoning', stepIndex: 1, state: 'running' });
+    return { text: '{"answer":"连接成功","missing":[]}', usage: {} };
+  } });
+  await service.detect(1, 'detect'); await service.probe(1, 'probe');
+  await service.save(1, 'save', { ...DEFAULT_PREFS, enabled: true });
+  const prefs = (await service.getState()).prefs;
+  const result = await service.generate(1, 'observed', { system: 'test', user: 'test', model: prefs.model, effort: prefs.effort }, event => events.push(event));
+  assert.equal(result.ok, true);
+  assert.deepEqual(events.filter(event => ['text', 'reasoning', 'observation'].includes(event.type)), [
+    { type: 'text', text: 'answer' }, { type: 'reasoning', text: 'typed' },
+    { type: 'observation', observation: { event: 'step_update', stepType: 'agent_reasoning', stepIndex: 1, state: 'running' } },
+  ]);
+  await service.shutdown();
+});
+test('saves global and organization concurrency to the device file without a model call',async t=>{
+  let calls=0;const {service,directory}=await setup(t,{runtime:async()=>{calls++;throw Error('unexpected model call');}});
+  const result=await service.save(1,'limits',{...DEFAULT_PREFS,concurrency:3,featureOverrides:{organization:{concurrency:2}}});
+  assert.equal(result.ok,true);assert.equal(result.value.prefs.concurrency,3);assert.equal(result.value.pool.limit,3);
+  const stored=JSON.parse(await fs.readFile(path.join(directory,'agy-device.json'),'utf8'));
+  assert.equal(stored.prefs.concurrency,3);assert.equal(stored.prefs.featureOverrides.organization.concurrency,2);assert.equal(calls,0);
+  await service.shutdown();
+});
+
 test('recovery requires every owned process to be closed and does not call the model', async t => {
   let processCount = 1; let calls = 0; let close; const cleanupSettled = new Promise(resolve => { close = resolve; });
   const { service } = await setup(t, { processCount: () => processCount, runtime: async () => {

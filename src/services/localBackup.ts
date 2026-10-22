@@ -7,7 +7,7 @@ import type { ThemeTokens } from '../types/themeTokens';
 import type { RepositoryCardFields } from '../types/repositoryCardFields';
 import type { ThemePresetId } from '../constants/themePresets';
 import { validateCustomCategorySnapshot } from '../store/helpers/repositoryOrganization';
-import { classificationSchemesSchema } from './classificationSchema';
+import { classificationSchemesSchema, repositoryClassificationInsightsSchema } from './classificationSchema';
 export interface BackupIdentity { githubUserId: string | null; workspaceId: string | null }
 export interface LocalBackup {
   version: string;
@@ -45,7 +45,10 @@ export interface LocalBackup {
     themePreset?: ThemePresetId;
     themeTokens?: ThemeTokens;
     repositoryCardFields?: RepositoryCardFields;
-    repositoryViewMode?: 'list' | 'grid';
+    repositoryViewMode?: 'list' | 'grid' | 'cluster';
+    clusterDisplayMode?: 'clusters' | 'network' | 'galaxy';
+    clusterPreset?: 'all' | 'purpose' | 'technology' | 'topics' | 'ai' | 'semantic' | 'topic-search';
+    clusterQuery?: string;
     language?: AppLanguage;
     isSidebarCollapsed?: boolean;
     releaseViewMode?: 'timeline' | 'repository';
@@ -66,13 +69,14 @@ const idList = z.array(z.number().int().positive().safe());
 const strings = z.array(z.string());
 const dataSchema = z.object({
   classificationSchemes: classificationSchemesSchema.optional(),
-  repositories: z.array(z.object({ id: z.number().int().positive().safe(), full_name: z.string().regex(/^[^/\\\s]+\/[^/\\\s]+$/) }).passthrough()).optional(),
+  repositories: z.array(z.object({ id: z.number().int().positive().safe(), full_name: z.string().regex(/^[^/\\\s]+\/[^/\\\s]+$/), classificationInsights: repositoryClassificationInsightsSchema.optional() }).passthrough()).optional(),
   releases: z.array(object).optional(), aiConfigs: z.array(object).optional(), webdavConfigs: z.array(object).optional(),
   customCategories: z.array(object).optional(), subcategories: z.array(z.object({ id: z.string().min(1), parentId: z.string().min(1), name: z.string().min(1), icon: z.string() })).optional(),
   subcategoryOrder: strings.optional(), repositoryOrder: idList.optional(), categoryOrder: strings.optional(),
   hiddenDefaultCategoryIds: strings.optional(), defaultCategoryOverrides: object.optional(),
   theme: z.enum(['light', 'dark']).optional(), themePreset: z.string().optional(), themeTokens: object.optional(),
-  repositoryCardFields: z.record(z.string(), z.boolean()).optional(), repositoryViewMode: z.enum(['list', 'grid']).optional(),
+  repositoryCardFields: z.record(z.string(), z.boolean()).optional(), repositoryViewMode: z.enum(['list', 'grid', 'cluster']).optional(),
+  clusterDisplayMode: z.enum(['clusters', 'network', 'galaxy']).optional(), clusterPreset: z.enum(['all', 'purpose', 'technology', 'topics', 'ai', 'semantic', 'topic-search']).optional(), clusterQuery: z.string().optional(),
   language: z.string().optional(), isSidebarCollapsed: z.boolean().optional(),
   releaseViewMode: z.enum(['timeline', 'repository']).optional(), releaseSelectedFilters: strings.optional(),
   releaseSearchQuery: z.string().optional(), releaseExpandedRepositories: idList.optional(),
@@ -86,7 +90,7 @@ const dataSchema = z.object({
 
 export const SAFE_BACKUP_TYPES = ['repositories', 'customCategories', 'uiSettings'] as const;
 export const ORGANIZATION_BACKUP_KEYS = ['classificationSchemes', 'customCategories', 'hiddenDefaultCategoryIds', 'defaultCategoryOverrides', 'categoryOrder', 'subcategories', 'subcategoryOrder', 'repositoryOrder'] as const;
-export const PREFERENCE_BACKUP_KEYS = ['theme', 'themePreset', 'themeTokens', 'repositoryCardFields', 'repositoryViewMode', 'language', 'isSidebarCollapsed', 'releaseViewMode', 'releaseSelectedFilters', 'releaseSearchQuery', 'releaseExpandedRepositories'] as const;
+export const PREFERENCE_BACKUP_KEYS = ['theme', 'themePreset', 'themeTokens', 'repositoryCardFields', 'repositoryViewMode', 'clusterDisplayMode', 'clusterPreset', 'clusterQuery', 'language', 'isSidebarCollapsed', 'releaseViewMode', 'releaseSelectedFilters', 'releaseSearchQuery', 'releaseExpandedRepositories'] as const;
 const aliases: Record<string, string> = { discoveryWorkspace: 'discoveryRepos', discoveryTotalCount: 'discoveryRepos', discoveryHasMore: 'discoveryRepos', discoveryNextPage: 'discoveryRepos', subscriptionChannels: 'subscriptionRepos', subscriptionLastRefresh: 'subscriptionRepos', releaseSourceSettings: 'releaseSubscriptions', readReleases: 'releaseSubscriptions' };
 export function localBackupTypes(data: LocalBackup['data']): string[] {
   const types = ['repositories', 'releases', 'aiConfigs', 'webdavConfigs', 'customCategories', 'assetFilters', 'discoveryRepos', 'subscriptionRepos', 'releaseSubscriptions', 'searchFilters', 'uiSettings'];
@@ -101,6 +105,8 @@ export function decodeLocalBackup(text: string): LocalBackup {
   if (new TextEncoder().encode(text).byteLength > 20 * 1024 * 1024) throw new Error('BACKUP_TOO_LARGE');
   const raw = z.object({ version: z.enum(['1.0', '1.1', '1.2']) }).passthrough().parse(JSON.parse(text));
   const data = dataSchema.parse(raw.version === '1.2' && !('data' in raw) ? raw : raw.data);
+  if (data.hiddenDefaultCategoryIds) data.hiddenDefaultCategoryIds = data.hiddenDefaultCategoryIds.filter(id => id !== 'all' && id !== 'pending');
+  if (data.categoryOrder) data.categoryOrder = data.categoryOrder.filter(id => id !== 'all' && id !== 'pending');
   if (data.customCategories !== undefined) validateCustomCategorySnapshot(data.customCategories);
   for (const rows of [data.repositories, data.subcategories]) {
     if (rows && new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('BACKUP_DUPLICATE_ID');

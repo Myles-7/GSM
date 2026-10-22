@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { AIWorkbench } from './AIWorkbench';
 import type { WorkbenchProposal, WorkbenchScope, WorkbenchSearchBatch } from '../../../types/aiWorkbench';
 import type { Repository } from '../../../types';
+import { useAppStore } from '../../../store/useAppStore';
 
 const mockWorkbench = {
   active: { id: 's1', title: 'Test Session', createdAt: new Date().toISOString() },
@@ -29,7 +30,7 @@ const mockWorkbench = {
   mode: 'active' as const,
   project: null,
   localProject: null,
-  error: null,
+  error: null as string | null,
   guard: vi.fn((fn: () => unknown) => fn()),
   createSession: vi.fn().mockResolvedValue({ id: 's2', title: 'New' }),
   select: vi.fn(),
@@ -71,10 +72,10 @@ vi.mock('../../../components/AIOrganizationPanel', () => ({
 }));
 
 vi.mock('../../../store/useAppStore', () => ({
-  useAppStore: vi.fn((selector) => {
+  useAppStore: Object.assign(vi.fn((selector) => {
     const state = { language: 'zh' };
     return selector ? selector(state) : state;
-  }),
+  }), { getState: () => ({ setCurrentView: vi.fn() }) }),
 }));
 
 describe('AIWorkbench Component (Phase 1)', () => {
@@ -82,10 +83,21 @@ describe('AIWorkbench Component (Phase 1)', () => {
     localStorage.clear();
     vi.clearAllMocks();
     mockWorkbench.activeId = 's1';
+    mockWorkbench.error = null;
     mockWorkbench.messages = [];
     mockWorkbench.proposals = [];
     mockWorkbench.settings.retainSessionDays = 90;
     mockWorkbench.data.scope = 'github';
+  });
+
+  it('routes errors to task records without showing raw failure text on the business page', () => {
+    mockWorkbench.error = 'AGY_TIMEOUT: internal request diagnostic';
+    const setCurrentView = vi.fn();
+    vi.spyOn(useAppStore, 'getState').mockReturnValue({ setCurrentView } as unknown as ReturnType<typeof useAppStore.getState>);
+    render(<AIWorkbench />);
+    expect(screen.queryByText(/AGY_TIMEOUT|internal request diagnostic/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '任务记录' }));
+    expect(setCurrentView).toHaveBeenCalledWith('tasks');
   });
 
   it('explains missing AI configuration and offers a setup destination while preserving the question', () => {

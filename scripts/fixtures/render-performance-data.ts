@@ -25,7 +25,7 @@ export function makeFixture(count: number) {
   const discovery: DiscoveryRepo[] = repositories.map((repo, i) => ({ ...repo, channel: 'trending', rank: i + 1, platform: 'All', starsToday: i % 30 }));
   const channel: CustomDiscoveryChannel = { id: 'custom:diagnostic', name: '匿名诊断频道', instruction: 'Offline fixture', revision: 1, enabled: true, paused: true,
     ai: false, autoAnalyze: false, limit: count, hour: 9, cursors: [], blocked: [], read: [], recommended: {},
-    plan: { version: 1, required: [], preferred: [], excluded: [], branches: [], filters: { language: null, minStars: null, maxStars: null, createdWithinDays: null }, filterSources: { language: null, minStars: null, maxStars: null, createdWithinDays: null }, conflicts: [] } };
+    plan: { version: 1, required: [], preferred: [], excluded: [], branches: [{ terms: ['offline'], readme: false }], filters: { language: null, minStars: null, maxStars: null, createdWithinDays: null }, filterSources: { language: null, minStars: null, maxStars: null, createdWithinDays: null }, conflicts: [] } };
   const data: CustomDiscoveryData = { cache: {}, channels: [channel, { ...channel, id: 'custom:other', name: '匿名对照频道' }],
     editions: [0, 1].map(j => ({ channelId: channel.id, date: `2026-10-0${j + 2}`, revision: 1, instruction: channel.instruction,
       entries: repositories.map(repo => ({ repo, verdict: 'match', reason: '匿名离线结果', evidence: ['Synthetic metadata'], method: 'rules', relevance: 3, preference: 0 })),

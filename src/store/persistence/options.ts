@@ -131,6 +131,9 @@ sortOrder: state.searchFilters.sortOrder,
 
   // 持久化仓库页面视图设置
   repositoryViewMode: state.repositoryViewMode,
+  clusterDisplayMode: state.clusterDisplayMode,
+  clusterPreset: state.clusterPreset,
+  clusterQuery: state.clusterQuery,
   // 持久化Release页面视图设置
   releaseViewMode: state.releaseViewMode,
   releaseShowMode: state.releaseShowMode,

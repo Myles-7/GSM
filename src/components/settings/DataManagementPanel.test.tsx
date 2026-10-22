@@ -28,7 +28,7 @@ vi.mock('../../services/localBackupScope', () => ({ getLocalBackupIdentity: () =
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.state = { user: { id: 42, login: 'alice' }, repositories: [], releases: [], aiConfigs: [], webdavConfigs: [],
-    customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], assetFilters: [], discoveryRepos: {},
+    customCategories: [], defaultCategoryOverrides: {}, hiddenDefaultCategoryIds: [], categoryOrder: [], subcategories: [], subcategoryOrder: [], repositoryOrder: [], assetFilters: [], discoveryRepos: {},
     discoveryTotalCount: {}, discoveryHasMore: {}, discoveryNextPage: {}, subscriptionRepos: {}, subscriptionChannels: [],
     releaseSubscriptions: new Set(), readReleases: new Set(), releaseExpandedRepositories: new Set(), language: 'en',
     releaseSourceSettings: { enabledSourceIds: [], watchCustomReleaseRepos: [], customReleaseRepos: [] },

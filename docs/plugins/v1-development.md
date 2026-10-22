@@ -263,7 +263,7 @@ AI 请求正文不会写入调试日志；关闭页面会中止进行中的 AI �
 `repository-card` actions may declare `opensPage` pointing to a page in the same
 manifest. A plugin with only pages and opensPage actions needs no `main` or Worker.
 The modal supplies whitelisted repository facts, README and language. See
-`examples/plugins/repo-info-card` and [integration/security spec](v1.4-integration-spec.md).
+[`examples/plugins/repo-info-card`](../../examples/plugins/repo-info-card) and the [architecture/security boundaries](../architecture.md).
 
 Every page request must include `origin: window.location.origin`; opaque or missing
 origins are rejected. Host init/responses target `plugin-page://<pluginId>` exactly.

@@ -64,6 +64,12 @@ describe('shared organization executor', () => {
     }
     expect(generate).toHaveBeenCalledOnce();
   });
+  it('never probes or replays an HTTP 503 with an unknown outcome', async () => {
+    generate.mockReset().mockRejectedValue(Object.assign(new Error('upstream failure'),{status:503,providerOutcome:'unknown'}));
+    const {value}=executor();
+    await expect(value.request('assignments:both:0',{},[1],new AbortController().signal)).rejects.toMatchObject({code:'UNKNOWN_PROVIDER_OUTCOME'});
+    expect(generate).toHaveBeenCalledOnce();
+  });
   it('never probes or replays a sent call with an unknown outcome', async () => {
     vi.useFakeTimers();
     try {

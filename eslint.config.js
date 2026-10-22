@@ -99,6 +99,10 @@ export default tseslint.config(
       ],
       'no-restricted-syntax': [
         'error',
+        {
+          selector: "NewExpression[callee.name='GitHubApiService']",
+          message: 'Build GitHub API clients with createGitHubApiService(token) so route-mode settings apply.',
+        },
         ...BANNED_COMPONENT_SERVICE_DYNAMIC_SELECTORS.map((selector) => ({
           selector,
           message:
@@ -117,7 +121,14 @@ export default tseslint.config(
      * setting. The factory itself and tests are exempt.
      */
     files: ['src/**/*.{ts,tsx}'],
-    ignores: ['src/services/githubApiFactory.ts', 'src/**/*.test.{ts,tsx}'],
+    ignores: [
+      'src/services/githubApiFactory.ts',
+      'src/**/*.test.{ts,tsx}',
+      // Views have both rules above; a later flat-config entry would replace
+      // their dynamic-import selectors instead of merging the arrays.
+      'src/components/**/*.{ts,tsx}',
+      'src/features/*/components/**/*.{ts,tsx}',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',

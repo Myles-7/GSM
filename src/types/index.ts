@@ -72,6 +72,7 @@ export interface Repository {
   category_candidates?: string[];
   category_legacy?: import('./repositoryOrganization').RepositoryLegacyClassification;
   classifications?: import('./classification').RepositoryClassifications;
+  classificationInsights?: Partial<Record<import('./classification').ClassificationSchemeId, import('./classification').ClassificationInsight>>;
   ai_details?: import('./repositoryDetails').RepositoryDetailsAnalysis;
   category_locked?: boolean;
   last_edited?: string;
@@ -337,6 +338,10 @@ export interface SimilarViewState {
   originalSearchResults: Repository[]; // 进入前的 searchResults 快照，重置恢复用
   originalSearchFilters: SearchFilters; // 进入前的 searchFilters 快照，重置恢复用
 }
+
+export type RepositoryViewMode = 'grid' | 'list' | 'cluster';
+export type ClusterDisplayMode = 'clusters' | 'network' | 'galaxy';
+export type ClusterPresetId = 'all' | 'purpose' | 'technology' | 'topics' | 'ai' | 'semantic' | 'topic-search';
 export type AIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 export type MiMoPlan = 'api' | 'token-plan';
 
@@ -454,6 +459,11 @@ export interface Category {
   mergedInto?: string;
   retired?: boolean;
   retirementTargets?: string[];
+  /** Classification provenance. AI-generated categories are safe to rebuild. */
+  source?: 'ai' | 'manual';
+  sourceKey?: string;
+  generatedAt?: string;
+  evidence?: string[];
 }
 
 export interface AssetFilter {
@@ -542,7 +552,10 @@ export interface AppState {
   isSyncingStars: boolean;
   lastSync: string | null;
   analyzingRepositoryIds: Set<number>;
-  repositoryViewMode: 'grid' | 'list';
+  repositoryViewMode: RepositoryViewMode;
+  clusterDisplayMode: ClusterDisplayMode;
+  clusterPreset: ClusterPresetId;
+  clusterQuery: string;
   /** 仓库卡片显示哪些字段（开发守则 §14）：只保存声明式开关 */
   repositoryCardFields: RepositoryCardFields;
 

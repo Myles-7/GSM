@@ -44,6 +44,7 @@ export async function analyzeRepositoryDetails(options: {
   if (readme) sources.push({ label: 'README', url: `${repository.html_url}#readme`, retrieved_at: retrievedAt });
   if (options.localResponse === undefined) options.onStage?.('model');
   const request = (requestSignal = signal) => new AIService(forAgyFeature(aiConfig, 'repository-details', aiConfig.provider === 'agy-cli' ? aiConfig.agyPriority : undefined), language, true).generateChatText({
+    feature: 'repository-details',
     recovery: { step: `details:${repository.id}`, onResult: record => { resultRecord = record; options.recovery?.onResult?.(record); },
       context: detailRecoveryContext(repository, { fullName: repository.full_name, pushedAt: repository.pushed_at || null, language,
         model: agyProfileIdentity(aiConfig, 'repository-details').model, readme: { content: readmeEvidence, retrievedAt } }, aiConfig, options.recovery?.assetVersion, options.recovery?.source) },

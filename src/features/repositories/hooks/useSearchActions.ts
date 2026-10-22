@@ -10,7 +10,7 @@ import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIden
 import { createGitHubApiService, createGitHubListsApiService } from '../../../services/githubApiFactory';
 import { forceSyncToBackend } from '../../../services/autoSync';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
-import { bindTaskSignal, taskConfigSnapshot } from '../../../services/taskExecution';
+import { bindTaskSignal, taskConfigSnapshot, inheritTaskSignal } from '../../../services/taskExecution';
 import { useDialog } from '../../../hooks/useDialog';
 import type { GitHubList } from '../../../services/githubListsApi';
 import type { VectorQueryResult } from '../../../services/vectorSearchService';
@@ -439,6 +439,7 @@ export const useSearchActions = (): SearchActions => {
           const hydeConfig = aiConfigs.find(config => config.id === activeAIConfig);
           if (vsConfig.enableHyDE !== false && hydeConfig) {
             const hydeAbort = new AbortController();
+            inheritTaskSignal(controller.signal, hydeAbort.signal);
             const abortHyde = () => hydeAbort.abort();
             controller.signal.addEventListener('abort', abortHyde, { once: true });
             let hydeTimer: ReturnType<typeof setTimeout> | null = null;

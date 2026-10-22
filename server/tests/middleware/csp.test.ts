@@ -83,6 +83,20 @@ describeIfDb('helmet CSP for browser-direct route mode', () => {
     expect(imgSrc).toContain('https:');
   });
 
+  it('allows only the trusted static bootstrap hashes when serving a frontend', async () => {
+    const staticDir = path.join(tmpDir, 'frontend');
+    fs.mkdirSync(staticDir, { recursive: true });
+    fs.writeFileSync(path.join(staticDir, 'index.html'), '<script>window.bootstrap=true</script>');
+    process.env.STATIC_DIR = staticDir;
+    try {
+      const csp = await cspOf(createApp());
+      const scriptSrc = csp.split(';').find(directive => directive.trim().startsWith('script-src ')) ?? '';
+      expect(scriptSrc).toContain("'sha256-");
+      expect(scriptSrc).not.toContain("'unsafe-inline'");
+      expect(scriptSrc).not.toContain("'unsafe-eval'");
+    } finally { delete process.env.STATIC_DIR; }
+  });
+
   it('appends CSP_CONNECT_SRC extra origins', async () => {
     process.env.CSP_CONNECT_SRC = 'https://ai.example.com, https://worker.example.org';
     try {

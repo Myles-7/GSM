@@ -237,7 +237,8 @@ async function drain() {
     }
     };
     const first = queue[0]?.config;
-    await Promise.all(Array.from({ length: first ? agyFeatureConcurrency(first, 'repository-details') : 1 }, worker));
+    const workerCount = first ? agyFeatureConcurrency(first, 'repository-details') : 1;
+    await Promise.all(Array.from({ length: workerCount }, worker));
   } finally {
     draining = false;
     useCustomAnalysis.setState({ running: false, paused: false });

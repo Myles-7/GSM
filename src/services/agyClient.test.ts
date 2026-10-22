@@ -4,6 +4,46 @@ import { agyQueueStatus, generateAgyText } from './agyClient';
 import { bindTaskSignal, bindTaskItemSignal } from './taskExecution';
 import type { AgyEvent } from '../types/agy';
 import { aiTaskJournal } from './aiTaskJournal';
+import { taskObservability } from './taskObservability';
+
+vi.mock('./taskObservability', async importOriginal => {
+  const actual = await importOriginal<typeof import('./taskObservability')>();
+  return { ...actual, taskObservability: { ...actual.taskObservability,
+    begin: vi.fn(), phase: vi.fn(), append: vi.fn(), complete: vi.fn(), event: vi.fn(),
+  } };
+});
+
+it('captures linked AGY request channels and reconciles the final answer without replaying chunks', async () => {
+  vi.clearAllMocks();
+  const listeners = new Set<(event: AgyEvent) => void>();
+  const previous = window.electronAPI;
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {},
+    onEvent: (listener: (event: AgyEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    start: async (requestId: string, session: string) => {
+      for (const event of [{ type: 'sent' }, { type: 'reasoning', text: 'explicit reason' },
+        { type: 'observation', observation: { event: 'step_update', stepType: 'agent_response', stepIndex: 2, state: 'running' } },
+        { type: 'text', text: '<think>literal</think>' }, { type: 'cleanup' }]) {
+        listeners.forEach(listener => listener({ requestId, session, ...event } as AgyEvent));
+      }
+      return { ok: true, value: { text: '<think>literal</think> final', usage: { output_tokens: 4 } } };
+    },
+  } } as unknown as typeof previous;
+  const controller = new AbortController(), chunks = vi.fn();
+  const task = aiTaskJournal.begin('journal-owner', 'details', [{ id: 'repo', label: 'Repository' }]);
+  bindTaskItemSignal(controller.signal, task, 'repo');
+  try {
+    expect(await generateAgyText({ id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'fixture', agyEffort: 'high', agyMode: 'model', isActive: true, deviceBound: true },
+      { system: '', user: '', signal: controller.signal, onChunk: chunks })).toBe('<think>literal</think> final');
+    expect(taskObservability.begin).toHaveBeenCalledWith(expect.objectContaining({ owner: 'journal-owner', taskId: task.id, itemId: 'repo', source: 'agy', model: 'fixture' }));
+    const { requestId } = vi.mocked(taskObservability.begin).mock.calls[0][0];
+    expect(taskObservability.append).toHaveBeenCalledWith('journal-owner', task.id, requestId, 'reasoning', 'explicit reason');
+    expect(taskObservability.append).toHaveBeenCalledWith('journal-owner', task.id, requestId, 'answer', '<think>literal</think>');
+    expect(taskObservability.complete).toHaveBeenCalledWith('journal-owner', task.id, requestId, expect.objectContaining({ outcome: 'succeeded', answer: '<think>literal</think> final', usage: { output_tokens: 4 } }));
+    expect(chunks.mock.calls).toEqual([['<think>literal</think>']]);
+    expect(taskObservability.event).toHaveBeenCalledWith('journal-owner', task.id, expect.objectContaining({ type: 'step_update', stepIndex: 2 }));
+    expect(listeners.size).toBe(0);
+  } finally { task.finish('complete'); window.electronAPI = previous; }
+});
 
 it('returns explicit unsent deferral without an automatic admission retry', async () => {
   const start = vi.fn().mockResolvedValueOnce({ ok: false, code: 'RESOURCE_DEFERRED', details: { retryAfterMs: 1 } })
@@ -23,6 +63,22 @@ it('returns explicit unsent deferral without an automatic admission retry', asyn
 vi.mock('../store/useAppStore', () => ({ useAppStore: {
   getState: () => ({ aiConfigs: [], language: 'zh', user: { id: 7 } }), subscribe: () => () => {},
 } }));
+
+it('tracks a direct authenticated AGY call once when the caller has no parent task', async () => {
+  vi.clearAllMocks();
+  const previous = window.electronAPI, before = new Set(aiTaskJournal.snapshot().map(record => record.id));
+  const start = vi.fn().mockResolvedValue({ ok: true, value: { text: 'original', usage: {} } });
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {}, start, onEvent: () => () => {} } } as unknown as typeof previous;
+  try {
+    expect(await generateAgyText({ id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'fixture', agyEffort: 'high', agyMode: 'model', isActive: true, deviceBound: true },
+      { feature: 'repository-details', system: '', user: '' })).toBe('original');
+    const created = aiTaskJournal.snapshot().filter(record => !before.has(record.id));
+    expect(created).toHaveLength(1); expect(created[0]).toMatchObject({ owner: '7', kind: 'details', state: 'complete' });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0][2]).toMatchObject({ taskId: created[0].id, itemId: 'operation' });
+    expect(taskObservability.begin).toHaveBeenCalledTimes(1);
+  } finally { window.electronAPI = previous; }
+});
 
 it('submits background work to the authoritative queue to use spare capacity during a manual batch', async () => {
   const previous = window.electronAPI;
@@ -103,4 +159,58 @@ it('retains cleanup warnings and a known successful outcome when local output va
       providerOutcome: 'succeeded', validationStatus: 'failed', warning: 'CLEANUP_TIMEOUT', failureCode: 'AGY_OUTPUT_LIMIT',
     });
   } finally { task.finish('partial'); window.electronAPI = previous; }
+});
+
+it('never calls window.confirm for background tasks with unconfirmed unknown recovery records', async () => {
+  const previous = window.electronAPI;
+  const confirmSpy = vi.spyOn(window, 'confirm');
+  const recoveryList = vi.fn().mockResolvedValue({
+    ok: true, value: { records: [{ requestId: 'prev-req', owner: '7', providerOutcome: 'unknown', receipt: null, step: 'step-1', inputDigest: 'digest' }], errors: [] },
+  });
+  const start = vi.fn().mockResolvedValue({ ok: true, value: { text: 'ok', usage: {} } });
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {}, start, recoveryList, onEvent: () => () => {} } } as unknown as typeof previous;
+  try {
+    const config = { id: 'agy', name: 'AGY', provider: 'agy-cli' as const, model: 'fixture', agyEffort: 'high' as const, agyMode: 'model' as const, isActive: true, deviceBound: true, agyPriority: 'background' as const };
+    await expect(generateAgyText(config, { system: '', user: '', recovery: { step: 'step-1' } })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  } finally {
+    confirmSpy.mockRestore();
+    window.electronAPI = previous;
+  }
+});
+
+it('prompts window.confirm for interactive tasks with unconfirmed unknown recovery records and records confirmation', async () => {
+  const previous = window.electronAPI;
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const recoveryList = vi.fn().mockResolvedValue({
+    ok: true, value: { records: [{ requestId: 'interactive-req', owner: '7', providerOutcome: 'unknown', receipt: null, step: 'step-interactive', inputDigest: 'digest' }], errors: [] },
+  });
+  const start = vi.fn().mockResolvedValue({ ok: true, value: { text: 'interactive result', usage: {} } });
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {}, start, recoveryList, onEvent: () => () => {} } } as unknown as typeof previous;
+  try {
+    const config = { id: 'agy', name: 'AGY', provider: 'agy-cli' as const, model: 'fixture', agyEffort: 'high' as const, agyMode: 'model' as const, isActive: true, deviceBound: true, agyPriority: 'interactive' as const };
+    const result = await generateAgyText(config, { system: '', user: '', recovery: { step: 'step-interactive' } });
+    expect(result).toBe('interactive result');
+    expect(confirmSpy).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(start.mock.calls[0][2]).toMatchObject({ retryOf: 'interactive-req' });
+
+    // Second call should not prompt again because confirmation is recorded
+    confirmSpy.mockClear();
+    await generateAgyText(config, { system: '', user: '', recovery: { step: 'step-interactive' } });
+    expect(confirmSpy).not.toHaveBeenCalled();
+  } finally {
+    confirmSpy.mockRestore();
+    window.electronAPI = previous;
+  }
+});
+
+it('keeps an unknown nested request visible even when its request reference is not a repository item',async()=>{
+ const previous=window.electronAPI;const listeners=new Set<(event:AgyEvent)=>void>();
+ window.electronAPI={agy:{setSession:async()=>{},cancel:async()=>{},onEvent:(listener:(event:AgyEvent)=>void)=>{listeners.add(listener);return()=>listeners.delete(listener);},start:async(requestId:string,session:string)=>{listeners.forEach(listener=>listener({type:'sent',requestId,session}));return {ok:false,code:'TIMEOUT'};}}} as unknown as typeof previous;
+ const task=aiTaskJournal.begin('7','organization',[]),controller=new AbortController();bindTaskItemSignal(controller.signal,task,'nested-request');
+ try{await expect(generateAgyText({id:'agy',name:'AGY',provider:'agy-cli',model:'fixture',agyEffort:'high',agyMode:'model',isActive:true,deviceBound:true},{system:'',user:'',signal:controller.signal})).rejects.toThrow('AGY_TIMEOUT');
+ expect(aiTaskJournal.snapshot().find(row=>row.id===task.id)).toMatchObject({providerOutcome:'unknown',failureCode:'unknown_provider_outcome',phase:'generating'});
+ }finally{task.finish('failed');window.electronAPI=previous;}
 });

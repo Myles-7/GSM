@@ -9,6 +9,24 @@ const done = JSON.stringify({ event: 'result', result: { status: 'SUCCESS', num_
 const base = { executable: 'fake-agy', cwd: __dirname, prompt: 'synthetic-only', timeoutMs: 3000, initTimeoutMs: 1500 };
 const fixture = source => (_executable, _args, options) => spawn(process.execPath, ['-e', source], options);
 
+test('forwards typed reasoning and public steps without duplicating answer callbacks', async () => {
+  const child = new EventEmitter(); child.pid = 1;
+  child.stdin = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  const answer = [], reasoning = [], observations = [];
+  child.stdin.end = () => queueMicrotask(() => {
+    for (const step of [{ step_type: 'agent_reasoning', text_delta: 'typed' }, { step_type: 'agent_response', step_index: 2, text_delta: 'ok' }]) {
+      child.stdout.emit('data', Buffer.from(`${JSON.stringify({ event: 'step_update', step_update: step })}\n`));
+    }
+    child.stdout.emit('data', Buffer.from(`${done}\n`)); child.emit('close', 0);
+  });
+  const pending = runAgy({ ...base, spawnProcess: () => child, onText: text => answer.push(text),
+    onReasoning: text => reasoning.push(text), onObservation: value => observations.push(value) });
+  child.stdout.emit('data', Buffer.from(`${init}\n`));
+  assert.equal((await pending).text, 'ok');
+  assert.deepEqual(answer, ['ok']); assert.deepEqual(reasoning, ['typed']);
+  assert.ok(observations.some(value => value.stepIndex === 2));
+});
+
 test('does not charge startup or confirmed terminal exit time to model generation', async () => {
   const child = new EventEmitter(); child.pid = 1;
   child.stdin = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
@@ -186,15 +204,17 @@ test('abort listeners do not affect later isolated requests', async () => {
 
 test('100 actual CLI fixture processes retain request isolation at queue capacity five', async () => {
   const { AgyQueue }=require('./agyQueue');const queue=new AgyQueue(5);
-  const cwd=await createAgyWorkspace(),directories=new Set(),pids=new Set();let peak=0,live=0;
+  const cwd=await createAgyWorkspace(),directories=new Set(),processes=new Set();let peak=0,live=0;
   const worker=createAgyWorker({executable:'fixture',cwd,maxRequests:20,spawnProcess:(_exe,_args,options)=>{
     directories.add(options.cwd);live++;peak=Math.max(peak,live);
     const child=fixture(`console.log(${JSON.stringify(init)});let input='';process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',num_turns:1,response:JSON.parse(input).message.content.split(String.fromCharCode(10)).pop()}})));`)(_exe,_args,options);
-    pids.add(child.pid);child.once('close',()=>live--);return child;
+    processes.add(child);child.once('close',()=>live--);return child;
   }});
   try{
     const result=await Promise.all(Array.from({length:100},(_,index)=>queue.run('owner',`request-${index}`,signal=>worker.request({requestId:`request-${index}`,prompt:`isolated-${index}`,signal,timeoutMs:5000}),{maxQueued:100,waitMs:30000})));
     assert.equal(result.length,100);for(let i=0;i<100;i++)assert.equal(result[i].text,`isolated-${i}`);
-    assert.equal(directories.size,100);assert.equal(pids.size,100);assert.equal(peak,5);assert.equal(live,0);
+    // Windows may recycle PIDs after exit. Verify fresh process handles and
+    // workspaces rather than global uniqueness of historical process numbers.
+    assert.equal(directories.size,100);assert.equal(processes.size,100);assert.equal(peak,5);assert.equal(live,0);
   }finally{await queue.shutdown();await worker.close();}
 });

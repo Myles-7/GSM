@@ -63,6 +63,7 @@ export async function readModelStream(response: Response, signal: AbortSignal, e
         if(!line.startsWith('data:')) continue; const data=line.slice(5).trim();
         if(data==='[DONE]'){done=true;break;}
         const event=JSON.parse(data); if(event.error) throw new Error('MODEL_STREAM_ERROR');
+        if(event.usage&&typeof event.usage==='object')emit('provider_usage',{usage:event.usage,cumulative:true});
         const choice=event.choices?.[0];if(choice?.finish_reason && !['stop','tool_calls'].includes(choice.finish_reason))throw new Error('MODEL_OUTPUT_INCOMPLETE');
         const delta=choice?.delta;
         if(typeof delta?.reasoning_content==='string') emit('reasoning',{text:delta.reasoning_content});

@@ -1,6 +1,20 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+
+/** Authorize only the inline bootstrap scripts in the deployed, trusted build. */
+export function staticFrontendScriptHashes(staticDir = process.env.STATIC_DIR): string[] {
+  if (!staticDir) return [];
+  const indexFile = path.resolve(staticDir, 'index.html');
+  if (!fs.existsSync(indexFile)) return [];
+  const html = fs.readFileSync(indexFile, 'utf8');
+  const hashes = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)]
+    .map(match => match[1])
+    .filter(script => script.trim())
+    .map(script => `'sha256-${createHash('sha256').update(script).digest('base64')}'`);
+  return [...new Set(hashes)];
+}
 
 const backendPathPrefixes = ['/api', '/mcp', '/sse', '/messages'];
 
@@ -41,7 +55,7 @@ export function mountStaticFrontend(app: Express, staticDir = process.env.STATIC
   // Register this after all API and MCP routes. Keep their unknown paths as 404s
   // instead of returning the SPA shell.
   app.get('*', (req: Request, res: Response, next: NextFunction) => {
-    if (isBackendPath(req.path)) {
+    if (isBackendPath(req.path) || path.extname(req.path) || !req.accepts('html')) {
       next();
       return;
     }

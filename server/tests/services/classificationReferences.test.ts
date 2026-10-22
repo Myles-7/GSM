@@ -57,11 +57,13 @@ describe('effective final-state technology references', () => {
   it('rolls back a repository when the taxonomy operation needed for it conflicts', () => {
     bootstrap();
     const before = snapshot();
-    expect(() => push([
+    const result = push([
       operation({ data: { ...repository(), classifications: membership('next') } }),
       operation({ opId: 'stale-taxonomy', collection: 'organization', id: 'default', baseVersion: 0, data: { classificationSchemes: { technology: tree('next') } } }),
-    ])).toThrow('Technology membership');
-    expect(snapshot()).toEqual(before);
+    ]);
+    expect(result.results.map(row => row.status)).toEqual(['conflict', 'conflict']);
+    const after = snapshot();
+    for (const table of ['sync_v2_records', 'sync_v2_changes', 'repositories', 'settings']) expect(after[table]).toEqual(before[table]);
   });
   it('does not resurrect a replayed taxonomy to validate a new repository update', () => {
     bootstrap();

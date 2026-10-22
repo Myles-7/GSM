@@ -16,6 +16,7 @@ import { getRepositoryDetailReadme } from '../../../services/repositoryDetailRea
 import { enqueueAnalysis, cancelAnalysis } from './analysis';
 import { useCustomDiscovery } from './store';
 import { scheduleModel } from './modelScheduler';
+import { createTaskBatchGate } from '../../../services/taskBatchGate';
 import { agyFeatureConcurrency } from '../../../services/agyProfiles';
 
 export function currentAccount(): string | null {
@@ -45,6 +46,8 @@ interface Session {
   cache: CustomDiscoveryData['cache'];
   trending: Promise<Repository[]>;
   progress: (id: string, message: TaskProgress | null) => void;
+  enterBatch?: (signal:AbortSignal)=>Promise<()=>void>;
+  checkpoint?: (result:Collection)=>Promise<void>;
 }
 interface Collection { edition: ChannelDailyEdition; cursors: number[]; rejected?: number[] }
 
@@ -66,7 +69,9 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
   let complete = true;
   let assessments: CandidateAssessment[] = [];
   const fallback = (repo: Repository): CandidateAssessment => ({
-    repo, verdict: rules.plan.required.length || rules.plan.excluded.length ? 'unknown' : 'match',
+    // AI-enabled channels require a validated screening result even when their
+    // compiled plan has no hard rules. Pending/failed batches stay unconfirmed.
+    repo, verdict: channel.ai || rules.plan.required.length || rules.plan.excluded.length ? 'unknown' : 'match',
     reason: '', evidence: [], method: 'rules', relevance: lexicalScore(repo, rules.plan), preference: 0,
     relation: relations.get(repo.id) ?? 'direct',
   });
@@ -124,7 +129,6 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
     }));
   };
   notifyCandidates();
-  if (channel.autoAnalyze !== false) enqueueAnalysis(channel, pool, { auto: true });
   if (channel.ai && pool.length) {
     try {
       const ai = activeAI(session.config?.provider === 'agy-cli' && session.config.agyPriority === 'interactive' ? 'interactive' : 'background', session.config);
@@ -132,6 +136,9 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
       let nextOffset = 0, readCount = 0, screenedCount = 0;
       const screenWorker = async () => {
       while (nextOffset < pool.length) {
+      const leave=await session.enterBatch?.(signal);
+      if(nextOffset>=pool.length){leave?.();break;}
+      try {
       const offset = nextOffset; nextOffset += 5;
       const batch: { repo: Repository; text: string }[] = [];
       for (let i = offset; i < Math.min(offset + 5, pool.length); i++) {
@@ -175,13 +182,23 @@ async function collect(channel: CustomDiscoveryChannel, session: Session): Promi
           check();
         }
         screenedCount += batch.length;
+        const ranked=rankAssessments(assessments.map(a=>({...a,screening:undefined})),rules.sort);
+        await session.checkpoint?.({cursors,rejected:[...rejected],edition:{channelId:channel.id,date:localDay(),revision:channel.revision,instruction:channel.instruction,entries:ranked.filter(a=>a.verdict==='match').slice(0,channel.limit),pending:ranked.filter(a=>a.verdict==='unknown'),errors:[],issues:issues.slice(0,20),ruleSnapshot:rules,complete:false,searched,filtered,generatedAt:new Date().toISOString()}});
         session.progress(channel.id, { phase: 'screen', current: screenedCount, total: pool.length });
+      } finally {leave?.();}
       }
       };
-      await Promise.all(Array.from({ length: config ? agyFeatureConcurrency(config, 'discovery') : 1 }, screenWorker));
+      const screenConcurrency = config ? agyFeatureConcurrency(config, 'discovery') : 1;
+      await Promise.all(Array.from({ length: screenConcurrency }, screenWorker));
     } catch (error) {
       issues.push({ ...taskIssue(error), source: 'ai' });
     }
+  }
+  if (channel.autoAnalyze !== false) {
+    const matching = channel.ai && pool.length
+      ? assessments.filter(a => a.verdict === 'match').map(a => a.repo)
+      : pool;
+    if (matching.length) enqueueAnalysis(channel, matching, { auto: true });
   }
   } catch (error) {
     issues.push(taskIssue(error));
@@ -267,6 +284,12 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
   const state = useAppStore.getState();
   const selected = options.config ?? state.aiConfigs.find(item => item.id === state.activeAIConfig);
   const config = selected?.provider === 'agy-cli' ? { ...selected, agyPriority: options.automatic ? 'background' as const : 'interactive' as const } : selected;
+  const gate=createTaskBatchGate(status=>{
+    if(status==='paused'&&activeRun?.channelId)options.task?.item(activeRun.channelId,'pending');
+    options.task?.state(status);
+  });
+  options.task?.bind({stop:()=>controller.abort(),pause:()=>gate.pause(),resume:()=>gate.resume()});
+  options.task?.metadata({capabilities:{pause:true,cancel:true,resume:'safe'}});
   activeController = controller;
   const owner = crypto.randomUUID();
   activeRun = { id: owner, cancelled: new Set(), revisions: new Map() };
@@ -291,6 +314,7 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
     if (activeRun) activeRun.revisions = new Map(channels.map(channel => [channel.id, channel.revision]));
     invalidateCustomRun();
     for (let index = 0; index < channels.length; index++) {
+      const leave=await gate.enter(controller.signal);leave();
       const channel = channels[index];
       if (activeRun?.cancelled.has(channel.id)) { progress(channel.id, null); continue; }
       controller.signal.throwIfAborted();
@@ -303,7 +327,11 @@ export async function runChannels(ids: string[], progress: Session['progress'], 
       if (session.budget.remaining <= 0) break;
       const share = Math.min(12, Math.max(1, Math.floor(session.budget.remaining / (channels.length - index))));
       const localBudget = { remaining: share };
-      const result = await collect(channel, { ...session, signal: channelController.signal, budget: localBudget });
+      const result = await collect(channel, { ...session, signal: channelController.signal, budget: localBudget,enterBatch:signal=>gate.enter(signal),checkpoint:async partial=>{
+        if(currentAccount()!==account||controller.signal.aborted)return;
+        await transact(account,fresh=>{publish(fresh,channel,partial,owner);});
+        await onUpdated();
+      } });
       controller.signal.removeEventListener('abort', abortChannel);
       session.budget.remaining -= share - localBudget.remaining;
       if (activeRun?.cancelled.has(channel.id)) { progress(channel.id, null); continue; }

@@ -11,6 +11,14 @@ export const emptyClassificationScheme = (): ClassificationScheme => ({
 });
 const uninitializedTechnology = emptyClassificationScheme();
 const technologyRepositories = new WeakMap<Repository, Repository>();
+// Symbols survive UI object spreads but are omitted from JSON persistence.
+const projectedPurposeMembership = Symbol('projectedPurposeMembership');
+type ProjectedRepository = Repository & { [projectedPurposeMembership]?: { purpose: OrganizationMembership; technology: OrganizationMembership } };
+export function classificationPurposeMembership(repository: Repository): OrganizationMembership {
+  const projection = (repository as ProjectedRepository)[projectedPurposeMembership];
+  return projection && repository.category_id === projection.technology.categoryId && repository.subcategory_id === projection.technology.subcategoryId
+    ? projection.purpose : classificationMembership(repository, 'purpose');
+}
 const technologyLists = new WeakMap<Repository[], Repository[]>();
 function projectTechnologyList(repositories: Repository[]): Repository[] {
   let projected = technologyLists.get(repositories);
@@ -30,7 +38,7 @@ export function projectClassificationRepository(repository: Repository, id: Clas
   const cached = technologyRepositories.get(repository);
   if (cached) return cached;
   const member = classificationMembership(repository, id);
-  const projected = { ...repository, category_id: member.categoryId, subcategory_id: member.subcategoryId, category_locked: member.locked, custom_category: undefined, category_candidates: [] };
+  const projected = { ...repository, [projectedPurposeMembership]: { purpose: classificationMembership(repository, 'purpose'), technology: member }, classifications: { ...repository.classifications, purpose: classificationMembership(repository, 'purpose') }, category_id: member.categoryId, subcategory_id: member.subcategoryId, category_locked: member.locked, custom_category: undefined, category_candidates: [] };
   technologyRepositories.set(repository, projected);
   return projected;
 }
@@ -64,9 +72,27 @@ export function normalizeClassificationSchemes(state: AppStoreState): { classifi
   const technology = classificationStructure(state, 'technology');
   const projection = classificationProjection(state, 'technology');
   const normalized = normalizeRepositoryOrganization(projection, technology.customCategories);
-  return { classificationSchemes: { purpose: classificationStructure(state, 'purpose'), technology: { ...technology, subcategories: normalized.subcategories,
-    subcategoryOrder: normalized.subcategoryOrder, repositoryOrder: normalized.repositoryOrder } } };
+  const persisted = state.classificationSchemes?.generation;
+  const generation = persisted && typeof persisted === 'object' && ['idle', 'stale', 'running', 'ready', 'failed'].includes(persisted.status)
+    ? { status: persisted.status, generation: Number.isFinite(persisted.generation) ? Math.max(0, persisted.generation) : 0,
+      ...(Array.isArray(persisted.repositoryIds) ? { repositoryIds: [...new Set(persisted.repositoryIds.filter(id => Number.isSafeInteger(id) && id > 0))] } : {}),
+      queuedRepositoryIds: Array.isArray(persisted.queuedRepositoryIds) ? persisted.queuedRepositoryIds.filter(id => Number.isInteger(id) && id > 0) : [],
+      ...(typeof persisted.lastGeneratedAt === 'string' ? { lastGeneratedAt: persisted.lastGeneratedAt } : {}),
+      ...(typeof persisted.sourceFingerprint === 'string' ? { sourceFingerprint: persisted.sourceFingerprint } : {}),
+      ...(typeof persisted.algorithmVersion === 'string' ? { algorithmVersion: persisted.algorithmVersion } : {}),
+      ...(persisted.lastChange ? { lastChange: persisted.lastChange } : {}),
+      ...(typeof persisted.error === 'string' ? { error: persisted.error.slice(0, 240) } : {}),
+      ...(typeof persisted.syncPending === 'boolean' ? { syncPending: persisted.syncPending } : {}),
+    } : { status: 'idle' as const, generation: 0, queuedRepositoryIds: [] };
+  return { classificationSchemes: { purpose: classificationStructure(state, 'purpose'), technology: { ...technology, hiddenDefaultCategoryIds: technology.hiddenDefaultCategoryIds.filter(id => id !== 'all' && id !== 'pending'), categoryOrder: technology.categoryOrder.filter(id => id !== 'all' && id !== 'pending'), subcategories: normalized.subcategories,
+    subcategoryOrder: normalized.subcategoryOrder, repositoryOrder: normalized.repositoryOrder }, generation } };
 }
 export function classificationExport(state: import('../../types').AppState): ClassificationSchemes {
-  return { ...state.classificationSchemes, purpose: { ...structureSnapshot(state as AppStoreState), initialized: true } };
+  return { purpose: { ...structureSnapshot(state as AppStoreState), initialized: true },
+    ...(state.classificationSchemes?.technology ? { technology: state.classificationSchemes.technology } : {}) };
+}
+
+/** Backups retain the local rebuild journal in addition to the synchronized taxonomy. */
+export function classificationBackupExport(state: import('../../types').AppState): ClassificationSchemes {
+  return { ...classificationExport(state), ...(state.classificationSchemes?.generation ? { generation: state.classificationSchemes.generation } : {}) };
 }

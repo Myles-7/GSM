@@ -27,6 +27,7 @@ export interface RepositoryRow {
   category_candidates?: string | null;
   category_legacy?: string | null;
   classifications?: string | null;
+  classificationInsights?: string | null;
   ai_details?: string | null;
   category_locked: number;
   last_edited: string | null;

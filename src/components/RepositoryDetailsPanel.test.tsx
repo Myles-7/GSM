@@ -33,6 +33,20 @@ describe('RepositoryDetailsPanel', () => {
     expect(screen.queryByText('AI summary')).not.toBeInTheDocument();
     expect(screen.queryByText('Original')).not.toBeInTheDocument();
   });
+  it('retains all raw tag sources and facets in a collapsed details section', () => {
+    render(<RepositoryDetailsPanel repository={{ ...repository,
+      topics: ['topic-one', 'topic-two', 'topic-three', 'topic-four'],
+      custom_tags: ['custom-one', 'custom-two', 'custom-three', 'custom-four'],
+      ai_tags: ['ai-one', 'ai-two', 'ai-three', 'ai-four'],
+      ai_platforms: ['Browser', 'Linux', 'Windows', 'Desktop'],
+    }} onClose={vi.fn()} />);
+    const section = screen.getByText('All tags and classification facets').closest('details');
+    expect(section).not.toHaveAttribute('open');
+    for (const label of ['topic-four', 'custom-four', 'ai-four', 'Desktop']) {
+      for (const element of screen.getAllByText(label)) expect(section).toContainElement(element);
+    }
+    expect(screen.queryByText(/confidence/i)).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
@@ -54,7 +68,7 @@ describe('RepositoryDetailsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'details.readme' }));
     expect(await screen.findByTestId('in-app-readme')).toBeInTheDocument();
   });
-  it('pins with sufficient content width and resets to a modal on narrow screens', async () => {
+  it('pins regardless of screen width and stays pinned on resize', async () => {
     const onPinnedChange = vi.fn();
     render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} onPinnedChange={onPinnedChange} />);
     fireEvent.click(screen.getByRole('button', { name: 'details.pin' }));
@@ -62,13 +76,12 @@ describe('RepositoryDetailsPanel', () => {
     expect(screen.getByRole('complementary')).toHaveClass('w-[440px]', 'h-[calc(100dvh-4rem)]');
     expect(onPinnedChange).toHaveBeenLastCalledWith(true);
     act(() => { Object.defineProperty(window, 'innerWidth', { value: 1000 }); window.dispatchEvent(new Event('resize')); });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    await waitFor(() => expect(onPinnedChange).toHaveBeenLastCalledWith(false));
+    expect(screen.getByRole('complementary')).toBeInTheDocument();
   });
-  it('does not allow pinning when sidebar leaves insufficient content width', () => {
+  it('allows pinning even when sidebar leaves narrow content width', () => {
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 900 } as DOMRect);
     render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} />);
-    expect(screen.getByRole('button', { name: 'details.pin' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'details.pin' })).not.toBeDisabled();
   });
   it('keeps per-repository scroll position while switching repositories', () => {
     const { rerender } = render(<RepositoryDetailsPanel repository={repository} onClose={vi.fn()} />);

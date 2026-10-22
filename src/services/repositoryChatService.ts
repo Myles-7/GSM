@@ -18,6 +18,7 @@ import { ANSWER_REVIEW_PROMPT, parseAnswerQualityReview, type AnswerQualityRevie
 import { answerRequirements, USER_REQUIREMENTS_FIRST } from './answerRequirements';
 import { readPinnedFile } from './pinnedFileCache';
 import { withDeadline } from '../utils/requestDeadline';
+import { inheritTaskSignal } from '../utils/taskSignals';
 import { createGitHubApiService } from './githubApiFactory';
 import {
   buildIssuesEvidence,
@@ -869,9 +870,15 @@ const parseEvidenceGate = (content: string, allowedDocumentation: Set<string>, a
   };
 };
 
-export const isTransientAgentError = (error: unknown): boolean => /\b(?:429|5\d\d)\b|timeout|timed?\s*out|network|fetch|upstream|temporar(?:y|ily)|rate.?limit/i.test(
-  error instanceof Error ? error.message : String(error ?? ''),
-);
+export const isTransientAgentError = (error: unknown): boolean => {
+  const carrier = error as { name?: string; providerOutcome?: string; details?: { sent?: boolean; providerOutcome?: string } } | null;
+  if (['unknown', 'in_flight', 'succeeded'].includes(carrier?.providerOutcome ?? carrier?.details?.providerOutcome ?? '')
+    || carrier?.details?.sent === true || carrier?.name === 'AbortError' || carrier?.name === 'TimeoutError') return false;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message.startsWith('AGY_')) return /^AGY_(?:BUSY|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(message)
+    || message === 'AGY_RATE_LIMIT' && carrier?.details?.sent === false;
+  return /\b(?:429|5\d\d)\b|timeout|timed?\s*out|network|fetch|upstream|temporar(?:y|ily)|rate.?limit/i.test(message);
+};
 
 export const evidenceAgentInsufficientResponse = (language: AppLanguage, reason: string, hadToolError = false): string => {
   const t = makeT(language, 'chat');
@@ -1077,6 +1084,7 @@ export const createEvidenceToolbox = (input: RepositoryChatTurnInput, budget: Re
     emit({ toolName, status: 'running', paramSummary, stage, round, detail });
     // GitHub 读取附加工具级超时，避免单个挂死请求耗尽整轮时间预算。
     const controller = new AbortController();
+    inheritTaskSignal(input.signal, controller.signal);
     const abortForCaller = () => controller.abort(input.signal?.reason);
     if (input.signal?.aborted) controller.abort(input.signal?.reason);
     input.signal?.addEventListener('abort', abortForCaller, { once: true });
@@ -1202,6 +1210,7 @@ export const synthesizeVerifiedAnswer = async (
     let streamed = '';
     try {
       const controller = new AbortController();
+      inheritTaskSignal(input.signal, controller.signal);
       const abortForCaller = () => controller.abort(input.signal?.reason);
       if (input.signal?.aborted) controller.abort(input.signal?.reason);
       input.signal?.addEventListener('abort', abortForCaller, { once: true });

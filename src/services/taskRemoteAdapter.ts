@@ -1,19 +1,22 @@
 import { aiTaskJournal, taskError, taskIsTerminal, type AITaskKind, type AITaskRecord } from './aiTaskJournal';
 import type { HomeTask } from '../home/types';
 import type { HomeSync } from '../home/sync';
+import { createRemoteTaskObserver, captureRemoteTaskResult } from './taskObservationRemote';
 import { readPendingTaskRequests, lookupTaskReceipt, confirmPolledTaskReceipt } from '../home/taskSubmission';
 
 const remoteKinds: Record<string, AITaskKind> = { summary: 'summary', details: 'details', classification: 'organization', organization: 'organization', chat: 'chat', research: 'research', compare: 'research', requirements: 'research', proposal: 'organization', custom_discovery: 'discovery', refresh_stars: 'refresh' };
-const remoteStates: Record<string, AITaskRecord['state']> = { queued: 'queued', running: 'running', completed: 'complete', failed: 'failed', cancelled: 'canceled', interrupted: 'interrupted' };
+const remoteStates: Record<string, AITaskRecord['state']> = { queued: 'queued', running: 'running', completed: 'complete', failed: 'failed', cancelled: 'canceled', interrupted: 'interrupted', paused: 'paused' };
 
 export function projectRemoteTask(sync: HomeSync, remote: HomeTask): AITaskRecord {
   const owner = String(sync.identity.githubUserId), id = `server:${sync.identity.workspaceId}:${remote.id}`;
   const existing = aiTaskJournal.snapshot().find(task => task.id === id);
-  const state = remoteStates[remote.status] ?? 'unconfirmed';
+  const state = remote.status==='running'&&remote.pauseRequested?'pausing':remoteStates[remote.status] ?? 'unconfirmed';
+  captureRemoteTaskResult(owner,id,remote);
   if(existing&&existing.updatedAt===remote.updatedAt&&!existing.connectionError&&existing.state===state
     &&existing.phase===(remote.phase??remote.stage)&&existing.commitStatus===(remote.commitStatus??(state==='complete'?'saved':'not_started'))
-    &&existing.providerOutcome===(remote.providerOutcome??(state==='complete'?'succeeded':'in_flight'))
+    &&(remote.pinned===undefined||existing.pinned===remote.pinned)&&existing.providerOutcome===(remote.providerOutcome??(state==='complete'?'succeeded':'in_flight'))
     &&existing.failureCode===(remote.failureCode??undefined)&&existing.error===(remote.error?taskError(remote.error):undefined)
+    &&JSON.stringify(existing.usage)===JSON.stringify(remote.diagnostics?{providerRequests:remote.diagnostics.providerRequests,contentBytes:remote.diagnostics.contentBytes,reasoningBytes:remote.diagnostics.reasoningBytes}:existing.usage)
     &&(!remote.capabilities||JSON.stringify(existing.capabilities)===JSON.stringify(remote.capabilities)))return existing;
   const kind = remoteKinds[remote.kind] ?? 'research';
   const names = Array.isArray(remote.input.repositories) ? remote.input.repositories.filter((value): value is string => typeof value === 'string') : [];
@@ -23,7 +26,8 @@ export function projectRemoteTask(sync: HomeSync, remote: HomeTask): AITaskRecor
     : []);
   const pendingRepository = typeof remote.result?.pendingRepository === 'string' ? remote.result.pendingRepository : undefined;
   const extended = remote;
-  const task: AITaskRecord = { ...existing, id, owner, kind, state, location: 'server', executor: remote.kind==='refresh_stars'?undefined:extended.executor ?? 'server-provider', commitStatus: extended.commitStatus ?? (state === 'complete' ? 'saved' : 'not_started'), providerOutcome: extended.providerOutcome ?? (state === 'complete' ? 'succeeded' : 'in_flight'), failureCode: extended.failureCode ?? undefined,
+  const task: AITaskRecord = { ...existing, id, owner, kind, state,...(remote.pinned!==undefined?{pinned:remote.pinned}:{}), location: 'server', executor: remote.kind==='refresh_stars'?undefined:extended.executor ?? 'server-provider', commitStatus: extended.commitStatus ?? (state === 'complete' ? 'saved' : 'not_started'), providerOutcome: extended.providerOutcome ?? (state === 'complete' ? 'succeeded' : 'in_flight'), failureCode: extended.failureCode ?? undefined,
+    units:names.length?{items:'repositories',repositories:names.length}:existing?.units??{items:'steps'},usage:remote.diagnostics?{providerRequests:remote.diagnostics.providerRequests,contentBytes:remote.diagnostics.contentBytes,reasoningBytes:remote.diagnostics.reasoningBytes}:existing?.usage,
     phase: extended.phase ?? remote.stage, capabilities: extended.capabilities ?? { pause: false, cancel: state === 'running' || state === 'queued', resume: ['interrupted', 'failed', 'canceled'].includes(state) ? 'new-provider-call' : 'unsupported' }, remoteId: remote.id,
     createdAt: remote.createdAt, startedAt: existing?.startedAt, updatedAt: remote.updatedAt,
     endedAt: ['complete', 'failed', 'canceled', 'interrupted'].includes(state) ? remote.updatedAt : undefined,
@@ -32,8 +36,8 @@ export function projectRemoteTask(sync: HomeSync, remote: HomeTask): AITaskRecor
     target: { view: kind === 'chat' || kind === 'research' || kind === 'organization' ? 'ai' : kind === 'discovery' ? 'subscription' : 'repositories',
       id: typeof remote.input.sessionId === 'string' ? remote.input.sessionId : undefined },
     title: names.length === 1 ? names[0] : undefined,
-    items: names.length ? names.map(name => ({ id: name, label: name, state: state === 'complete' || completedRepositories.has(name) ? 'complete' : name === pendingRepository ? state === 'canceled' ? 'canceled' : state === 'failed' || state === 'interrupted' ? 'failed' : 'running' : 'pending' }))
-      : [{ id: remote.id, label: remote.kind, state: state === 'complete' ? 'complete' : state === 'failed' ? 'failed' : state === 'canceled' ? 'canceled' : state === 'running' ? 'running' : 'pending' }],
+    items: names.length ? names.map(name => ({ ...existing?.items.find(item=>item.id===name),id: name, label: name, state: state === 'complete' || completedRepositories.has(name) ? 'complete' : name === pendingRepository ? state === 'canceled' ? 'canceled' : state === 'failed' || state === 'interrupted' ? 'failed' : 'running' : 'pending' }))
+      : [{ ...existing?.items.find(item=>item.id===remote.id),id: remote.id, label: remote.kind, state: state === 'complete' ? 'complete' : state === 'failed' ? 'failed' : state === 'canceled' ? 'canceled' : state === 'running' ? 'running' : 'pending' }],
   };
   aiTaskJournal.project(task);
   return task;
@@ -41,6 +45,7 @@ export function projectRemoteTask(sync: HomeSync, remote: HomeTask): AITaskRecor
 export function watchRemoteTasks(getSync: () => HomeSync | null, expectedOwner: string) {
   let stopped = false, pending = false;
   const controller = new AbortController();
+  const observations=createRemoteTaskObserver(getSync,expectedOwner,projectRemoteTask);
   let scan: { sync: HomeSync; cursor?: string; watermark?: string; asOf?: string; ids: Set<string> } | undefined;
   let nextScanAt = 0;
   let liveOffset = 0;
@@ -134,13 +139,17 @@ export function watchRemoteTasks(getSync: () => HomeSync | null, expectedOwner: 
         }
         if (aiTaskJournal.hiddenRemote(`server:${sync.identity.workspaceId}:${remote.id}`)) continue;
         const task = projectRemoteTask(sync, remote);
+        observations.observe(remote);
+        const canContinue=remote.status==='paused'&&remote.capabilities?.pause===true;
+        const canPause=['queued','running'].includes(remote.status)&&remote.capabilities?.pause===true&&!remote.pauseRequested;
+        const canStop=['queued','running','paused'].includes(remote.status)&&(remote.capabilities?.cancel??remote.status!=='paused');
         const canResume = ['interrupted', 'failed', 'cancelled'].includes(remote.status) && remote.capabilities?.resume !== 'unsupported';
-        if (!['queued', 'running'].includes(remote.status) && !canResume && remote.commitStatus!=='conflict') { aiTaskJournal.unbind(task.id); continue; }
-        const action = async (operation: 'cancel' | 'resume') => {
+        if (!canStop && !canContinue && !canPause && !canResume && remote.commitStatus!=='conflict') { aiTaskJournal.unbind(task.id); continue; }
+        const action = async (operation: 'cancel' | 'resume' | 'pause' | 'continue') => {
           if (stopped || getSync() !== sync) return;
           try {
             const result = await sync.api.request<HomeTask>(`/tasks/${encodeURIComponent(remote.id)}/${operation}`, sync.identity, controller.signal);
-            if (!stopped && getSync() === sync) { projectRemoteTask(sync, result); aiTaskJournal.unbind(task.id); }
+            if (!stopped && getSync() === sync) { projectRemoteTask(sync, result); observations.observe(result); aiTaskJournal.unbind(task.id); }
           } catch (error) {
             if (!stopped) aiTaskJournal.patch(task.id, { state: 'unconfirmed', error: taskError(error) });
           }
@@ -156,7 +165,7 @@ export function watchRemoteTasks(getSync: () => HomeSync | null, expectedOwner: 
             .then(result => { if (!stopped && getSync() === sync) { if(result){projectRemoteTask(sync, result); aiTaskJournal.unbind(task.id);}else aiTaskJournal.patch(task.id,{state:task.state}); } })
             .catch(error=>{if(!stopped&&getSync()===sync)aiTaskJournal.patch(task.id,{state:task.state,commitStatus:'conflict',error:taskError(error)});});
         } } : {};
-        aiTaskJournal.bind(task.id, { ...(canResume ? { resume: () => { void action('resume'); } } : ['queued','running'].includes(remote.status)?{ stop: () => { void action('cancel'); } } : {}), ...commit });
+        aiTaskJournal.bind(task.id, { ...(canResume||canContinue ? { resume: () => { void action(canContinue?'continue':'resume'); } } : {}), ...(canPause?{pause:()=>{void action('pause');}}:{}), ...(canStop?{stop:()=>{void action('cancel');}}:{}), ...commit });
       }
       if (reconcileComplete) {
         for (const task of aiTaskJournal.snapshot().filter(item => item.owner === expectedOwner && item.id.startsWith(`server:${sync.identity.workspaceId}:`) && item.remoteId && !remoteIds.has(item.remoteId) && (!scanning?.asOf || item.createdAt && item.createdAt <= scanning.asOf) && !taskIsTerminal(item))) {
@@ -169,5 +178,5 @@ export function watchRemoteTasks(getSync: () => HomeSync | null, expectedOwner: 
   };
   void refresh();
   const timer = setInterval(() => { void refresh(); }, 5000);
-  return () => { stopped = true; clearInterval(timer); controller.abort(); aiTaskJournal.snapshot().filter(task => task.owner === expectedOwner && task.location === 'server').forEach(task => aiTaskJournal.unbind(task.id)); };
+  return () => { stopped = true; clearInterval(timer); controller.abort(); observations.stop(); aiTaskJournal.snapshot().filter(task => task.owner === expectedOwner && task.location === 'server').forEach(task => aiTaskJournal.unbind(task.id)); };
 }

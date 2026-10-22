@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { getStorageItemStrict } from './indexedDbStorage';
 import { taskJournalStorage } from './taskJournalStorage';
 import { reconcileAgyTask } from './agyRecoveryPolicy';
+import { taskObservability } from './taskObservability';
 
-export const TASK_KINDS = ['summary', 'details', 'gists', 'discovery', 'discovery-analysis', 'plugins', 'organization', 'release', 'search', 'chat', 'research', 'index', 'refresh', 'sync', 'import', 'export', 'backup', 'restore'] as const;
+export const TASK_KINDS = ['summary', 'details', 'gists', 'discovery', 'discovery-analysis', 'plugins', 'organization', 'exploration', 'release', 'search', 'chat', 'research', 'index', 'refresh', 'sync', 'import', 'export', 'backup', 'restore'] as const;
 export type AITaskKind = typeof TASK_KINDS[number];
 export const TASK_PHASES = ['queue_wait', 'initializing', 'generating', 'committing', 'cleanup', 'reconciling'] as const;
 export type AITaskPhase = typeof TASK_PHASES[number];
@@ -14,7 +15,7 @@ const states = ['queued', 'running', 'pausing', 'paused', 'stopping', 'canceled'
 const schema = z.object({
   id: z.string(), owner: z.string(), kind: z.enum(TASK_KINDS), configId: z.string().optional(), channelId: z.string().optional(),
   state: z.enum(states), updatedAt: z.string(), createdAt: z.string().optional(), startedAt: z.string().optional(), endedAt: z.string().optional(),
-  title: z.string().optional(), phase: z.string().optional(), error: z.string().optional(), archived: z.boolean().optional(),
+  title: z.string().optional(), phase: z.string().optional(), error: z.string().optional(), archived: z.boolean().optional(), pinned: z.boolean().optional(),
   connectionError: z.string().optional(), lastServerCheckAt: z.string().optional(),
   trigger: z.enum(['manual', 'automatic']).optional(), location: z.enum(['device', 'server']).optional(),
   executor: z.enum(['agy-device', 'server-provider']).optional(),
@@ -27,6 +28,7 @@ const schema = z.object({
   config: z.object({ model: z.string().optional(), provider: z.string().optional(), effort: z.string().optional(), timeoutSeconds: z.number().optional() }).optional(),
   target: z.object({ view: z.string(), id: z.string().optional(), tab: z.string().optional() }).optional(),
   progress: z.object({ done: z.number(), total: z.number() }).optional(), usage: z.record(z.string(), z.number()).optional(),
+  units: z.object({items:z.enum(['batches','repositories','steps']),repositories:z.number().int().nonnegative().optional()}).optional(),
   items: z.array(z.object({ id: z.string(), label: z.string(), error: z.string().optional(), phase: z.string().optional(),
     providerOutcome: z.enum(['not_started', 'in_flight', 'succeeded', 'failed', 'unknown']).optional(),
     commitStatus: z.enum(['not_started', 'pending', 'saved', 'conflict', 'failed']).optional(),
@@ -37,7 +39,7 @@ const schema = z.object({
 });
 export type AITaskRecord = z.infer<typeof schema>;
 export interface AITaskControls { pause?(): void; resume?(): void; stop?(): void; commit?(): void; }
-export type TaskMetadata = Partial<Pick<AITaskRecord, 'title' | 'phase' | 'trigger' | 'location' | 'executor' | 'commitStatus' | 'providerOutcome' | 'failureCode' | 'capabilities' | 'parentId' | 'remoteId' | 'config' | 'target' | 'usage' | 'stopReason'>>;
+export type TaskMetadata = Partial<Pick<AITaskRecord, 'title' | 'phase' | 'trigger' | 'location' | 'executor' | 'commitStatus' | 'providerOutcome' | 'failureCode' | 'capabilities' | 'parentId' | 'remoteId' | 'config' | 'target' | 'usage' | 'stopReason' | 'units'>>;
 export interface TaskActivity { lastRun?: string; runCount: number; changedCount: number; failureCount: number; noChangeCount: number; lastError?: string; }
 const activitySchema = z.object({ lastRun: z.string().optional(), runCount: z.number().nonnegative(), changedCount: z.number().nonnegative(), failureCount: z.number().nonnegative(), noChangeCount: z.number().nonnegative(), lastError: z.string().optional() });
 const controls = new Map<string, AITaskControls>();
@@ -65,10 +67,12 @@ export const taskNeedsAttention = (task: AITaskRecord) => !!task.connectionError
   || taskIsTerminal(task) && task.items.some(item => !!item.recovery)
   || (task.state === 'complete' && task.items.some(item => item.state === 'failed'));
 export const taskIsTerminal = (task: AITaskRecord) => ['complete', 'partial', 'failed', 'canceled', 'interrupted', 'unconfirmed'].includes(task.state);
+export const taskHasProtectedContent = (task:AITaskRecord) => !taskIsTerminal(task)||['interrupted','unconfirmed'].includes(task.state)||task.providerOutcome==='unknown'
+  ||['pending','failed','conflict'].includes(task.commitStatus??'')||task.items.some(item=>!!item.recovery||item.providerOutcome==='unknown'||['pending','failed','conflict'].includes(item.commitStatus??''));
 export const taskDisplayState = (task: AITaskRecord): AITaskRecord['state'] => ['complete', 'failed'].includes(task.state) && task.items.some(item => item.state === 'failed')
   ? task.items.some(item => item.state === 'complete') ? 'partial' : 'failed' : task.state;
-const retained = (task: AITaskRecord) => task.archived || taskNeedsAttention(task) || !taskIsTerminal(task)
-  || !Number.isFinite(Date.parse(task.endedAt ?? task.updatedAt)) || Date.now() - Date.parse(task.endedAt ?? task.updatedAt) < (task.trigger === 'automatic' ? 7 : 30) * 86400000;
+const retained = (task: AITaskRecord) => task.archived || task.pinned || taskHasProtectedContent(task)
+  || !Number.isFinite(Date.parse(task.endedAt ?? task.updatedAt)) || Date.now() - Date.parse(task.endedAt ?? task.updatedAt) < 30 * 86400000;
 export function taskError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/Bearer\s+[^\s]+/gi, 'Bearer [redacted]')
@@ -113,7 +117,18 @@ function persist(owner: string, immediate = false, id?: string) {
   if (immediate) save(); else timers.set(owner, setTimeout(save, 250));
 }
 function publish(record: AITaskRecord, immediate = false) {
+  const previous=byId.get(record.id);
   byId.set(record.id, record);
+  taskObservability.markTask(record.owner,record.id,{state:record.state,endedAt:record.endedAt,pinned:record.pinned,protected:taskHasProtectedContent(record)});
+  if(previous?.state!==record.state||previous?.phase!==record.phase||previous?.commitStatus!==record.commitStatus)taskObservability.event(record.owner,record.id,{source:record.location==='server'?'server':'gsm',type:'task-state',phase:record.phase,message:record.state});
+  for(const item of record.items){
+    const old=previous?.items.find(row=>row.id===item.id);
+    if(old?.state!==item.state||old?.commitStatus!==item.commitStatus)taskObservability.event(record.owner,record.id,{source:record.location==='server'?'server':'gsm',type:'item-state',itemId:item.id,requestId:item.requestId,phase:item.phase,message:item.state});
+    if(item.state==='complete'&&(old?.state!=='complete'||old?.commitStatus!==item.commitStatus)){
+      const request=[...taskObservability.snapshot(record.owner,record.id).requests].reverse().find(row=>(row.itemId===item.id||!row.itemId&&record.items.length===1)&&row.outcome==='succeeded');
+      if(request?.answer){let data:unknown=request.answer;try{data=JSON.parse(request.answer);}catch{/* Plain answers remain readable text. */}taskObservability.result(record.owner,record.id,{id:`${item.id}:${request.requestId}`,itemId:item.id,requestId:request.requestId,label:item.label,data,commitStatus:item.commitStatus??record.commitStatus??'not_started'});}
+    }
+  }
   // Retention runs on terminal transitions, never on progress/activity updates.
   if (immediate && taskIsTerminal(record)) pruneOwner(record.owner);
   persist(record.owner, immediate, record.id); emit();
@@ -157,11 +172,7 @@ function removeRecord(task: AITaskRecord) {
   const ids = removedIds.get(task.owner) ?? new Set<string>(); ids.add(task.id); removedIds.set(task.owner, ids);
 }
 function pruneOwner(owner: string) {
-  const automatic = ownerRecords(owner).filter(task => {
-    if (!retained(task) && !controls.has(task.id)) { removeRecord(task); return false; }
-    return task.trigger === 'automatic' && taskIsTerminal(task) && !taskNeedsAttention(task) && !task.archived && !controls.has(task.id);
-  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  automatic.slice(200).forEach(removeRecord);
+  ownerRecords(owner).forEach(task => { if (!retained(task) && !controls.has(task.id)) removeRecord(task); });
 }
 export const aiTaskJournal = {
   attachHost() { hosts++; return () => { hosts--; }; }, hasHost: () => hosts > 0,
@@ -229,7 +240,9 @@ export const aiTaskJournal = {
         const failedItem = items.find(item => item.providerOutcome === 'failed');
         const failureCode = record.commitStatus === 'failed' || record.commitStatus === 'conflict' ? record.failureCode
           : providerOutcome === 'unknown' ? 'unknown_provider_outcome' : failedItem?.failureCode;
-        update({ items, providerOutcome, failureCode }, !!patch.providerOutcome || !!patch.commitStatus);
+        const activePhases=items.filter(item=>item.state==='running').map(item=>item.phase);
+        const phase=['generating','initializing','cleanup','queue_wait'].find(value=>activePhases.includes(value));
+        update({ items, providerOutcome, failureCode,...(phase&&record.phase!=='committing'?{phase}:{}) }, !!patch.providerOutcome || !!patch.commitStatus);
       },
       finish(state?: AITaskRecord['state']) { controls.delete(id); const record = byId.get(id); if (!record) return; const next = state ?? (record.state === 'stopping' ? 'canceled' : record.items.some(item => ['pending', 'running'].includes(item.state)) ? 'interrupted' : record.items.some(item => item.state === 'canceled' || item.state === 'failed') ? record.items.some(item => item.state === 'complete') ? 'partial' : record.items.some(item => item.state === 'failed') ? 'failed' : 'canceled' : 'complete'); update({ state: next, endedAt: new Date().toISOString(), items: record.items.map(item => ({ ...item, state: item.state === 'running' || (next === 'canceled' && item.state === 'pending') ? next === 'canceled' ? 'canceled' : 'pending' : item.state })) }, true); },
     };

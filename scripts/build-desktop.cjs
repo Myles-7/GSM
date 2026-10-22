@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 console.log('🚀 开始构建桌面应用...');
+const root = path.resolve(__dirname, '..');
 
 // 1. 构建Web应用
 console.log('📦 构建Web应用...');
-execSync('npm run build', { stdio: 'inherit' });
+execSync('npm run build', { stdio: 'inherit', cwd: root });
 
 // 2. Electron sources are committed under electron/ (main.js, preload.js, mcpLocalServer.js).
 // Do NOT overwrite them with a generated shell — MCP + preload require first-class sources.
@@ -46,7 +47,14 @@ console.log('⚡ 使用已提交的 electron/ 源码（含 MCP 与 preload）');
 // never mutate package.json/package-lock.json or silently change Electron.
 console.log('🔨 构建桌面应用...');
 try {
-  execSync('npx --no-install electron-builder', { stdio: 'inherit' });
+  const args = [require.resolve('electron-builder/cli.js'), '--publish', 'never'];
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    // Use the lockfile-pinned, installed Windows runtime. This also installs
+    // Electron's lazily downloaded binary before the launcher can use it and
+    // avoids the builder extractor's directory rename failure on Windows.
+    args.push('--config.electronDist=' + path.dirname(require('electron')));
+  }
+  execFileSync(process.execPath, args, { stdio: 'inherit', cwd: root });
   console.log('✅ 桌面应用构建完成！');
   console.log('📁 构建文件位于 release/ 目录');
 } catch (error) {

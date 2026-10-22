@@ -49,4 +49,21 @@ describe('sync v2 HTTP identity and capabilities', () => {
     expect(response.status).toBe(403);
     expect(response.body.code).toBe('WORKSPACE_ACCOUNT_MISMATCH');
   });
+  it('maps ClassificationReferenceError to HTTP 400 with INVALID_CLASSIFICATION_REFERENCE code', async () => {
+    const input = {
+      githubUserId: 42,
+      source: 'desktop',
+      records: [{
+        collection: 'repositories' as const,
+        id: '1',
+        data: { id: 1, name: 'repo1', full_name: 'test/repo1', classifications: { technology: { categoryId: 'missing', subcategoryId: null, locked: false } } },
+      }],
+    };
+    const preview = await request(app(42)).post('/api/sync/v2/bootstrap').send(input);
+    expect(preview.status).toBe(200);
+    const response = await request(app(42)).post('/api/sync/v2/bootstrap').send({ ...input, confirm: true, previewToken: preview.body.previewToken });
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('INVALID_CLASSIFICATION_REFERENCE');
+    expect(response.body.error).toBe('INVALID_CLASSIFICATION_REFERENCE');
+  });
 });

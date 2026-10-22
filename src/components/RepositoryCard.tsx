@@ -34,6 +34,9 @@ import { openPluginPage } from '../plugins/pluginPageSession';
 import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
 import { RepositoryLanguageStars, RepositorySoftwareForms } from './RepositoryListPresentation';
 import { repositoryListDescriptionClass, repositoryListSurfaceClass } from '../lib/repositoryReadingPresentation';
+import { RepositoryClassificationEvidence } from './RepositoryClassificationEvidence';
+import { repositoryFacetLabels } from '../utils/classificationFacets';
+import { mergeClassificationLabels } from '../utils/repositoryClassificationDisplay';
 
 type DialogContentPointerDownOutsideHandler = NonNullable<
   React.ComponentProps<typeof DialogContent>['onPointerDownOutside']
@@ -641,6 +644,10 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
     }
   }, [repository.custom_tags, repository.analyzed_at, repository.analysis_failed, repository.ai_details, repository.ai_summary, repository.ai_tags, repository.topics]);
 
+  const classificationLabels = useMemo(() => mergeClassificationLabels(
+    displayTags.tags.map(item => item.tag), repositoryFacetLabels(repository),
+  ), [repository, displayTags.tags]);
+
   // 使用 useMemo 缓存AI分析按钮提示文本
   const aiButtonTitle = useMemo(() => {
     const details = readRepositoryDetails(repository.ai_details);
@@ -1122,17 +1129,17 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       </div>
       )}
 
+      <RepositoryClassificationEvidence repository={repository} compact />
       {/* List mode keeps tags and repository metadata on one wrapping information row. */}
       <div className={viewMode === 'list' ? 'flex flex-wrap items-center gap-x-3 gap-y-2' : 'contents'}>
-      {/* Tags - 未AI分析时显示Topics，AI分析后显示AI标签 */}
-      {isRepositoryCardFieldVisible(cardFields, 'tags') && displayTags.tags.length > 0 && (
-        <div className={`flex flex-wrap ${viewMode === 'list' ? 'gap-1' : 'gap-2 mb-4'}`}>
-          {displayTags.tags.slice(0, 3).map((tagItem, index) => (
+      {isRepositoryCardFieldVisible(cardFields, 'tags') && classificationLabels.length > 0 && (
+        <div className={`flex flex-wrap ${viewMode === 'list' ? 'gap-1' : 'gap-2 mb-4'}`} aria-label={language === 'zh' ? '标签与分类特征' : 'Tags and classification facets'}>
+          {classificationLabels.map((label) => (
             <span
-              key={`tag-${index}`}
+              key={label}
               className={`linear-card-tag font-medium ${viewMode === 'list' ? 'px-1.5 py-0.5 text-xs' : 'px-2 py-1 text-xs'}`}
             >
-              {highlightSearchTerm(tagItem.tag, searchQuery)}
+              {highlightSearchTerm(label, searchQuery)}
             </span>
           ))}
         </div>
@@ -1330,6 +1337,8 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.repository.ai_tags === nextProps.repository.ai_tags &&
     prevProps.repository.ai_platforms === nextProps.repository.ai_platforms &&
     prevProps.repository.ai_details === nextProps.repository.ai_details &&
+    prevProps.repository.classifications === nextProps.repository.classifications &&
+    prevProps.repository.classificationInsights === nextProps.repository.classificationInsights &&
     prevProps.repository.custom_description === nextProps.repository.custom_description &&
     prevProps.repository.custom_tags === nextProps.repository.custom_tags &&
     prevProps.repository.custom_category === nextProps.repository.custom_category &&

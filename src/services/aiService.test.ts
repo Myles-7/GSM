@@ -11,6 +11,17 @@ import {
 } from './aiService';
 import { isToolCallCapableApiType } from '../constants/aiCapabilities';
 import { logger } from './logger';
+import { aiTaskJournal } from './aiTaskJournal';
+import { bindTaskItemSignal } from './taskExecution';
+import { taskObservability } from './taskObservability';
+import { useAppStore } from '../store/useAppStore';
+
+vi.mock('./taskObservability', async importOriginal => {
+  const actual = await importOriginal<typeof import('./taskObservability')>();
+  return { ...actual, taskObservability: { ...actual.taskObservability,
+    begin: vi.fn(), phase: vi.fn(), append: vi.fn(), complete: vi.fn(), event: vi.fn(),
+  } };
+});
 
 // Minimal AIConfig that lets AIService construct without a real token.
 const makeConfig = () => ({
@@ -21,6 +32,94 @@ const makeConfig = () => ({
   apiKey: '',
   model: 'gpt-test',
   isActive: true,
+});
+
+describe('HTTP request observations', () => {
+  it('creates one authenticated task for a legacy call and reuses an existing parent without duplicates', async () => {
+    vi.clearAllMocks();
+    const previous = useAppStore.getState;
+    Object.assign(useAppStore, { getState: () => ({ user: { id: 'legacy-owner' } }) });
+    const begin = vi.spyOn(aiTaskJournal, 'begin');
+    vi.mocked(window.fetch).mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'unchanged' } }] }), { headers: { 'Content-Type': 'application/json' } }));
+    try {
+      const service = new AIService(makeConfig());
+      expect(await service.generateChatText({ feature: 'plugin', system: '', user: '' })).toBe('unchanged');
+      expect(begin).toHaveBeenCalledTimes(1);
+      const created = aiTaskJournal.snapshot().find(record => record.id === begin.mock.results[0].value.id)!;
+      expect(created).toMatchObject({ owner: 'legacy-owner', kind: 'plugins', state: 'complete' });
+      expect(taskObservability.begin).toHaveBeenCalledWith(expect.objectContaining({ taskId: created.id, owner: 'legacy-owner', itemId: 'operation' }));
+      const parent = aiTaskJournal.begin('parent-owner', 'chat', []), controller = new AbortController();
+      bindTaskItemSignal(controller.signal, parent, 'existing'); begin.mockClear();
+      expect(await service.generateChatText({ system: '', user: '', signal: controller.signal })).toBe('unchanged');
+      expect(begin).not.toHaveBeenCalled();
+      expect(taskObservability.begin).toHaveBeenLastCalledWith(expect.objectContaining({ taskId: parent.id, owner: 'parent-owner', itemId: 'existing' }));
+      parent.finish('complete');
+    } finally { begin.mockRestore(); if (previous) Object.assign(useAppStore, { getState: previous }); else Reflect.deleteProperty(useAppStore, 'getState'); }
+  });
+
+  it('keeps a nonstream request final-only, captures typed reasoning, and redacts configuration secrets', async () => {
+    vi.clearAllMocks();
+    const fetch = vi.mocked(window.fetch).mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: 'answer secret-key', reasoning_content: 'typed reasoning secret-key' } }], usage: { prompt_tokens: 3, completion_tokens: 4 },
+    }), { headers: { 'Content-Type': 'application/json' } }));
+    const task = aiTaskJournal.begin('http-owner', 'details', [{ id: 'repo', label: 'Repository' }]);
+    const controller = new AbortController(), chunks = vi.fn(); bindTaskItemSignal(controller.signal, task, 'repo');
+    try {
+      const service = new AIService({ ...makeConfig(), apiKey: 'secret-key' });
+      expect(await service.generateChatText({ system: 'rules', user: 'question', signal: controller.signal, onChunk: chunks })).toBe('answer secret-key');
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).not.toHaveProperty('stream');
+      expect(chunks).not.toHaveBeenCalled();
+      expect(taskObservability.begin).toHaveBeenCalledWith(expect.objectContaining({ owner: 'http-owner', taskId: task.id, itemId: 'repo', mode: 'final', source: 'http' }));
+      const { requestId } = vi.mocked(taskObservability.begin).mock.calls[0][0];
+      expect(taskObservability.append).toHaveBeenCalledWith('http-owner', task.id, requestId, 'reasoning', 'typed reasoning [REDACTED]');
+      expect(taskObservability.complete).toHaveBeenCalledWith('http-owner', task.id, requestId, expect.objectContaining({ outcome: 'succeeded', answer: 'answer [REDACTED]', usage: { prompt_tokens: 3, completion_tokens: 4 } }));
+    } finally { task.finish('complete'); }
+  });
+
+  it('captures an existing SSE stream once, separates reasoning and preserves literal thinking tags', async () => {
+    vi.clearAllMocks();
+    const frames = [
+      { choices: [{ delta: { reasoning_content: 'typed' } }] },
+      { choices: [{ delta: { content: '<think>literal</think>' } }] },
+      { choices: [{ delta: { content: ' answer' }, finish_reason: 'stop' }] },
+    ].map(data => `data: ${JSON.stringify(data)}\n\n`).join('');
+    const fetch = vi.mocked(window.fetch).mockResolvedValue(new Response(frames, { headers: { 'Content-Type': 'text/event-stream' } }));
+    const task = aiTaskJournal.begin('stream-owner', 'chat', [{ id: 'operation', label: 'Chat' }]);
+    const controller = new AbortController(), chunks = vi.fn(); bindTaskItemSignal(controller.signal, task, 'operation');
+    try {
+      const answer = await new AIService(makeConfig()).generateChatTextStream({ system: '', user: '', signal: controller.signal, onChunk: chunks });
+      expect(answer).toBe('<think>literal</think> answer'); expect(fetch).toHaveBeenCalledOnce();
+      expect(chunks.mock.calls).toEqual([['<think>literal</think>'], [' answer']]);
+      const { requestId } = vi.mocked(taskObservability.begin).mock.calls[0][0];
+      expect(taskObservability.append).toHaveBeenCalledWith('stream-owner', task.id, requestId, 'reasoning', 'typed');
+      expect(taskObservability.complete).toHaveBeenCalledWith('stream-owner', task.id, requestId, expect.objectContaining({ outcome: 'succeeded', answer }));
+    } finally { task.finish('complete'); }
+  });
+
+  it('redacts a configured credential split across SSE fragments before storage',async()=>{
+    vi.clearAllMocks();
+    const frames=['prefix abc-','key-def suffix'].map(content=>`data: ${JSON.stringify({choices:[{delta:{content}}]})}\n\n`).join('')+'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
+    vi.mocked(window.fetch).mockResolvedValue(new Response(frames,{headers:{'Content-Type':'text/event-stream'}}));
+    const task=aiTaskJournal.begin('redaction-owner','chat',[{id:'operation',label:'Chat'}]),controller=new AbortController();bindTaskItemSignal(controller.signal,task,'operation');
+    try{await new AIService({...makeConfig(),apiKey:'abc-key-def'}).generateChatTextStream({system:'',user:'',signal:controller.signal,onChunk:()=>{}});
+      const stored=vi.mocked(taskObservability.append).mock.calls.filter(call=>call[3]==='answer').map(call=>call[4]).join('');
+      expect(stored).toBe('prefix [REDACTED] suffix');expect(JSON.stringify(vi.mocked(taskObservability.append).mock.calls)).not.toContain('abc-key-def');
+    }finally{task.finish('complete');}
+  });
+
+  it('marks interrupted dispatched requests unknown without issuing a retry', async () => {
+    vi.clearAllMocks();
+    const fetch = vi.mocked(window.fetch).mockRejectedValue(new TypeError('Network lost'));
+    const task = aiTaskJournal.begin('http-owner', 'chat', []), controller = new AbortController();
+    bindTaskItemSignal(controller.signal, task, 'repo');
+    try {
+      await expect(new AIService(makeConfig()).generateChatText({ system: '', user: '', signal: controller.signal })).rejects.toThrow('Network lost');
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(taskObservability.complete).toHaveBeenCalledWith('http-owner', task.id, expect.any(String), expect.objectContaining({ outcome: 'unknown' }));
+      expect(aiTaskJournal.snapshot().find(row=>row.id===task.id)?.providerOutcome).toBe('unknown');
+    } finally { task.finish('failed'); }
+  });
 });
 
 it.each([undefined, true, false])('redacts all AI request details regardless of legacy option (%s)', (legacyOption) => {

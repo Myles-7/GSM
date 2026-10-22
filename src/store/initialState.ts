@@ -64,7 +64,7 @@ export const createInitialState = (): AppState => ({
       releaseSourceSettings: defaultReleaseSourceSettings,
       readReleases: new Set<number>(),
       customCategories: [],
-      classificationSchemes: {},
+      classificationSchemes: { generation: { status: 'idle', generation: 0, queuedRepositoryIds: [] } },
       activeClassificationScheme: 'purpose',
       classificationNavigation: {},
       hiddenDefaultCategoryIds: [],
@@ -92,6 +92,9 @@ export const createInitialState = (): AppState => ({
       isSidebarCollapsed: false,
       readmeModalOpen: false,
       repositoryViewMode: 'grid',
+      clusterDisplayMode: 'clusters',
+      clusterPreset: 'all',
+      clusterQuery: '',
       // 卡片可见字段默认全开（开发守则 §14）
       repositoryCardFields: { ...DEFAULT_REPOSITORY_CARD_FIELDS },
       releaseViewMode: 'timeline',

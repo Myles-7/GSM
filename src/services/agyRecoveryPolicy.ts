@@ -2,6 +2,7 @@ import type { AITaskRecord } from './aiTaskJournal';
 import type { AgyRecoveryRecord } from '../types/agy';
 const confirmedCalls = new Set<string>();
 export const wasAgyRetryConfirmed = (id: string) => confirmedCalls.has(id);
+export const confirmAgyRetry = (id: string) => { confirmedCalls.add(id); };
 
 export function reconcileAgyTask(task: AITaskRecord, calls: AgyRecoveryRecord[] = []): AITaskRecord {
   const related = calls.filter(call => call.taskId === task.id);

@@ -53,7 +53,7 @@ describe.each(['http', 'agy'] as const)('%s bounded analysis retries', transport
   }
 
   const transient = () => transport === 'http'
-    ? new AIRequestError('Service unavailable', 503) : new Error('AGY_TIMEOUT');
+    ? new AIRequestError('Rate limited', 429) : new Error('AGY_INIT_TIMEOUT');
 
   it.each([
     ['transient then repair', () => [transient(), 'invalid', valid]],
@@ -104,6 +104,10 @@ describe.each(['http', 'agy'] as const)('%s bounded analysis retries', transport
     new Error('AGY_MODEL_EFFORT_CONFLICT'),
     new Error('AGY_DISABLED'),
     new Error('AGY_OUTPUT_LIMIT'),
+    new Error('AGY_TIMEOUT'),
+    new Error('AGY_UNKNOWN_PROVIDER_OUTCOME'),
+    Object.assign(new Error('AGY_INIT_TIMEOUT'), { details: { sent: true, providerOutcome: 'unknown' } }),
+    Object.assign(new AIRequestError('Service unavailable after dispatch', 503), { providerOutcome: 'unknown' }),
     new Error('AGY_CANCELED'),
     new Error('AGY_SESSION_CHANGED'),
     new Error('Permanent configuration failure'),

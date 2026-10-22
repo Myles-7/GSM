@@ -8,16 +8,11 @@ import type { AppStoreState } from './types';
 export const selectAppShellState = (state: AppStoreState) => ({
   isAuthenticated: state.isAuthenticated,
   currentView: state.currentView,
-  selectedCategory: state.selectedCategory,
   theme: state.theme,
   themePreset: state.themePreset,
   themeTokens: state.themeTokens,
   language: state.language,
   hasHydrated: state.hasHydrated,
-  searchResults: state.searchResults,
-  searchFilters: state.searchFilters,
-  repositories: state.repositories,
-  setSelectedCategory: state.setSelectedCategory,
 });
 
 export const selectAuthSession = (state: AppStoreState) => ({

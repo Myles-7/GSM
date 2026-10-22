@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type Database from 'better-sqlite3';
+import { SyncError } from './syncErrors.js';
 const id = z.string().trim().min(1).max(160).refine(value => !['all', 'pending'].includes(value));
 const member = z.object({ categoryId: id.nullable(), subcategoryId: id.nullable(), locked: z.boolean() }).strict()
   .refine(row => row.categoryId !== null || row.subcategoryId === null);
@@ -24,10 +25,12 @@ export const classificationSchemesSchema = z.object({ purpose: scheme.optional()
 });
 
 /** A structurally valid technology membership must also point at the final taxonomy. */
-export class ClassificationReferenceError extends Error {
-  readonly status = 400;
-  readonly code = 'INVALID_CLASSIFICATION_REFERENCE';
-  constructor(message = 'Technology membership references a missing category or subcategory') { super(message); }
+export class ClassificationReferenceError extends SyncError {
+  constructor(message = 'Technology membership references a missing category or subcategory') {
+    super('INVALID_CLASSIFICATION_REFERENCE', 400);
+    this.name = 'ClassificationReferenceError';
+    this.message = message;
+  }
 }
 
 function parseJson(value: unknown): unknown {
@@ -75,3 +78,14 @@ export function assertStoredTechnologyMembershipReferences(db: Database.Database
   const repositories = db.prepare('SELECT classifications FROM repositories').all() as Record<string, unknown>[];
   assertTechnologyMembershipReferences(schemes?.value, repositories);
 }
+
+const classificationInsightSchema = z.object({
+  confidence: z.enum(['high', 'medium', 'low']),
+  evidence: z.array(z.string().max(2000)).max(100),
+  facets: z.array(z.object({ id: z.string().min(1).max(160), label: z.string().min(1).max(200),
+    score: z.number().finite().nonnegative(), evidence: z.array(z.string().max(2000)).max(100),
+    group: z.enum(['technology', 'platform', 'scenario']).optional(),
+  }).strict()).max(100),
+  categoryId: id.optional(), subcategoryId: id.optional(), refinementReason: z.string().max(2000).optional(),
+}).strict();
+export const repositoryClassificationInsightsSchema = z.object({ purpose: classificationInsightSchema.optional(), technology: classificationInsightSchema.optional() }).strict();

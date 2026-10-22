@@ -9,7 +9,13 @@ directories:
 
 files:
   - dist/**/*
+  - build/icon.png
   - electron/**/*
+  - '!electron/**/*.test.js'
+  - '!electron/**/*.fixture*'
+  - '!electron/**/*.fixture-*'
+  - '!electron/**/*Smoke.cjs'
+  - '!electron/**/*Probe.cjs'
   - node_modules/**/*
   - package.json
 
@@ -22,7 +28,7 @@ win:
     - target: nsis
       arch:
         - x64
-  icon: dist/vite.svg
+  icon: build/icon.ico
   
 nsis:
   oneClick: false
@@ -38,12 +44,12 @@ mac:
       arch:
         - x64
         - arm64
-  icon: dist/vite.svg
+  icon: build/icon.png
   category: public.app-category.productivity
 
 dmg:
   title: GitHub Stars Manager
-  icon: dist/vite.svg
+  icon: build/icon.png
   window:
     width: 540
     height: 380
@@ -68,7 +74,7 @@ linux:
     - target: rpm
       arch:
         - x64
-  icon: dist/vite.svg
+  icon: build/icon.png
   category: Office
   synopsis: AI-powered GitHub starred repositories management tool
   description: >
@@ -76,7 +82,4 @@ linux:
     your GitHub starred repositories with AI-powered analysis and release tracking.
 
 # 发布配置
-publish:
-  provider: github
-  owner: your-username
-  repo: your-repo-name
+publish: null

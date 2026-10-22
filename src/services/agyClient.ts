@@ -3,14 +3,17 @@ import type { AgyDesktopAPI, AgyDeviceState, AgyRecoveryIssue, AgyRecoveryRecord
 import { useAppStore } from '../store/useAppStore';
 import { AGY_CONFIG_ID, isAgyConfig } from '../utils/aiConfig';
 import './electronProxy';
-import { taskForSignal, taskItemForSignal } from './taskExecution';
-import { aiTaskJournal, type ProviderOutcome } from './aiTaskJournal';
+import { taskForSignal, taskItemForSignal, runTrackedTask, bindTaskItemSignal } from './taskExecution';
+import { aiTaskJournal, type ProviderOutcome, type AITaskKind } from './aiTaskJournal';
+import { taskObservability } from './taskObservability';
 
 let bridge: AgyDesktopAPI | undefined;
 let session = '';
 let sessionReady: Promise<void> = Promise.resolve();
 let unsubscribe: (() => void) | undefined;
 let scheduler: AgyDeviceState['pool'];
+let appliedDeviceAPI: AgyDesktopAPI | undefined;
+let appliedDeviceRevision: number | undefined;
 const schedulerListeners = new Set<() => void>();
 export const agySchedulerStatus = {
   snapshot: () => scheduler,
@@ -49,7 +52,11 @@ function bindSession(api: AgyDesktopAPI) {
 
 const configId = (active: string | null) => active ?? AGY_CONFIG_ID;
 
-export function applyAgyDeviceState(device: AgyDeviceState): void {
+export function applyAgyDeviceState(device: AgyDeviceState): boolean {
+  const api = window.electronAPI?.agy;
+  if(api!==appliedDeviceAPI){appliedDeviceAPI=api;appliedDeviceRevision=undefined;}
+  if(device.revision!==undefined && appliedDeviceRevision!==undefined && device.revision<appliedDeviceRevision)return false;
+  if(device.revision!==undefined)appliedDeviceRevision=device.revision;
   setScheduler(device.pool);
   const store = useAppStore.getState();
   const config: AgyAIConfig = {
@@ -62,6 +69,7 @@ export function applyAgyDeviceState(device: AgyDeviceState): void {
   if (JSON.stringify(old) !== JSON.stringify(config)) store.setAIConfigs([
     ...store.aiConfigs.filter(item => item.id !== AGY_CONFIG_ID), config,
   ]);
+  return true;
 }
 
 export async function refreshAgyDeviceState(): Promise<void> {
@@ -74,6 +82,8 @@ export async function refreshAgyDeviceState(): Promise<void> {
 export async function generateAgyText(config: AgyAIConfig, options: {
   system: string; user: string; maxTokens?: number; signal?: AbortSignal; onChunk?: (text: string) => void;
   feature?: import('../types/agy').AgyFeature;
+  priority?: import('../types/agy').AgyPriority;
+  interactive?: boolean;
   onRequestState?: (state: 'queued' | 'running') => void;
   onLifecycle?: (event: 'initializing' | 'cleanup' | 'warning', code?: string) => void;
   onSent?: () => void;
@@ -82,6 +92,22 @@ export async function generateAgyText(config: AgyAIConfig, options: {
   const api = window.electronAPI?.agy;
   if (!api || !config.deviceBound || !config.isActive) throw new Error('AGY_DISABLED');
   if (options.signal?.aborted) throw new DOMException('Canceled', 'AbortError');
+  if (!taskForSignal(options.signal)) {
+    const owner = useAppStore.getState().user?.id;
+    if (owner !== undefined && owner !== null && String(owner).trim()) {
+      const feature = config.agyFeature ?? options.feature;
+      const kinds: Partial<Record<import('../types/agy').AgyFeature, AITaskKind>> = {
+        'repository-summary': 'summary', 'repository-details': 'details', 'gist-summary': 'gists', 'release-summary': 'release',
+        'query-expansion': 'search', 'repository-rerank': 'search', 'gist-rerank': 'search', 'repository-chat': 'chat',
+        organization: 'organization', discovery: 'discovery', plugin: 'plugins', workbench: 'research',
+      };
+      return runTrackedTask({ owner: String(owner), kind: feature ? kinds[feature] ?? 'research' : 'research',
+        label: feature ?? config.name, config: feature ? { ...config, agyFeature: feature } : config, signal: options.signal }, (signal, task) => {
+        bindTaskItemSignal(signal, task, 'operation');
+        return generateAgyText(config, { ...options, signal });
+      });
+    }
+  }
   bindSession(api);
   const ownedSession = session;
   await sessionReady;
@@ -95,26 +121,45 @@ export async function generateAgyText(config: AgyAIConfig, options: {
   let succeeded = false;
   const task = taskForSignal(options.signal);
   const itemId = taskItemForSignal(options.signal);
+  const taskRecord = task ? aiTaskJournal.snapshot().find(record => record.id === task.id) : undefined;
+  const mappedItem=!!itemId&&!!taskRecord?.items.some(item=>item.id===itemId);
+  const owner = taskRecord?.owner ?? String(useAppStore.getState().user?.id ?? '');
+  let observationCompleted = false;
+  if (task) taskObservability.begin({ owner, taskId: task.id, requestId, itemId,
+    label: taskRecord?.items.find(item => item.id === itemId)?.label ?? taskRecord?.kind ?? 'AGY',
+    source: 'agy', model: config.agyRequestProfile?.model ?? config.model,
+    effort: config.agyRequestProfile?.effort ?? config.agyEffort, mode: 'stream' });
   let phase = 'queue_wait', phaseStarted = performance.now();
   const timings: Record<string, number> = {};
   const enterPhase = (next: 'queue_wait' | 'initializing' | 'generating' | 'cleanup') => {
     const at = performance.now();
     timings[`phase_${phase}_ms`] = (timings[`phase_${phase}_ms`] ?? 0) + Math.max(0, at - phaseStarted);
     phase = next; phaseStarted = at;
-    task?.phase(next);
+    if(!mappedItem)task?.phase(next);
+    if (task) taskObservability.phase(owner, task.id, requestId, next, undefined, 'agy');
     if (itemId) task?.itemExecution(itemId, { phase: next });
   };
   const outcome = (value:ProviderOutcome, failureCode?:string) => {
-    if (itemId && task?.itemExecution) { task.itemExecution(itemId, { providerOutcome: value, failureCode, requestId }); return; }
+    if (mappedItem && task?.itemExecution) { task.itemExecution(itemId, { providerOutcome: value, failureCode, requestId }); return; }
     // One uncertain item must not be hidden by a healthy sibling completing.
     if(task&&aiTaskJournal.snapshot().find(record=>record.id===task.id)?.providerOutcome!=='unknown')task.providerOutcome(value,failureCode);
   };
-  task?.metadata({executor:'agy-device'});task?.phase('queue_wait');
+  task?.metadata({executor:'agy-device'});if(!mappedItem)task?.phase('queue_wait');
   options.onRequestState?.('queued');
   const stop = () => { void api.cancel(requestId).catch(() => {}); };
   const off = api.onEvent(event => {
     if (event.session === ownedSession && session === ownedSession && event.requestId === requestId && !options.signal?.aborted) {
       if (event.type === 'scheduler') setScheduler(event.pool);
+      if (task && !['scheduler', 'text', 'reasoning', 'observation'].includes(event.type)) taskObservability.event(owner, task.id, {
+        requestId, itemId, source: 'agy', type: event.type, message: event.code,
+      });
+      if (task && event.type === 'reasoning' && typeof event.text === 'string') taskObservability.append(owner, task.id, requestId, 'reasoning', event.text);
+      if (task && event.type === 'observation' && event.observation) {
+        const observation = event.observation;
+        taskObservability.event(owner, task.id, { requestId, itemId, source: 'agy', type: observation.event,
+          phase: observation.stepType, message: observation.state, state: observation.state, stepIndex: observation.stepIndex, usage: observation.usage,
+          ...(typeof observation.time === 'string' ? { time: observation.time } : {}) });
+      }
       if (event.type === 'queued' && Number.isInteger(event.position) && event.position! > 0) {
         enterPhase('queue_wait');
         queuePositions.set(requestId, { position: event.position!, taskId: taskForSignal(options.signal)?.id }); notifyQueue();
@@ -128,7 +173,10 @@ export async function generateAgyText(config: AgyAIConfig, options: {
         !options.signal?.aborted && event.type === 'text' && typeof event.text === 'string') {
       receivedChars += event.text.length;
       if (receivedChars > maxChars) { overLimit = true; }
-      else options.onChunk?.(event.text);
+      else {
+        if (task) taskObservability.append(owner, task.id, requestId, 'answer', event.text);
+        options.onChunk?.(event.text);
+      }
     }
   });
   options.signal?.addEventListener('abort', stop, { once: true });
@@ -137,7 +185,7 @@ export async function generateAgyText(config: AgyAIConfig, options: {
       system: `${options.system}\nApplication output ceiling: ${maxChars} characters. Stay within it without dropping requested requirements. Return a complete result, never truncated JSON.`,
       user: options.user, model: config.model, effort: config.agyEffort,
       profileOverride: config.agyRequestProfile,
-      feature: config.agyFeature ?? options.feature ?? 'other', revision: config.agyRevision, priority: config.agyPriority ?? 'interactive',
+      feature: config.agyFeature ?? options.feature ?? 'other', revision: config.agyRevision, priority: options.priority ?? config.agyPriority ?? 'interactive',
       taskId: taskForSignal(options.signal)?.id,
       itemId, step: options.recovery?.step, retryOf: options.recovery?.retryOf ?? aiTaskJournal.snapshot()
         .find(record => record.id === aiTaskJournal.snapshot().find(record => record.id === task?.id)?.parentId)?.items.find(item => item.id === itemId)?.requestId,
@@ -146,16 +194,25 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     if (typeof api.recoveryList === 'function') {
       const owner = String(useAppStore.getState().user?.id ?? '');
       const previous = (await listAgyRecovery(owner)).filter(record => !record.receipt && record.providerOutcome === 'unknown');
-      const { wasAgyRetryConfirmed } = await import('./agyRecoveryPolicy');
+      const { wasAgyRetryConfirmed, confirmAgyRetry } = await import('./agyRecoveryPolicy');
+      const taskRecord = task ? aiTaskJournal.snapshot().find(record => record.id === task.id) : undefined;
+      const isBackground = request.priority === 'background' || options.interactive === false || taskRecord?.trigger === 'automatic';
       for (const record of previous) {
         const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([
           request.system, request.user, record.profile, request.recoveryContext ?? null,
         ])));
         const hash = Array.from(new Uint8Array(bytes), value => value.toString(16).padStart(2, '0')).join('');
         if (!(request.step && request.step === record.step) && record.inputDigest !== hash && record.requestId !== request.retryOf) continue;
-        if (!wasAgyRetryConfirmed(record.requestId) && !window.confirm(useAppStore.getState().language.startsWith('zh')
+        if (!wasAgyRetryConfirmed(record.requestId)) {
+          if (isBackground) throw new DOMException('Canceled', 'AbortError');
+          const prompt = useAppStore.getState().language.startsWith('zh')
           ? '上次模型调用结果未知，可能已经计费。继续将发起新的模型调用，是否继续？'
-          : 'The previous provider call may already have been billed. Start a new provider call?')) throw new DOMException('Canceled', 'AbortError');
+            : 'The previous provider call may already have been billed. Start a new provider call?';
+          if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+            if (!window.confirm(prompt)) throw new DOMException('Canceled', 'AbortError');
+            confirmAgyRetry(record.requestId);
+          }
+        }
         request.retryOf = record.requestId;
         break;
       }
@@ -169,6 +226,8 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     const result = await api.start(requestId, ownedSession, request);
     if (result.ok) {
       succeeded = true; outcome('succeeded');
+      if (task) taskObservability.complete(owner, task.id, requestId, { outcome: 'succeeded', answer: result.value.text, usage: result.value.usage });
+      observationCompleted = true;
       if (result.value.recovery) {
         options.recovery?.onResult?.(result.value.recovery);
         if (itemId) task?.itemExecution(itemId, { recovery: { requestId, digest: result.value.recovery.resultDigest }, commitStatus: 'pending' });
@@ -201,9 +260,17 @@ export async function generateAgyText(config: AgyAIConfig, options: {
   } catch(error) {
     const code=error instanceof Error?error.message:'';
     const unknown=!succeeded&&sent&&!/^AGY_(?:AUTH_REQUIRED|PERMISSION_DENIED|RATE_LIMIT|QUOTA_EXHAUSTED|BUDGET_LIMIT|MODEL_EFFORT_CONFLICT|INVALID_MODEL|INVALID_EFFORT)$/.test(code);
+    if (error instanceof Error && Object.isExtensible(error)) {
+      const details = (error as Error & { details?: Record<string, unknown> }).details;
+      Object.assign(error, { details: { ...details, sent, providerOutcome: succeeded ? 'succeeded' : unknown ? 'unknown' : 'failed' } });
+    }
     outcome(succeeded?'succeeded':unknown?'unknown':'failed',unknown?'unknown_provider_outcome':/^AGY_[A-Z_]+$/.test(code)?code:undefined);
     if (succeeded && itemId) task?.itemExecution(itemId, { validationStatus: 'failed', failureCode: code });
-    if(unknown)task?.metadata({capabilities:{pause:false,cancel:false,resume:'new-provider-call'}});
+    // A sibling may still be running; uncertainty must not remove parent cancellation.
+    if (task && !observationCompleted) taskObservability.complete(owner, task.id, requestId, {
+      outcome: succeeded ? 'succeeded' : unknown ? 'unknown' : options.signal?.aborted || (error instanceof Error && error.name === 'AbortError') ? 'canceled' : 'failed',
+      error: code,
+    });
     throw error;
   } finally {
     timings[`phase_${phase}_ms`] = (timings[`phase_${phase}_ms`] ?? 0) + Math.max(0, performance.now() - phaseStarted);

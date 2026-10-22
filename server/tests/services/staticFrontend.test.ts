@@ -1,10 +1,11 @@
 import express from 'express';
 import fs from 'node:fs';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mountStaticFrontend } from '../../src/services/staticFrontend.js';
+import { mountStaticFrontend, staticFrontendScriptHashes } from '../../src/services/staticFrontend.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -26,6 +27,13 @@ afterEach(() => {
 });
 
 describe('mountStaticFrontend', () => {
+  it('hashes the exact deployed bootstrap scripts without allowing arbitrary inline code', () => {
+    const directory = createStaticDirectory();
+    const script = 'window.__vite_is_modern_browser=true';
+    fs.appendFileSync(path.join(directory, 'index.html'), `<script type="module">${script}</script><script src="/app.js"></script><script>${script}</script>`);
+    expect(staticFrontendScriptHashes(directory)).toEqual([`'sha256-${createHash('sha256').update(script).digest('base64')}'`]);
+    expect(staticFrontendScriptHashes(path.join(directory, 'missing'))).toEqual([]);
+  });
   it('does not change a standalone backend when STATIC_DIR is absent', () => {
     const app = express();
     expect(mountStaticFrontend(app, undefined)).toBe(false);
@@ -51,5 +59,15 @@ describe('mountStaticFrontend', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gsm-static-empty-'));
     temporaryDirectories.push(directory);
     expect(mountStaticFrontend(app, directory)).toBe(false);
+  });
+
+  it('returns 404 for missing chunks instead of serving HTML as JavaScript', async () => {
+    const app = express();
+    mountStaticFrontend(app, createStaticDirectory());
+    await request(app).get('/assets/stale-chunk.js').expect(404);
+    await request(app).get('/assets/stale.css').expect(404);
+    await request(app).get('/missing.webmanifest').expect(404);
+    await request(app).get('/repositories/42').set('Accept', 'application/json').expect(404);
+    await request(app).get('/repositories/42').set('Accept', 'text/html').expect(200);
   });
 });

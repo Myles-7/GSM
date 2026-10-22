@@ -11,7 +11,7 @@ const refused = new Set(['AUTH_REQUIRED', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QU
 function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 1024,
   reservationBytes = 8 * 1024 * 1024 } = {}) {
   let chain = Promise.resolve();
-  const serial = work => { const next = chain.then(work); chain = next.catch(() => {}); return next; };
+  const serial = work => { const next = chain.then(async () => { await initialize(); return work(); }); chain = next.catch(() => {}); return next; };
   const identity = (account, requestId) => {
     if (!validId(account) || !validId(requestId)) throw new AgyError('INVALID_REQUEST');
     return `${digest(account)}-${requestId}`;
@@ -76,6 +76,25 @@ function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 
       await fs.rename(temporary, file);
     } finally { await handle?.close(); await fs.rm(temporary, { force: true }).catch(() => {}); }
   };
+  let initialization;
+  const initialize = () => initialization ??= (async () => {
+    let files;
+    try { files = await fs.readdir(directory); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    // A registry belongs to one main-process lifetime. Calls left by its previous
+    // lifetime cannot still own execution slots. Retain evidence and uncertainty,
+    // but account for the actual encrypted body rather than an unused output slot.
+    for (const file of files.filter(name => /^[a-f0-9]{64}-[\w-]{1,80}\.json$/.test(name))) {
+      let metadata;
+      try { metadata = JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')); } catch { continue; }
+      if (!validId(metadata.account) || !validId(metadata.requestId) || path.basename(location(metadata.account, metadata.requestId)) !== file) continue;
+      let row;
+      try { row = await load(metadata.account, metadata.requestId); } catch (error) { if (error.code === 'RECOVERY_RECORD_CORRUPT') continue; throw error; }
+      if (!row || row.receipt || row.providerOutcome === 'succeeded') continue;
+      if (row.dispatch === 'sent' && row.providerOutcome === 'in_flight' || row.dispatch === 'prepared' && row.providerOutcome === 'not_started') {
+        await write({ ...row, providerOutcome: row.dispatch === 'sent' ? 'unknown' : 'not_started', bytes: row.body ? Buffer.byteLength(row.body) : 0 });
+      }
+    }
+  })();
   const all = async account => {
     if (!validId(account)) throw new AgyError('INVALID_REQUEST');
     let files;
@@ -140,14 +159,14 @@ function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 
       await write({ ...row, providerOutcome: unknown ? 'unknown' : 'failed', failureCode: /^[A-Z_]{1,80}$/.test(code) ? code : 'IO_FAILED', bytes: 0, body: undefined });
     }),
     async list(account, cursor = '', limit = 100) {
-      await chain;
+      await chain; await initialize();
       const { records, errors } = await all(account);
       const ordered = records.sort((a, b) => a.requestId.localeCompare(b.requestId)).filter(row => !cursor || row.requestId.localeCompare(cursor) > 0);
       const page = ordered.slice(0, Math.min(100, Math.max(1, Number(limit) || 100)));
       return { records: page.map(publicRecord), errors, ...(ordered.length > page.length ? { nextCursor: page.at(-1).requestId } : {}) };
     },
     async read(account, requestId) {
-      await chain; const row = await load(account, requestId);
+      await chain; await initialize(); const row = await load(account, requestId);
       if (!row) throw new AgyError('RECOVERY_NOT_FOUND');
       const payload = row.body ? unseal(row.body) : {};
       if (payload.result && digest(payload.result.text) !== row.resultDigest) throw new AgyError('RECOVERY_RECORD_CORRUPT');

@@ -114,6 +114,17 @@ router.post('/api/sync/import', (req, res) => {
       return;
     }
 
+    // Full repository replacement is explicit and requires a complete valid ID
+    // list before the transaction can remove omitted rows.
+    if (data.isFullRepositorySync === true) {
+      const rows = data.repositories;
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== 'object' || !Number.isSafeInteger(row.id) || row.id <= 0)
+        || new Set(rows.map(row => row.id)).size !== rows.length) {
+        res.status(400).json({ error: 'Full repository sync requires unique positive repository IDs', code: 'INVALID_FULL_REPOSITORY_SNAPSHOT' });
+        return;
+      }
+    }
+
     // 导入前校验 releases：id / repo_id / repo_full_name / repo_name 均非空，
     // 避免 NOT NULL 列绑 null 导致整笔事务 500。
     const importRels = data.releases as Record<string, unknown>[] | undefined;
@@ -226,6 +237,13 @@ router.post('/api/sync/import', (req, res) => {
           writeRepositoryOrganization(db, r, previous);
         }
         counts.repositories = repos.length;
+      }
+
+      if (data.isFullRepositorySync === true && Array.isArray(repos)) {
+        const incomingIds = new Set(repos.map(repository => repository.id));
+        const existingIds = db.prepare('SELECT id FROM repositories').all() as { id: number }[];
+        const remove = db.prepare('DELETE FROM repositories WHERE id = ?');
+        for (const row of existingIds) if (!incomingIds.has(row.id)) remove.run(row.id);
       }
 
       // Releases

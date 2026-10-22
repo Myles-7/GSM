@@ -4,8 +4,6 @@ import { AIService } from './aiService';
 import { agyProfileIdentity } from './agyProfiles';
 import { OrganizationBudgetError, OrganizationDeferredError, organizationRequest } from './aiOrganizationReliability';
 import { OrganizationBlockedError, organizationProblemCode } from './aiOrganizationReadiness';
-import { parseOrganizationJSON } from './aiOrganizationService';
-import { waitForRequest } from '../utils/requestDeadline';
 import { organizationExcerpt, organizationRunEvents, redactOrganizationOutput } from './aiOrganizationRunEvents';
 import { taskError } from './aiTaskJournal';
 import { findOrganizationResponse, registerOrganizationResult } from './aiOrganizationResultRecovery';
@@ -15,8 +13,6 @@ export class OrganizationRequestExecutor {
   private used = 0;
   private reserved = 0;
   private infrastructureFailures = 0;
-  private recoveryUsed = false;
-  private recovery?: Promise<void>;
   private rootUsed = new Map<string, number>();
   private branchUsed = new Map<string, number>();
   constructor(private input: { proposalId: string; ownerId: string; runId: string; config: AIConfig; system: string;
@@ -27,12 +23,10 @@ export class OrganizationRequestExecutor {
     const i = this.input; i.check();
     const branch = `${key}:${JSON.stringify([...ids].sort((a, b) => a - b))}`;
     const budget = { used: this.branchUsed.get(branch) ?? 0, limit: 3 };
-    if (this.recovery && !key.startsWith('recovery:')) await this.recovery;
-    let release = await i.acquire(signal);
+    const release = await i.acquire(signal);
     let reservedRequest = false;
     try {
       return await organizationRequest(async attemptSignal => {
-        if (this.recovery && !key.startsWith('recovery:')) { release(); await this.recovery; release = await i.acquire(attemptSignal); }
         i.check(); const createdAt = Date.now(); const requestId = crypto.randomUUID(); let modelStarted = false; let cleanupAt = 0; let initAt = 0; let generatedAt = 0;
         const identity = agyProfileIdentity(config, 'organization'); const agy = config.provider === 'agy-cli';
         let output = ''; let liveState: 'queued' | 'initializing' | 'running' | 'cleanup' = agy ? 'queued' : 'running';
@@ -134,25 +128,7 @@ export class OrganizationRequestExecutor {
         const infrastructure = ['AGY_TIMEOUT', 'AGY_INIT_TIMEOUT', 'AGY_RATE_LIMIT', 'MODEL_TIMEOUT'].includes(code ?? '') || error instanceof Error && /network|fetch|socket|ECONN/i.test(error.message) || (error as { status?: number })?.status === 429 || Number((error as { status?: number })?.status) >= 500;
         if (!infrastructure) return;
         i.onFailure?.(error);
-        if (key.startsWith('recovery:')) throw new OrganizationBlockedError('REQUEST_CIRCUIT_OPEN', `Recovery probe failed: ${code ?? taskError(error)}`);
-        if (++this.infrastructureFailures < 2) return;
-        release();
-        if (!this.recoveryUsed) {
-          this.recoveryUsed = true;
-          this.recovery = (async () => {
-            await waitForRequest(60000, signal);
-            const raw = await this.request('recovery:connection', { task: 'Connection recovery check. Return JSON only: {"ok":true}. No other fields.' }, [], signal, 400, config);
-            try {
-              const result = parseOrganizationJSON(raw) as { ok?: boolean };
-              if (result.ok !== true) throw new OrganizationBlockedError('REQUEST_CIRCUIT_OPEN', 'Recovery probe returned invalid JSON');
-              organizationRunEvents.validation(i.proposalId, 'recovery:connection');
-            } catch (error) { organizationRunEvents.validation(i.proposalId, 'recovery:connection', error); throw error; }
-            this.infrastructureFailures = 0;
-          })().catch(error => { throw error instanceof OrganizationBlockedError ? error : new OrganizationBlockedError('REQUEST_CIRCUIT_OPEN', taskError(error)); });
-          void this.recovery.catch(() => {});
-        } else if (this.infrastructureFailures > 2) throw new OrganizationBlockedError('REQUEST_CIRCUIT_OPEN', `Repeated infrastructure failure: ${code ?? taskError(error)}`);
-        await this.recovery;
-        release = await i.acquire(signal);
+        if (++this.infrastructureFailures >= 2) throw new OrganizationBlockedError('REQUEST_CIRCUIT_OPEN', `Repeated infrastructure failure: ${code ?? taskError(error)}`);
       }, config.provider === 'agy-cli' ? 1 : 3, () => { this.rootUsed.set(key, Math.max(0, (this.rootUsed.get(key) ?? 0) - 1)); this.branchUsed.set(branch, budget.used); });
     } finally { release(); }
   }

@@ -11,6 +11,7 @@ import { areRepositoryRecordsEqual, replaceRepositoryInList } from '../helpers/r
 import { shouldPreserveExisting } from '../helpers/accountWorkspace';
 import { normalizeOrder, normalizeRepositoryUpdate } from '../helpers/repositoryOrganization';
 import { isValidRepositoryId } from '../../utils/repositoryIdentity';
+import { classificationSourceFingerprint } from '../../services/classificationEngine';
 
 export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setRepositories'
@@ -68,7 +69,7 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           return state;
         }
 
-        return {
+        const nextState = {
           repositories: repositoriesResult.repositories,
           searchResults: searchResultsResult.repositories,
           similarView: similarResultsResult
@@ -78,6 +79,11 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
             }
             : state.similarView,
         };
+        const analysisChanged = !!previous && classificationSourceFingerprint([previous]) !== classificationSourceFingerprint([repo]);
+        if (analysisChanged) void import('../../services/aiClassificationRebuild').then(module => {
+          if (get().user?.id === state.user?.id) module.enqueueAIClassificationRebuild([repo.id]);
+        });
+        return nextState;
       }),
       updateRepositoriesMetadata: (updates) => set((state) => {
         if (!updates.length) return state;
@@ -118,7 +124,7 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
           return state;
         }
 
-        return {
+        const nextState = {
           repositories: repositoriesResult.repositories,
           searchResults: searchResultsResult.repositories,
           similarView: state.similarView
@@ -128,6 +134,14 @@ export const createRepositorySlice: AppStoreSlice<Pick<import('../types').AppAct
             }
             : state.similarView,
         };
+        const changedAnalysisIds = [...patchMap].filter(([id, patch]) => {
+          const previous = state.repositories.find(repo => repo.id === id);
+          return !!previous && classificationSourceFingerprint([previous]) !== classificationSourceFingerprint([{ ...previous, ...patch }]);
+        }).map(([id]) => id);
+        if (changedAnalysisIds.length) void import('../../services/aiClassificationRebuild').then(module => {
+          if (get().user?.id === state.user?.id) module.enqueueAIClassificationRebuild(changedAnalysisIds);
+        });
+        return nextState;
       }),
       addRepository: (repo) => set((state) => {
         if (!isValidRepositoryId(repo.id)) throw new Error('INVALID_GITHUB_REPOSITORY_ID');

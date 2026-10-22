@@ -5,7 +5,7 @@ const fields = [
   'fork', 'is_template', 'open_issues_count', 'default_branch', 'license', 'ai_summary', 'ai_tags',
   'ai_platforms', 'analyzed_at', 'analysis_failed', 'analysis_error', 'subscribed_to_releases',
   'custom_description', 'custom_tags', 'custom_category', 'category_id', 'subcategory_id',
-  'category_candidates', 'category_legacy', 'classifications', 'ai_details', 'category_locked',
+  'category_candidates', 'category_legacy', 'classifications', 'classificationInsights', 'ai_details', 'category_locked',
   'last_edited', 'vector_indexed_at', 'vector_indexed_license', 'vector_indexed_identity',
   'vector_indexed_generation', 'vector_indexed_content_hash', 'last_release_fetch_time', 'has_fetched_releases',
 ] as const;

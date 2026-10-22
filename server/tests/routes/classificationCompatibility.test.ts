@@ -23,6 +23,70 @@ beforeEach(async () => {
 });
 afterEach(() => mocks.db.close());
 describe('dual classification compatibility API', () => {
+  it('atomically removes omitted repositories when replacing the complete legacy classification snapshot', async () => {
+    const removed = { ...repo, id: 2, name: 'removed', full_name: 'fixture/removed' };
+    await request(app()).put('/api/repositories').send({ repositories: [repo, removed], classificationSchemaVersion: 2 }).expect(200);
+    const technology = { ...tree, customCategories: [{ id: 'new-tech', name: 'New category', icon: '', keywords: [] }], categoryOrder: ['new-tech'] };
+    const classificationInsights = { technology: { categoryId: 'new-tech', confidence: 'high', evidence: ['technologies: React'], facets: [] } };
+    const updated = { ...repo, classifications: { technology: { ...member, categoryId: 'new-tech' } }, classificationInsights };
+    await request(app()).post('/api/sync/import').send({ isFullRepositorySync: true, repositories: [updated], settings: { classificationSchemes: { ...schemes, technology } } }).expect(200);
+    const rows = (await request(app()).get('/api/repositories')).body.repositories;
+    expect(rows).toHaveLength(1); expect(rows[0].id).toBe(1);
+    expect(rows[0].classificationInsights).toEqual(classificationInsights);
+    expect(rows[0].classifications.technology.categoryId).toBe('new-tech');
+    const exported = await request(app()).post('/api/sync/export').expect(200);
+    await request(app()).post('/api/sync/import').send({ ...exported.body, isFullRepositorySync: true }).expect(200);
+    expect((await request(app()).get('/api/repositories')).body.repositories).toMatchObject(rows);
+  });
+  it('rolls back omitted repository deletion, assignments and settings when the replacement is invalid', async () => {
+    const removed = { ...repo, id: 2, name: 'removed', full_name: 'fixture/removed' };
+    await request(app()).put('/api/repositories').send({ repositories: [repo, removed], classificationSchemaVersion: 2 }).expect(200);
+    const repositoryBefore = mocks.db.prepare('SELECT * FROM repositories ORDER BY id').all();
+    const settingsBefore = mocks.db.prepare('SELECT * FROM settings ORDER BY key').all();
+    const technology = { ...tree, customCategories: [{ id: 'new-tech', name: 'New category', icon: '', keywords: [] }], categoryOrder: ['new-tech'] };
+    await request(app()).post('/api/sync/import').send({ isFullRepositorySync: true, repositories: [{ ...repo, description: 'must-not-write' }], settings: { activeAIConfig: 'must-not-write', classificationSchemes: { technology } } }).expect(400);
+    expect(mocks.db.prepare('SELECT * FROM repositories ORDER BY id').all()).toEqual(repositoryBefore);
+    expect(mocks.db.prepare('SELECT * FROM settings ORDER BY key').all()).toEqual(settingsBefore);
+    await request(app()).post('/api/sync/import').send({ isFullRepositorySync: true, settings: { classificationSchemes: schemes } }).expect(400);
+    await request(app()).post('/api/sync/import').send({ isFullRepositorySync: true, repositories: [repo, repo] }).expect(400);
+    expect(mocks.db.prepare('SELECT * FROM repositories ORDER BY id').all()).toEqual(repositoryBefore);
+  });
+
+  it('roundtrips saved classification evidence through legacy API, backup import and v2 projection', async () => {
+    const classificationInsights = { purpose: { confidence: 'medium', evidence: ['summary: developer workflow'], facets: [] }, technology: { categoryId: 'tech', confidence: 'high', evidence: ['technologies: React'], facets: [{ id: 'react', label: 'React', score: 12, evidence: ['AI technologies'], group: 'technology' }] } };
+    await request(app()).patch('/api/repositories/1').send({ classificationInsights }).expect(200);
+    const exported = await request(app()).post('/api/sync/export').expect(200);
+    expect(JSON.parse(exported.body.repositories[0].classificationInsights)).toEqual(classificationInsights);
+    await request(app()).put('/api/repositories').send({ repositories: [{ ...repo, classifications: undefined }], classificationSchemaVersion: 2 }).expect(200);
+    expect((await request(app()).get('/api/repositories')).body.repositories[0].classificationInsights).toEqual(classificationInsights);
+    await request(app()).post('/api/sync/import').send(exported.body).expect(200);
+    expect((await request(app()).get('/api/repositories')).body.repositories[0].classificationInsights).toEqual(classificationInsights);
+    await request(app()).patch('/api/repositories/1').send({ classificationInsights: { technology: { confidence: 'invented', evidence: [], facets: [] } }, custom_description: 'must-not-write' }).expect(400);
+    expect((await request(app()).get('/api/repositories')).body.repositories[0].classificationInsights).toEqual(classificationInsights);
+    initializeSyncV2(mocks.db);
+    const records = [{ collection: 'repositories' as const, id: '1', data: { ...repo, classificationInsights } }, { collection: 'organization' as const, id: 'default', data: { classificationSchemes: schemes } }];
+    const preview = bootstrapWorkspace(mocks.db, { githubUserId: 999, source: 'desktop', records });
+    bootstrapWorkspace(mocks.db, { githubUserId: 999, source: 'desktop', records, confirm: true, previewToken: 'previewToken' in preview ? preview.previewToken : '' });
+    expect(getRecord(mocks.db, 'repositories', '1')?.data?.classificationInsights).toEqual(classificationInsights);
+  });
+  it('rejects a dependent classification batch as a whole when one assignment has a version conflict', () => {
+    initializeSyncV2(mocks.db);
+    const records = [{ collection: 'repositories' as const, id: '1', data: repo }, { collection: 'organization' as const, id: 'default', data: { classificationSchemes: schemes } }];
+    const preview = bootstrapWorkspace(mocks.db, { githubUserId: 999, source: 'desktop', records });
+    bootstrapWorkspace(mocks.db, { githubUserId: 999, source: 'desktop', records, confirm: true, previewToken: 'previewToken' in preview ? preview.previewToken : '' });
+    const organizationBefore = getRecord(mocks.db, 'organization', 'default')!;
+    const repositoryBefore = getRecord(mocks.db, 'repositories', '1')!;
+    const input = { workspaceId: getWorkspace(mocks.db)!.id, githubUserId: 999, clientId: 'atomic', operations: [
+      { opId: 'org-edit', collection: 'organization' as const, id: 'default', baseVersion: organizationBefore.version, kind: 'put' as const, data: { classificationSchemes: { ...schemes, technology: { ...tree, customCategories: [{ ...tree.customCategories[0], name: 'Updated taxonomy' }] } } } },
+      { opId: 'repo-edit', collection: 'repositories' as const, id: '1', baseVersion: repositoryBefore.version - 1, kind: 'put' as const, data: { ...repo, description: 'must-not-write' } },
+    ] };
+    const result = pushOperations(mocks.db, input);
+    expect(result.results.map(row => row.status)).toEqual(['conflict', 'conflict']);
+    expect(getRecord(mocks.db, 'organization', 'default')).toEqual(organizationBefore);
+    expect(getRecord(mocks.db, 'repositories', '1')).toEqual(repositoryBefore);
+    expect(pushOperations(mocks.db, input)).toEqual(result);
+  });
+
   it('rejects memberships without a persisted taxonomy, including a spoofed PUT taxonomy', async () => {
     mocks.db.prepare('DELETE FROM repositories').run();
     mocks.db.prepare("DELETE FROM settings WHERE key='classificationSchemes'").run();

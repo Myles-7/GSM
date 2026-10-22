@@ -1,3 +1,4 @@
+import userEvent from '@testing-library/user-event';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CategorySidebar } from './CategorySidebar';
@@ -33,6 +34,7 @@ describe('direct two-level category navigation', () => {
   it.each([1440, 390])('opens children directly from a main row at %i px', width => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
     const view = render(sidebar());
+    if (width < 1024) fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
     expect(screen.queryByText('Numerical Computing')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Scientific Research 0' }));
     expect(mocks.select).toHaveBeenCalledWith('science');
@@ -40,10 +42,12 @@ describe('direct two-level category navigation', () => {
     mocks.state.classificationNavigation = { purpose: { selected: 'science', expanded: ['science'] } };
     mocks.state.selectedCategory = 'science';
     view.rerender(sidebar('science'));
+    if (width < 1024) fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
     expect(screen.getByText('Numerical Computing')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Numerical Computing 0' }));
     expect(mocks.select).toHaveBeenLastCalledWith('numeric');
     expect(screen.queryByText(/Categories \(/)).toBeNull();
+    if (width < 1024) fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
     fireEvent.click(screen.getByRole('button', { name: 'Scientific Research 0' }));
     expect(mocks.expand).toHaveBeenLastCalledWith('purpose', []);
   });
@@ -68,12 +72,54 @@ describe('direct two-level category navigation', () => {
     expect(mocks.expand).toHaveBeenCalledWith('technology', ['science']);
     expect(mocks.state.classificationNavigation.purpose?.expanded).toEqual(['tools']);
   });
-  it('editing does not select or expand a category, and counts stay visible', () => {
+  it('editing uses a menu without selecting or expanding, and counts stay visible', async () => {
     render(sidebar());
-    fireEvent.click(screen.getAllByRole('button', { name: 'Edit category' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: 'Scientific Research actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit category' }));
     expect(mocks.select).not.toHaveBeenCalled();
     expect(mocks.expand).not.toHaveBeenCalled();
     const row = screen.getByRole('button', { name: 'Scientific Research 0' });
     expect(row.lastElementChild?.className).not.toContain('group-hover:opacity-0');
   });
+  it.each([1440, 390])('keeps the scheme and shortcuts outside the only scrolling region at %i px', width => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    const { container } = render(sidebar());
+    if (width < 1024) fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
+    const card = container.querySelector('[data-classification-sidebar]')!;
+    const scroll = card.querySelector('[data-classification-scroll]')!;
+    expect(card.className).toContain('flex-col');
+    expect(card.className).toContain('overflow-hidden');
+    expect(scroll.className).toContain('min-h-0 flex-1 overflow-y-auto');
+    expect(scroll.querySelector('nav')).toBeNull();
+    expect(card.querySelector('nav')).not.toBeNull();
+    const rows = [...scroll.querySelectorAll('button[aria-pressed]')];
+    expect(rows[0]).toHaveTextContent('All repositories');
+    expect(rows.at(-1)).toHaveTextContent('Pending classification');
+    expect(screen.queryByRole('button', { name: 'Pending classification actions' })).toBeNull();
+  });
+
+  it('starts compact on mobile, preserves selection labels, and closes after category or subgroup selection', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    const desktopPreference = mocks.state.isSidebarCollapsed;
+    const view = render(sidebar());
+    expect(view.container.querySelector('[data-classification-scroll]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Browse categories' })).toHaveTextContent('All repositories');
+    expect(view.container.querySelector('[data-classification-sidebar]')).toHaveStyle({ height: 'auto' });
+    fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
+    expect(view.container.querySelector('[data-classification-sidebar]')).toHaveStyle({ height: 'min(24rem, calc(100dvh - 6rem))' });
+    fireEvent.click(screen.getByRole('button', { name: 'Scientific Research 0' }));
+    mocks.state.selectedCategory = 'science';
+    mocks.state.classificationNavigation = { purpose: { selected: 'science', expanded: ['science'] } };
+    view.rerender(sidebar('science'));
+    expect(screen.getByRole('button', { name: 'Browse categories' })).toHaveTextContent('Scientific Research');
+    expect(view.container.querySelector('[data-classification-scroll]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse categories' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Numerical Computing 0' }));
+    mocks.state.selectedCategory = 'numeric';
+    view.rerender(sidebar('numeric'));
+    expect(screen.getByRole('button', { name: 'Browse categories' })).toHaveTextContent('Numerical Computing');
+    expect(view.container.querySelector('[data-classification-scroll]')).toBeNull();
+    expect(mocks.state.isSidebarCollapsed).toBe(desktopPreference);
+  });
+
 });

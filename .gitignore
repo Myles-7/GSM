@@ -1,6 +1,8 @@
 # Logs
 /output/
 /.research/
+/.workbuddy/
+/.workbuddy-ai/
 /scratch-*.png
 logs
 *.log

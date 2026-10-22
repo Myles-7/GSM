@@ -13,7 +13,7 @@ const repo = { id: 42, full_name: 'owner/tool', description: 'Original', pushed_
   custom_description: '', custom_category: 'manual', custom_tags: ['personal'], category_locked: true } as Repository;
 const config = { id: 'ai', model: 'test', name: 'test', baseUrl: 'https://model.test', apiKey: 'secret' } as AIConfig;
 const details: RepositoryDetailsAnalysis = { version: 1, generated_at: '2026-10-01T00:00:00Z', repository_pushed_at: repo.pushed_at!,
-  model: 'test', sources: [], summary: 'Saved overview', tags: ['tool'], platforms: ['Linux'], software_forms: [], deployment_modes: [], problem: null,
+  model: 'test', sources: [], summary: 'Saved overview', tags: ['tool'], platforms: ['Linux'], technologies: [], software_forms: [], deployment_modes: [], problem: null,
   features: [], scenarios: [], architecture: null, quickstart: [], deployment: null, cost: null, maintenance: null };
 const summaryOnly: Repository = { ...repo, ai_summary: 'Original saved summary', ai_tags: ['original'], ai_platforms: ['Windows'],
   analyzed_at: '2026-10-02T00:00:00Z', analysis_failed: false };
@@ -174,7 +174,7 @@ describe('shared repository analysis assets', () => {
     expect(payload.assets).toHaveLength(1);
     expect(payload.assets[0]).toEqual({ version: 1, accountId: 'alice', repositoryId: repo.id, fullName: repo.full_name,
       language: 'und', schemaVersion: 'legacy', configIdentity: null, details: {
-        version: 1, summary: summaryOnly.ai_summary, tags: summaryOnly.ai_tags, platforms: summaryOnly.ai_platforms,
+        version: 1, summary: summaryOnly.ai_summary, tags: summaryOnly.ai_tags, platforms: summaryOnly.ai_platforms, technologies: [],
         generated_at: summaryOnly.analyzed_at, repository_pushed_at: null, model: 'unknown', sources: [],
         software_forms: [], deployment_modes: [], problem: null, features: [], scenarios: [], architecture: null,
         quickstart: [], deployment: null, cost: null, maintenance: null,

@@ -13,7 +13,7 @@ const init = { event: 'init', init: { tools: [], agent: 'gsm-isolated', permissi
 const result = { event: 'result', result: { status: 'SUCCESS', response: '中文完成', num_turns: 1, usage: { output_tokens: 3 } } };
 const encode = (...events) => Buffer.from(events.map(e => JSON.stringify(e)).join('\n') + '\n');
 
-test('decodes split UTF-8 and partial NDJSON, suppresses reasoning', () => {
+test('decodes split UTF-8 and partial NDJSON, keeps reasoning out of answer callbacks', () => {
   const deltas = [];
   const parser = new AgyProtocol({ onText: text => deltas.push(text) });
   const data = encode(init,
@@ -23,6 +23,32 @@ test('decodes split UTF-8 and partial NDJSON, suppresses reasoning', () => {
   for (const byte of data) parser.push(Buffer.from([byte]));
   assert.equal(parser.finish(0).text, '中文完成');
   assert.deepEqual(deltas, ['中文']);
+});
+
+test('observes only explicit reasoning channels and allowlisted public step metadata', () => {
+  const answer = [], reasoning = [], observations = [];
+  const parser = new AgyProtocol({ onText: text => answer.push(text), onReasoning: text => reasoning.push(text), onObservation: value => observations.push(value) });
+  parser.push(encode(init,
+    ...['thinking', 'reasoning', 'agent_reasoning'].map((step_type, step_index) => ({ event: 'step_update', step_update: {
+      step_type, step_index, state: 'running', text_delta: `typed-${step_index}`, private_path: 'secret', conversation_id: 'secret',
+    } })),
+    { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: '<think>literal answer</think>' } }, result));
+  assert.equal(parser.finish(0).text, '中文完成');
+  assert.deepEqual(reasoning, ['typed-0', 'typed-1', 'typed-2']);
+  assert.deepEqual(answer, ['<think>literal answer</think>']);
+  assert.deepEqual(observations.find(value => value.stepType === 'thinking'), {
+    event: 'step_update', stepType: 'thinking', stepIndex: 0, state: 'running',
+  });
+  assert.equal(JSON.stringify(observations).includes('secret'), false);
+});
+
+test('untyped text and usage-only thinking tokens never create reasoning text', () => {
+  const reasoning = [];
+  const parser = new AgyProtocol({ onReasoning: text => reasoning.push(text) });
+  parser.push(encode(init, { event: 'step_update', step_update: { text_delta: 'untyped' } },
+    { ...result, result: { ...result.result, usage: { thinking_tokens: 20 } } }));
+  assert.equal(parser.finish(0).usage.thinking_tokens, 20);
+  assert.deepEqual(reasoning, []);
 });
 
 for (const [name, events, code] of [

@@ -4,6 +4,8 @@ import type { Repository } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n/useT';
 import { readRepositoryDetails } from '../utils/repositoryDetailsSchema';
+import { RepositoryClassificationEvidence } from './RepositoryClassificationEvidence';
+import { repositoryDetailFacetLabels } from '../utils/repositoryClassificationDisplay';
 import { RepositoryHealthPanel } from './RepositoryHealthPanel';
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
 import { RepositoryDetailRecovery } from './RepositoryDetailRecovery';
@@ -39,7 +41,6 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   if (repository && account !== undefined) repository = applyRepositoryAnalysisAsset(String(account), repository, language);
   const releases = useAppStore((state) => state.releases);
   const [pinned, setPinned] = useState(defaultDocked);
-  const [canPin, setCanPin] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [readmeOpen, setReadmeOpen] = useState(false);
@@ -49,7 +50,6 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   const autoDocked = useRef(false);
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
-  const anchor = useRef<HTMLSpanElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new Map<number, number>());
   const opener = useRef<HTMLElement | null>(null);
@@ -60,22 +60,11 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
   const onPinnedChangeRef = useRef(onPinnedChange);
   onPinnedChangeRef.current = onPinnedChange;
   useEffect(() => {
-    const measure = () => {
-      const width = anchor.current?.parentElement?.getBoundingClientRect().width || 0;
-      const eligible = window.innerWidth >= 1280 && width >= 1080;
-      setCanPin(eligible);
-      if (!eligible) { setPinned(false); autoDocked.current = false; }
-      if (repository && defaultDocked && eligible && !autoDocked.current) {
-        autoDocked.current = true;
-        setPinned(true);
-      }
-    };
-    measure();
-    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    if (anchor.current?.parentElement) observer?.observe(anchor.current.parentElement);
-    window.addEventListener('resize', measure);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [pinned, repository, defaultDocked]);
+    if (repository && defaultDocked && !autoDocked.current) {
+      autoDocked.current = true;
+      setPinned(true);
+    }
+  }, [repository, defaultDocked]);
   useEffect(() => {
     onPinnedChangeRef.current?.(pinned && isOpen);
     return () => onPinnedChangeRef.current?.(false);
@@ -108,6 +97,14 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     if (result.success) { setCopiedCommand(text); setTimeout(() => setCopiedCommand(null), 2000); }
   };
   const isProblemRedundant = isRepeatedRepositoryProblem(details?.problem, summary);
+  const zh = language.startsWith('zh');
+  const labelGroups = repository ? [
+    { name: zh ? '全部分类特征' : 'All classification facets', values: repositoryDetailFacetLabels(repository) },
+    { name: 'GitHub topics', values: repository.topics ?? [] },
+    { name: zh ? '自定义标签' : 'Custom tags', values: repository.custom_tags ?? [] },
+    { name: zh ? 'AI 标签' : 'AI tags', values: repository.ai_tags ?? [] },
+    { name: zh ? '分析标签' : 'Analysis tags', values: repository.ai_details?.tags ?? [] },
+  ].filter(group => group.values.length > 0) : [];
 
   const iconButton = (label: string, handler: () => void, icon: React.ReactNode, disabled = false) =>
     <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" title={label} aria-label={label} onClick={handler} disabled={disabled}>{icon}</Button>;
@@ -117,7 +114,7 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
       <RepositoryAnalysisFreshness repository={repository} />
       {onPrevious && iconButton(t('details.previous'), onPrevious, <ArrowLeft className="h-4 w-4" />)}
       {onNext && iconButton(t('details.next'), onNext, <ArrowRight className="h-4 w-4" />)}
-      {iconButton(t(pinned ? 'details.unpin' : 'details.pin'), () => setPinned(!pinned), pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />, !pinned && !canPin)}
+      {iconButton(t(pinned ? 'details.unpin' : 'details.pin'), () => setPinned(!pinned), pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />)}
       {iconButton(t('details.close'), close, <X className="h-4 w-4" />)}
     </header>
     <Tabs value={detailTab} onValueChange={setDetailTab} className="flex min-h-0 flex-1 flex-col">
@@ -148,6 +145,16 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
           {iconButton(language.startsWith('zh') ? '复制总结' : 'Copy summary', () => void copyText(summary), copiedCommand === summary ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />)}</div>
         <p className="whitespace-pre-wrap break-words text-sm">{summary}</p>
       </section>}
+      {detailTab === 'overview' && <RepositoryClassificationEvidence repository={repository} />}
+      {detailTab === 'overview' && labelGroups.length > 0 && <details className="border-t pt-3">
+        <summary className="cursor-pointer text-sm font-semibold">{zh ? '全部标签与分类特征' : 'All tags and classification facets'}</summary>
+        <dl className="mt-3 space-y-3">
+          {labelGroups.map(group => <div key={group.name}>
+            <dt className="mb-1 text-xs text-muted-foreground">{group.name}</dt>
+            <dd className="flex flex-wrap gap-1">{group.values.map((label, index) => <span key={`${index}:${label}`} className="break-words rounded border px-2 py-0.5 text-xs">{label}</span>)}</dd>
+          </div>)}
+        </dl>
+      </details>}
       {copyFailed && <p role="alert" className="text-sm text-destructive">{t('details.copyFailed')}</p>}
       {!!details?.adjustments?.length && <p role="status" className="text-xs text-muted-foreground">{language.startsWith('zh')
         ? '部分列表已在本机去重并截取到上限，未重新调用模型。'
@@ -199,9 +206,8 @@ export function RepositoryDetailsPanel({ repository, onClose, onAskRepository, o
     </Tabs>
   </>;
   return <>
-    <span ref={anchor} className="hidden" />
     {repository && (pinned
-      ? <aside data-independent-reading aria-label={t('details.title')} className="sticky top-16 flex h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] w-[440px] xl:w-[480px] shrink-0 flex-col border-l border-border/60 bg-card/95 backdrop-blur-sm transition-all duration-200" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
+      ? <aside data-independent-reading aria-label={t('details.title')} className="sticky top-16 flex h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] w-[440px] max-w-full xl:w-[480px] shrink-0 flex-col border-l border-border/60 bg-card/95 backdrop-blur-sm transition-all duration-200" onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>{body}</aside>
       : <Dialog open onOpenChange={(open) => !open && close()}>
         <DialogContent showClose={false} aria-describedby={undefined} className="left-0 right-auto top-0 flex h-dvh max-h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 sm:left-auto sm:right-0 sm:w-full sm:max-w-[480px]" onCloseAutoFocus={(event) => { event.preventDefault(); if (!pinnedRef.current) opener.current?.focus({ preventScroll: true }); }}>
           <DialogTitle className="sr-only">{t('details.title')}</DialogTitle>{body}

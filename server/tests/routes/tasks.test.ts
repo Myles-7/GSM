@@ -204,6 +204,18 @@ describe('task creation receipts over HTTP', () => {
     expect(uninitialized.body).toEqual({ error: 'WORKSPACE_UNINITIALIZED', code: 'WORKSPACE_UNINITIALIZED' });
   });
 
+  it('guards pause and continue by API authentication and workspace ownership', async () => {
+    const task=createTask(connection.db,{...base,kind:'summary',input:{repositories:['owner/one','owner/two']}});
+    const action=(name:string,identity=account)=>request(app()).post(`/api/tasks/${task.id}/${name}`).auth(config.apiSecret,{type:'bearer'}).send(identity);
+    expect((await request(app()).post(`/api/tasks/${task.id}/pause`).send(account)).status).toBe(401);
+    expect((await action('pause',{...account,githubUserId:43})).body.code).toBe('WORKSPACE_ACCOUNT_MISMATCH');
+    expect((await action('pause')).body).toMatchObject({status:'paused',pauseRequested:true,capabilities:{pause:true,cancel:true,resume:'unsupported'}});
+    expect((await action('resume')).body.code).toBe('TASK_NOT_RESUMABLE');
+    expect((await action('continue',{...account,githubUserId:43})).body.code).toBe('WORKSPACE_ACCOUNT_MISMATCH');
+    const continued=await action('continue');expect(continued.status).toBe(200);expect(continued.body).toMatchObject({status:'queued',pauseRequested:false});
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('requires API authentication for both submission and receipt lookup', async () => {
     for (const response of [await request(app()).post('/api/tasks').send(base),
       await request(app()).get(`/api/tasks/by-request/${base.requestId}`).query(account),

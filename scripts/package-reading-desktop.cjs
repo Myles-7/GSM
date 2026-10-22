@@ -44,7 +44,7 @@ for (const id of dependencies) copyDependency(id);
 fs.writeFileSync(path.join(output, '启动GSM.cmd'), '@echo off\r\nset NODE_ENV=production\r\nset ELECTRON_RUN_AS_NODE=\r\nset GSM_DEV_SERVER_URL=\r\nset GSM_DESKTOP_LAUNCHER=\r\nstart "" "%~dp0runtime\\electron.exe" "%~dp0app\\electron\\main.js"\r\n', 'utf8');
 const notesPath = process.argv[3] ? path.resolve(root, process.argv[3]) : undefined;
 if (notesPath && !notesPath.startsWith(path.join(root, 'output') + path.sep)) throw Error('Package notes must come from workspace output.');
-fs.writeFileSync(path.join(output, '使用说明.txt'), notesPath ? fs.readFileSync(notesPath, 'utf8') : 'GSM 每日 HTML 阅读闭环桌面构建\r\n\r\n双击“启动GSM.cmd”。先从托盘完全退出旧 GSM，避免旧进程接管新启动。\r\n这是免安装目录包，使用现有 Electron 包名的 Windows 用户数据目录；不随包提供个人资料、邮箱授权或 API 密钥。\r\n源码根目录的 dist/electron 也已更新。首次使用请备份当前资料，再进入“设置 → 每日 HTML”检查保存配置。\r\n原先使用不同打包应用名或浏览器访问的资料不会自动迁移到此目录包。\r\n真实 Gmail/安卓验收请见项目 docs/html-reading-loop-20261004.md。\r\n', 'utf8');
+fs.writeFileSync(path.join(output, '使用说明.txt'), notesPath ? fs.readFileSync(notesPath, 'utf8') : 'GSM 每日 HTML 阅读闭环桌面构建\r\n\r\n双击“启动GSM.cmd”。先从托盘完全退出旧 GSM，避免旧进程接管新启动。\r\n这是免安装目录包，使用现有 Electron 包名的 Windows 用户数据目录；不随包提供个人资料、邮箱授权或 API 密钥。\r\n源码根目录的 dist/electron 也已更新。首次使用请备份当前资料，再进入“设置 → 每日 HTML”检查保存配置。\r\n原先使用不同打包应用名或浏览器访问的资料不会自动迁移到此目录包。\r\n真实 Gmail/安卓验收请见项目 docs/features.md。\r\n', 'utf8');
 const files = [];
 function inventory(directory) {
   for (const name of fs.readdirSync(directory)) {

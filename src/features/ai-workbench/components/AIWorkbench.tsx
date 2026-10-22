@@ -37,6 +37,7 @@ import { WorkbenchResults } from './WorkbenchResults';
 import { WorkbenchSelect } from './WorkbenchSelect';
 import { mergeWorkbenchCandidates } from '../../../services/workbenchOverview';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
+import { retainPageTaskFailure } from '../../../services/pageTaskFailure';
 import type { WorkbenchInputIntent } from '../../../types/aiWorkbench';
 import './workbench-layout.css';
 
@@ -358,6 +359,11 @@ function RetentionChip({
 
 export function AIWorkbench() {
   const w = useAIWorkbench();
+  useEffect(() => {
+    if (w.error) retainPageTaskFailure(w.ownerId, 'chat', w.error, {
+      title: 'AI', target: { view: 'ai', id: w.activeId ?? undefined },
+    });
+  }, [w.ownerId, w.error, w.activeId]);
   const liveWorkbench = useRef(w);
   liveWorkbench.current = w;
   const organization = useAIOrganization({ filteredRepositories: w.repositories, selectedRepositoryIds: [], categoryId: 'all', sessionId: w.activeId ?? undefined });
@@ -651,6 +657,7 @@ export function AIWorkbench() {
         </Button>
         <Bot className="h-4 w-4 shrink-0 text-primary" />
         <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{w.active?.title ?? t('workbench.title')}</h1>
+        {(w.error || (w.task.error && w.task.sessionId === w.activeId)) && <Button size="sm" variant="ghost" onClick={() => useAppStore.getState().setCurrentView('tasks')}>{t('workbench.taskRecords')}</Button>}
         </div>
         <div className="flex shrink-0 items-center justify-center" role="tablist" aria-label={t('workbench.title')}>
           {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
@@ -687,7 +694,6 @@ export function AIWorkbench() {
               if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); setResultRatio(current => event.key === 'Home' ? 35 : event.key === 'End' ? 70 : Math.max(35, Math.min(70, current + (event.key === 'ArrowRight' ? 2 : -2)))); }
             }}><span /></div>
         <main className="workbench-chat-pane min-h-0 min-w-0 flex-col">
-          {(w.error || (w.task.error && w.task.sessionId === w.activeId)) && <p role="alert" className="border-b border-destructive/30 px-4 py-2 text-sm text-destructive">{w.error || w.task.error}</p>}
           {busy && <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs" role="status">
             <Loader2 className="h-3 w-3 animate-spin" /><span className="min-w-0 flex-1 truncate">{w.task.stage === 'overview' ? t('overview.stage') : t(`workbench.stage-${w.task.stage}`, { defaultValue: w.task.stage })}</span>
             <ResearchTimer task={w.task} />

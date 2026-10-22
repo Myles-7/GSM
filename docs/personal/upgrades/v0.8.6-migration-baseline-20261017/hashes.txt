@@ -1,5 +1,0 @@
-
-Algorithm : SHA256
-Hash      : 32AB55215A6FEFB1C166AB1F5BAFC947E4FF3B3375C835146DF38538AC0895CF
-Path      : D:\桌面\GSM\docs\personal\upgrades\v0.8.6-migration-baseline-20261017\tracked-working-tree.patch
-

@@ -63,40 +63,29 @@ if (!Element.prototype.releasePointerCapture) {
   });
 }
 
-// Node >=22 exposes an experimental global `localStorage` (undefined unless
-// `--localstorage-file` is passed), which vitest copies in and shadows jsdom's
-// real Storage even once a non-opaque test origin is configured. Provide a
-// minimal in-memory Storage fallback only when none is available so persistence
-// paths (e.g. the auth mirror in useAppStore) stay testable.
-const storageShim = (): Storage => {
-  let store: Record<string, string> = {};
-  return {
-    get length() {
-      return Object.keys(store).length;
-    },
-    clear: () => {
-      store = {};
-    },
-    getItem: (key: string) => (key in store ? store[key] : null),
-    key: (index: number) => Object.keys(store)[index] ?? null,
-    removeItem: (key: string) => {
-      delete store[key];
-    },
-    setItem: (key: string, value: string) => {
-      store[key] = String(value);
-    },
-  };
-};
-
-if (!window.localStorage || typeof window.localStorage.clear !== 'function') {
-  const shim = storageShim();
-  Object.defineProperty(window, 'localStorage', { configurable: true, writable: true, value: shim });
-  Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: shim });
+// Recent Node versions can shadow jsdom's Storage with the host implementation.
+// Keep the constructor and both instances consistent so Storage.prototype spies
+// really exercise quota/security failures instead of silently missing the shim.
+class TestStorage implements Storage {
+  private readonly values = new Map<string, string>();
+  get length() { return this.values.size; }
+  clear() { this.values.clear(); }
+  getItem(key: string) { return this.values.get(String(key)) ?? null; }
+  key(index: number) { return [...this.values.keys()][index] ?? null; }
+  removeItem(key: string) { this.values.delete(String(key)); }
+  setItem(key: string, value: string) { this.values.set(String(key), String(value)); }
 }
-if (!window.sessionStorage || typeof window.sessionStorage.clear !== 'function') {
-  const shim = storageShim();
-  Object.defineProperty(window, 'sessionStorage', { configurable: true, writable: true, value: shim });
-  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, writable: true, value: shim });
+
+if (!(window.localStorage instanceof window.Storage) || !(window.sessionStorage instanceof window.Storage)) {
+  for (const target of new Set([window, globalThis])) {
+    Object.defineProperty(target, 'Storage', { configurable: true, writable: true, value: TestStorage });
+  }
+  for (const name of ['localStorage', 'sessionStorage'] as const) {
+    const storage = new TestStorage();
+    for (const target of new Set([window, globalThis])) {
+      Object.defineProperty(target, name, { configurable: true, writable: true, value: storage });
+    }
+  }
 }
 
 vi.mock('../store/useAppStore', () => ({

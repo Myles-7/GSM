@@ -2,6 +2,7 @@ import type { AppLanguage } from '../i18n/languages';
 import type { ToolEvidence } from '../types/repositoryChat';
 import { AIService, type AIToolCall, type AIToolDefinition, type AIToolLoopMessage } from './aiService';
 import { forAgyFeature } from './agyProfiles';
+import { inheritTaskSignal } from '../utils/taskSignals';
 import { createGitHubApiService } from './githubApiFactory';
 import {
   asStringArray,
@@ -390,6 +391,7 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
 
   const callToolLoopModel = (): Promise<{ content: string; toolCalls: AIToolCall[] }> => {
     const controller = new AbortController();
+    inheritTaskSignal(input.signal, controller.signal);
     const abortForCaller = () => controller.abort(input.signal?.reason);
     if (input.signal?.aborted) controller.abort(input.signal?.reason);
     input.signal?.addEventListener('abort', abortForCaller, { once: true });

@@ -209,3 +209,31 @@ describe('desktop Home identity boundary', () => {
     await expect(sync.db.edit('repositories', 'new', {})).rejects.toThrow('REPOSITORY_IDENTITY_MAINTENANCE_REQUIRED');
   });
 });
+
+describe('desktop classification delivery recovery', () => {
+  it('automatically acknowledges persisted pending classification after a later successful retry', async () => {
+    mocks.state = fixture(); mocks.url = `https://${crypto.randomUUID()}.example/api`;
+    let offline = false;
+    vi.spyOn(HomeApi.prototype, 'request').mockImplementation(async (path, body) => {
+      if (offline) throw new TypeError('offline');
+      if (path.startsWith('/sync/v2/snapshot')) return { records: [], cursor: 1, snapshotId: 'classification-recovery', nextOffset: 0, hasMore: false } as never;
+      if (path.startsWith('/sync/v2/changes')) return { records: [], cursor: 1, hasMore: false } as never;
+      if (path === '/sync/v2/operations') return { results: (body as { operations: HomeOperation[] }).operations.map(operation => ({ opId: operation.opId, status: 'applied', record: { collection: operation.collection, id: operation.id, version: operation.baseVersion + 1, data: operation.data ?? null } })) } as never;
+      throw Error('unexpected endpoint');
+    });
+    await activateDesktopHome(capabilities()); await flushDesktopHome();
+    const setGeneration = (updates: Partial<import('../types/classification').ClassificationGenerationState>) => {
+      useAppStore.setState({ classificationSchemes: { ...mocks.state.classificationSchemes, generation: { ...mocks.state.classificationSchemes!.generation!, ...updates } } });
+    };
+    useAppStore.setState({ setClassificationGeneration: setGeneration, customCategories: [{ id: 'mine', name: 'Mine', icon: 'folder', keywords: [], isCustom: true }],
+      classificationSchemes: { generation: { status: 'ready', generation: 7, queuedRepositoryIds: [], sourceFingerprint: 'recovered', syncPending: true } },
+    } as never);
+    offline = true;
+    await expect(flushDesktopHome()).rejects.toThrow();
+    expect(mocks.state.classificationSchemes!.generation!.syncPending).toBe(true);
+    offline = false;
+    await flushDesktopHome();
+    await vi.waitFor(() => expect(mocks.state.classificationSchemes!.generation!.syncPending).toBe(false));
+    expect(await getDesktopHomeSync()!.db.pending()).toEqual([]);
+  });
+});

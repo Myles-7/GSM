@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getDb } from '../db/connection.js';
-import { createTask,getTask,getTaskByRequest,isTaskRequestId,recordTaskCreationRejection,publicTask,listTasks,listTasksPage,taskEvents,cancelTask,resumeTask,retryTaskCommit,previewTaskCommit } from '../services/taskRunner.js';
+import { createTask,getTask,getTaskByRequest,isTaskRequestId,recordTaskCreationRejection,publicTask,listTasks,listTasksPage,taskEvents,cancelTask,resumeTask,pauseTask,continueTask,retainTaskHistory,retryTaskCommit,previewTaskCommit } from '../services/taskRunner.js';
 import { applyTaskProposal } from '../services/taskProposals.js';
 import { SyncError } from '../services/syncV2.js';
 import { config } from '../config.js';
@@ -39,7 +39,8 @@ router.post('/api/tasks',(req,res)=>{let account:ReturnType<typeof identity>|und
 router.get('/api/tasks',(req,res)=>{try{const a=identity(req);const cursor=typeof req.query.cursor==='string'?req.query.cursor:undefined;const limit=typeof req.query.limit==='string'?Number(req.query.limit):undefined;if(cursor===undefined&&limit===undefined){res.json({tasks:listTasks(getDb(),a.workspaceId,a.githubUserId).map(publicTask)});return;}const page=listTasksPage(getDb(),a.workspaceId,a.githubUserId,{cursor,limit});res.json({...page,tasks:page.tasks.map(publicTask)});}catch(e){fail(res,e);}});
 router.get('/api/tasks/by-request/:requestId',(req,res)=>{try{const a=identity(req);res.json(publicTask(getTaskByRequest(getDb(),req.params.requestId,a.workspaceId,a.githubUserId)));}catch(e){const code=errorCode(e);fail(res,e,e instanceof SyncError?e.status:code==='TASK_REQUEST_NOT_FOUND'?404:code==='INVALID_TASK'||identityCodes.has(code)?400:500);}});
 router.get('/api/tasks/:id',(req,res)=>{try{const a=identity(req);res.json(publicTask(getTask(getDb(),req.params.id,a.workspaceId,a.githubUserId)));}catch(e){fail(res,e);}});
-for(const action of ['cancel','resume'] as const)router.post(`/api/tasks/:id/${action}`,(req,res)=>{try{const a=identity(req);res.json(publicTask((action==='cancel'?cancelTask:resumeTask)(getDb(),req.params.id,a.workspaceId,a.githubUserId)));}catch(e){fail(res,e);}});
+for(const action of ['cancel','resume','pause','continue'] as const)router.post(`/api/tasks/:id/${action}`,(req,res)=>{try{const a=identity(req);res.json(publicTask(({cancel:cancelTask,resume:resumeTask,pause:pauseTask,continue:continueTask}[action])(getDb(),req.params.id,a.workspaceId,a.githubUserId)));}catch(e){fail(res,e);}});
+router.post('/api/tasks/:id/retain',(req,res)=>{try{const a=identity(req);res.json(publicTask(retainTaskHistory(getDb(),req.params.id,a.workspaceId,a.githubUserId,req.body?.pinned)));}catch(e){fail(res,e);}});
 router.post('/api/tasks/:id/commit',(req,res)=>{try{const a=identity(req);const expectedVersions=req.body?.expectedVersions&&typeof req.body.expectedVersions==='object'?req.body.expectedVersions:{};res.json(publicTask(retryTaskCommit(getDb(),req.params.id,a.workspaceId,a.githubUserId,expectedVersions)));}catch(e){fail(res,e);}});
 router.get('/api/tasks/:id/commit-preview',(req,res)=>{try{const a=identity(req);res.json(previewTaskCommit(getDb(),req.params.id,a.workspaceId,a.githubUserId));}catch(e){fail(res,e);}});
 router.get('/api/tasks/:id/events',(req,res)=>{

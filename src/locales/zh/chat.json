@@ -262,6 +262,7 @@
     "evidence-insufficient-default-reason": "未能在取证预算内确认完整答案。"
   },
   "workbench": {
+    "taskRecords": "任务记录",
     "title": "AI 工作台",
     "newChat": "新对话",
     "newProject": "新建项目",

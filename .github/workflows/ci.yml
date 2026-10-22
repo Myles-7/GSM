@@ -86,6 +86,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck offline audit fixtures
+        run: npm run typecheck:fixtures
+
+      - name: Check maintained documentation links
+        run: npm run check:docs
+
       - name: Run tests
         run: npm run test:run
 
@@ -116,5 +122,7 @@ jobs:
         run: npm ci --prefix server
       - name: Test server
         run: npm --prefix server test
+      - name: Typecheck server
+        run: npm --prefix server run typecheck
       - name: Build server
         run: npm --prefix server run build

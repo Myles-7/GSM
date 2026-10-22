@@ -111,6 +111,7 @@ export const normalizePersistedState = (
     // Auth fallback: if the IndexedDB snapshot is missing the login credentials
     // (e.g. async unload write never completed), restore from the synchronous
     // localStorage mirror. Persisted values always win over the mirror.
+    currentView: 'repositories',
     user: resolvedUser,
     githubToken: resolvedGithubToken,
     backendApiSecret: resolvedBackendApiSecret,
@@ -127,6 +128,7 @@ export const normalizePersistedState = (
     themeTokens: normalizeThemeTokens((safePersisted as Record<string, unknown>).themeTokens),
     ...organization,
     ...normalizeClassificationSchemes({ ...currentState, ...safePersisted, ...organization, customCategories: recovered.customCategories } as AppStoreState),
+    classificationContext: 'purpose',
     activeClassificationScheme: safePersisted.activeClassificationScheme === 'technology' ? 'technology' : 'purpose',
     gists,
     starredGists,
@@ -141,6 +143,9 @@ export const normalizePersistedState = (
     searchResults: organization.repositories,
     releaseSubscriptions: normalizeNumberSet(safePersisted.releaseSubscriptions),
     repositoryViewMode: safePersisted.repositoryViewMode === 'list' ? 'list' : 'grid',
+    clusterDisplayMode: safePersisted.clusterDisplayMode === 'network' || safePersisted.clusterDisplayMode === 'galaxy' ? safePersisted.clusterDisplayMode : 'clusters',
+    clusterPreset: ['all', 'purpose', 'technology', 'topics', 'ai', 'semantic', 'topic-search'].includes(String(safePersisted.clusterPreset)) ? safePersisted.clusterPreset : 'all',
+    clusterQuery: typeof safePersisted.clusterQuery === 'string' ? safePersisted.clusterQuery : '',
     releaseSourceSettings: normalizeReleaseSourceSettings(safePersisted.releaseSourceSettings),
     readReleases: normalizeNumberSet(safePersisted.readReleases),
     readForks: normalizeNumberSet(safePersisted.readForks),
@@ -192,7 +197,7 @@ export const normalizePersistedState = (
     hiddenDefaultCategoryIds: (() => {
       const persistedIds = (safePersisted as Record<string, unknown>).hiddenDefaultCategoryIds;
       return Array.isArray(persistedIds)
-        ? persistedIds.filter((id): id is string => typeof id === 'string')
+        ? persistedIds.filter((id): id is string => typeof id === 'string' && id !== 'all' && id !== 'pending')
         : [];
     })(),
     defaultCategoryOverrides: (() => {
@@ -201,7 +206,7 @@ export const normalizePersistedState = (
         ? persisted as Record<string, Partial<Category>>
         : {};
     })(),
-    categoryOrder: Array.isArray(safePersisted.categoryOrder) ? safePersisted.categoryOrder.filter((id: unknown): id is string => typeof id === 'string') : [],
+    categoryOrder: Array.isArray(safePersisted.categoryOrder) ? safePersisted.categoryOrder.filter((id: unknown): id is string => typeof id === 'string' && id !== 'all' && id !== 'pending') : [],
     collapsedSidebarCategoryCount: typeof safePersisted.collapsedSidebarCategoryCount === 'number' && safePersisted.collapsedSidebarCategoryCount > 0 ? safePersisted.collapsedSidebarCategoryCount : 20,
     categoryMatchMode: safePersisted.categoryMatchMode === 'legacy' ? 'legacy' : 'effective',
     assetFilters: normalizedAssetFilters.length > 0 ? normalizedAssetFilters : defaultPresetFilters,

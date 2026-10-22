@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { repositoryClassificationsSchema } from './classificationValidation.js';
+import { repositoryClassificationsSchema, repositoryClassificationInsightsSchema } from './classificationValidation.js';
 import { parseClassificationJson } from './classificationCompatibility.js';
 
 export function repositoryOrganizationDto(row: Record<string, unknown>): Record<string, unknown> {
@@ -13,6 +13,7 @@ export function repositoryOrganizationDto(row: Record<string, unknown>): Record<
     category_candidates: parse(row.category_candidates),
     category_legacy: parse(row.category_legacy),
     classifications: parse(row.classifications),
+    classificationInsights: parse(row.classificationInsights),
     ai_details: parse(row.ai_details),
   };
 }
@@ -29,17 +30,19 @@ export function writeRepositoryOrganization(
   const classifications = input.classifications == null ? previous.classifications ?? null : JSON.stringify({
     ...(parseClassificationJson(previous.classifications) as Record<string, unknown> ?? {}), ...repositoryClassificationsSchema.parse(parseClassificationJson(input.classifications)),
   });
+  const classificationInsights = input.classificationInsights == null ? previous.classificationInsights ?? null
+    : JSON.stringify(repositoryClassificationInsightsSchema.parse(parseClassificationJson(input.classificationInsights)));
   const json = (key: string): unknown => {
     if (input[key] === undefined) return previous[key] ?? null;
     return typeof input[key] === 'string' ? input[key] : JSON.stringify(input[key]);
   };
   db.prepare(`UPDATE repositories SET category_id = ?, category_id_defined = ?,
-    subcategory_id = ?, category_candidates = ?, category_legacy = ?, ai_details = ?, classifications = ? WHERE id = ?`).run(
+    subcategory_id = ?, category_candidates = ?, category_legacy = ?, ai_details = ?, classifications = ?, classificationInsights = ? WHERE id = ?`).run(
     typeof categoryId === 'string' ? categoryId : null,
     provided ? 1 : previous.category_id_defined ? 1 : 0,
     categoryId === null ? null : input.subcategory_id !== undefined && input.category_id_defined !== 0 ? input.subcategory_id
       : categoryChanged ? null : previous.subcategory_id ?? null,
-    json('category_candidates'), json('category_legacy'), json('ai_details'), classifications, input.id,
+    json('category_candidates'), json('category_legacy'), json('ai_details'), classifications, classificationInsights, input.id,
   );
   if (previous.id && input.category_locked === undefined) {
     db.prepare('UPDATE repositories SET category_locked = ? WHERE id = ?').run(previous.category_locked ?? 0, input.id);

@@ -33,13 +33,19 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
   | 'deleteAssetFilter'
 >> = (set) => ({
       applyAIOrganization: (transaction) => set(state => organizationTransaction(state, transaction)),
-      addSubcategory: (input) => set(state => organizationSnapshot(state, {
-        subcategories: [...state.subcategories, { ...input, id: crypto.randomUUID() }],
-      })),
+      addSubcategory: (input) => set(state => {
+        if (!input.name.trim() || !organizationCategories(state).some(category => category.id === input.parentId)) throw new Error('Invalid subcategory name or parent');
+        if (input.name.trim().length > 120 || input.icon.length > 100 || state.subcategories.length >= 2000) throw new Error('Subcategory exceeds the synchronized schema limits');
+        if (state.subcategories.some(group => group.parentId === input.parentId && group.name.trim().normalize('NFKC').toLocaleLowerCase() === input.name.trim().normalize('NFKC').toLocaleLowerCase())) throw new Error('A subgroup with this name already exists; rename or explicitly merge');
+        return organizationSnapshot(state, { subcategories: [...state.subcategories, { ...input, name: input.name.trim(), id: crypto.randomUUID() }] });
+      }),
       updateSubcategory: (id, updates) => set(state => {
         if (updates.name !== undefined && !updates.name.trim()) return state;
+        if ((updates.name?.trim().length ?? 0) > 120 || (updates.icon?.length ?? 0) > 100) throw new Error('Subcategory exceeds the synchronized schema limits');
+        const source = state.subcategories.find(group => group.id === id);
+        if (source && updates.name !== undefined && state.subcategories.some(group => group.id !== id && group.parentId === source.parentId && group.name.trim().normalize('NFKC').toLocaleLowerCase() === updates.name!.trim().normalize('NFKC').toLocaleLowerCase())) throw new Error('A subgroup with this name already exists; rename or explicitly merge');
         return organizationSnapshot(state, {
-          subcategories: state.subcategories.map(group => group.id === id ? { ...group, ...updates } : group),
+          subcategories: state.subcategories.map(group => group.id === id ? { ...group, ...updates, name: updates.name?.trim() ?? group.name } : group),
         });
       }),
       deleteSubcategory: (id) => set(state => organizationSnapshot(state, {
@@ -99,6 +105,7 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         });
       }),
       updateDefaultCategory: (id, updates) => set((state) => {
+        if (id === 'all' || id === 'pending') return state;
         const defaultCat = defaultCategories.find(c => c.id === id);
         if (!defaultCat) return {};
 
@@ -256,6 +263,7 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         return { defaultCategoryOverrides: nextOverrides };
       }),
       deleteCustomCategory: (id) => set((state) => {
+        if (id === 'all' || id === 'pending') return state;
         const targetCategory = state.customCategories.find(category => category.id === id);
         const nextSelectedCategory = state.selectedCategory === id ? 'all' : state.selectedCategory;
 
@@ -279,7 +287,7 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
         });
       }),
       hideDefaultCategory: (id) => set((state) => ({
-        hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds.includes(id)
+        hiddenDefaultCategoryIds: id === 'all' || id === 'pending' ? state.hiddenDefaultCategoryIds.filter(value => value !== 'all' && value !== 'pending') : state.hiddenDefaultCategoryIds.includes(id)
           ? state.hiddenDefaultCategoryIds
           : [...state.hiddenDefaultCategoryIds, id],
         selectedCategory: state.selectedCategory === id ? 'all' : state.selectedCategory
@@ -287,14 +295,15 @@ export const createCategorySlice: AppStoreSlice<Pick<import('../types').AppActio
       showDefaultCategory: (id) => set((state) => ({
         hiddenDefaultCategoryIds: state.hiddenDefaultCategoryIds.filter(categoryId => categoryId !== id)
       })),
-      setCategoryOrder: (order) => set({ categoryOrder: order }),
+      setCategoryOrder: (order) => set({ categoryOrder: order.filter(id => id !== 'all' && id !== 'pending') }),
       reorderCategories: (oldIndex, newIndex) => set((state) => {
         const allCategories = getAllCategories(state.customCategories, state.language, state.hiddenDefaultCategoryIds, state.defaultCategoryOverrides);
         const orderedCategories = sortCategoriesByOrder(allCategories, state.categoryOrder);
         const newOrder = orderedCategories.map(c => c.id);
+        if (newOrder[oldIndex] === 'all' || newOrder[newIndex] === 'all') return state;
         const [movedId] = newOrder.splice(oldIndex, 1);
         newOrder.splice(newIndex, 0, movedId);
-        return { categoryOrder: newOrder };
+        return { categoryOrder: newOrder.filter(id => id !== 'all' && id !== 'pending') };
       }),
       setCollapsedSidebarCategoryCount: (count) => set({ collapsedSidebarCategoryCount: count }),
       setCategoryMatchMode: (mode) => set({ categoryMatchMode: mode }),

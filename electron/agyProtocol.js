@@ -21,13 +21,15 @@ function classifyAgyFailure(message) {
 }
 
 class AgyProtocol {
-  constructor({ onInit = () => {}, onText = () => {}, onActivity = () => {}, validate, maxBytes = 4 * 1024 * 1024 } = {}) {
+  constructor({ onInit = () => {}, onText = () => {}, onReasoning = () => {}, onObservation = () => {}, onActivity = () => {}, validate, maxBytes = 4 * 1024 * 1024 } = {}) {
     this.decoder = new TextDecoder('utf-8', { fatal: true });
     this.buffer = '';
     this.bytes = 0;
     this.maxBytes = maxBytes;
     this.onInit = onInit;
     this.onText = onText;
+    this.onReasoning = onReasoning;
+    this.onObservation = onObservation;
     this.onActivity = onActivity;
     this.validate = validate;
     this.initialized = false;
@@ -71,13 +73,22 @@ class AgyProtocol {
       const init = event.init;
       if (!init || !Array.isArray(init.tools)) this.fail('INVALID_PROTOCOL');
       this.initialized = true;
+      this.onObservation({ event: 'init' });
       this.onInit(init);
     } else if (event.event === 'step_update') {
       if (!this.initialized) this.fail('INVALID_PROTOCOL');
       const step = event.step_update;
       if (!step || typeof step !== 'object') this.fail('INVALID_PROTOCOL');
       if (step.step_type === 'tool' || step.tool_info || step.subagent_info) this.fail('NATIVE_TOOL_CALL');
+      const observation = { event: 'step_update' };
+      if (['agent_response', 'thinking', 'reasoning', 'agent_reasoning'].includes(step.step_type)) observation.stepType = step.step_type;
+      if (Number.isInteger(step.step_index) && step.step_index >= 0) observation.stepIndex = step.step_index;
+      if (typeof step.state === 'string' && /^[a-z_ -]{1,40}$/i.test(step.state)) observation.state = step.state;
+      const time = step.time ?? event.time;
+      if ((typeof time === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(time) && Number.isFinite(Date.parse(time))) || (typeof time === 'number' && Number.isFinite(time) && time >= 0)) observation.time = time;
+      this.onObservation(observation);
       if (step.step_type === 'agent_response' && typeof step.text_delta === 'string') this.onText(step.text_delta);
+      if (['thinking', 'reasoning', 'agent_reasoning'].includes(step.step_type) && typeof step.text_delta === 'string') this.onReasoning(step.text_delta);
     } else if (event.event === 'result') {
       const result = event.result;
       if (!result || result.status !== 'SUCCESS') this.fail(classifyAgyFailure(String(result?.error || result?.status || '')));
@@ -89,13 +100,14 @@ class AgyProtocol {
             hasStructured: result.structured_output !== undefined,
           });
       if (this.validate && !this.validate(result.structured_output)) this.fail('SCHEMA_MISMATCH');
-      // Do not propagate internal reasoning, conversation identifiers, or arbitrary fields.
+      // Keep only public token counters; never forward identifiers or arbitrary fields.
       const usage = {};
       for (const key of ['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens']) {
         if (Number.isFinite(result.usage?.[key]) && result.usage[key] >= 0) usage[key] = result.usage[key];
       }
       this.result = { text: structuredOnly ? JSON.stringify(result.structured_output)
         : result.response, structuredOutput: result.structured_output, usage };
+      this.onObservation({ event: 'result', status: 'SUCCESS', usage });
     } else {
       this.fail('INVALID_PROTOCOL');
     }

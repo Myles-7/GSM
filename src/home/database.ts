@@ -136,7 +136,14 @@ export class HomeDatabase {
     const pending = await result(tx.objectStore('outbox').getAll()) as PendingOperation[];
     this.assertWritable(tx, done);
     if (!clientId) { clientId = crypto.randomUUID(); meta.put(clientId, 'clientId'); }
-    const operations = pending.filter(item => item.conflict === undefined && !item.rejected).slice(0, 100).map(item => ({ opId: item.opId, collection: item.collection, id: item.id, baseVersion: item.baseVersion, kind: item.kind, ...(item.data ? { data: item.data } : {}), source: item.source }));
+    const isOrganization = (item: PendingOperation) => item.collection === 'organization' && item.id === 'default';
+    const dependency = (item: PendingOperation) => isOrganization(item) || item.collection === 'repositories';
+    const group = pending.some(isOrganization) ? pending.filter(dependency) : [];
+    if (group.length > 2000) { await done; throw new Error('分类结构和仓库关联超过单次同步上限（2000 项），请减少操作后重试'); }
+    const blocked = group.some(item => item.conflict !== undefined || item.rejected);
+    const readyGroup = blocked ? [] : group;
+    const remainder = pending.filter(item => item.conflict === undefined && !item.rejected && (!group.length || !dependency(item)));
+    const operations = [...readyGroup, ...remainder.slice(0, 2000 - readyGroup.length)].map(item => ({ opId: item.opId, collection: item.collection, id: item.id, baseVersion: item.baseVersion, kind: item.kind, ...(item.data ? { data: item.data } : {}), source: item.source }));
     const batch = { clientId, operations };
     if (operations.length) meta.put(batch, 'inFlight');
     await done; return batch;
@@ -245,23 +252,31 @@ export class HomeDatabase {
     tx.objectStore('meta').put(value, name); await done;
   }
   async edit(collection: Collection, id: string, data: Record<string, unknown> | null, source: 'user' | 'ai' = 'user', expectedVersion?: number): Promise<void> {
+    return this.editMany([{ collection, id, data, source, expectedVersion }]);
+  }
+  /** A taxonomy and its repository memberships become visible to the outbox together. */
+  async editMany(edits: Array<{ collection: Collection; id: string; data: Record<string, unknown> | null; source?: 'user' | 'ai'; expectedVersion?: number }>): Promise<void> {
     this.assertWritable();
     const db = await this.open(); this.assertWritable();
     const tx = db.transaction(['records', 'shadow', 'outbox'], 'readwrite'); const done = complete(tx);
-    const recordKey = key(collection, id);
-    const pending = await result(tx.objectStore('outbox').get(recordKey)) as PendingOperation | undefined;
-    this.assertWritable(tx, done);
-    const shadow = await result(tx.objectStore('shadow').get(recordKey)) as HomeRecord | undefined;
-    this.assertWritable(tx, done);
-    if (expectedVersion !== undefined && expectedVersion !== (shadow?.version ?? 0)) { await done; throw new Error('资料版本已改变，请刷新或处理同步冲突后重试'); }
-    const operation: PendingOperation = {
-      key: recordKey, opId: crypto.randomUUID(), collection, id, baseVersion: pending?.baseVersion ?? shadow?.version ?? 0,
-      kind: data === null ? 'delete' : 'put', ...(data ? { data } : {}), source,
-      ...(pending?.conflict !== undefined ? { conflict: pending.conflict } : {}),
-    };
-    tx.objectStore('outbox').put(operation, recordKey);
-    tx.objectStore('records').put({ collection, id, data, version: operation.baseVersion, deleted: data === null }, recordKey);
-    await done;
+    try {
+      for (const { collection, id, data, source = 'user', expectedVersion } of edits) {
+        const recordKey = key(collection, id);
+        const pending = await result(tx.objectStore('outbox').get(recordKey)) as PendingOperation | undefined;
+        this.assertWritable(tx, done);
+        const shadow = await result(tx.objectStore('shadow').get(recordKey)) as HomeRecord | undefined;
+        this.assertWritable(tx, done);
+        if (expectedVersion !== undefined && expectedVersion !== (shadow?.version ?? 0)) throw new Error('资料版本已改变，请刷新或处理同步冲突后重试');
+        const operation: PendingOperation = {
+          key: recordKey, opId: crypto.randomUUID(), collection, id, baseVersion: pending?.baseVersion ?? shadow?.version ?? 0,
+          kind: data === null ? 'delete' : 'put', ...(data ? { data } : {}), source,
+          ...(pending?.conflict !== undefined ? { conflict: pending.conflict } : {}),
+        };
+        tx.objectStore('outbox').put(operation, recordKey);
+        tx.objectStore('records').put({ collection, id, data, version: operation.baseVersion, deleted: data === null }, recordKey);
+      }
+      await done;
+    } catch (error) { void done.catch(() => {}); try { tx.abort(); } catch { /* transaction already finished */ } throw error; }
   }
   /** Only a backup-owned gate can stage/undo these records. No canonical shadow is replaced. */
   async stageLocalRestore(account: string, journalId: string, operations: LocalRestoreOperation[], undo = false): Promise<void> {

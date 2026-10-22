@@ -262,6 +262,7 @@
     "evidence-insufficient-default-reason": "A complete answer could not be confirmed within the research budget."
   },
   "workbench": {
+    "taskRecords": "Task records",
     "title": "AI Workbench",
     "newChat": "New conversation",
     "newProject": "New project",

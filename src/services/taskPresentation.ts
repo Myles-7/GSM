@@ -1,7 +1,8 @@
-import type { AITaskKind, AITaskRecord } from './aiTaskJournal';
-import { taskDisplayState, taskError } from './aiTaskJournal';
+import type { AITaskKind, AITaskRecord, CommitStatus, ProviderOutcome } from './aiTaskJournal';
+import { taskDisplayState, taskError, taskIsTerminal } from './aiTaskJournal';
 
 const kinds: Record<AITaskKind, [string, string]> = {
+  exploration: ['项目地图探索', 'Project exploration'],
   summary: ['仓库摘要', 'Repository summaries'], details: ['仓库详情分析', 'Repository analysis'],
   gists: ['Gist 摘要', 'Gist summaries'], discovery: ['订阅检索', 'Subscription retrieval'],
   'discovery-analysis': ['订阅项目分析', 'Subscription project analysis'], plugins: ['插件任务', 'Plugin task'],
@@ -19,6 +20,18 @@ const states: Record<string, [string, string]> = {
 };
 export const taskKindLabel = (kind: AITaskKind, zh: boolean) => kinds[kind][zh ? 0 : 1];
 export const taskStateLabel = (state: string, zh: boolean) => states[state]?.[zh ? 0 : 1] ?? state;
+const providerOutcomes: Record<ProviderOutcome, [string, string]> = {
+  not_started: ['未调用', 'Not started'], in_flight: ['请求中', 'In progress'],
+  succeeded: ['已成功', 'Succeeded'], failed: ['失败', 'Failed'], unknown: ['结果待核对', 'Outcome unknown'],
+};
+const commitStatuses: Record<CommitStatus, [string, string]> = {
+  not_started: ['未保存', 'Not saved'], pending: ['等待保存', 'Pending save'],
+  saved: ['已保存', 'Saved'], conflict: ['保存冲突', 'Save conflict'], failed: ['保存失败', 'Save failed'],
+};
+export const taskProviderOutcomeLabel = (outcome: ProviderOutcome, zh: boolean) => providerOutcomes[outcome][zh ? 0 : 1];
+export const taskCommitStatusLabel = (status: CommitStatus | undefined, zh: boolean) => commitStatuses[status ?? 'not_started'][zh ? 0 : 1];
+export const taskFailureLabel = (error: string, zh: boolean) => /^AGY_TIMEOUT(?:[;；]\s*AGY_TIMEOUT)*$/.test(error)
+  ? (zh ? '模型响应超时，结果待核对' : 'Model response timed out; outcome unknown') : error;
 const phases: Record<string, [string, string]> = {
   search: ['检索', 'Searching'], readme: ['读取 README', 'Reading README'], reading: ['读取资料', 'Reading sources'],
   generating: ['生成回答', 'Generating answer'], generation: ['生成回答', 'Generating answer'],
@@ -37,15 +50,27 @@ const phases: Record<string, [string, string]> = {
 };
 export const taskPhaseLabel = (phase: string | undefined, zh: boolean) => phase ? phases[phase]?.[zh ? 0 : 1] ?? phase : (zh ? '未记录' : 'Not recorded');
 export const taskExecutorLabel = (executor: AITaskRecord['executor'], zh: boolean) => executor === 'server-provider' ? (zh ? 'Server · Provider' : 'Server · Provider') : executor === 'agy-device' ? 'AGY · Device' : (zh ? '本机／同步任务' : 'Device / sync task');
-export const taskOutcomeLabel = (task: AITaskRecord, zh: boolean) => task.commitStatus === 'conflict'
+export const taskOutcomeLabel = (task: AITaskRecord, zh: boolean) => {
+  const timeouts = task.items.filter(item => /\bAGY_TIMEOUT\b/.test(item.error ?? '')).length;
+  if (timeouts && !taskIsTerminal(task)) return zh ? `${taskStateLabel(task.state, zh)} · ${timeouts} 个子项超时` : `${taskStateLabel(task.state, zh)} · ${timeouts} item(s) timed out`;
+  return task.commitStatus === 'conflict'
   ? (zh ? '分析完成，保存冲突' : 'Analysis complete; save conflict')
   : task.providerOutcome === 'unknown' ? (zh ? `${task.items.length > 1 ? '部分子项' : ''}模型结果未知` : `${task.items.length > 1 ? 'Some item' : 'Provider'} result unknown`)
     : task.state === 'interrupted' && task.items.some(item => item.state === 'complete')
       ? (zh ? '部分已完成，其余待处理' : 'Partially complete; remaining items pending') : taskStateLabel(taskDisplayState(task), zh);
-export const taskTitle = (task: AITaskRecord, zh: boolean) => task.title ? `${taskKindLabel(task.kind, zh)} · ${task.title}` : taskKindLabel(task.kind, zh);
+};
+export const taskTitle = (task: AITaskRecord, zh: boolean) => {
+  const label = taskKindLabel(task.kind, zh);
+  const title = task.title?.trim() ?? '';
+  const prefix = kinds[task.kind].find(value => title === value || title.startsWith(`${value} · `));
+  const detail = prefix ? title.slice(prefix.length).replace(/^ · /, '').trim() : title;
+  return detail ? `${label} · ${detail}` : label;
+};
+export const taskTimerEnd = (task: AITaskRecord) => task.endedAt ?? (taskIsTerminal(task) ? task.updatedAt : undefined);
 export function taskElapsed(task: AITaskRecord, at = Date.now()): string {
   if (!task.startedAt) return '—';
-  const seconds = Math.max(0, Math.floor(((task.endedAt ? Date.parse(task.endedAt) : at) - Date.parse(task.startedAt)) / 1000));
+  const end = taskTimerEnd(task);
+  const seconds = Math.max(0, Math.floor(((end ? Date.parse(end) : at) - Date.parse(task.startedAt)) / 1000));
   if (!Number.isFinite(seconds)) return '—';
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

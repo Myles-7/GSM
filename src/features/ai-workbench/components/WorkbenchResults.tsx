@@ -79,7 +79,6 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
 
   return <section className="overview-container flex h-full min-h-0 min-w-0 flex-col" aria-label={t('overview.view')} data-testid="workbench-results">
     <div className="shrink-0 border-b border-border px-4 py-3 sm:px-5">
-      {(w.error || (w.task.sessionId === w.activeId && w.task.error)) && <p role="alert" className="mb-3 break-words text-xs text-destructive">{w.error || w.task.error}</p>}
       {busy && <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2 text-xs" role="status">
         <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
         <span className="min-w-0 flex-1">{w.task.stage === 'overview' ? t('overview.stage') : t(`workbench.stage-${w.task.stage}`, { defaultValue: w.task.stage })}</span>
@@ -223,7 +222,6 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
         <p className="text-xs text-muted-foreground">{activeDetail.repository.license || t('workbench.unknown')} · {activeDetail.repository.pushed_at?.slice(0, 10) || t('workbench.unknown')}</p>
         {activeDetail.reasons.length > 0 && <section><h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t('overview.reasons')}</h3><ul className="space-y-2">{activeDetail.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul></section>}
         {activeDetail.limitations.length > 0 && <section><h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t('overview.limitations')}</h3><ul className="space-y-2">{activeDetail.limitations.map(reason => <li key={reason}>{reason}</li>)}</ul></section>}
-        {activeDetail.overview?.error && <p role="alert" className="break-words text-xs text-destructive">{activeDetail.overview.error}</p>}
         <section><h3 className="mb-2 text-xs font-semibold text-muted-foreground">{t('overview.sources')}</h3>{activeDetail.sources.map(url => publicSource(url) && <a key={url} href={publicSource(url)} target="_blank" rel="noreferrer" className="mb-2 block break-all text-xs text-primary underline">{url}</a>)}</section>
         <a href={`https://github.com/${activeDetail.repository.full_name}#readme`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary">README<ExternalLink className="h-3.5 w-3.5" /></a>
       </div>}

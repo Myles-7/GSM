@@ -56,15 +56,29 @@ function trackAgyProcess(child) {
 }
 const pendingAgyProcesses = () => ownedProcesses.size;
 
+function destroyChildStdio(child) {
+  if (!child) return;
+  try { child.stdin?.destroy(); } catch {}
+  try { child.stdout?.destroy(); } catch {}
+  try { child.stderr?.destroy(); } catch {}
+}
+
 function terminateAgyTree(child, { platform = process.platform, spawnProcess = spawn, timeoutMs = 2000 } = {}) {
   if (!child.pid) return Promise.resolve({ code: 'NOT_STARTED' });
-  if (child.exitCode != null || child.signalCode != null) return Promise.resolve({ code: 'ALREADY_EXITED' });
+  if (child.exitCode != null || child.signalCode != null) {
+    destroyChildStdio(child);
+    return Promise.resolve({ code: 'ALREADY_EXITED' });
+  }
   if (platform !== 'win32') {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    destroyChildStdio(child);
     return Promise.resolve({ code: 'KILL_SENT' });
   }
   return new Promise(resolve => {
-    const fallback = () => { if (child.exitCode == null && child.signalCode == null) try { child.kill('SIGKILL'); } catch { /* Exit observation remains authoritative. */ } };
+    const fallback = () => {
+      if (child.exitCode == null && child.signalCode == null) try { child.kill('SIGKILL'); } catch { /* Exit observation remains authoritative. */ }
+      destroyChildStdio(child);
+    };
     let killer;
     try {
       killer = spawnProcess(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'),
@@ -72,7 +86,14 @@ function terminateAgyTree(child, { platform = process.platform, spawnProcess = s
     } catch { fallback(); resolve({ code: 'TASKKILL_SPAWN_FAILED' }); return; }
     trackAgyProcess(killer);
     let settled = false;
-    const finish = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const finish = result => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        destroyChildStdio(child);
+        resolve(result);
+      }
+    };
     const timer = setTimeout(() => {
       finish({ code: 'TASKKILL_TIMEOUT' });
       try { killer.kill('SIGKILL'); } catch { /* An unconfirmed helper prevents recovery. */ }
@@ -89,7 +110,7 @@ function terminateAgyTree(child, { platform = process.platform, spawnProcess = s
 
 // Internal main-process API, never expose executable/cwd/extra arguments over IPC.
 function runAgy({ executable, cwd, prompt, model, effort, schema, validate, signal,
-  timeoutMs = 180000, initTimeoutMs = 20000, onText = () => {}, onInit = () => {},
+  timeoutMs = 180000, initTimeoutMs = 20000, onText = () => {}, onReasoning = () => {}, onObservation = () => {}, onInit = () => {},
   beforePrompt = async () => {}, onPromptSent = () => {}, onCleanup = () => {}, onWarning = () => {}, onActivity = () => {}, spawnProcess = spawn, cleanupTimeoutMs = 5000, terminateProcess = terminateAgyTree }) {
   if (signal?.aborted) return Promise.reject(new AgyError('CANCELED'));
   if (typeof prompt !== 'string' || Buffer.byteLength(prompt) > 512 * 1024) return Promise.reject(new AgyError('INPUT_LIMIT'));
@@ -129,11 +150,17 @@ function runAgy({ executable, cwd, prompt, model, effort, schema, validate, sign
       }
       failure = error;
       onCleanup();
-      Promise.resolve().then(() => terminateProcess(child)).then(result => { terminationResult = result; }, () => { terminationResult = { code: 'TERMINATE_FAILED' }; });
-      cleanupTimer = setTimeout(() => finish(child.pid ? new AgyError('CLEANUP_TIMEOUT', {
-        operation: 'terminate-process', originalCode: failure.code, systemCode: terminationResult?.code,
-        exitObserved: child.exitCode !== null && child.exitCode !== undefined || child.signalCode != null,
-      }) : failure), cleanupTimeoutMs);
+      Promise.resolve().then(() => terminateProcess(child)).then(
+        result => { terminationResult = result; destroyChildStdio(child); },
+        () => { terminationResult = { code: 'TERMINATE_FAILED' }; destroyChildStdio(child); },
+      );
+      cleanupTimer = setTimeout(() => {
+        destroyChildStdio(child);
+        finish(child.pid ? new AgyError('CLEANUP_TIMEOUT', {
+          operation: 'terminate-process', originalCode: failure.code, systemCode: terminationResult?.code,
+          exitObserved: child.exitCode !== null && child.exitCode !== undefined || child.signalCode != null,
+        }) : failure);
+      }, cleanupTimeoutMs);
     };
     const finish = (error, result) => {
       if (settled) return;
@@ -153,6 +180,7 @@ function runAgy({ executable, cwd, prompt, model, effort, schema, validate, sign
       clearTimeout(deadline); clearTimeout(startup); clearTimeout(cleanupTimer); clearTimeout(resultCloseTimer);
       signal?.removeEventListener('abort', abort);
       if (error) {
+        destroyChildStdio(child);
         if (error.code === 'CLEANUP_TIMEOUT') Object.defineProperty(error, 'cleanupSettled', { value: cleanupSettled });
         reject(error);
       } else resolve(result);
@@ -163,6 +191,8 @@ function runAgy({ executable, cwd, prompt, model, effort, schema, validate, sign
       validate,
       onActivity,
       onText: text => { if (!failure && !settled) onText(text); },
+      onReasoning: text => { if (!failure && !settled) onReasoning(text); },
+      onObservation: event => { if (!failure && !settled) onObservation(event); },
       onInit: init => {
         clearTimeout(startup);
         if (failure) return;
@@ -252,7 +282,15 @@ function createAgyWorker({ executable, cwd, model, effort, runtime = runAgy,
     return maintain().then(() => true);
   };
   const prepare = async () => {
-    await maintain();
+    try { await maintain(); }
+    catch (error) {
+      // A confirmed-exited request may leave a Windows file lock briefly. Its
+      // directory is never reused. Keep cleanup debt bounded, but do not let
+      // that lock block unrelated requests in fresh isolated directories.
+      const requestLocks = root && pendingCleanup.size < 8 && [...pendingCleanup].every(directory =>
+        path.dirname(directory) === root && path.basename(directory).startsWith('request-'));
+      if (!requestLocks || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error.code)) throw error;
+    }
     if (!root) {
       preparing ??= createAgyWorkspace().then(directory => { root = directory; return directory; }).finally(() => { preparing = null; });
       await preparing;
@@ -281,6 +319,23 @@ function createAgyWorker({ executable, cwd, model, effort, runtime = runAgy,
       let deferredCleanup = false;
       const cleanup = async () => { if (directory) await remove(directory); };
       const work = (async () => {
+        const trackWorkerSuspect = (pendingPromise) => {
+          deferredCleanup = true;
+          let settled = false;
+          let timer;
+          const finish = async () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            suspects.delete(suspect);
+            try { await cleanup(); } catch { options.onWarning?.('CLEANUP_IO_FAILED'); }
+            schedule();
+          };
+          timer = setTimeout(() => { void finish(); }, 15000);
+          timer.unref?.();
+          const suspect = (pendingPromise || Promise.resolve()).then(finish, finish);
+          suspects.add(suspect);
+        };
         try {
           const base = await prepare();
           controller.signal.throwIfAborted();
@@ -289,19 +344,12 @@ function createAgyWorker({ executable, cwd, model, effort, runtime = runAgy,
           await fs.copyFile(path.join(base, '.agents', 'agents', 'gsm-isolated.md'), path.join(directory, '.agents', 'agents', 'gsm-isolated.md'));
           const result = await runtime({ ...options, executable, cwd: directory, model, effort, signal: controller.signal, spawnProcess, terminateProcess, initTimeoutMs });
           if (result.cleanupSettled) {
-            deferredCleanup = true;
-            const suspect = result.cleanupSettled; suspects.add(suspect);
-            void suspect.then(async () => { suspects.delete(suspect); await cleanup(); }).then(schedule, () => {});
+            trackWorkerSuspect(result.cleanupSettled);
           }
           return result;
         } catch (error) {
           if (error.code === 'CLEANUP_TIMEOUT') {
-            deferredCleanup = true;
-            // Keep both the directory and capacity lease until the exact child
-            // closes. Never clear another worker or delete a live child's cwd.
-            const pending = error.cleanupSettled;
-            const suspect = pending ?? new Promise(() => {}); suspects.add(suspect);
-            void suspect.then(async () => { suspects.delete(suspect); await cleanup(); }).then(schedule, () => {});
+            trackWorkerSuspect(error.cleanupSettled);
           }
           throw error;
         } finally {

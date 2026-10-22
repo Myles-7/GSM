@@ -42,10 +42,16 @@ export function installGlobalErrorHandlers(): void {
         return;
       }
       if (target && typeof target.tagName === 'string') {
-        logger.error('ui.global', `Resource failed to load: ${target.tagName.toLowerCase()}`, {
-          tag: target.tagName.toLowerCase(),
+        const tag = target.tagName.toLowerCase();
+        const data = {
+          tag,
           url: target.src || target.href || undefined,
-        });
+        };
+        // Remote avatars and Markdown images already have local fallbacks.
+        // Keep these expected offline failures in opt-in diagnostics; missing
+        // scripts/styles still indicate a broken application build.
+        if (tag === 'img') logger.debug('ui.global', 'Image failed to load', data);
+        else logger.error('ui.global', `Resource failed to load: ${tag}`, data);
       }
     } catch { /* handler must never throw */ }
   }, true);

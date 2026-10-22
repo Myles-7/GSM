@@ -77,7 +77,7 @@ export function createSyncV2Router(options: { db?: () => Database.Database; veri
     });
     const workspace = getWorkspace(db);
     const lastCheckedAt = getRecord(db,'organization','default')?.data?.githubStarsLastCheckedAt;
-    res.json({ protocolVersion: 2, discovery: discoveryAvailability(db), workspace, github, binding:bindingStatus(db), ai: { configured: aiConfigs.some(c => c.available) }, aiConfigs, tasks: { kinds: taskKinds, refreshStars: {available:!!workspace && github.verified && github.id===workspace.githubUserId,...(typeof lastCheckedAt==='string'?{lastCheckedAt}:{})}, maxConcurrentRequests: 2, eventRetentionDays: 30 }, sync: { enabled: true, collections: COLLECTIONS, tombstoneRetentionDays: 90, maxBatchSize: 500, canonical: true } });
+    res.json({ protocolVersion: 2, discovery: discoveryAvailability(db), workspace, github, binding:bindingStatus(db), ai: { configured: aiConfigs.some(c => c.available) }, aiConfigs, tasks: { kinds: taskKinds, refreshStars: {available:!!workspace && github.verified && github.id===workspace.githubUserId,...(typeof lastCheckedAt==='string'?{lastCheckedAt}:{})}, maxConcurrentRequests: 2, eventRetentionDays: 30 }, sync: { enabled: true, collections: COLLECTIONS, tombstoneRetentionDays: 90, maxBatchSize: 2000, canonical: true } });
   }));
   router.get('/api/diagnostics', handle((_req, res, db) => {
     const hasTable = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);

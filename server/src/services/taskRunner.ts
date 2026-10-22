@@ -12,6 +12,7 @@ import { initializeTaskProposals } from './taskProposals.js';
 import { taskKinds, taskPrompt, validateTaskResult, readModelStream, type TaskKind, type TaskEvidence } from './taskModel.js';
 import { snapshotTaskProject, bindTaskProjectPrompt, hasLocalTaskSources, type TaskProjectSnapshot } from './taskProject.js';
 import { initializeStarsRefresh, refreshStars, type StarsCheckpoint } from './taskRefreshStars.js';
+import { initializeTaskDiagnostics, appendTaskDiagnostic, taskDiagnostics, type TaskDiagnostics } from './taskDiagnostics.js';
 
 export interface TaskInput {prompt?:string;repositories?:string[];sessionId?:string;userMessageId?:string;projectId?:string;language?:string;expectedVersions?:Record<string,number>;channelId?:string;date?:string}
 export interface CreateTask {requestId:string;workspaceId:string;githubUserId:number;configId?:string;kind:TaskKind;input:TaskInput}
@@ -22,14 +23,15 @@ interface ValidatedCheckpoint {evidence?:TaskEvidence[];validated?:boolean;conte
 interface BatchItem extends ValidatedCheckpoint {repository:string;evidence:TaskEvidence[];commitAt?:string}
 interface BatchCheckpoint {completed:Array<{repository:string;repositoryId:string;messageId:string;status:string}>;current:BatchItem|null}
 interface TaskCheckpoint extends ValidatedCheckpoint {compiledPlan?:unknown;discovery?:DiscoverySearch;research?:ResearchCheckpoint;batch?:BatchCheckpoint;stars?:StarsCheckpoint;commitAt?:string;commitAttempt?:number;commitVersions?:Record<string,number>}
-interface TaskRow {id:string;workspace_id:string;github_user_id:number;request_id:string;request_hash:string;kind:TaskKind;config_id:string;config_snapshot:string;input:string;status:string;stage:string;phase?:string;executor?:string;commit_status?:string;provider_outcome?:string;failure_code?:string|null;checkpoint:string|null;result:string|null;error:string|null;created_at:string;updated_at:string}
-export interface TaskRecord extends CreateTask {id:string;status:string;stage:string;phase:string;executor:'server-provider';commitStatus:'not_started'|'pending'|'saved'|'conflict'|'failed';providerOutcome:'not_started'|'in_flight'|'succeeded'|'failed'|'unknown';capabilities:{pause:boolean;cancel:boolean;resume:'safe'|'new-provider-call'|'unsupported'};failureCode:string|null;configSnapshot:ConfigSnapshot;result:TaskOutput|null;error:string|null;createdAt:string;updatedAt:string;lastSeq:number;checkpoint:TaskCheckpoint|null}
+interface TaskRow {id:string;workspace_id:string;github_user_id:number;request_id:string;request_hash:string;kind:TaskKind;config_id:string;config_snapshot:string;input:string;status:string;stage:string;phase?:string;executor?:string;commit_status?:string;provider_outcome?:string;failure_code?:string|null;pause_requested?:number;pinned?:number;checkpoint:string|null;result:string|null;error:string|null;created_at:string;updated_at:string}
+export interface TaskRecord extends CreateTask {pinned:boolean;pauseRequested:boolean;diagnostics:TaskDiagnostics;id:string;status:string;stage:string;phase:string;executor:'server-provider';commitStatus:'not_started'|'pending'|'saved'|'conflict'|'failed';providerOutcome:'not_started'|'in_flight'|'succeeded'|'failed'|'unknown';capabilities:{pause:boolean;cancel:boolean;resume:'safe'|'new-provider-call'|'unsupported'};failureCode:string|null;configSnapshot:ConfigSnapshot;result:TaskOutput|null;error:string|null;createdAt:string;updatedAt:string;lastSeq:number;checkpoint:TaskCheckpoint|null}
 export function publicTask(task:TaskRecord):Omit<TaskRecord,'checkpoint'> {const output:Partial<TaskRecord>={...task};delete output.checkpoint;return output as Omit<TaskRecord,'checkpoint'>;}
 type DB=Database.Database;
 const controllers=new Map<string,AbortController>();
 const activePromises=new Set<Promise<void>>();
 const executionContexts=new Map<string,{db:DB;shutdown:boolean}>();
 const safeCheckpoint=(task:Pick<TaskRecord,'kind'|'stage'|'checkpoint'>)=>task.kind==='refresh_stars'||['queued','evidence','search'].includes(task.stage)||!!task.checkpoint?.validated||!!task.checkpoint?.batch?.current?.validated||(task.stage==='saving'&&task.checkpoint?.batch?.current===null);
+const batchCapable=(task:Pick<CreateTask,'kind'|'input'>)=>['summary','details','classification'].includes(task.kind)&&(task.input.repositories?.length??0)>1;
 const providerStage=(stage:string)=>['model','compiling','planning','drafting','reviewing'].includes(stage);
 let runner:ReturnType<typeof setInterval>|undefined;
 let running=false, interactiveStreak=0;
@@ -60,10 +62,11 @@ export function initializeTasks(db:DB):void {
   initializeTaskProposals(db);
   initializeStarsRefresh(db);
   db.exec(`CREATE TABLE IF NOT EXISTS ai_tasks (id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,kind TEXT NOT NULL,config_id TEXT NOT NULL,config_snapshot TEXT NOT NULL,input TEXT NOT NULL,status TEXT NOT NULL,stage TEXT NOT NULL,phase TEXT NOT NULL DEFAULT 'queue_wait',executor TEXT NOT NULL DEFAULT 'server-provider',commit_status TEXT NOT NULL DEFAULT 'not_started',provider_outcome TEXT NOT NULL DEFAULT 'not_started',failure_code TEXT,checkpoint TEXT,result TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(workspace_id,request_id)); CREATE TABLE IF NOT EXISTS ai_task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL,type TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ai_task_events_task ON ai_task_events(task_id,seq); CREATE TABLE IF NOT EXISTS ai_task_event_watermarks (task_id TEXT PRIMARY KEY,pruned_seq INTEGER NOT NULL);`);
-  for (const [column, definition] of [['phase', "TEXT NOT NULL DEFAULT 'queue_wait'"], ['executor', "TEXT NOT NULL DEFAULT 'server-provider'"], ['commit_status', "TEXT NOT NULL DEFAULT 'not_started'"], ['provider_outcome', "TEXT NOT NULL DEFAULT 'not_started'"], ['failure_code', 'TEXT']] as const) {
+  for (const [column, definition] of [['phase', "TEXT NOT NULL DEFAULT 'queue_wait'"], ['executor', "TEXT NOT NULL DEFAULT 'server-provider'"], ['commit_status', "TEXT NOT NULL DEFAULT 'not_started'"], ['provider_outcome', "TEXT NOT NULL DEFAULT 'not_started'"], ['failure_code', 'TEXT'],['pause_requested','INTEGER NOT NULL DEFAULT 0'],['pinned','INTEGER NOT NULL DEFAULT 0']] as const) {
     const columns = db.prepare('PRAGMA table_info(ai_tasks)').all() as Array<{ name: string }>;
     if (!columns.some(item => item.name === column)) db.exec(`ALTER TABLE ai_tasks ADD COLUMN ${column} ${definition}`);
   }
+  initializeTaskDiagnostics(db);
   db.exec('CREATE TABLE IF NOT EXISTS ai_task_request_rejections(workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,request_id TEXT NOT NULL,request_hash TEXT NOT NULL,error_code TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(workspace_id,request_id))');
   db.exec(`CREATE TABLE IF NOT EXISTS ai_task_lineage(seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL UNIQUE,workspace_id TEXT NOT NULL,github_user_id INTEGER NOT NULL,deleted_at TEXT);
     INSERT OR IGNORE INTO ai_task_lineage(task_id,workspace_id,github_user_id) SELECT id,workspace_id,github_user_id FROM ai_tasks ORDER BY created_at,id;
@@ -72,7 +75,7 @@ export function initializeTasks(db:DB):void {
     CREATE TRIGGER IF NOT EXISTS ai_task_lineage_delete AFTER DELETE ON ai_tasks BEGIN UPDATE ai_task_lineage SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE task_id=OLD.id; END;`);
   pruneTaskEvents(db);
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS ai_tasks_active_stars ON ai_tasks(workspace_id) WHERE kind='refresh_stars' AND status IN ('queued','running')");
-  for(const row of db.prepare("SELECT id,kind,stage,checkpoint FROM ai_tasks WHERE status='running'").all() as {id:string;kind:TaskKind;stage:string;checkpoint:string|null}[]) {
+  for(const row of db.prepare("SELECT id,kind,stage,checkpoint,pause_requested FROM ai_tasks WHERE status='running'").all() as {id:string;kind:TaskKind;stage:string;checkpoint:string|null;pause_requested:number}[]) {
     let checkpoint:TaskCheckpoint|null=null;
     try { checkpoint=row.checkpoint?JSON.parse(row.checkpoint):null; } catch { /* Unknown checkpoint state must require explicit recovery. */ }
     const validated=(value:ValidatedCheckpoint|null|undefined)=>value?.validated===true && typeof value.content==='string' && value.value!==undefined && Array.isArray(value.evidence);
@@ -83,13 +86,13 @@ export function initializeTasks(db:DB):void {
       || (row.stage==='saving' && checkpoint?.batch?.current===null && Array.isArray(checkpoint.batch.completed) && checkpoint.batch.completed.length>0);
     db.transaction(()=>{
       const unknown = !safe && (providerStage(row.stage)||row.stage==='saving');
-      db.prepare('UPDATE ai_tasks SET status=?,phase=?,provider_outcome=?,failure_code=?,error=?,updated_at=? WHERE id=?').run(safe?'queued':'interrupted',safe?'queue_wait':phaseForStage(row.stage),safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',safe?null:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',safe?null:'SERVER_RESTART_UNKNOWN_CALL',now(),row.id);
-      taskEvent(db,row.id,'state',{status:safe?'queued':'interrupted',stage:row.stage,phase:safe?'queue_wait':phaseForStage(row.stage),providerOutcome:safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',failureCode:safe?undefined:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',reason:safe?'Server restarted; safe checkpoint automatically requeued.':'Server restarted; explicit resume required. The previous provider call may have been charged.'});
+      db.prepare('UPDATE ai_tasks SET status=?,phase=?,provider_outcome=?,failure_code=?,error=?,updated_at=? WHERE id=?').run(safe?(row.pause_requested?'paused':'queued'):'interrupted',safe?'queue_wait':phaseForStage(row.stage),safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',safe?null:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',safe?null:'SERVER_RESTART_UNKNOWN_CALL',now(),row.id);
+      taskEvent(db,row.id,'state',{status:safe?(row.pause_requested?'paused':'queued'):'interrupted',stage:row.stage,phase:safe?'queue_wait':phaseForStage(row.stage),providerOutcome:safe?(validated(checkpoint)||validated(checkpoint?.batch?.current)?'succeeded':'not_started'):unknown?'unknown':'failed',failureCode:safe?undefined:unknown?'unknown_provider_outcome':'SERVER_RESTART_UNKNOWN_CALL',reason:safe?(row.pause_requested?'Server restarted; dispatch remains paused.':'Server restarted; safe checkpoint automatically requeued.'):'Server restarted; explicit resume required. The previous provider call may have been charged.'});
     })();
   }
 }
-export function taskEvent(db:DB,id:string,type:string,data:unknown):void {db.prepare('INSERT INTO ai_task_events(task_id,type,data,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(data),now());}
-function shape(db:DB,raw:unknown):TaskRecord {const row=raw as TaskRow;return {id:row.id,workspaceId:row.workspace_id,githubUserId:row.github_user_id,requestId:row.request_id,configId:row.config_id,kind:row.kind,input:JSON.parse(row.input),status:row.status,stage:row.stage,phase:row.phase || row.stage,executor:'server-provider',commitStatus:(row.commit_status as TaskRecord['commitStatus']) || 'not_started',providerOutcome:(row.provider_outcome as TaskRecord['providerOutcome']) || 'not_started',failureCode:row.failure_code ?? null,capabilities:{pause:false,cancel:['queued','running'].includes(row.status),resume:['interrupted','failed','cancelled'].includes(row.status)?safeCheckpoint({kind:row.kind,stage:row.stage,checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null})?'safe':'new-provider-call':'unsupported'},configSnapshot:JSON.parse(row.config_snapshot),checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null,result:row.result?JSON.parse(row.result):null,error:row.error,createdAt:row.created_at,updatedAt:row.updated_at,lastSeq:(db.prepare('SELECT MAX(COALESCE((SELECT MAX(seq) FROM ai_task_events WHERE task_id=?),0),COALESCE((SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=?),0)) seq').get(row.id,row.id) as {seq:number}).seq};}
+export function taskEvent(db:DB,id:string,type:string,data:unknown):void {appendTaskDiagnostic(db,id,type,data);}
+function shape(db:DB,raw:unknown):TaskRecord {const row=raw as TaskRow;return {pinned:!!row.pinned,pauseRequested:!!row.pause_requested,diagnostics:taskDiagnostics(db,row.id),id:row.id,workspaceId:row.workspace_id,githubUserId:row.github_user_id,requestId:row.request_id,configId:row.config_id,kind:row.kind,input:JSON.parse(row.input),status:row.status,stage:row.stage,phase:row.phase || row.stage,executor:'server-provider',commitStatus:(row.commit_status as TaskRecord['commitStatus']) || 'not_started',providerOutcome:(row.provider_outcome as TaskRecord['providerOutcome']) || 'not_started',failureCode:row.failure_code ?? null,capabilities:{pause:batchCapable({kind:row.kind,input:JSON.parse(row.input)})&&['queued','running','paused'].includes(row.status),cancel:['queued','running','paused'].includes(row.status),resume:['interrupted','failed','cancelled'].includes(row.status)?safeCheckpoint({kind:row.kind,stage:row.stage,checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null})?'safe':'new-provider-call':'unsupported'},configSnapshot:JSON.parse(row.config_snapshot),checkpoint:row.checkpoint?JSON.parse(row.checkpoint):null,result:row.result?JSON.parse(row.result):null,error:row.error,createdAt:row.created_at,updatedAt:row.updated_at,lastSeq:(db.prepare('SELECT MAX(COALESCE((SELECT MAX(seq) FROM ai_task_events WHERE task_id=?),0),COALESCE((SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=?),0),COALESCE((SELECT gap_seq FROM ai_task_diagnostics WHERE task_id=?),0)) seq').get(row.id,row.id,row.id) as {seq:number}).seq};}
 export function getTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
   assertWorkspace(db,workspaceId,githubUserId); const row=db.prepare('SELECT * FROM ai_tasks WHERE id=? AND workspace_id=? AND github_user_id=?').get(id,workspaceId,githubUserId);
   if(!row) throw new Error('TASK_NOT_FOUND'); return shape(db,row);
@@ -118,24 +121,33 @@ export function listTasksPage(db:DB,workspaceId:string,githubUserId:number,optio
   const deletedIds=(db.prepare('SELECT task_id FROM ai_task_lineage WHERE workspace_id=? AND github_user_id=? AND seq<=? AND deleted_at IS NOT NULL').all(workspaceId,githubUserId,cursor.boundary) as Array<{task_id:string}>).map(row=>row.task_id);
   return {tasks:page,nextCursor,reconcile:{watermark:`${cursor.boundary}:${cursor.asOf}`,asOf:cursor.asOf,complete:!nextCursor,deletedIds}};
 }
+export function retainTaskHistory(db:DB,id:string,workspaceId:string,githubUserId:number,pinned:boolean):TaskRecord {
+  getTask(db,id,workspaceId,githubUserId);
+  if(typeof pinned!=='boolean')throw new Error('INVALID_TASK_RETENTION');
+  db.prepare('UPDATE ai_tasks SET pinned=? WHERE id=?').run(pinned?1:0,id);
+  return getTask(db,id,workspaceId,githubUserId);
+}
 /** Expire terminal task streams after 30 days; durable task results remain intact. */
 export function pruneTaskEvents(db:DB, at=new Date()):number {
   const cutoff=new Date(at.getTime()-30*24*60*60*1000).toISOString();
   return db.transaction(()=>{
   db.prepare(`INSERT INTO ai_task_event_watermarks(task_id,pruned_seq)
       SELECT e.task_id,MAX(e.seq) FROM ai_task_events e JOIN ai_tasks t ON t.id=e.task_id
-      WHERE t.status IN ('completed','cancelled','failed','interrupted') AND t.updated_at<? AND e.created_at<? GROUP BY e.task_id
+      WHERE t.status IN ('completed','cancelled','failed','interrupted') AND t.pinned=0 AND t.provider_outcome<>'unknown' AND t.commit_status NOT IN ('pending','failed','conflict') AND t.updated_at<? AND e.created_at<? GROUP BY e.task_id
       ON CONFLICT(task_id) DO UPDATE SET pruned_seq=MAX(pruned_seq,excluded.pruned_seq)`).run(cutoff,cutoff);
-    return db.prepare('DELETE FROM ai_task_events WHERE seq <= (SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=ai_task_events.task_id)').run().changes;
+    const deleted=db.prepare('DELETE FROM ai_task_events WHERE seq <= (SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=ai_task_events.task_id)').run().changes;
+    db.prepare('UPDATE ai_task_diagnostics SET stored_bytes=COALESCE((SELECT SUM(length(CAST(data AS BLOB))) FROM ai_task_events WHERE task_id=ai_task_diagnostics.task_id),0)').run();
+    return deleted;
   })();
 }
 export function taskEvents(db:DB,id:string,after:number) {
   const watermark=db.prepare('SELECT pruned_seq FROM ai_task_event_watermarks WHERE task_id=?').get(id) as {pruned_seq:number}|undefined;
-  if(watermark && after<watermark.pruned_seq) {
+  const gap=(db.prepare('SELECT gap_seq FROM ai_task_diagnostics WHERE task_id=?').get(id) as {gap_seq:number}|undefined)?.gap_seq??0;
+  if((watermark && after<watermark.pruned_seq)||after<gap) {
     const row=db.prepare('SELECT * FROM ai_tasks WHERE id=?').get(id);
     if(!row)throw new Error('TASK_NOT_FOUND');
     const task=publicTask(shape(db,row));
-    return [{seq:task.lastSeq,type:'resync',data:{reason:'EVENT_CURSOR_EXPIRED',task},createdAt:now()}];
+    return [{seq:task.lastSeq,type:'resync',data:{reason:after<gap?'DIAGNOSTIC_GAP':'EVENT_CURSOR_EXPIRED',task},createdAt:now()}];
   }
   return (db.prepare('SELECT * FROM ai_task_events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 1000').all(id,after) as {seq:number;type:string;data:string;created_at:string}[]).map(r=>({seq:r.seq,type:r.type,data:JSON.parse(r.data),createdAt:r.created_at}));
 }
@@ -189,20 +201,45 @@ export function createTask(db:DB,request:CreateTask):TaskRecord {
   if(typeof cfg.model!=='string'||!cfg.model.trim()||cfg.model.length>150)throw new Error('DEEPSEEK_MODEL_REQUIRED');
   const snapshot:ConfigSnapshot={model:cfg.model,baseUrl:endpoint.origin,configId:String(cfg.id),reasoningEffort:cfg.reasoning_effort || null,...(project?{project}:{})};
   const id=randomUUID(); const date=now();
-  if(request.input.sessionId && db.prepare("SELECT id FROM ai_tasks WHERE workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running')").get(request.workspaceId,request.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
+  if(request.input.sessionId && db.prepare("SELECT id FROM ai_tasks WHERE workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running','paused')").get(request.workspaceId,request.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
   db.transaction(()=>{assertRequestNotRejected(db,request,hash);db.prepare('INSERT INTO ai_tasks(id,workspace_id,github_user_id,request_id,request_hash,kind,config_id,config_snapshot,input,status,stage,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,request.workspaceId,request.githubUserId,request.requestId,hash,request.kind,request.configId,JSON.stringify(snapshot),JSON.stringify(input),'queued','queued',date,date);taskEvent(db,id,'state',{status:'queued',stage:'queued'});}).immediate();
   return getTask(db,id,request.workspaceId,request.githubUserId);
 }
+/** Pause dispatch only; an already dispatched provider call finishes and saves. */
+export function pauseTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
+  const task=getTask(db,id,workspaceId,githubUserId);
+  if(!batchCapable(task))throw new Error('TASK_PAUSE_UNSUPPORTED');
+  if(task.status==='paused')return task;
+  if(!['queued','running'].includes(task.status))throw new Error('TASK_NOT_PAUSABLE');
+  const status=task.status==='queued'?'paused':'running';
+  db.transaction(()=>{db.prepare('UPDATE ai_tasks SET pause_requested=1,status=?,updated_at=? WHERE id=?').run(status,now(),id);taskEvent(db,id,'state',{status,pauseRequested:true,reason:'pause_dispatch'});})();
+  return getTask(db,id,workspaceId,githubUserId);
+}
+export function continueTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
+  const task=getTask(db,id,workspaceId,githubUserId);
+  if(task.status!=='paused'||!batchCapable(task))throw new Error('TASK_NOT_CONTINUABLE');
+  if(controllers.has(id))throw new Error('TASK_STILL_STOPPING');
+  if(task.input.sessionId&&db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running','paused')").get(id,workspaceId,task.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET pause_requested=0,status='queued',phase='queue_wait',error=NULL,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'queued',pauseRequested:false,reason:'continue_dispatch'});})();
+  return getTask(db,id,workspaceId,githubUserId);
+}
+function pauseAtBoundary(db:DB,task:TaskRecord):boolean {
+  const row=db.prepare('SELECT pause_requested,status FROM ai_tasks WHERE id=?').get(task.id) as {pause_requested:number;status:string};
+  if(!row.pause_requested||row.status!=='running')return false;
+  db.prepare("UPDATE ai_tasks SET status='paused',phase='queue_wait',updated_at=? WHERE id=?").run(now(),task.id);
+  taskEvent(db,task.id,'state',{status:'paused',pauseRequested:true,reason:'pause_dispatch',completed:task.checkpoint?.batch?.completed.length??0});
+  return true;
+}
 export function cancelTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
   const task=getTask(db,id,workspaceId,githubUserId);if(['completed','cancelled'].includes(task.status))return task;
-  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='cancelled',updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'cancelled'});})(); controllers.get(id)?.abort();return getTask(db,id,workspaceId,githubUserId);
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='cancelled',pause_requested=0,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'cancelled'});})(); controllers.get(id)?.abort();return getTask(db,id,workspaceId,githubUserId);
 }
 export function resumeTask(db:DB,id:string,workspaceId:string,githubUserId:number):TaskRecord {
   const task=getTask(db,id,workspaceId,githubUserId);if(!['interrupted','failed','cancelled'].includes(task.status))throw new Error('TASK_NOT_RESUMABLE');
   if(controllers.has(id))throw new Error('TASK_STILL_STOPPING');
   if(task.kind==='refresh_stars' && db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND kind='refresh_stars' AND status IN ('queued','running')").get(id,workspaceId))throw new Error('REFRESH_STARS_TASK_ACTIVE');
-  if(task.input.sessionId && db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running')").get(id,workspaceId,task.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
-  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='queued',error=NULL,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'queued',stage:'resume',warning:task.providerOutcome==='unknown'?'Explicit resume starts a new provider call; previous call outcome was unknown':null});})();return getTask(db,id,workspaceId,githubUserId);
+  if(task.input.sessionId && db.prepare("SELECT id FROM ai_tasks WHERE id<>? AND workspace_id=? AND json_extract(input,'$.sessionId')=? AND status IN ('queued','running','paused')").get(id,workspaceId,task.input.sessionId))throw new Error('SESSION_TASK_ACTIVE');
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='queued',pause_requested=0,error=NULL,updated_at=? WHERE id=?").run(now(),id);taskEvent(db,id,'state',{status:'queued',stage:'resume',warning:task.providerOutcome==='unknown'?'Explicit resume starts a new provider call; previous call outcome was unknown':null});})();return getTask(db,id,workspaceId,githubUserId);
 }
 /** Re-commit a generated result without invoking the provider again. */
 export function previewTaskCommit(db:DB,id:string,workspaceId:string,githubUserId:number) {
@@ -288,7 +325,7 @@ function commitGeneratedResult(db:DB,task:TaskRecord):void {
         } else result.repositoryWrite=current?{status:'proposal',reason:'Expected repository version required to apply AI fields'}:{status:'snapshot',reason:'Discovery analysis retained in task result; repository was not added or starred'};
       }
       const commitStatus=result.repositoryWrite?.status==='conflict'?'conflict':'saved';
-      db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status=?,provider_outcome='succeeded',result=?,failure_code=?,error=NULL,updated_at=? WHERE id=?").run(commitStatus,JSON.stringify(result),commitStatus==='conflict'?'RESULT_SYNC_CONFLICT':null,now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing',commitStatus});
+      db.prepare("UPDATE ai_tasks SET status='completed',pause_requested=0,stage='completed',phase='committing',commit_status=?,provider_outcome='succeeded',result=?,failure_code=?,error=NULL,updated_at=? WHERE id=?").run(commitStatus,JSON.stringify(result),commitStatus==='conflict'?'RESULT_SYNC_CONFLICT':null,now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing',commitStatus});
     })();
 }
 export interface TaskDependencies {githubFetch?:typeof fetch;evidence?:typeof collectTaskEvidence;model?:(task:TaskRecord,evidence:TaskEvidence[],signal:AbortSignal,emit:(type:string,data:unknown)=>void)=>Promise<string>}
@@ -300,8 +337,26 @@ async function modelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:Ab
   if(task.kind==='organization')prompt.user=JSON.stringify({request:JSON.parse(prompt.user),currentOrganization:getRecord(db,'organization','default')?.data??{},repositories:(task.input.repositories??[]).map(name=>{const record=(db.prepare("SELECT data FROM sync_v2_records WHERE collection='repositories' AND deleted=0 AND json_extract(data,'$.full_name')=?").get(name) as {data:string}|undefined);return record?JSON.parse(record.data):{full_name:name};})});
   const boundPrompt=bindTaskProjectPrompt(prompt,task.configSnapshot.project);
   const history=task.input.sessionId?(db.prepare("SELECT data FROM sync_v2_records WHERE collection='messages' AND deleted=0 AND id<>? AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 12").all(task.input.userMessageId || '',task.input.sessionId) as {data:string}[]).reverse().map(r=>JSON.parse(r.data)).filter(r=>['user','assistant'].includes(r.role)&&typeof r.content==='string').map(r=>({role:r.role,content:r.content.slice(0,8000)})):[];
-  const response=await fetch(`${task.configSnapshot.baseUrl}/chat/completions`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:task.configSnapshot.model,stream:true,max_tokens:6000,messages:[{role:'system',content:boundPrompt.system},...history,{role:'user',content:boundPrompt.user}]}),signal,redirect:'error'});
+  const body=JSON.stringify({model:task.configSnapshot.model,stream:true,max_tokens:6000,messages:[{role:'system',content:boundPrompt.system},...history,{role:'user',content:boundPrompt.user}]});
+  emit('provider_request',{body,model:task.configSnapshot.model,endpoint:`${task.configSnapshot.baseUrl}/chat/completions`});
+  const response=await fetch(`${task.configSnapshot.baseUrl}/chat/completions`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body,signal,redirect:'error'});
   return readModelStream(response,signal,emit);
+}
+async function observedModelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:AbortSignal,emit:(type:string,data:unknown)=>void,deps:TaskDependencies,prompt?:{system:string;user:string}):Promise<string> {
+  const providerRequestId=randomUUID();
+  const batch=task.checkpoint?.batch;
+  const identity={providerRequestId,...(batch?{batch:{index:batch.completed.length,total:JSON.parse((db.prepare('SELECT input FROM ai_tasks WHERE id=?').get(task.id) as {input:string}).input).repositories.length,repository:batch.current?.repository}}:{})};
+  let contentSeen=false;
+  const forward=(type:string,data:unknown)=>{if(type==='content')contentSeen=true;emit(type,{...(data&&typeof data==='object'?data:{}),...identity});};
+  if(deps.model)forward('provider_request',{model:task.configSnapshot.model,source:'injected-model',body:JSON.stringify(prompt??taskPrompt(task.kind,task.input,evidence))});
+  try {
+    const content=await(deps.model?deps.model(task,evidence,signal,forward):modelCall(db,task,evidence,signal,forward,prompt));
+    signal.throwIfAborted();if(!contentSeen)forward('content',{text:content});
+    forward('provider_result',{content,outcome:'succeeded'});return content;
+  }catch(error){
+    if(!signal.aborted)forward('provider_result',{outcome:'unknown',error:error instanceof Error&&/^[A-Z][A-Z_0-9]+$/.test(error.message)?error.message:'MODEL_CALL_FAILED'});
+    throw error;
+  }
 }
 export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Promise<void> {
   if(controllers.has(task.id))return;
@@ -310,11 +365,14 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
   // item the same execution budget instead of forcing every 20+ item batch into
   // a one-hour ceiling; completed siblings are already checkpointed safely.
   const deadline=setTimeout(()=>controller.abort(),Math.max(240000,(task.input.repositories?.length || 1)*180000));
-  let contentBuffer='',contentTimer:ReturnType<typeof setTimeout>|undefined;
-  const flushContent=()=>{clearTimeout(contentTimer);contentTimer=undefined;if(contentBuffer){const text=contentBuffer;contentBuffer='';taskEvent(db,task.id,'content',{text});}};
+  let contentBuffer='',bufferType='content',bufferIdentity:Record<string,unknown>={},contentTimer:ReturnType<typeof setTimeout>|undefined;
+  const flushContent=()=>{clearTimeout(contentTimer);contentTimer=undefined;if(contentBuffer){const text=contentBuffer;contentBuffer='';taskEvent(db,task.id,bufferType,{...bufferIdentity,text});}};
   const emit=(type:string,data:unknown)=>{
-    signal.throwIfAborted();if(type==='reasoning')return;
-    if(type==='content'&&data&&typeof data==='object'&&'text' in data&&typeof data.text==='string'){
+    signal.throwIfAborted();
+    if(['content','reasoning'].includes(type)&&data&&typeof data==='object'&&'text' in data&&typeof data.text==='string'){
+      const identity=Object.fromEntries(Object.entries(data).filter(([key])=>key!=='text'));
+      if(bufferType!==type||JSON.stringify(bufferIdentity)!==JSON.stringify(identity))flushContent();
+      bufferType=type;bufferIdentity=identity;
       contentBuffer+=data.text;
       if(contentBuffer.length>=8192)flushContent();
       else contentTimer??=setTimeout(()=>{try{flushContent();}catch{controller.abort();}},250);
@@ -328,7 +386,7 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
     const checkpoint=(value:TaskCheckpoint)=>{signal.throwIfAborted();task.checkpoint=value;db.prepare('UPDATE ai_tasks SET checkpoint=? WHERE id=?').run(JSON.stringify(value),task.id);};
     if(task.kind==='refresh_stars') {
       await refreshStars(db,task,signal,{fetch:deps.githubFetch,state:task.checkpoint?.stars,stage,checkpoint:stars=>checkpoint({stars}),progress:data=>emit('progress',data),finish:result=>{
-        db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);
+        db.prepare("UPDATE ai_tasks SET status='completed',pause_requested=0,stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);
         taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed'});
       }});
       return;
@@ -339,7 +397,7 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
       if(channelRecord&&!channelRecord.deleted&&channelRecord.data?.planSource==='pending'){
         if(channelRecord.data.enabled===false||channelRecord.data.paused===true)throw new Error('DISCOVERY_CHANNEL_PAUSED');
         stage('compiling');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight' WHERE id=?").run(task.id);const instruction=String(channelRecord.data.instruction??task.input.prompt??'');
-        const raw=await(deps.model?deps.model(task,[],signal,emit):modelCall(db,task,[],signal,()=>{},{system:discoveryCompilePrompt,user:instruction.slice(0,4000)}));signal.throwIfAborted();
+        const raw=await observedModelCall(db,task,[],signal,emit,deps,{system:discoveryCompilePrompt,user:instruction.slice(0,4000)});signal.throwIfAborted();
         const plan=parsePlan(raw,instruction);if(plan.conflicts.length)throw new Error('DISCOVERY_PLAN_CONFLICTS');
         db.transaction(()=>{const saved=pushOperations(db,{workspaceId:task.workspaceId,githubUserId:task.githubUserId,clientId:'backend-task-runner',operations:[{opId:`task:${task.id}:compile`,collection:'discovery_subscriptions',id:channelRecord.id,baseVersion:channelRecord.version,kind:'put',source:'ai',data:{...channelRecord.data,plan,planSource:'compiled'}}]});if(saved.results[0].status!=='applied')throw new Error('DISCOVERY_CHANNEL_CHANGED');checkpoint({compiledPlan:plan});stage('evidence');})();
       }
@@ -355,9 +413,9 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
     if(task.checkpoint?.validated){content=task.checkpoint.content!;value=task.checkpoint.value!;}
     else {stage('model');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight',updated_at=? WHERE id=?").run(now(),task.id);
       if(['research','compare'].includes(task.kind)&&!deps.model){
-        const researched=await researchTask(db,task.id,task.input.prompt || task.kind,evidence,signal,async(prompt,researchStage)=>{stage(researchStage);return modelCall(db,task,evidence!,signal,()=>{},prompt);},async()=>{stage('drafting');return modelCall(db,task,evidence!,signal,()=>{});},research=>checkpoint({evidence,research}),task.checkpoint?.research);
-        content=researched.content;value={content,quality:'model-reviewed',...(researched.review as Record<string,unknown>)};emit('content',{text:content});
-      }else{content=await(deps.model ? deps.model(task,evidence,signal,emit):modelCall(db,task,evidence,signal,emit));db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded' WHERE id=?").run(task.id);value=validateTaskResult(task.kind,content,evidence);}
+        const researched=await researchTask(db,task.id,task.input.prompt || task.kind,evidence,signal,async(prompt,researchStage)=>{stage(researchStage);return observedModelCall(db,task,evidence!,signal,emit,deps,prompt);},async()=>{stage('drafting');return observedModelCall(db,task,evidence!,signal,emit,deps);},research=>checkpoint({evidence,research}),task.checkpoint?.research);
+        content=researched.content;value={content,quality:'model-reviewed',...(researched.review as Record<string,unknown>)};
+      }else{content=await observedModelCall(db,task,evidence,signal,emit,deps);db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded' WHERE id=?").run(task.id);value=validateTaskResult(task.kind,content,evidence);}
       signal.throwIfAborted();if(task.kind==='details')value={...(value as Record<string,unknown>),model:task.configSnapshot.model};checkpoint({evidence,discovery,validated:true,content,value});db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded',updated_at=? WHERE id=?").run(now(),task.id);}
     commitGeneratedResult(db,getTask(db,task.id,task.workspaceId,task.githubUserId));
   } catch(error) {
@@ -366,7 +424,7 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
     if(current?.status!=='cancelled') {
       const code=error instanceof Error && /^[A-Z][A-Z_0-9]+$/.test(error.message)?error.message:(signal.aborted?'TASK_DEADLINE_OR_SHUTDOWN':'TASK_EXECUTION_FAILED');
       if (code === 'RESULT_SYNC_CONFLICT' && !current?.checkpoint?.batch) {
-        db.prepare("UPDATE ai_tasks SET status='completed',stage='committing',phase='committing',commit_status='conflict',provider_outcome='succeeded',failure_code=?,error=?,updated_at=? WHERE id=?").run(code,code,now(),task.id);
+        db.prepare("UPDATE ai_tasks SET status='completed',pause_requested=0,stage='committing',phase='committing',commit_status='conflict',provider_outcome='succeeded',failure_code=?,error=?,updated_at=? WHERE id=?").run(code,code,now(),task.id);
         taskEvent(db,task.id,'commit_conflict',{status:'completed',commitStatus:'conflict',providerOutcome:'succeeded',failureCode:code});
         taskEvent(db,task.id,'state',{status:'completed',stage:'committing',phase:'committing'});
       } else {
@@ -375,7 +433,7 @@ export async function runTask(db:DB,task:TaskRecord,deps:TaskDependencies={}):Pr
         const unknown=!!current&&!safe&&current.providerOutcome!=='succeeded'&&(providerStage(current.stage)||current.providerOutcome==='in_flight');
         const outcome=unknown?'unknown':safe&&(current?.checkpoint?.validated||current?.checkpoint?.batch?.current?.validated)?'succeeded':current?.providerOutcome==='succeeded'?'succeeded':'failed';
         const failureCode=unknown?'unknown_provider_outcome':shutdown&&safe?'SAFE_SHUTDOWN_REQUEUED':code;
-        const status=shutdown&&safe?'queued':'interrupted';
+        const status=shutdown&&safe?(current?.pauseRequested?'paused':'queued'):'interrupted';
         db.prepare("UPDATE ai_tasks SET status=?,phase=?,provider_outcome=?,commit_status=?,failure_code=?,error=?,updated_at=? WHERE id=?").run(status,status==='queued'?'queue_wait':current?.phase??task.phase,outcome,code==='RESULT_SYNC_CONFLICT'?'conflict':current?.commitStatus??'not_started',failureCode,status==='queued'?null:code,now(),task.id);
         taskEvent(db,task.id,'state',{status,error:status==='queued'?null:code,providerOutcome:outcome,failureCode});
       }
@@ -413,16 +471,17 @@ async function runTaskBatch(db:DB,task:TaskRecord,deps:TaskDependencies,signal:A
   const names=task.input.repositories!;
   for(let index=state.completed.length;index<names.length;index++) {
     signal.throwIfAborted();assertWorkspace(db,task.workspaceId,task.githubUserId);
+    if(pauseAtBoundary(db,task))return;
     stage('evidence');emit('progress',{completed:index,total:names.length,repository:names[index]});
     const evidence:TaskEvidence[]=state.current?.repository===names[index]?state.current.evidence:await(deps.evidence || collectTaskEvidence)(db,[names[index]],task.githubUserId,signal);
     state.current={...(state.current?.repository===names[index]?state.current:{}),repository:names[index],evidence};checkpoint({...task.checkpoint,batch:state});
     let value:Record<string,unknown>=state.current.value!;let content:string=state.current.content!;
-    if(!state.current.validated){stage('model');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight',updated_at=? WHERE id=?").run(now(),task.id);const itemTask={...task,input:{...task.input,repositories:[names[index]]}};content=await(deps.model?deps.model(itemTask,evidence,signal,emit):modelCall(db,itemTask,evidence,signal,emit));db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded',updated_at=? WHERE id=?").run(now(),task.id);signal.throwIfAborted();value=validateTaskResult(task.kind,content,evidence);if(task.kind==='details')value={...value,model:task.configSnapshot.model};state.current={...state.current,validated:true,content,value};checkpoint({...task.checkpoint,batch:state});}
+    if(!state.current.validated){stage('model');db.prepare("UPDATE ai_tasks SET provider_outcome='in_flight',updated_at=? WHERE id=?").run(now(),task.id);const itemTask={...task,input:{...task.input,repositories:[names[index]]}};content=await observedModelCall(db,itemTask,evidence,signal,emit,deps);db.prepare("UPDATE ai_tasks SET provider_outcome='succeeded',updated_at=? WHERE id=?").run(now(),task.id);signal.throwIfAborted();value=validateTaskResult(task.kind,content,evidence);if(task.kind==='details')value={...value,model:task.configSnapshot.model};state.current={...state.current,validated:true,content,value};checkpoint({...task.checkpoint,batch:state});}
     stage('saving');db.prepare("UPDATE ai_tasks SET commit_status='pending',updated_at=? WHERE id=?").run(now(),task.id);
     commitBatchItem(db,task,state,index);
   }
   const result={content:state.completed.map(r=>`${r.repository}: ${r.status}`).join('\n'),batch:state.completed,completed:state.completed.length,total:names.length};
-  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='completed',stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,failure_code=NULL,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing'});})();
+  db.transaction(()=>{db.prepare("UPDATE ai_tasks SET status='completed',pause_requested=0,stage='completed',phase='committing',commit_status='saved',provider_outcome='succeeded',result=?,failure_code=NULL,error=NULL,updated_at=? WHERE id=?").run(JSON.stringify(result),now(),task.id);taskEvent(db,task.id,'result',result);taskEvent(db,task.id,'state',{status:'completed',stage:'completed',phase:'committing'});})();
 }
 export function startTaskRunner(db:DB,deps:TaskDependencies={}):void {
   if(runner)return;running=true;

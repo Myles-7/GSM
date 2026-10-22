@@ -20,10 +20,37 @@ const record = (id: string, state: AITaskRecord['state'], extra: Partial<AITaskR
 beforeEach(() => vi.clearAllMocks());
 
 describe('unified task center', () => {
+  it('counts active batches and distinguishes partial timeout failures from the running task', () => {
+    render(<TaskCenter tasks={[record('超时核查','running',{providerOutcome:'unknown',items:[
+      {id:'1',label:'first batch',state:'failed',error:'AGY_TIMEOUT',providerOutcome:'unknown'},
+      {id:'2',label:'second batch',state:'running'},
+      {id:'3',label:'third batch',state:'pending'},
+    ]})]} chinese retry={vi.fn()} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button',{name:'仓库摘要 · 超时核查'}));
+    const detail=screen.getByRole('complementary',{name:'任务详情'});
+    expect(within(detail).getByText('完成／失败／执行中／未执行／取消: 0 / 1 / 1 / 1 / 0')).toBeVisible();
+    expect(within(detail).getByText(/进行中 · 1 个子项超时/)).toBeVisible();
+    expect(within(detail).getAllByText('模型响应超时，结果待核对').length).toBeGreaterThan(0);
+  });
+  it('shows failure diagnostics only after opening task details', () => {
+    render(<TaskCenter tasks={[record('diagnostics', 'failed', { error:'Private provider diagnostic', failureCode:'PROVIDER_ERROR' })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.queryByText(/Private provider diagnostic|PROVIDER_ERROR/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name:'Repository summaries · diagnostics' }));
+    const details = screen.getByRole('complementary', { name:'Task details' });
+    expect(within(details).getByText('Private provider diagnostic')).toBeVisible();
+    expect(within(details).getByText('Failure: PROVIDER_ERROR')).toBeVisible();
+  });
+  it('presents provider and save outcomes in the selected language', () => {
+    render(<TaskCenter tasks={[record('状态', 'failed', { items: [{ id: 'a', label: 'owner/repo', state: 'complete', providerOutcome: 'succeeded', commitStatus: 'saved' }] })]} chinese retry={vi.fn()} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '仓库摘要 · 状态' }));
+    expect(screen.getByText('模型结果: 已成功 · 保存: 已保存')).toBeVisible();
+    expect(screen.queryByText(/succeeded|not_started/)).not.toBeInTheDocument();
+  });
   it('shows phase request totals separately from overall elapsed time', () => {
     render(<TaskCenter tasks={[record('timings', 'complete', { usage: { phase_queue_wait_ms: 1200, phase_generating_ms: 3400 } })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /^All$/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Repository summaries · timings' }));
+    fireEvent.click(screen.getByText('Model configuration and execution metadata'));
     expect(screen.getByText('Waiting for execution slot · Request total')).toBeVisible();
     expect(screen.getByText('1.20s')).toBeVisible(); expect(screen.getByText('3.40s')).toBeVisible();
   });
@@ -48,6 +75,7 @@ describe('unified task center', () => {
     render(<TaskCenter tasks={[record('failure', 'failed')]} chinese={false} retry={retry} onNavigate={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Repository summaries · failure' }));
     const detail = screen.getByRole('complementary', { name: 'Task details' });
+    fireEvent.click(within(detail).getByText('Model configuration and execution metadata'));
     expect(within(detail).getByText('saved-model')).toBeVisible();
     fireEvent.change(within(detail).getByRole('combobox', { name: 'Retry configuration' }), { target: { value: 'other' } });
     expect(within(detail).getByRole('textbox', { name: 'Model' })).toHaveValue('model-two');
@@ -81,6 +109,27 @@ describe('unified task center', () => {
     fireEvent.click(screen.getByRole('button', { name: '仓库摘要 · 提交' }));
     expect(screen.getByText('正在提交已完成结果，此阶段无法取消。')).toBeVisible();
     expect(screen.getAllByText('复核回答').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText('模型配置与执行元数据'));
     expect(screen.getAllByText('未记录').length).toBeGreaterThan(0);
   });
+  it('replaces the desktop list with full task content and keeps drawer diagnostic-free', () => {
+    const open = vi.fn();
+    const { unmount } = render(<TaskCenter tasks={[record('whole-page', 'failed', { error: 'diagnostic body' }), record('another', 'running')]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Repository summaries · whole-page' }));
+    expect(screen.queryByRole('article')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Execution process' })).toBeVisible();
+    expect(screen.getByRole('complementary')).not.toHaveClass('lg:sticky');
+    unmount();
+    render(<TaskCenter compact tasks={[record('drawer', 'failed', { error: 'secret diagnostics' })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} onOpenCenter={open} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Repository summaries · drawer' }));
+    expect(open).toHaveBeenCalledWith('drawer');
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(screen.queryByText('secret diagnostics')).toBeNull();
+  });
+  it('protects unknown provider outcomes from history deletion', () => {
+    render(<TaskCenter tasks={[record('unknown-history', 'failed', { providerOutcome: 'unknown' })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Repository summaries · unknown-history' }));
+    expect(screen.getByRole('button', { name: 'Delete finished records' })).toBeDisabled();
+  });
+
 });

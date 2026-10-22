@@ -11,6 +11,7 @@ import { flushDesktopHome, getDesktopHomeSync } from '../home/desktop';
 import { hasActiveSearchFilters } from '../utils/repoSearch';
 import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
 import { aiTaskJournal } from './aiTaskJournal';
+import { acknowledgeClassificationSync, classificationSyncSettings, classificationSyncToken } from './classificationSyncReceipt';
 
 // Prevent sync loops: when we pull data FROM backend and update store,
 // the store subscription would trigger a push TO backend. This flag blocks that.
@@ -27,6 +28,7 @@ let _pushPromise: Promise<boolean> | null = null;
 let _hasPendingPush = false;
 // Track unsynced local edits so backend polling does not overwrite them.
 let _hasPendingLocalChanges = false;
+let _lastClassificationToken = '';
 
 // Debounce timer for push-to-backend
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,6 +72,7 @@ if (typeof backend.registerBeforeInitHook === 'function') {
     await waitForInFlightSync();
     _hasPendingPush = false;
     _hasPendingLocalChanges = false;
+    _lastClassificationToken = '';
     if (_debounceTimer) {
       clearTimeout(_debounceTimer);
       _debounceTimer = null;
@@ -83,6 +86,7 @@ if (typeof backend.registerBeforeInitHook === 'function') {
  * whether the backend data has changed since the last session.
  */
 export function resetSyncHashes(): void {
+  _lastClassificationToken = '';
   _lastHash.repos = '';
   _lastHash.releases = '';
   _lastHash.ai = '';
@@ -683,6 +687,23 @@ async function pushToBackend(): Promise<boolean> {
   try {
     const state = useAppStore.getState();
 
+    // Legacy endpoints validate references separately. Publish the taxonomy and
+    // memberships in the existing import transaction before ordinary shard sync.
+    const classificationToken = classificationSyncToken(state);
+    const hasClassification = (state.classificationSchemes?.generation?.generation ?? 0) > 0 || state.classificationSchemes?.technology?.initialized;
+    if (hasClassification && (_lastClassificationToken !== classificationToken || state.classificationSchemes?.generation?.syncPending)) {
+      if (state.repositories.length > 1000) throw new Error('分类同步目前支持最多 1000 个仓库');
+      await backend.importData({
+        isFullRepositorySync: true,
+        repositories: stripLocalRepositoryFields(state.repositories).map(repository => ({ ...repository,
+          owner_login: repository.owner?.login ?? '', owner_avatar_url: repository.owner?.avatar_url ?? null })),
+        settings: classificationSyncSettings(state),
+      });
+      _lastClassificationToken = classificationToken;
+      acknowledgeClassificationSync(state);
+      if (useAppStore.getState().user?.id !== state.user?.id) throw new Error('账户已变化，已停止旧账户同步');
+    }
+
     changed = _lastHash.repos !== quickHash(stripLocalRepositoryFields(state.repositories))
       || _lastHash.releases !== quickHash(state.releases) || _lastHash.ai !== quickHash(httpAIConfigs(state.aiConfigs))
       || _lastHash.webdav !== quickHash(state.webdavConfigs) || _lastHash.embedding !== quickHash(state.embeddingConfigs)
@@ -717,6 +738,7 @@ async function pushToBackend(): Promise<boolean> {
       }),
     ]);
     const [reposSync, releasesSync, aiSync, webdavSync, embeddingSync, vectorSearchSync, settingsSync] = results;
+    if (reposSync.status === 'fulfilled' && settingsSync.status === 'fulfilled') acknowledgeClassificationSync(state);
 
     const failures = results.filter(r => r.status === 'rejected');
     if (failures.length > 0) {
@@ -783,9 +805,9 @@ export async function forceSyncToBackend(options: { reportFailures?: boolean } =
     _debounceTimer = null;
   }
   _hasPendingLocalChanges = true;
-  if (!await syncToBackend() && options.reportFailures) {
-    throw new Error('Failed to sync to backend');
-  }
+  try {
+    if (!await syncToBackend() && options.reportFailures) throw new Error('Failed to sync to backend');
+  } catch (error) { if (options.reportFailures) throw error; }
 }
 
 /**
@@ -837,7 +859,7 @@ export function startAutoSync(): () => void {
       state.subcategoryOrder !== prevState.subcategoryOrder ||
       state.repositoryOrder !== prevState.repositoryOrder ||
       state.customCategories !== prevState.customCategories ||
-      state.classificationSchemes !== prevState.classificationSchemes ||
+      (state.classificationSchemes !== prevState.classificationSchemes && quickHash(classificationExport(state)) !== quickHash(classificationExport(prevState))) ||
       state.assetFilters !== prevState.assetFilters ||
       state.defaultCategoryOverrides !== prevState.defaultCategoryOverrides ||
       state.releaseSourceSettings !== prevState.releaseSourceSettings ||

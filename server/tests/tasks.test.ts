@@ -41,14 +41,14 @@ describe('durable task execution',()=>{
    await runTask(db,resumeTask(db,task.id,'workspace',42),{evidence,model});
    expect(model).toHaveBeenCalledTimes(2);expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'completed',commitStatus:'saved',failureCode:null,result:{completed:2}});
  });
- it('coalesces fine model deltas and prunes interrupted unknown streams with resync evidence',async()=>{
+ it('coalesces fine model deltas and protects interrupted unknown streams during expiry',async()=>{
    const task=createTask(db,base);
    await runTask(db,task,{model:async(_task,_evidence,_signal,emit)=>{for(let i=0;i<10000;i++)emit('content',{text:'a'});throw Error('MODEL_STREAM_INTERRUPTED');}});
    const events=taskEvents(db,task.id,0).filter(event=>event.type==='content');
    expect(events.length).toBeLessThan(5);expect(events.map(event=>event.data.text).join('')).toHaveLength(10000);
    db.prepare("UPDATE ai_tasks SET updated_at='2026-01-01T00:00:00.000Z'").run();db.prepare("UPDATE ai_task_events SET created_at='2026-01-01T00:00:00.000Z'").run();
-   expect(pruneTaskEvents(db,new Date('2026-10-17'))).toBeGreaterThan(0);
-   expect(taskEvents(db,task.id,0)[0]).toMatchObject({type:'resync',data:{task:{providerOutcome:'unknown'}}});
+   expect(pruneTaskEvents(db,new Date('2026-10-17'))).toBe(0);
+   expect(taskEvents(db,task.id,0).some(event=>event.type==='content')).toBe(true);
  });
  it('does not classify a model network failure as a safe retry',async()=>{
    const task=createTask(db,base);const model=vi.fn(async()=>{throw TypeError('fetch failed');});
@@ -83,7 +83,7 @@ describe('durable task execution',()=>{
  });
  it('is idempotent and refuses request ID reuse with changed payload',()=>{const a=createTask(db,base);expect(createTask(db,base).id).toBe(a.id);expect(()=>createTask(db,{...base,input:{prompt:'different'}})).toThrow('REQUEST_ID_CONFLICT');});
  it('rejects wrong account for creation and retrieval',()=>{const task=createTask(db,base);expect(()=>createTask(db,{...base,githubUserId:43})).toThrow('WORKSPACE_ACCOUNT_MISMATCH');expect(()=>getTask(db,task.id,'workspace',43)).toThrow('WORKSPACE_ACCOUNT_MISMATCH');});
- it('persists final result and sync message atomically; reasoning never escapes',async()=>{const task=createTask(db,base);await runTask(db,task,{model:async(_t,_e,_s,emit)=>{emit('reasoning',{text:'private thought'});emit('content',{text:'answer'});return 'answer';}});const result=getTask(db,task.id,'workspace',42);expect(result.status).toBe('completed');expect(getRecord(db,'messages',task.id)?.data?.content).toBe('answer');expect(JSON.stringify(taskEvents(db,task.id,0))).not.toContain('private thought');const seq=taskEvents(db,task.id,0)[1].seq;expect(taskEvents(db,task.id,seq).every(e=>e.seq>seq)).toBe(true);});
+ it('persists final result and sync message atomically; exposed reasoning stays separate',async()=>{const task=createTask(db,base);await runTask(db,task,{model:async(_t,_e,_s,emit)=>{emit('reasoning',{text:'private thought'});emit('content',{text:'answer'});return 'answer';}});const result=getTask(db,task.id,'workspace',42);expect(result.status).toBe('completed');expect(getRecord(db,'messages',task.id)?.data?.content).toBe('answer');expect(taskEvents(db,task.id,0).find(e=>e.type==='reasoning')?.data.text).toBe('private thought');expect(result.result?.content).toBe('answer');const seq=taskEvents(db,task.id,0)[1].seq;expect(taskEvents(db,task.id,seq).every(e=>e.seq>seq)).toBe(true);});
  it('marks unknown calls interrupted after restart without reissuing the model call',()=>{const task=createTask(db,base);db.prepare("UPDATE ai_tasks SET status='running',stage='model',checkpoint=? WHERE id=?").run(JSON.stringify({evidence:[]}),task.id);initializeTasks(db);const recovered=getTask(db,task.id,'workspace',42);expect(recovered.status).toBe('interrupted');expect(recovered.error).toBe('SERVER_RESTART_UNKNOWN_CALL');expect(resumeTask(db,task.id,'workspace',42).status).toBe('queued');});
  it.each(['queued','evidence','search'])('automatically requeues a safe %s stage after restart',stage=>{
    const task=createTask(db,base);db.prepare("UPDATE ai_tasks SET status='running',stage=? WHERE id=?").run(stage,task.id);

@@ -1,195 +1,77 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createStore, type StoreApi } from 'zustand/vanilla';
 import { CategorySidebar } from './CategorySidebar';
-import { useAppStore } from '../store/useAppStore';
+import { createInitialState } from '../store/initialState';
+import { createCategorySlice } from '../store/slices/categorySlice';
+import { createClassificationSlice } from '../store/slices/classificationSlice';
+import type { AppStoreState } from '../store/types';
 import { useRepositoryDragStore } from '../store/useRepositoryDragStore';
 import type { Repository } from '../types';
 
+const categories = [{ id: 'all', name: '全部分类', icon: '📁', keywords: [] }, { id: 'cat-b', name: '分类B', icon: '📦', keywords: [], isCustom: true }, { id: 'cat-c', name: '分类C', icon: '🧪', keywords: [], isCustom: true }];
+const mocks = vi.hoisted(() => ({ state: {} as AppStoreState, sync: vi.fn(), toast: vi.fn(), confirm: vi.fn() }));
 vi.mock('../store/useAppStore', () => ({
-  useAppStore: vi.fn(),
-  getAllCategories: () => [
-    { id: 'all', name: '全部分类', icon: '📁', keywords: [] },
-    { id: 'cat-b', name: '分类B', icon: '📦', keywords: [], isCustom: true },
-    { id: 'cat-c', name: '分类C', icon: '🧪', keywords: [], isCustom: true },
-  ],
-  sortCategoriesByOrder: (categories: { id: string }[]) => categories,
+  useAppStore: Object.assign((selector: (state: AppStoreState) => unknown) => selector(mocks.state), { getState: () => mocks.state }),
+  getAllCategories: () => categories,
+  sortCategoriesByOrder: (values: unknown) => values,
 }));
+vi.mock('../hooks/useDialog', () => ({ useDialog: () => ({ toast: mocks.toast, confirm: mocks.confirm }) }));
+vi.mock('../features/repositories/hooks/useCategorySyncActions', () => ({ useCategorySyncActions: () => ({ forceSyncToBackend: mocks.sync }) }));
+vi.mock('../features/repositories/hooks/syncClassificationEdit', () => ({ syncClassificationEdit: mocks.sync }));
+vi.mock('./CategoryEditModal', () => ({ CategoryEditModal: () => null }));
+vi.mock('./ClassificationSchemeSwitch', () => ({ ClassificationSchemeSwitch: () => null }));
+vi.mock('../features/settings/hooks/useLocalVectorPendingCount', () => ({ useLocalVectorPendingCount: () => 0 }));
 
-const syncMocks = vi.hoisted(() => ({
-  forceSyncToBackend: vi.fn(),
-  toast: vi.fn(),
-  confirm: vi.fn(),
-}));
-
-vi.mock('../hooks/useDialog', () => ({
-  useDialog: () => ({ toast: syncMocks.toast, confirm: syncMocks.confirm }),
-}));
-
-vi.mock('../features/repositories/hooks/useCategorySyncActions', () => ({
-  useCategorySyncActions: () => syncMocks,
-}));
-
-const categorizedRepo: Repository = {
-  id: 1,
-  name: 'example-repository',
-  full_name: 'owner/example-repository',
-  description: 'Repository description',
-  html_url: 'https://github.com/owner/example-repository',
-  stargazers_count: 128,
-  forks_count: 3,
-  forks: 3,
-  language: 'TypeScript',
-  created_at: '2026-01-01T00:00:00.000Z',
-  updated_at: '2026-01-02T00:00:00.000Z',
-  pushed_at: '2026-01-03T00:00:00.000Z',
-  owner: {
-    login: 'owner',
-    avatar_url: 'https://example.com/avatar.png',
-  },
-  topics: ['test'],
-  ai_platforms: ['web', 'cli'],
-  custom_category: '分类B',
-  category_locked: true,
-  category_id: 'cat-b',
-  category_candidates: ['cat-b', 'cat-c'],
-};
-
-const storeState = {
-  customCategories: [],
-  hiddenDefaultCategoryIds: [],
-  defaultCategoryOverrides: {},
-  categoryOrder: [],
-  collapsedSidebarCategoryCount: 6,
-  categoryMatchMode: 'effective' as const,
-  deleteCustomCategory: vi.fn(),
-  hideDefaultCategory: vi.fn(),
-  showDefaultCategory: vi.fn(),
-  language: 'zh' as const,
-  updateRepository: vi.fn(),
-  isSidebarCollapsed: false,
-  setSidebarCollapsed: vi.fn(),
-  repositories: [] as Repository[],
-  assignRepositoryCategory: vi.fn(),
-};
-
-const mockUseAppStore = vi.mocked(useAppStore);
-
+const categorizedRepo = { id: 1, name: 'example-repository', full_name: 'owner/example-repository', custom_category: '分类B', category_locked: true, category_id: 'cat-b', subcategory_id: null, category_candidates: ['cat-b', 'cat-c'] } as Repository;
+let store: StoreApi<AppStoreState>;
 const renderSidebar = (repositories: Repository[]) => {
-  storeState.repositories = repositories;
-  return render(
-    <CategorySidebar
-      repositories={repositories}
-      selectedCategory="cat-b"
-      onCategorySelect={vi.fn()}
-    />
-  );
+  store.setState({ repositories });
+  return render(<CategorySidebar repositories={repositories} selectedCategory="cat-b" onCategorySelect={vi.fn()} />);
 };
-
 const dropOnCategory = async (categoryName: string, repoId: string) => {
-  const target = screen.getByText(categoryName);
-  const dataTransfer = { getData: vi.fn(() => repoId) };
-  await act(async () => {
-    fireEvent.drop(target, { dataTransfer });
-  });
+  const dataTransfer = { types: ['application/x-gsm-repository-id'], getData: (type: string) => type === 'application/x-gsm-repository-id' ? repoId : '' };
+  await act(async () => { fireEvent.drop(screen.getByText(categoryName), { dataTransfer }); });
 };
-
 beforeEach(() => {
-  vi.clearAllMocks();
-  useRepositoryDragStore.getState().endDrag();
-  syncMocks.forceSyncToBackend.mockReset().mockResolvedValue(undefined);
-  syncMocks.confirm.mockResolvedValue(true);
-  storeState.updateRepository.mockImplementation((repository: Repository) => {
-    storeState.repositories = storeState.repositories.map(repo => repo.id === repository.id ? repository : repo);
-  });
-  storeState.assignRepositoryCategory.mockImplementation((id: number, categoryId: string | null) => {
-    storeState.repositories = storeState.repositories.map(repo => repo.id === id ? { ...repo, category_id: categoryId, subcategory_id: null } : repo);
-  });
-  mockUseAppStore.mockImplementation(((selector?: (state: typeof storeState) => unknown) => (
-    selector ? selector(storeState) : storeState
-  )) as typeof useAppStore);
-  Object.assign(mockUseAppStore, { getState: () => storeState });
+  vi.clearAllMocks(); useRepositoryDragStore.getState().endDrag(); mocks.sync.mockReset().mockResolvedValue(undefined); mocks.confirm.mockResolvedValue(true);
+  store = createStore<AppStoreState>((set, get) => ({ ...createInitialState(), ...createCategorySlice(set, get), ...createClassificationSlice(set, get) } as AppStoreState));
+  store.setState({ user: { id: 17 } as never, language: 'zh', customCategories: categories.filter(category => category.id !== 'all'), hiddenDefaultCategoryIds: [], defaultCategoryOverrides: {}, isSidebarCollapsed: false, setSidebarCollapsed: vi.fn(), setCurrentView: vi.fn() });
+  mocks.state = store.getState(); store.subscribe(state => { mocks.state = state; });
 });
-
 describe('CategorySidebar drop-to-uncategorize (issue #353 suggestion)', () => {
   it('moves a confirmed locked repository to pending, preserves suggestions, and clears its lock atomically', async () => {
-    renderSidebar([categorizedRepo]);
-
-    await dropOnCategory('全部分类', String(categorizedRepo.id));
-
-    expect(syncMocks.confirm).toHaveBeenCalledOnce();
-    expect(storeState.updateRepository).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category_id: null }), { overrideCategoryLock: true });
-    expect(storeState.repositories[0]).toMatchObject({ category_id: null, category_locked: false, category_candidates: ['cat-b', 'cat-c'] });
-    expect(syncMocks.forceSyncToBackend).toHaveBeenCalledOnce();
-    expect(useRepositoryDragStore.getState().isDragging).toBe(false);
+    renderSidebar([categorizedRepo]); useRepositoryDragStore.getState().startDrag();
+    await dropOnCategory('全部分类', '1');
+    expect(mocks.confirm).toHaveBeenCalledOnce();
+    expect(store.getState().repositories[0]).toMatchObject({ category_id: null, subcategory_id: null, category_locked: false, category_candidates: ['cat-b', 'cat-c'] });
+    expect(mocks.sync).toHaveBeenCalledOnce(); expect(useRepositoryDragStore.getState().isDragging).toBe(false);
   });
-
-  it('本就无分类的仓库拖到「全部分类」时不写入不同步', async () => {
-    renderSidebar([{ ...categorizedRepo, category_id: null, custom_category: '', category_locked: false }]);
-
-    await dropOnCategory('全部分类', String(categorizedRepo.id));
-
-    expect(storeState.updateRepository).not.toHaveBeenCalled();
-    expect(syncMocks.forceSyncToBackend).not.toHaveBeenCalled();
+  it('does not write or sync when the repository is already pending', async () => {
+    renderSidebar([{ ...categorizedRepo, category_id: null, custom_category: '', category_locked: false }]); const before = store.getState();
+    await dropOnCategory('全部分类', '1');
+    expect(store.getState()).toBe(before); expect(mocks.sync).not.toHaveBeenCalled();
   });
-
-  it('无锁定分类且 AI/默认分类均未命中的仓库拖到「全部分类」时保持 no-op（保留 undefined 以便后续 AI 归类）', async () => {
-    const neverMatchedRepo: Repository = {
-      ...categorizedRepo,
-      id: 2,
-      name: 'zzz-project',
-      full_name: 'owner/zzz-project',
-      description: '',
-      language: 'Rust',
-      topics: [],
-      ai_tags: undefined,
-      ai_summary: undefined,
-      custom_category: undefined,
-      category_locked: false,
-      category_id: null,
-    };
-    renderSidebar([neverMatchedRepo]);
-
+  it('keeps an unmatched pending record unchanged for later AI classification', async () => {
+    renderSidebar([{ ...categorizedRepo, id: 2, category_id: null, custom_category: undefined, category_locked: false }]); const before = store.getState();
     await dropOnCategory('全部分类', '2');
-
-    expect(storeState.updateRepository).not.toHaveBeenCalled();
-    expect(syncMocks.forceSyncToBackend).not.toHaveBeenCalled();
+    expect(store.getState()).toBe(before); expect(store.getState().repositories[0].custom_category).toBeUndefined(); expect(mocks.sync).not.toHaveBeenCalled();
   });
-
   it('assigns a single explicit category id after confirming a locked reassignment', async () => {
-    renderSidebar([categorizedRepo]);
-
-    await dropOnCategory('分类C', String(categorizedRepo.id));
-
-    expect(storeState.updateRepository).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ category_id: 'cat-c' }), { overrideCategoryLock: true });
-    expect(storeState.repositories[0]).toMatchObject({ category_id: 'cat-c', category_locked: true });
-    expect(syncMocks.forceSyncToBackend).toHaveBeenCalledOnce();
+    renderSidebar([categorizedRepo]); await dropOnCategory('分类C', '1');
+    expect(store.getState().repositories[0]).toMatchObject({ category_id: 'cat-c', category_locked: true }); expect(mocks.sync).toHaveBeenCalledOnce();
   });
-
-  it('同步失败时回滚为原始仓库数据', async () => {
-    syncMocks.forceSyncToBackend.mockRejectedValue(new Error('sync failed'));
-    renderSidebar([categorizedRepo]);
-
-    await dropOnCategory('全部分类', String(categorizedRepo.id));
-
-    // 回滚：以原始仓库对象调用 updateRepository
-    expect(storeState.updateRepository).toHaveBeenCalledTimes(2);
-    const rollback = storeState.updateRepository.mock.calls[1][0] as Repository;
-    expect(rollback.custom_category).toBe('分类B');
-    expect(rollback.category_locked).toBe(true);
-    expect(syncMocks.toast).toHaveBeenCalledWith('同步到后端失败，已恢复分类更改。', 'error');
+  it('retains the committed local membership and pending sync marker when delivery fails', async () => {
+    mocks.sync.mockRejectedValue(new Error('sync failed')); renderSidebar([categorizedRepo]); await dropOnCategory('全部分类', '1');
+    expect(store.getState().repositories[0]).toMatchObject({ category_id: null, category_locked: false });
+    expect(store.getState().classificationSchemes?.generation?.syncPending).toBe(true);
+    expect(mocks.toast).toHaveBeenCalledWith('已保存在本地，同步失败后可重试。', 'error');
   });
-
   it('does not write or sync when the lock confirmation is cancelled', async () => {
-    syncMocks.confirm.mockResolvedValue(false);
-    renderSidebar([categorizedRepo]);
-    await dropOnCategory('分类C', '1');
-    expect(storeState.updateRepository).not.toHaveBeenCalled();
-    expect(storeState.assignRepositoryCategory).not.toHaveBeenCalled();
-    expect(syncMocks.forceSyncToBackend).not.toHaveBeenCalled();
+    mocks.confirm.mockResolvedValue(false); renderSidebar([categorizedRepo]); const before = store.getState(); await dropOnCategory('分类C', '1');
+    expect(store.getState()).toBe(before); expect(mocks.sync).not.toHaveBeenCalled();
   });
-
   it('includes a pending classification entry with the pending count', () => {
-    renderSidebar([{ ...categorizedRepo, category_id: null }]);
-    expect(screen.getByText('待分类').closest('button')).toHaveTextContent('1');
+    renderSidebar([{ ...categorizedRepo, category_id: null }]); expect(screen.getByText('待分类').closest('button')).toHaveTextContent('1');
   });
 });

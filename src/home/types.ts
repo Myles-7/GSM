@@ -33,6 +33,9 @@ export interface HomeTask {
   commitStatus?: 'not_started' | 'pending' | 'saved' | 'conflict' | 'failed';
   providerOutcome?: 'not_started' | 'in_flight' | 'succeeded' | 'failed' | 'unknown';
   failureCode?: string | null;
+  pauseRequested?: boolean;
+  pinned?: boolean;
+  diagnostics?: { cumulative: true; providerRequests: number; contentBytes: number; reasoningBytes: number; storedBytes: number; droppedEvents: number; truncated: boolean };
   capabilities?: { pause: boolean; cancel: boolean; resume: 'safe' | 'new-provider-call' | 'unsupported' };
   input: Record<string, unknown>; result?: Record<string, unknown> | null;
   error?: string | null; createdAt: string; updatedAt: string; lastSeq?: number;

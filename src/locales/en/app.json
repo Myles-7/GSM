@@ -1,4 +1,5 @@
 {
+  "shell": { "loading": "Loading…" },
   "localAgentMcp": {
     "backendTitle": "Backend Library Connection",
     "title": "Desktop Organization Connection",

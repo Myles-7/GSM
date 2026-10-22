@@ -55,8 +55,18 @@ vi.mock('./vectorSearchService', () => ({
 }));
 
 import { runRepositoryChatTurn } from './repositoryChatRunner';
-import { runModelRepositoryChatTurn } from './repositoryChatService';
+import { runModelRepositoryChatTurn, isTransientAgentError } from './repositoryChatService';
 import { bindFileCacheIdentity } from './pinnedFileCache';
+
+it('never automatically retries dispatched or uncertain provider calls in either agent loop', () => {
+  for (const error of [new Error('AGY_TIMEOUT'), new Error('AGY_UNKNOWN_PROVIDER_OUTCOME'),
+    Object.assign(new Error('upstream network timeout'), { providerOutcome: 'unknown' }),
+    Object.assign(new Error('AGY_RATE_LIMIT'), { details: { sent: true } }), new DOMException('timed out', 'TimeoutError')]) {
+    expect(isTransientAgentError(error)).toBe(false);
+  }
+  expect(isTransientAgentError(new Error('AGY_INIT_TIMEOUT'))).toBe(true);
+  expect(isTransientAgentError(Object.assign(new Error('AGY_RATE_LIMIT'), { details: { sent: false } }))).toBe(true);
+});
 
 describe('research latency regression', () => {
   beforeEach(() => {
@@ -104,6 +114,8 @@ describe('research latency regression', () => {
       expect(result.quality).toBe('unreviewed');
       expect(result.missing).toEqual([]);
       expect(mocks.reviewAnswer.mock.calls[0][0].signal.aborted).toBe(true);
+      // Journal and observation cache intentionally debounce persistence after completion.
+      await vi.advanceTimersByTimeAsync(3000);
       expect(vi.getTimerCount()).toBe(0);
     } finally { mocks.reviewAnswer.mockReset(); vi.useRealTimers(); }
   });

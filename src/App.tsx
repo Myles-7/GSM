@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useEffect, useMemo } from 'react';
 import { LoginScreen } from './components/LoginScreen';
 import { Header } from './components/Header';
 import { AITaskPanel } from './components/AITaskPanel';
@@ -6,9 +6,6 @@ import { usePageTranslationLifecycle } from './hooks/usePageTranslation';
 import { useWorkbenchLifecycle } from './features/ai-workbench/hooks/useWorkbenchLifecycle';
 import { useCustomDiscoveryLifecycle } from './features/discovery/hooks/useCustomDiscoveryLifecycle';
 import { useHtmlReadingLifecycle } from './features/lifecycle/hooks/useHtmlReadingLifecycle';
-import { SearchBar } from './components/SearchBar';
-import { RepositoryList } from './components/RepositoryList';
-import { CategorySidebar } from './components/CategorySidebar';
 
 import { DebugModeIndicator } from './components/DebugModeIndicator';
 
@@ -16,7 +13,6 @@ import { BackToTop } from './components/BackToTop';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SyncModeChoiceModal } from './components/SyncModeChoiceModal';
 import { useAppStore } from './store/useAppStore';
-import { useClassificationStore } from './store/useClassificationStore';
 import { selectAppShellState } from './store/selectors';
 import { useShallow } from 'zustand/react/shallow';
 import { applyThemePreset } from './lib/themePresets';
@@ -28,9 +24,10 @@ import { UpdateNotificationBanner } from './components/UpdateNotificationBanner'
 import { ListsPushIndicator } from './components/ListsPushIndicator';
 import { PluginPageHost } from './components/PluginPageHost';
 import { useBackendLifecycle } from './features/lifecycle/hooks/useBackendLifecycle';
-import type { AppState } from './types';
-import { hasActiveSearchFilters } from './utils/repoSearch';
 import { isElectron, loadEncryptedXAuthViaDesktop } from './services/electronProxy';
+import { RepositoriesView } from './features/repositories/components/RepositoriesView';
+import { useT } from './i18n/useT';
+import { useAIClassificationBootstrap } from './features/lifecycle/hooks/useAIClassificationBootstrap';
 
 const LazyReleaseTimeline = React.lazy(() =>
   import('./components/ReleaseTimeline').then((module) => ({ default: module.ReleaseTimeline }))
@@ -54,74 +51,20 @@ const LazyDailyReading = React.lazy(() =>
   import('./components/reading/DailyReadingView').then((module) => ({ default: module.DailyReadingView }))
 );
 
-const ViewLoadingFallback: React.FC = () => (
-  <div className="flex min-h-[12rem] items-center justify-center bg-background text-foreground" role="status" aria-live="polite">
-    <div className="animate-pulse text-lg font-medium text-foreground">Loading...</div>
-  </div>
-);
+const ViewLoadingFallback: React.FC = () => {
+  const t = useT('app');
+  return (
+    <div className="flex min-h-[12rem] items-center justify-center bg-background text-foreground" role="status" aria-live="polite">
+      <div className="animate-pulse text-lg font-medium text-foreground">{t('shell.loading')}</div>
+    </div>
+  );
+};
 
 const LazyViewBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <ErrorBoundary>
     <Suspense fallback={<ViewLoadingFallback />}>{children}</Suspense>
   </ErrorBoundary>
 );
-
-/**
- * Main repository view combining category sidebar, search bar, and repository list.
- * Switches between search results and full list based on active search filters.
- */
-const RepositoriesView = React.memo(({
-  repositories,
-  searchResults,
-  searchFilters,
-  selectedCategory,
-  onCategorySelect
-}: {
-  repositories: AppState['repositories'];
-  searchResults: AppState['searchResults'];
-  searchFilters: AppState['searchFilters'];
-  selectedCategory: string;
-  onCategorySelect: (category: string) => void;
-}) => {
-  const classification = useClassificationStore(useShallow(state => ({ repositories: state.repositories, searchResults: state.searchResults, selectedCategory: state.selectedCategory, select: state.setSelectedCategory })));
-  repositories = classification.repositories;
-  searchResults = classification.searchResults;
-  selectedCategory = classification.selectedCategory;
-  onCategorySelect = classification.select;
-  const isActive = hasActiveSearchFilters(searchFilters);
-  const similarView = useClassificationStore((state) => state.similarView);
-  const exitSimilarView = useAppStore((state) => state.exitSimilarView);
-
-  // 相似视图下用户发起搜索时，自动退出相似视图（搜索优先于相似浏览，避免界面歧义）
-  useEffect(() => {
-    if (similarView?.active && isActive) {
-      exitSimilarView();
-    }
-  }, [similarView?.active, isActive, exitSimilarView]);
-
-  // 相似仓库视图激活时，列表数据源切换为相似结果，且忽略分类过滤
-  const listRepositories = similarView?.active
-    ? similarView.similarResults
-    : (isActive ? searchResults : repositories);
-
-  return (
-    <div className="flex flex-col gap-4 lg:flex-row lg:gap-6">
-      <CategorySidebar
-        repositories={repositories}
-        selectedCategory={selectedCategory}
-        onCategorySelect={onCategorySelect}
-      />
-      <div className="min-w-0 flex-1 space-y-3">
-        <SearchBar />
-        <RepositoryList
-          repositories={listRepositories}
-          selectedCategory={similarView?.active ? 'all' : selectedCategory}
-        />
-      </div>
-    </div>
-  );
-});
-RepositoriesView.displayName = 'RepositoriesView';
 
 const ReleasesView = React.memo(() => (
   <LazyViewBoundary>
@@ -166,20 +109,16 @@ function App() {
   const {
     isAuthenticated,
     currentView,
-    selectedCategory,
     theme,
     themePreset,
     themeTokens,
     language,
     hasHydrated,
-    searchResults,
-    searchFilters,
-    repositories,
-    setSelectedCategory,
   } = useAppStore(useShallow(selectAppShellState));
 
   useAutoUpdateCheck();
   useBackendLifecycle(hasHydrated);
+  useAIClassificationBootstrap();
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -250,26 +189,10 @@ function App() {
     void changeAppLanguage(language);
   }, [language]);
 
-  const handleCategorySelect = useCallback((category: string) => {
-    // 相似仓库视图下点击分类 = 离开相似视图并切换到该分类，避免交互歧义
-    if (useAppStore.getState().similarView?.active) {
-      useAppStore.getState().exitSimilarView();
-    }
-    setSelectedCategory(category);
-  }, [setSelectedCategory]);
-
   const currentViewContent = useMemo(() => {
     switch (currentView) {
       case 'repositories':
-        return (
-          <RepositoriesView
-            repositories={repositories}
-            searchResults={searchResults}
-            searchFilters={searchFilters}
-            selectedCategory={selectedCategory}
-            onCategorySelect={handleCategorySelect}
-          />
-        );
+        return <RepositoriesView />;
       case 'gists':
         return <GistsView />;
       case 'releases':
@@ -291,15 +214,13 @@ function App() {
       default:
         return null;
     }
-  }, [currentView, repositories, searchResults, searchFilters, selectedCategory, handleCategorySelect]);
+  }, [currentView]);
 
   // Show loading state while store is hydrating to ensure correct theme is applied
   if (!hasHydrated) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <div className="animate-pulse text-lg font-medium text-foreground">
-          Loading...
-        </div>
+        <ViewLoadingFallback />
       </div>
     );
   }

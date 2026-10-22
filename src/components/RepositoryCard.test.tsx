@@ -32,10 +32,6 @@ vi.mock('../features/repositories/hooks/useRepositoryCardActions', () => ({
   useRepositoryCardActions: () => actionMocks.actions,
 }));
 
-vi.mock('./FloatingTooltip', () => ({
-  FloatingTooltip: () => null,
-}));
-
 vi.mock('./RepositoryEditModal', () => ({
   RepositoryEditModal: ({
     isOpen,
@@ -224,6 +220,25 @@ describe('RepositoryCard view modes', () => {
     expect(screen.getByText('Custom first')).toHaveClass('line-clamp-4');
     expect(screen.queryByText('AI second')).not.toBeInTheDocument();
     expect(screen.queryByText('four')).not.toBeInTheDocument();
+  });
+  it('merges facets with existing tags into three alias-deduplicated labels and preserves search highlighting', () => {
+    const repo: Repository = { ...repository, custom_tags: ['JS'], ai_platforms: ['JavaScript', 'React', 'Linux', 'Windows'] };
+    render(<TooltipProvider><RepositoryCard repository={repo} allCategories={[]} searchQuery="React" /></TooltipProvider>);
+    const labels = screen.getByLabelText('标签与分类特征');
+    expect(labels.children).toHaveLength(3);
+    expect(labels.textContent).toBe('JSReactLinux');
+    expect(labels.querySelector('mark')).toHaveTextContent('React');
+    expect(screen.queryByText('JavaScript')).not.toBeInTheDocument();
+    expect(screen.queryByText('Windows')).not.toBeInTheDocument();
+  });
+  it('hides the whole label row when tags are disabled while retaining classification badges', () => {
+    storeState.repositoryCardFields.tags = false;
+    const repo: Repository = { ...repository, category_id: 'web', custom_tags: ['Hidden custom tag'], ai_platforms: ['Hidden platform'] };
+    render(<TooltipProvider><RepositoryCard repository={repo} allCategories={[]} /></TooltipProvider>);
+    expect(screen.queryByLabelText('标签与分类特征')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hidden custom tag')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hidden platform')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('仓库分类依据')).toBeInTheDocument();
   });
   it('keeps Ask AI, GitHub and More directly accessible in list view', async () => {
     const user = userEvent.setup();

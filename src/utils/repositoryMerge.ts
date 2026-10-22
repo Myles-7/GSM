@@ -83,7 +83,7 @@ export function mergeRepositoriesPreservingLocalMetadata(
     }
 
     const mergedRepository: Repository = { ...incomingRepository };
-    for (const field of ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details', 'classifications'] as const) {
+    for (const field of ['category_id', 'subcategory_id', 'category_candidates', 'category_legacy', 'ai_details', 'classifications', 'classificationInsights'] as const) {
       if (incomingRepository[field] === undefined && localRepository[field] !== undefined) {
         Object.assign(mergedRepository, { [field]: localRepository[field] });
       }

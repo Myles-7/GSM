@@ -24,15 +24,17 @@ export async function organizationRequest<T>(work: (signal: AbortSignal) => Prom
       }
       if (organizationAuthError(error)) throw error;
       if (error instanceof OrganizationBlockedError || organizationFatalError(error)) throw error;
+      const carrier=error as {providerOutcome?:string;details?:{sent?:boolean;providerOutcome?:string}}|null;
+      if(['unknown','in_flight','succeeded'].includes(carrier?.providerOutcome??carrier?.details?.providerOutcome??'')||carrier?.details?.sent===true)throw new OrganizationBlockedError('UNKNOWN_PROVIDER_OUTCOME',error instanceof Error?error.message:String(error));
       // Only admission/init/rate rejection proves that no generation completed.
       // A sent request timeout/network disconnect may already have billed.
       if (error instanceof Error && /AGY_(?:TIMEOUT|CLEANUP_TIMEOUT|PROCESS_EXIT_TIMEOUT)|network|fetch|deadline|socket|ECONN/i.test(`${error.name} ${error.message}`)) {
         throw new OrganizationBlockedError('UNKNOWN_PROVIDER_OUTCOME', error.message);
       }
       await onFailure?.(error);
-      const agyRetryable = error instanceof Error && /^AGY_(?:BUSY|RATE_LIMIT|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(error.message);
+      const agyRetryable = error instanceof Error && (/^AGY_(?:BUSY|INIT_TIMEOUT|QUEUE_TIMEOUT)$/.test(error.message)||error.message==='AGY_RATE_LIMIT'&&carrier?.details?.sent===false);
       const status = error instanceof AIRequestError ? error.status : 0;
-      const retryable = agyRetryable || [408, 429, 500, 502, 503, 504].includes(status) || error instanceof Error && /network|fetch|timeout|deadline|socket|ECONN/i.test(`${error.name} ${error.message}`);
+      const retryable = agyRetryable || status===429 || carrier?.details?.sent===false && [408, 500, 502, 503, 504].includes(status) || error instanceof Error && /network|fetch|timeout|deadline|socket|ECONN/i.test(`${error.name} ${error.message}`);
       if (!retryable) throw error;
       if (retry >= Math.max(1, Math.min(3, maxAttempts)) - 1) throw new OrganizationBlockedError(error instanceof Error && /(?:TIMEOUT|deadline|timeout)/i.test(`${error.name} ${error.message}`) ? 'MODEL_TIMEOUT' : 'CONNECTION_FAILED', error instanceof Error ? error.message : String(error));
       await waitForRequest(getRetryAfterMsFromError(error) ?? 500 * 2 ** retry, signal);

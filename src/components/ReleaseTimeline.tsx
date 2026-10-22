@@ -6,7 +6,7 @@ import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Package, Bell, Search, X, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, LayoutGrid, ChevronDown, CheckCircle, Settings } from 'lucide-react';
+import { Package, Search, X, RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, LayoutGrid, ChevronDown, CheckCircle, Settings } from 'lucide-react';
 import { Release } from '../types';
 import { useReleaseTimelineActions } from '../features/releases/hooks/useReleaseTimelineActions';
 import { useAppStore } from '../store/useAppStore';
@@ -449,13 +449,6 @@ export const ReleaseTimeline: React.FC = () => {
          <h3 className="text-lg font-medium text-foreground dark:text-foreground mb-2">
           {subscribedRepoCount === 0 ? t('releaseTimeline.no-release-subscriptions') : t('releaseTimeline.no-recent-releases')}
         </h3>
-             <p className="text-muted-foreground dark:text-muted-foreground mb-6 max-w-md mx-auto">
-               {subscribedRepoCount === 0
-                 ? t('releaseTimeline.subscribe-to-repository-releases-from-the-reposi')
-                 : t('releaseTimeline.you-re-subscribed-to-subscribedrepocount-reposit', { subscribedRepoCount: subscribedRepoCount })
-               }
-             </p>
-        
         {/* Pre-release toggle + Refresh button */}
         {subscribedRepoCount > 0 && (
            <div className="mb-6 flex flex-col items-center gap-3">
@@ -498,46 +491,9 @@ export const ReleaseTimeline: React.FC = () => {
           </div>
         )}
 
-        {subscribedRepoCount === 0 && (
-          <div className="bg-muted dark:bg-muted/20 border border-border dark:border-border rounded-xl p-6 max-w-lg mx-auto">
-            <div className="flex items-start space-x-4">
-              <div className="flex-shrink-0 w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center">
-                <Bell className="w-6 h-6 text-primary " />
-              </div>
-              <div className="flex-1">
-                <h3 className="font-semibold text-muted-foreground dark:text-muted-foreground mb-2">
-                  {t('releaseTimeline.subscribe-to-repository-releases')}
-                </h3>
-                <p className="text-sm text-muted-foreground dark:text-muted-foreground mb-3 leading-relaxed">
-                  {t('releaseTimeline.subscribe-to-receive-the-latest-release-updates')}
-                </p>
-                <div className="bg-card dark:bg-card/60 rounded-lg p-3 text-sm">
-                  <div className="flex items-center space-x-2 text-muted-foreground dark:text-muted-foreground font-medium mb-2">
-                    <span className="w-5 h-5 bg-primary text-primary-foreground rounded-full flex items-center justify-center text-xs">1</span>
-                    <span>{t('releaseTimeline.go-to-repositories')}</span>
-                  </div>
-                  <div className="flex items-center space-x-2 text-muted-foreground dark:text-muted-foreground font-medium">
-                    <span className="w-5 h-5 bg-primary text-primary-foreground rounded-full flex items-center justify-center text-xs">2</span>
-                    <span>{t('releaseTimeline.click-the-bell-icon-on-any-repository-card')}</span>
-                  </div>
-                </div>
-                <div className="mt-4 rounded-lg bg-card dark:bg-card/60 p-3 text-sm text-muted-foreground dark:text-muted-foreground">
-                  <p className="mb-3">
-                    {t('releaseTimeline.you-can-also-use-watch-repository-sync-or-a-cust')}
-                  </p>
-                  <Button
-                    onClick={() => setIsReleaseSourceSettingsOpen(true)}
-                    className="inline-flex items-center space-x-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                    title={t('releaseTimeline.release-source-settings')}
-                  >
-                    <Settings className="w-4 h-4" />
-                    <span>{t('releaseTimeline.configure-release-sources')}</span>
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {subscribedRepoCount === 0 && <Button onClick={() => setIsReleaseSourceSettingsOpen(true)} className="mt-4" title={t('releaseTimeline.release-source-settings')}>
+          <Settings className="mr-2 h-4 w-4" />{t('releaseTimeline.configure-release-sources')}
+        </Button>}
       </div>
       <ReleaseSourceSettingsModal
         isOpen={isReleaseSourceSettingsOpen}

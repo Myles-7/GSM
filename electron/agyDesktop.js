@@ -137,11 +137,30 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
       const value = await work(cwd);
       lease = value?.cleanupSettled;
       return value;
-    } catch (error) { lease = error.cleanupSettled; if (error.code === 'CLEANUP_TIMEOUT' && !lease) lease = new Promise(() => {}); throw error; }
+    } catch (error) {
+      lease = error.cleanupSettled;
+      if (error.code === 'CLEANUP_TIMEOUT' && !lease) {
+        lease = new Promise(resolve => { const t = setTimeout(resolve, 15000); t.unref?.(); });
+      }
+      throw error;
+    }
     finally {
       if (lease) {
         const entry = { cwd, settled: false }; controlCleanup.add(entry);
-        void lease.then(async () => { entry.settled = true; await cleanupWorkspace(cwd); controlCleanup.delete(entry); }, () => {}).catch(() => {});
+        let completed = false;
+        let timer;
+        const release = async () => {
+          if (completed) return;
+          completed = true;
+          clearTimeout(timer);
+          entry.settled = true;
+          try { await cleanupWorkspace(cwd); }
+          catch { onWarning('CLEANUP_IO_FAILED'); }
+          finally { controlCleanup.delete(entry); }
+        };
+        timer = setTimeout(() => { void release(); }, 15000);
+        timer.unref?.();
+        void lease.then(() => { entry.settled = true; return release(); }, () => { entry.settled = true; return release(); });
       } else {
         try { await cleanupWorkspace(cwd); }
         catch { controlCleanup.add({ cwd, settled: true }); onWarning('CLEANUP_IO_FAILED'); }
@@ -327,7 +346,10 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
           model: profile.model || undefined, effort: profile.effort, signal, timeoutMs: profile.timeoutSeconds * 1000,
           onInit: init => { toolCount = init.tools.length; }, onPromptSent: () => { promptsSent++; } });
           cleanupSettled = result.cleanupSettled; return result;
-          } catch (error) { cleanupSettled = error.cleanupSettled ?? (error.code === 'CLEANUP_TIMEOUT' ? new Promise(() => {}) : undefined); throw error; }
+          } catch (error) {
+            cleanupSettled = error.cleanupSettled ?? (error.code === 'CLEANUP_TIMEOUT' ? new Promise(resolve => { const t = setTimeout(resolve, 15000); t.unref?.(); }) : undefined);
+            throw error;
+          }
         });
         const parsed = JSON.parse(result.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, ''));
         if (parsed.answer !== '连接成功' || !Array.isArray(parsed.missing) || parsed.missing.length) throw new AgyError('SCHEMA_MISMATCH');
@@ -427,6 +449,8 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
           prompt: `TASK REQUIREMENTS:\n${request.system}\n\nINPUT:\n${request.user}`,
           onPromptSent: () => { onEvent({ type: 'sent' }); onEvent({ type: 'running' }); },
           onText: text => onEvent({ type: 'text', text }),
+          onReasoning: text => onEvent({ type: 'reasoning', text }),
+          onObservation: observation => onEvent({ type: 'observation', observation }),
           onCleanup: () => onEvent({ type: 'cleanup' }),
           onWarning: code => onEvent({ type: 'warning', code }),
         }) : workspaceOperation(cwd => runtime({ executable: found.path, cwd, signal,
@@ -435,6 +459,8 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
            model: profile.model || undefined, effort: profile.effort, timeoutMs: profile.timeoutSeconds * 1000,
            onPromptSent: () => { onEvent({ type: 'sent' }); onEvent({ type: 'running' }); },
           onText: text => onEvent({ type: 'text', text }),
+          onReasoning: text => onEvent({ type: 'reasoning', text }),
+          onObservation: observation => onEvent({ type: 'observation', observation }),
           onCleanup: () => onEvent({ type: 'cleanup' }),
           onWarning: code => onEvent({ type: 'warning', code }),
         }), code => onEvent({ type: 'warning', code })));
