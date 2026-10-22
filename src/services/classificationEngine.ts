@@ -56,33 +56,37 @@ export function classificationEvidence(repository: Repository, scheme: Classific
   }
   return [...unique.values()].sort((a, b) => a.field.localeCompare(b.field) || normalize(a.value).localeCompare(normalize(b.value)));
 }
-const termPatterns = new Map<string, string | RegExp>();
-function includes(text: string, term: string): boolean {
+interface CompiledTerm { key: string; pattern: string | RegExp; generic: boolean; exactLanguage: boolean }
+// Only catalog terms are cached; repository content never enters this cache.
+const termPatterns = new Map<string, CompiledTerm>();
+function compileTerm(term: string): CompiledTerm {
   const cached = termPatterns.get(term);
-  if (cached) return typeof cached === 'string' ? text.includes(cached) : cached.test(text);
+  if (cached) return cached;
   const key = normalize(term);
-  if (/^[a-z0-9 .+#]+$/.test(key)) {
-    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`(?:^|[^a-z0-9+#])${escaped}(?=$|[^a-z0-9+#])`, 'i');
-    termPatterns.set(term, pattern);
-    return pattern.test(text);
-  }
-  termPatterns.set(term, key);
-  return text.includes(key);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = /^[a-z0-9 .+#]+$/.test(key)
+    ? new RegExp(`(?:^|[^a-z0-9+#])${escaped}(?=$|[^a-z0-9+#])`, 'i') : key;
+  const compiled = { key, pattern, generic: generic.has(key), exactLanguage: key === 'go' || key === 'c' };
+  termPatterns.set(term, compiled);
+  return compiled;
 }
 function score(rule: ClassificationLeaf, evidence: Evidence[]): Match {
   // A synonym appearing in tags, summaries and repeated features is one fact.
-  // Bound contributions per field and term so verbose analyses cannot dominate.
+  // Compile invariant catalog terms once instead of normalizing them for every
+  // repository/evidence pair. Track max strength without allocating hit arrays.
+  const terms = rule.terms.map(compileTerm);
   const byField = new Map<string, { row: Evidence; points: number }>();
   let specific = false;
   for (const row of evidence) {
-    const hits = rule.terms.filter(term => {
-      const key = normalize(term);
-      if (['go', 'c'].includes(key) && !['language', 'ai_details.technologies'].includes(row.field) && (row.normalized ?? normalize(row.value)) !== key) return false;
-      return includes(row.normalized ?? normalize(row.value), term);
-    });
-    if (!hits.length) continue;
-    const strength = Math.max(...hits.map(term => generic.has(normalize(term)) ? .12 : 1));
+    const text = row.normalized ?? normalize(row.value);
+    const language = row.field === 'language' || row.field === 'ai_details.technologies';
+    let strength = 0;
+    for (const term of terms) {
+      if (term.exactLanguage && !language && text !== term.key) continue;
+      const matches = typeof term.pattern === 'string' ? text.includes(term.pattern) : term.pattern.test(text);
+      if (matches) strength = Math.max(strength, term.generic ? .12 : 1);
+    }
+    if (!strength) continue;
     if (strength === 1 && row.field !== 'language') specific = true;
     const points = row.weight * strength;
     const previous = byField.get(row.field);
