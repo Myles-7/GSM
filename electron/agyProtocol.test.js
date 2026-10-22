@@ -9,9 +9,28 @@ test('distinguishes model-effort conflicts and exhausted credits from retryable 
   assert.equal(classifyAgyFailure('quota exceeded'), 'QUOTA_EXHAUSTED');
 });
 
+test('recognizes provider capacity errors without treating authentication or quota failures as outages', () => {
+  for (const message of [
+    'API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model example-high on the server',
+    'HTTP 502 Bad Gateway', '503 Service Unavailable', 'HTTP 504 Gateway Timeout',
+  ]) assert.equal(classifyAgyFailure(message), 'SERVICE_UNAVAILABLE');
+  assert.equal(classifyAgyFailure('authentication service unavailable: unauthorized'), 'AUTH_REQUIRED');
+  assert.equal(classifyAgyFailure('quota exhausted, model unavailable'), 'QUOTA_EXHAUSTED');
+  assert.equal(classifyAgyFailure('429 too many requests, model unavailable'), 'RATE_LIMIT');
+});
+
 const init = { event: 'init', init: { tools: [], agent: 'gsm-isolated', permission_mode: 'request-review' } };
 const result = { event: 'result', result: { status: 'SUCCESS', response: '中文完成', num_turns: 1, usage: { output_tokens: 3 } } };
 const encode = (...events) => Buffer.from(events.map(e => JSON.stringify(e)).join('\n') + '\n');
+
+test('rejects a capacity error even when the failed result carries an apparent answer', () => {
+  const parser = new AgyProtocol();
+  assert.throws(() => parser.push(encode(init, { event: 'result', result: {
+    status: 'ERROR', response: 'GSM_PROTOCOL_OK', num_turns: 1,
+    error: 'API error: UNAVAILABLE (code 503): No capacity available for model example-high SECRET_SENTINEL',
+  } })), error => error.code === 'SERVICE_UNAVAILABLE' && !error.message.includes('SECRET_SENTINEL'));
+  assert.equal(parser.result, null);
+});
 
 test('decodes split UTF-8 and partial NDJSON, keeps reasoning out of answer callbacks', () => {
   const deltas = [];

@@ -15,6 +15,7 @@ function classifyAgyFailure(message) {
   if (/auth|login|sign.?in|credential|unauthorized/i.test(message)) return 'AUTH_REQUIRED';
   if (/quota|credits|insufficient.balance/i.test(message)) return 'QUOTA_EXHAUSTED';
   if (/rate.limit|429|too.many.requests/i.test(message)) return 'RATE_LIMIT';
+  if (/\bunavailable\b|no capacity available|\b(?:502|503|504)\b|bad gateway|gateway timeout/i.test(message)) return 'SERVICE_UNAVAILABLE';
   if (/timeout|deadline/i.test(message)) return 'TIMEOUT';
   if (/permission|denied|not.allowed/i.test(message)) return 'PERMISSION_DENIED';
   return 'FAILED';

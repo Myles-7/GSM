@@ -14,4 +14,10 @@ describe('AGY errors shown after parallel batches', () => {
     const explained = describeAgyRecoveryError('AGY_TIMEOUT');
     expect(describeAgyRecoveryError(explained)).toBe(explained);
   });
+  it('explains capacity failures and preserves uncertainty about sent requests', () => {
+    const text = describeAgyRecoveryError('AGY_SERVICE_UNAVAILABLE');
+    expect(text).toContain('容量不足');
+    expect(text).toContain('不会自动重发或切换模型');
+    expect(text).toContain('计费');
+  });
 });

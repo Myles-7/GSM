@@ -43,6 +43,7 @@
     "working": "Checking…",
     "privacy": "AGY may send content to cloud models and retain its own conversation history. These preferences are not synced or backed up. GSM does not copy login credentials; sign in using the AGY terminal.",
     "errors": {
+      "SERVICE_UNAVAILABLE": "The AGY model service is unavailable or has no capacity (for example, 503). Retry manually later or choose another model or effort. Sent requests may have an unknown result or cost; GSM will not retry or switch models automatically.",
       "RATE_LIMIT": "AGY is rate limited. Concurrency is temporarily reduced while waiting to recover. No model or paid API was switched.",
       "QUEUE_TIMEOUT": "The queue wait expired. Wait for the active task or cancel it, then retry.",
       "PERMISSION_DENIED": "AGY requested a permission that was not approved. Check the CLI settings and retry.",

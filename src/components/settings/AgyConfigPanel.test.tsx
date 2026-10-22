@@ -118,7 +118,7 @@ describe('AGY device settings', () => {
     expect(api.save).not.toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ enabled: false }));
     expect(api.probe).toHaveBeenCalledOnce();
   });
-  it.each(['AUTH_REQUIRED', 'RATE_LIMIT', 'QUEUE_TIMEOUT', 'TIMEOUT', 'PERMISSION_DENIED'])(
+  it.each(['AUTH_REQUIRED', 'RATE_LIMIT', 'QUEUE_TIMEOUT', 'TIMEOUT', 'PERMISSION_DENIED', 'SERVICE_UNAVAILABLE'])(
     'provides an actionable %s error and allows recovery without changing the model', async code => {
       api.probe = vi.fn().mockResolvedValueOnce({ ok: false, code })
         .mockResolvedValueOnce({ ok: true, value: { ...detected, lastProbe: {

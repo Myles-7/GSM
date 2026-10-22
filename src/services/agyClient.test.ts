@@ -60,6 +60,29 @@ it('returns explicit unsent deferral without an automatic admission retry', asyn
   } finally { window.electronAPI = previous; }
 });
 
+it('keeps sent capacity failures unknown without retrying or switching profiles', async () => {
+  const listeners = new Set<(event: AgyEvent) => void>();
+  const start = vi.fn(async (requestId: string, session: string) => {
+    listeners.forEach(listener => listener({ requestId, session, type: 'sent' }));
+    return { ok: false, code: 'SERVICE_UNAVAILABLE' };
+  });
+  const previous = window.electronAPI;
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {}, start,
+    onEvent: (listener: (event: AgyEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+  } } as unknown as typeof previous;
+  const controller = new AbortController(), providerOutcome = vi.fn();
+  bindTaskSignal(controller.signal, { id: 'capacity-failure', phase: vi.fn(), metadata: vi.fn(), providerOutcome } as unknown as Parameters<typeof bindTaskSignal>[1]);
+  try {
+    await expect(generateAgyText({ id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'fixture-high', agyEffort: 'high',
+      agyMode: 'model', isActive: true, deviceBound: true }, { system: '', user: '', signal: controller.signal }))
+      .rejects.toMatchObject({ message: 'AGY_SERVICE_UNAVAILABLE', details: { sent: true, providerOutcome: 'unknown' } });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ model: 'fixture-high', effort: 'high' }));
+    expect(providerOutcome).toHaveBeenLastCalledWith('unknown', 'unknown_provider_outcome');
+    expect(listeners.size).toBe(0);
+  } finally { window.electronAPI = previous; }
+});
+
 vi.mock('../store/useAppStore', () => ({ useAppStore: {
   getState: () => ({ aiConfigs: [], language: 'zh', user: { id: 7 } }), subscribe: () => () => {},
 } }));

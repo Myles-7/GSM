@@ -35,7 +35,7 @@ export function AgyConfigPanelView({ agy }: { agy: ReturnType<typeof useAgySetti
   const dirty = draft && JSON.stringify(draft) !== JSON.stringify(state?.prefs);
   const concurrencyValid = !!draft && Number.isInteger(draft.concurrency ?? 5) && (draft.concurrency ?? 5)>=1 && (draft.concurrency ?? 5)<=5 && Object.values(draft.featureOverrides??{}).every(profile=>profile?.concurrency===undefined || Number.isInteger(profile.concurrency)&&profile.concurrency>=1&&profile.concurrency<=5);
   const probe = state?.lastProbe;
-  const errorKey = (code: string) => ['AUTH_REQUIRED', 'CANCELED', 'BUSY', 'EXECUTABLE_CHANGED', 'TIMEOUT', 'INIT_TIMEOUT', 'NOT_FOUND', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'QUEUE_TIMEOUT', 'PERMISSION_DENIED'].includes(code)
+  const errorKey = (code: string) => ['AUTH_REQUIRED', 'CANCELED', 'BUSY', 'EXECUTABLE_CHANGED', 'TIMEOUT', 'INIT_TIMEOUT', 'NOT_FOUND', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'QUEUE_TIMEOUT', 'PERMISSION_DENIED', 'SERVICE_UNAVAILABLE'].includes(code)
     ? `agy.errors.${code}` : 'agy.error';
   const errorText = (code: string) => code === 'MODEL_EFFORT_CONFLICT'
     ? zh ? '所选模型与 effort 冲突，请调整对应功能的配置后重新测试。' : 'The selected model conflicts with effort. Adjust this feature profile and test again.'

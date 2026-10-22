@@ -11,6 +11,18 @@ async function fixture(t, options = {}) {
   return { directory, registry: createAgyCallRegistry({ directory, safeStorage: secure, ...options }) };
 }
 const input = { system: 'private-prompt-sentinel', user: 'evidence', profile: 'fingerprint:model:medium:text-v1', taskId: 'task', itemId: 'repo', context: { readme: 'original evidence' } };
+
+test('a sent capacity failure remains unknown and cannot dispatch again under the same id', async t => {
+  const { registry } = await fixture(t);
+  await registry.reserve('42', 'capacity', input);
+  await registry.sent('42', 'capacity');
+  await registry.fail('42', 'capacity', 'SERVICE_UNAVAILABLE');
+  const saved = await registry.read('42', 'capacity');
+  assert.equal(saved.record.providerOutcome, 'unknown');
+  assert.equal(saved.record.failureCode, 'SERVICE_UNAVAILABLE');
+  assert.equal(saved.result, undefined);
+  assert.equal((await registry.reserve('42', 'capacity', input)).existing, true);
+});
 test('intent and terminal survive restart; duplicate ids never become fresh dispatches', async t => {
   const { directory, registry } = await fixture(t);
   assert.equal((await registry.reserve('42', 'req', input)).existing, false);

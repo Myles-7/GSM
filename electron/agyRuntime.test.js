@@ -176,6 +176,12 @@ test('maps stderr auth diagnostics without leaking their text', async () => {
     error.code === 'AUTH_REQUIRED' && !error.message.includes('SECRET_SENTINEL'));
 });
 
+test('maps provider capacity diagnostics on stderr without leaking private error text', async () => {
+  await assert.rejects(runAgy({ ...base,
+    spawnProcess: fixture(`console.error('UNAVAILABLE (code 503): No capacity available SECRET_SENTINEL'); process.exitCode = 1;`) }), error =>
+    error.code === 'SERVICE_UNAVAILABLE' && !error.message.includes('SECRET_SENTINEL'));
+});
+
 test('generation supervisor keeps request processes and workspaces isolated', async () => {
   const { rm } = require('node:fs/promises');
   const cwd = await createAgyWorkspace();
