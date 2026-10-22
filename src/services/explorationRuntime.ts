@@ -188,7 +188,7 @@ async function execute(owner: string, input: ExplorationRun) {
           // Stop accepting new batches after an infrastructure failure. Already
           // dispatched siblings finish and checkpoint independently; never replay
           // an unknown model outcome automatically.
-          if (config.provider === 'agy-cli' && /AGY_(TIMEOUT|INIT_TIMEOUT|RATE_LIMIT|PROCESS_FAILED|RESOURCE_DEFERRED|CLEANUP_TIMEOUT)/.test(message)) fatalFailure ??= reason;
+          if (config.provider === 'agy-cli' && /AGY_(TIMEOUT|INIT_TIMEOUT|RATE_LIMIT|PROCESS_FAILED|RESOURCE_DEFERRED|CLEANUP_TIMEOUT|SERVICE_UNAVAILABLE)/.test(message)) fatalFailure ??= reason;
           const unknown = uncertain(reason) && !record?.resultDigest && aiTaskJournal.snapshot().find(row => row.id === journal!.id)?.items.find(item => item.id === id)?.providerOutcome !== 'succeeded';
           if (unknown) journal!.itemExecution(id, { providerOutcome: 'unknown', failureCode: 'unknown_provider_outcome' });
           if (!signal.aborted) try { await publish(owner, current => {
@@ -255,7 +255,8 @@ async function execute(owner: string, input: ExplorationRun) {
     journal.commit('saved'); journal.finish(topicError ? 'partial' : 'complete'); await aiTaskJournal.flush(owner); patch(owner, { error: topicError ? `项目已保存；主题整理未完成：${topicError}` : '' });
   } catch (reason) {
     const message = controller.signal.aborted ? '任务已取消，检查点已保留；可手动继续。' : safeError(reason, executionConfig);
-    journal?.error(message); journal?.finish(controller.signal.aborted ? 'canceled' : task?.completed ? 'partial' : 'failed');
+    const completedThisRun = aiTaskJournal.snapshot().find(row => row.id === journal?.id)?.items.some(item => item.state === 'complete');
+    journal?.error(message); journal?.finish(controller.signal.aborted ? 'canceled' : completedThisRun ? 'partial' : 'failed');
     if (String(useAppStore.getState().user?.id ?? '') === owner) {
       patch(owner, { error: message });
       if (task) try { await publish(owner, current => current.task?.id === task!.id ? { ...current, task: { ...current.task, status: signal.aborted ? 'interrupted' : 'failed', error: message } } : current); } catch { /* The previous checkpoint is still durable. */ }

@@ -12,6 +12,15 @@ const request = (id: string, answer: string): TaskRequestObservation => ({ owner
 let data: TaskObservations;
 beforeEach(() => { data = { loaded: true, pinned: false, truncated: false, requests: [request('req-1', '<script>alert(1)</script> answer one'), request('req-2', 'answer two')], results: [], events: [] }; mocks.snapshot.mockImplementation(() => data); vi.clearAllMocks(); });
 describe('task observation tabs', () => {
+  it('shows the blocking cause above requests and distinguishes saved checkpoints from current batches', () => {
+    const blocked = { ...task, id: 'blocked-exploration', kind: 'exploration' as const, state: 'failed' as const,
+      units: { items: 'batches' as const, repositories: 131 }, progress: { done: 10, total: 131 }, error: 'AGY_RECOVERY_STORAGE_FULL' };
+    data.requests = [{ ...request('blocked-request', ''), error: 'AGY_RECOVERY_STORAGE_FULL', endedAt: '2026-10-22T01:01:00Z', outcome: 'failed' }];
+    render(<TaskObservationView task={blocked} chinese />);
+    expect(screen.getByText('累计项目已保存（含此前检查点）: 10/131')).toBeVisible();
+    expect(screen.getAllByText(/本机恢复区额度不足/)).toHaveLength(2);
+    expect(screen.getByRole('status')).toHaveTextContent('已有模型结果仍保留');
+  });
   it('freezes request clocks when an interrupted task has no end timestamp', () => {
     const interrupted = { ...task, id: 'interrupted-clock', state: 'interrupted' as const, updatedAt: '2026-10-22T01:01:10Z' };
     render(<TaskObservationView task={interrupted} chinese={false} />);

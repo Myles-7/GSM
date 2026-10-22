@@ -7,6 +7,7 @@ import { cacheExplorationDocuments, readExplorationDocuments, profileSchema } fr
 import { conceptId, explorationFingerprint, normalizeConcept, stableId, repositorySummary, explorationSearchFields, specificExplorationTopic } from '../features/repositories/exploration/model';
 import type { AIConfig, Repository } from '../types';
 import type { ExplorationEvidence, ExplorationProfile, ExplorationTopic } from '../features/repositories/exploration/types';
+import { EXPLORATION_DOCUMENT_CACHE_CHARS, explorationDocumentPassages } from './explorationEvidence';
 
 const citation = z.object({ sourceId: z.string(), quote: z.string().trim().min(3).max(2000) }).strict();
 const rawProfile = z.object({ repositoryId: z.number().int(), summary: z.string().max(1000),
@@ -86,7 +87,7 @@ export async function readExplorationEvidence(ownerId: string, repo: Repository,
   const timer = setTimeout(() => reading.abort(new Error('EXPLORATION_DOCUMENT_TIMEOUT')), 15000);
   try {
     const readme = await api.getRepositoryReadme(owner, name, reading.signal, { strict: true });
-    const sources: ExplorationEvidence[] = readme ? [{ id: 'readme', kind: 'readme', label: 'README', text: readme.slice(0, 18000), url: `https://github.com/${repo.full_name}#readme`, retrievedAt: now(), verified: true }] : [];
+    const sources: ExplorationEvidence[] = readme ? [{ id: 'readme', kind: 'readme', label: 'README', text: readme.slice(0, EXPLORATION_DOCUMENT_CACHE_CHARS), url: `https://github.com/${repo.full_name}#readme`, retrievedAt: now(), verified: true }] : [];
     if (!readme || readme.length < 400) {
       const docs = await readOrganizationDocumentation(repo, token, reading.signal);
       sources.push(...docs.map((doc, index) => ({ id: `document-${index}`, kind: 'document' as const, label: '项目文档', text: doc.content, url: doc.url, retrievedAt: doc.retrievedAt, verified: true })));
@@ -113,7 +114,7 @@ export async function analyzeExplorationBatch(options: AnalyzeOptions): Promise<
   const warnings: string[] = [];
   const enrich = async (repo: Repository) => {
     options.onProgress?.(`读取 ${repo.name} 的资料`);
-    try { const docs = await readExplorationEvidence(options.ownerId, repo, options.token, signal, guard, options.refreshDocuments); sources.set(repo.id, [...sources.get(repo.id)!, ...docs]); }
+    try { const docs = await readExplorationEvidence(options.ownerId, repo, options.token, signal, guard, options.refreshDocuments); sources.set(repo.id, [...sources.get(repo.id)!, ...explorationDocumentPassages(docs, options.query ?? '')]); }
     catch (error) { signal.throwIfAborted(); guard(); if (!(error instanceof Error && (error.name === 'AbortError' || error.message === 'EXPLORATION_DOCUMENT_TIMEOUT'))) throwSharedEvidenceError(error); warnings.push(`${repo.full_name}: 资料暂不可读，保留未核实状态`); }
   };
   // The initial map uses existing analyses. Remote verification belongs to the

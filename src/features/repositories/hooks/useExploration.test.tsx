@@ -15,7 +15,7 @@ import { explorationRuntime, retryExplorationTask } from '../../../services/expl
 const mocks = vi.hoisted(() => ({ state: {} as AppStoreState, analyze: vi.fn(), refresh: vi.fn(), consolidate: vi.fn() }));
 vi.mock('../../../services/agyClient', () => ({ refreshAgyDeviceState: mocks.refresh }));
 vi.mock('../../../store/useAppStore', () => ({ useAppStore: Object.assign((selector: (state: AppStoreState) => unknown) => selector(mocks.state), { getState: () => mocks.state }) }));
-vi.mock('../../../services/explorationAI', () => ({ analyzeExplorationBatch: mocks.analyze, consolidateExplorationTopics: mocks.consolidate, explorationCandidates: (repositories: Repository[]) => repositories.slice(0, 80) }));
+vi.mock('../../../services/explorationAI', () => ({ analyzeExplorationBatch: mocks.analyze, consolidateExplorationTopics: mocks.consolidate, explorationCandidates: (repositories: Repository[]) => repositories }));
 import { useExploration } from './useExploration';
 let nextOwner = 4000;
 const originalElectronAPI = window.electronAPI;
@@ -30,6 +30,52 @@ beforeEach(() => {
 async function existing() { const owner = String(mocks.state.user!.id); await updateExploration(owner, () => ({ ...accountFixture(mocks.state.repositories, mocks.state.repositories.map(() => 'direct')), ownerId: owner })); }
 
 describe('manual exploration tasks', () => {
+  it('completes all 25 remaining batches for 131 projects and reuses the 10 saved checkpoints', async () => {
+    mocks.state.repositories = Array.from({ length: 131 }, (_, i) => repositoryFixture(i + 1));
+    mocks.state.aiConfigs = [{ id: 'model', name: 'AGY', provider: 'agy-cli', model: 'configured-model', agyEffort: 'low', agyMode: 'model', deviceBound: true, isActive: true, concurrency: 5 }];
+    window.electronAPI = { agy: {} } as typeof window.electronAPI;
+    const owner = String(mocks.state.user!.id);
+    await updateExploration(owner, current => ({ ...current, task: { id: 'old-checkpoint', type: 'query', query: 'Codex', scope: '', status: 'failed', model: 'model:configured-model', fingerprint: 'previous',
+      startedAt: '2026-10-22', completed: 10, total: 131, draft: Object.fromEntries(mocks.state.repositories.slice(0, 10).map(repo => [String(repo.id), profileFixture(repo)])) } }));
+    const hook = renderHook(useExploration); await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    await act(async () => { await hook.result.current.deepen('Codex'); });
+    expect(mocks.analyze).toHaveBeenCalledTimes(25);
+    const requested = mocks.analyze.mock.calls.flatMap(call => call[0].repositories.map((repo: Repository) => repo.id));
+    expect(new Set(requested).size).toBe(121); expect(requested.every(id => id > 10)).toBe(true);
+    expect(Object.keys(hook.result.current.account!.queries[0].profiles)).toHaveLength(131);
+    expect(hook.result.current.account?.task).toBeNull();
+    const record = aiTaskJournal.snapshot().find(row => row.owner === owner && row.kind === 'exploration')!;
+    expect(record.state).toBe('complete'); expect(record.items.every(item => item.state === 'complete')).toBe(true);
+    await act(async () => { await hook.result.current.deepen('Codex'); });
+    expect(mocks.analyze).toHaveBeenCalledTimes(25);
+  });
+  it('stops new dispatch after a capacity outage and preserves batches that have not been sent', async () => {
+    mocks.state.repositories = Array.from({ length: 30 }, (_, i) => repositoryFixture(i + 1));
+    mocks.state.aiConfigs = [{ id: 'model', name: 'AGY', provider: 'agy-cli', model: 'configured-model', agyEffort: 'low', agyMode: 'model', deviceBound: true, isActive: true, concurrency: 1 }];
+    window.electronAPI = { agy: {} } as typeof window.electronAPI;
+    mocks.analyze.mockRejectedValueOnce(Object.assign(new Error('AGY_SERVICE_UNAVAILABLE'), { details: { sent: true, providerOutcome: 'unknown' } }));
+    const hook = renderHook(useExploration); await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    await act(async () => { await hook.result.current.deepen('Codex'); });
+    expect(mocks.analyze).toHaveBeenCalledOnce();
+    const record = aiTaskJournal.snapshot().find(row => row.id === hook.result.current.account?.task?.journalId)!;
+    expect(record.state).toBe('failed'); expect(record.items.filter(item => item.state === 'pending')).toHaveLength(5);
+    expect(record.items[0].providerOutcome).toBe('unknown');
+  });
+  it('marks an entirely blocked continuation as failed even when earlier checkpoints contain projects', async () => {
+    mocks.state.repositories = Array.from({ length: 15 }, (_, i) => repositoryFixture(i + 1));
+    mocks.state.aiConfigs[0].concurrency = 1;
+    mocks.analyze.mockImplementationOnce(async ({ repositories }: { repositories: Repository[] }) => repositories.map(repo => profileFixture(repo)))
+      .mockRejectedValueOnce(new Error('AGY_RECOVERY_STORAGE_FULL'));
+    const hook = renderHook(useExploration); await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    await act(async () => { await hook.result.current.build(); });
+    mocks.analyze.mockRejectedValueOnce(new Error('AGY_RECOVERY_STORAGE_FULL'));
+    await act(async () => { await hook.result.current.retry(); });
+    const record = aiTaskJournal.snapshot().find(row => row.id === hook.result.current.account?.task?.journalId)!;
+    expect(record.items.some(item => item.state === 'complete')).toBe(false);
+    expect(record.state).toBe('failed');
+    expect(record.progress).toEqual({ done: 5, total: 15 });
+    expect(hook.result.current.account?.task?.completed).toBe(5);
+  });
   it('pauses dispatch after in-flight batches save and continues without repeating them',async()=>{
     mocks.state.repositories=Array.from({length:15},(_,i)=>repositoryFixture(i+1));mocks.state.aiConfigs[0].concurrency=2;
     const pending:{resolve:()=>void}[]=[];

@@ -89,7 +89,15 @@ function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 
       if (!validId(metadata.account) || !validId(metadata.requestId) || path.basename(location(metadata.account, metadata.requestId)) !== file) continue;
       let row;
       try { row = await load(metadata.account, metadata.requestId); } catch (error) { if (error.code === 'RECOVERY_RECORD_CORRUPT') continue; throw error; }
-      if (!row || row.receipt || row.providerOutcome === 'succeeded') continue;
+      if (!row || row.receipt) continue;
+      // Terminal results have a known size. Old versions retained the entire
+      // dispatch reservation until ack, so six small paid results blocked every
+      // new call. Recount sealed bytes without decrypting or consuming evidence.
+      if (row.providerOutcome === 'succeeded') {
+        const bytes = row.body ? Buffer.byteLength(row.body) : 0;
+        if (row.bytes !== bytes) await write({ ...row, bytes });
+        continue;
+      }
       if (row.dispatch === 'sent' && row.providerOutcome === 'in_flight' || row.dispatch === 'prepared' && row.providerOutcome === 'not_started') {
         await write({ ...row, providerOutcome: row.dispatch === 'sent' ? 'unknown' : 'not_started', bytes: row.body ? Buffer.byteLength(row.body) : 0 });
       }
@@ -149,9 +157,9 @@ function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 
       const previous = unseal(row.body);
       const body = seal({ ...previous, result: { text: result.text, usage: result.usage, cleanupStatus: result.cleanupStatus } });
       if (Buffer.byteLength(body) > row.bytes) throw new AgyError('OUTPUT_LIMIT');
-      // Retain the reservation until consumption. A successful response must not
-      // let another request take the space reserved for its business checkpoint.
-      await write({ ...row, body, providerOutcome: 'succeeded', resultDigest: digest(result.text) });
+      // Keep the paid artifact, release only unused output capacity. Staging
+      // accounts for commit growth separately under the same serialized quota.
+      await write({ ...row, body, bytes: Buffer.byteLength(body), providerOutcome: 'succeeded', resultDigest: digest(result.text) });
     }),
     fail: (account, requestId, code) => serial(async () => {
       const row = await load(account, requestId); if (!row || row.providerOutcome === 'succeeded') return;
@@ -179,7 +187,7 @@ function createAgyCallRegistry({ directory, safeStorage, maxBytes = 50 * 1024 * 
       const body = seal({ ...unseal(row.body), commit });
       const rows = await all(account);
       if (rows.errors.length) throw new AgyError('RECOVERY_RECORD_CORRUPT');
-      const bytes = Math.max(row.bytes, Buffer.byteLength(body));
+      const bytes = Buffer.byteLength(body);
       if (rows.records.reduce((sum, other) => sum + (other.requestId === requestId ? bytes : other.bytes), 0) > maxBytes) throw new AgyError('RECOVERY_STORAGE_FULL');
       await write({ ...row, body, bytes });
     }),

@@ -30,8 +30,16 @@ const commitStatuses: Record<CommitStatus, [string, string]> = {
 };
 export const taskProviderOutcomeLabel = (outcome: ProviderOutcome, zh: boolean) => providerOutcomes[outcome][zh ? 0 : 1];
 export const taskCommitStatusLabel = (status: CommitStatus | undefined, zh: boolean) => commitStatuses[status ?? 'not_started'][zh ? 0 : 1];
-export const taskFailureLabel = (error: string, zh: boolean) => /^AGY_TIMEOUT(?:[;；]\s*AGY_TIMEOUT)*$/.test(error)
-  ? (zh ? '模型响应超时，结果待核对' : 'Model response timed out; outcome unknown') : error;
+export const taskFailureLabel = (error: string, zh: boolean): string => {
+  const codes: Record<string, [string, string]> = {
+    AGY_TIMEOUT: ['模型响应超时，结果待核对', 'Model response timed out; outcome unknown'],
+    AGY_RECOVERY_STORAGE_FULL: ['本机恢复区额度不足，请先在任务中心保存待处理结果；已有模型结果仍保留。', 'Recovery storage quota reached. Save pending results in Task Center; existing model results are retained.'],
+    AGY_SERVICE_UNAVAILABLE: ['模型服务暂不可用或容量不足，请稍后手动继续；已发送请求的结果与用量待核对。', 'Model service unavailable or at capacity. Continue manually later; sent requests may have an unknown outcome or cost.'],
+    AGY_RESOURCE_DEFERRED: ['执行资源繁忙，请稍后继续；本次请求未发送。', 'Execution capacity busy. Continue later; this request was not sent.'],
+  };
+  const parts = [...new Set(error.split(/[;；]\s*/))];
+  return parts.map(part => codes[part]?.[zh ? 0 : 1] ?? part).join(zh ? '；' : '; ');
+};
 const phases: Record<string, [string, string]> = {
   search: ['检索', 'Searching'], readme: ['读取 README', 'Reading README'], reading: ['读取资料', 'Reading sources'],
   generating: ['生成回答', 'Generating answer'], generation: ['生成回答', 'Generating answer'],

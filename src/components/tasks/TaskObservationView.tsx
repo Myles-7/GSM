@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ArrowDown, ArrowUpRight, Copy, Pin } from 'lucide-react';
 import { aiTaskJournal, type AITaskRecord } from '../../services/aiTaskJournal';
-import { taskPhaseLabel, taskCommitStatusLabel, taskTimerEnd } from '../../services/taskPresentation';
+import { taskPhaseLabel, taskCommitStatusLabel, taskTimerEnd, taskFailureLabel } from '../../services/taskPresentation';
 import { taskObservability } from '../../services/taskObservability';
 import type { TaskObservedResult, TaskRequestObservation } from '../../types/taskObservation';
 import { Button } from '../ui/button';
@@ -69,11 +69,14 @@ export function TaskObservationView({ task, chinese: zh, children, onLocate }: {
           {task.units?.items === 'batches' && task.kind === 'exploration' && task.items.some(item => item.id === 'topics') && <p className="text-xs text-muted-foreground sm:col-span-2">{txt('阶段计数包含主题整理步骤，批次数不包含此步骤。', 'Phase counts include topic consolidation; batch counts exclude that step.')}</p>}
           <p className="sm:col-span-2">{txt('最近实际活动', 'Last recorded activity')}: {date(lastActivity, zh)}</p>
           <p className="text-xs text-muted-foreground sm:col-span-2">{txt('计时仅表示已用时，不代表进度或预计完成时间。', 'Elapsed time is not progress or an estimated completion time.')}</p>
+          {task.kind === 'exploration' && task.progress && <p className="sm:col-span-2">{txt('累计项目已保存（含此前检查点）', 'Total projects saved (including earlier checkpoints)')}: {task.progress.done}/{task.progress.total}</p>}
         </div>
+        {(task.error || task.items.some(item => item.error)) && <p role="status" className="mb-4 break-words rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{taskFailureLabel(task.error ?? task.items.find(item => item.error)?.error ?? '', zh)}</p>}
         {observed.requests.length > 0 && <section className="mb-5" aria-label={txt('请求时间线', 'Request timeline')}><h3 className="mb-3 text-sm font-semibold">{txt('请求时间线', 'Request timeline')}</h3><ol className="space-y-3">{observed.requests.map(item => <li key={item.requestId} className="min-w-0 rounded-lg border border-border p-3 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2"><span className="break-all font-medium">{item.label} · {txt('尝试', 'Attempt')} {item.attempt}</span><span className="text-xs text-muted-foreground">{item.source} · {item.endedAt ? outcomeName(item.outcome) || txt('已结束，结果未记录', 'Ended; outcome not recorded') : phaseName(item.phase)}</span></div>
           <p className="mt-1 text-xs text-muted-foreground">{item.model ?? task.config?.model ?? txt('模型未记录', 'Model not recorded')} · {txt('请求用时', 'Request elapsed')} {elapsed(item.startedAt, item.endedAt ?? taskTimerEnd(task))}s · {txt('当前阶段用时', 'Current phase elapsed')} {elapsed(item.phaseStartedAt, item.endedAt ?? taskTimerEnd(task))}s</p>
           <p className="mt-1 text-xs text-muted-foreground">{txt('开始', 'Started')}: {date(item.startedAt, zh)} · {txt('最后活动', 'Last activity')}: {date(item.lastActivityAt, zh)}</p>
+          {item.error && <p className="mt-2 break-words text-xs text-destructive">{taskFailureLabel(item.error, zh)}</p>}
           <Button size="sm" variant="ghost" className="mt-1" onClick={() => update({ tab: 'content', requestId: item.requestId })}>{txt('查看返回内容', 'View returned content')}<ArrowUpRight size={13} /></Button>
         </li>)}</ol></section>}
         {observed.events.length > 0 && <details className="mb-5 rounded-lg border border-border p-3 text-xs"><summary className="cursor-pointer">{txt('阶段事件', 'Phase events')} ({observed.events.length})</summary><ol className="mt-3 max-h-72 space-y-2 overflow-y-auto">{observed.events.map(event => <li key={event.id} className="break-words"><time>{date(event.time, zh)}</time> · {event.source === 'gsm' ? txt('程序执行', 'Application') : event.source} · {event.requestId && <span className="break-all">{event.requestId} · </span>}{event.phase ? phaseName(event.phase) : event.type}{event.message ? ` · ${event.message}` : ''}</li>)}</ol></details>}

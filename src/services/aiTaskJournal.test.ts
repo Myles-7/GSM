@@ -154,6 +154,7 @@ describe('task journal persistence and lifecycle', () => {
     const record = { id: 'a', owner: 'owner', kind: 'summary' as const, state: 'failed' as const, updatedAt: new Date().toISOString(), items: [{ id: 'a', label: 'A', state: 'complete' as const }, { id: 'b', label: 'B', state: 'failed' as const }] };
     expect(taskDisplayState(record)).toBe('partial');
     expect(taskDisplayState({ ...record, state: 'running' })).toBe('running');
+    expect(taskDisplayState({ ...record, state: 'partial', items: [{ id: 'failed', label: 'Failed', state: 'failed' }, { id: 'pending', label: 'Pending', state: 'pending' }] })).toBe('failed');
   });
 
   it('pauses only after in-flight items finish and disallows controls during commit', async () => {

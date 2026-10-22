@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { taskElapsed, taskPhaseLabel, taskReport, taskTitle } from './taskPresentation';
+import { taskElapsed, taskFailureLabel, taskPhaseLabel, taskReport, taskTitle } from './taskPresentation';
 import type { AITaskRecord } from './aiTaskJournal';
 describe('task report projection', () => {
+  it('deduplicates repeated batch errors and explains storage failures without claiming the model never ran', () => {
+    const text = taskFailureLabel('AGY_RECOVERY_STORAGE_FULL；AGY_RECOVERY_STORAGE_FULL', true);
+    expect(text).toContain('本机恢复区额度不足'); expect(text).toContain('已有模型结果仍保留');
+    expect(text.split('本机恢复区额度不足')).toHaveLength(2);
+    expect(taskFailureLabel('AGY_SERVICE_UNAVAILABLE', false)).toContain('capacity');
+  });
   it('does not repeat an existing kind prefix and localizes that prefix', () => {
     const task: AITaskRecord = { id: 'map', owner: 'owner', kind: 'exploration', state: 'complete', updatedAt: '', items: [] };
     expect(taskTitle({ ...task, title: '项目地图探索 · 合成验收' }, true)).toBe('项目地图探索 · 合成验收');

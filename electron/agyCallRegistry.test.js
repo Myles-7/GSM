@@ -12,6 +12,51 @@ async function fixture(t, options = {}) {
 }
 const input = { system: 'private-prompt-sentinel', user: 'evidence', profile: 'fingerprint:model:medium:text-v1', taskId: 'task', itemId: 'repo', context: { readme: 'original evidence' } };
 
+test('six retained successful results do not exhaust reservations for a new five-worker run', async t => {
+  const { registry } = await fixture(t);
+  for (let index = 0; index < 6; index++) {
+    const id = `retained-${index}`;
+    await registry.reserve('42', id, input); await registry.sent('42', id);
+    await registry.succeed('42', id, { text: `paid result ${index}`, usage: {} });
+  }
+  for (let index = 0; index < 5; index++) await registry.reserve('42', `new-${index}`, input);
+  for (let index = 0; index < 6; index++) assert.equal((await registry.read('42', `retained-${index}`)).result.text, `paid result ${index}`);
+});
+
+test('migrates old successful reservations by ciphertext size without decrypting or consuming results', async t => {
+  const { directory, registry } = await fixture(t);
+  for (let index = 0; index < 6; index++) {
+    const id = `legacy-${index}`;
+    await registry.reserve('42', id, input); await registry.sent('42', id);
+    await registry.succeed('42', id, { text: `legacy result ${index}`, usage: {} });
+  }
+  for (const file of await fs.readdir(directory)) {
+    const target = path.join(directory, file), row = JSON.parse(await fs.readFile(target, 'utf8'));
+    await fs.writeFile(target, JSON.stringify({ ...row, bytes: 8 * 1024 * 1024 }));
+  }
+  const noDecrypt = { ...secure, decryptString() { throw Error('Migration must not read results'); } };
+  const migrated = createAgyCallRegistry({ directory, safeStorage: noDecrypt });
+  for (let index = 0; index < 5; index++) await migrated.reserve('42', `fresh-${index}`, input);
+  const saved = createAgyCallRegistry({ directory, safeStorage: secure });
+  assert.equal((await saved.read('42', 'legacy-0')).result.text, 'legacy result 0');
+  assert.equal((await saved.read('42', 'legacy-0')).record.receipt, undefined);
+});
+
+test('staged commits grow actual accounting atomically and enforce the shared quota', async t => {
+  const { registry } = await fixture(t, { maxBytes: 13000, reservationBytes: 12000 });
+  await registry.reserve('42', 'paid', input); await registry.sent('42', 'paid');
+  await registry.succeed('42', 'paid', { text: 'paid artifact', usage: {} });
+  const saved = await registry.read('42', 'paid');
+  await registry.reserve('42', 'running', input);
+  await assert.rejects(registry.stage('42', 'paid', saved.record.resultDigest, { data: 'x'.repeat(2000) }), /RECOVERY_STORAGE_FULL/);
+  assert.equal((await registry.read('42', 'paid')).result.text, 'paid artifact');
+  await registry.fail('42', 'running', 'INIT_TIMEOUT');
+  await registry.stage('42', 'paid', saved.record.resultDigest, { data: 'x'.repeat(2000) });
+  const staged = await registry.read('42', 'paid');
+  assert.ok(staged.record.bytes > saved.record.bytes);
+  assert.equal(staged.commit.data.length, 2000);
+});
+
 test('a sent capacity failure remains unknown and cannot dispatch again under the same id', async t => {
   const { registry } = await fixture(t);
   await registry.reserve('42', 'capacity', input);
@@ -110,15 +155,16 @@ test('repairing one corrupt record leaves unrelated recovery records intact', as
   assert.deepEqual(listed.records.map(record => record.requestId), ['good']);
 });
 
-test('success and staged commits retain quota until an idempotent consumption receipt', async t => {
+test('success and staged commits retain their actual bytes until an idempotent consumption receipt', async t => {
   const { directory, registry } = await fixture(t, { maxBytes: 20000, reservationBytes: 12000 });
   await registry.reserve('42', 'one', input); await registry.sent('42', 'one');
   await registry.succeed('42', 'one', { text: 'generated', usage: {} });
   const saved = await registry.read('42', 'one');
-  await registry.stage('42', 'one', saved.record.resultDigest, { kind: 'fixture', state: 'pending' });
+  const commit = { kind: 'fixture', state: 'pending', payload: 'x'.repeat(8500) };
+  await registry.stage('42', 'one', saved.record.resultDigest, commit);
   await assert.rejects(registry.reserve('42', 'two', input), /RECOVERY_STORAGE_FULL/);
   const restarted = createAgyCallRegistry({ directory, safeStorage: secure, maxBytes: 20000, reservationBytes: 12000 });
-  assert.deepEqual((await restarted.read('42', 'one')).commit, { kind: 'fixture', state: 'pending' });
+  assert.deepEqual((await restarted.read('42', 'one')).commit, commit);
   await restarted.ack('42', 'one', saved.record.resultDigest);
   await restarted.ack('42', 'one', saved.record.resultDigest);
   await restarted.reserve('42', 'two', input);
@@ -145,7 +191,7 @@ test('restart preserves successful unconsumed results and releases only unsent a
   await registry.reserve('42', 'unsent', input);
   const restarted = createAgyCallRegistry({ directory, safeStorage: secure, maxBytes: 30000, reservationBytes: 12000 });
   await restarted.reserve('42', 'fresh', input);
-  const saved = await restarted.read('42', 'success'); assert.equal(saved.result.text, 'keep this result'); assert.equal(saved.record.bytes, 12000);
+  const saved = await restarted.read('42', 'success'); assert.equal(saved.result.text, 'keep this result'); assert.ok(saved.record.bytes < 12000);
   const unsent = await restarted.read('42', 'unsent'); assert.equal(unsent.record.providerOutcome, 'not_started'); assert.ok(unsent.record.bytes < 12000);
   await restarted.sent('42', 'fresh');
   await restarted.list('42');
@@ -156,11 +202,13 @@ test('default quota recovers from five interrupted calls plus one unconsumed res
   const { directory, registry } = await fixture(t);
   for (let index = 0; index < 5; index++) { await registry.reserve('42', `old-${index}`, input); await registry.sent('42', `old-${index}`); }
   await registry.reserve('42', 'retained', input); await registry.sent('42', 'retained'); await registry.succeed('42', 'retained', { text: 'preserve paid result', usage: {} });
-  await assert.rejects(registry.reserve('42', 'project-map', input), /RECOVERY_STORAGE_FULL/);
+  await registry.reserve('42', 'project-map', input);
   const restarted = createAgyCallRegistry({ directory, safeStorage: secure });
-  await restarted.reserve('42', 'project-map', input); await restarted.sent('42', 'project-map');
-  await restarted.succeed('42', 'project-map', { text: '{"projects":[]}', usage: {} });
-  const result = await restarted.read('42', 'project-map'); await restarted.ack('42', 'project-map', result.record.resultDigest);
+  assert.equal((await restarted.reserve('42', 'project-map', input)).existing, true);
+  // A prepared call from a previous lifetime is never sent again implicitly.
+  await restarted.reserve('42', 'new-project-map', input); await restarted.sent('42', 'new-project-map');
+  await restarted.succeed('42', 'new-project-map', { text: '{"projects":[]}', usage: {} });
+  const result = await restarted.read('42', 'new-project-map'); await restarted.ack('42', 'new-project-map', result.record.resultDigest);
   assert.equal((await restarted.read('42', 'retained')).result.text, 'preserve paid result');
   assert.equal((await restarted.list('42')).records.filter(row => row.providerOutcome === 'unknown').length, 5);
 });

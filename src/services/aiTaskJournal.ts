@@ -69,7 +69,7 @@ export const taskNeedsAttention = (task: AITaskRecord) => !!task.connectionError
 export const taskIsTerminal = (task: AITaskRecord) => ['complete', 'partial', 'failed', 'canceled', 'interrupted', 'unconfirmed'].includes(task.state);
 export const taskHasProtectedContent = (task:AITaskRecord) => !taskIsTerminal(task)||['interrupted','unconfirmed'].includes(task.state)||task.providerOutcome==='unknown'
   ||['pending','failed','conflict'].includes(task.commitStatus??'')||task.items.some(item=>!!item.recovery||item.providerOutcome==='unknown'||['pending','failed','conflict'].includes(item.commitStatus??''));
-export const taskDisplayState = (task: AITaskRecord): AITaskRecord['state'] => ['complete', 'failed'].includes(task.state) && task.items.some(item => item.state === 'failed')
+export const taskDisplayState = (task: AITaskRecord): AITaskRecord['state'] => ['complete', 'failed', 'partial'].includes(task.state) && task.items.some(item => item.state === 'failed')
   ? task.items.some(item => item.state === 'complete') ? 'partial' : 'failed' : task.state;
 const retained = (task: AITaskRecord) => task.archived || task.pinned || taskHasProtectedContent(task)
   || !Number.isFinite(Date.parse(task.endedAt ?? task.updatedAt)) || Date.now() - Date.parse(task.endedAt ?? task.updatedAt) < 30 * 86400000;

@@ -25,6 +25,17 @@ beforeEach(() => {
 });
 describe('exploration AI and evidence integration', () => {
   const options = () => ({ ownerId: crypto.randomUUID(), repositories: [repositoryFixture(1)], allRepositories: [repositoryFixture(1)], config, language: 'zh', token: '', signal: new AbortController().signal, guard: vi.fn(), knownTopics: [] });
+  it('bounds deep evidence while retaining literal target mentions beyond long introductions', async () => {
+    const input = options();
+    const readme = 'Introduction '.repeat(2000) + '\nThis plugin supports Codex workflows.\n' + 'Unrelated background '.repeat(2000);
+    mocks.readme.mockResolvedValue(readme);
+    await analyzeExplorationBatch({ ...input, query: 'Codex' });
+    const payload = JSON.parse(mocks.generate.mock.calls[0][0].user);
+    const docs = payload.projects[0].sources.filter((s: { kind: string }) => s.kind === 'readme');
+    expect(docs.reduce((n: number, s: { text: string }) => n + s.text.length, 0)).toBeLessThanOrEqual(8000);
+    expect(docs.some((s: { text: string }) => s.text.includes('This plugin supports Codex workflows.'))).toBe(true);
+    expect(docs.every((s: { text: string }) => s.text.length > 0 && readme.includes(s.text))).toBe(true);
+  });
   it('validates a saved provider result without fetching documentation or starting a new model request',async()=>{
     const input=options();const onResponse=vi.fn();
     const result=await analyzeExplorationBatch({...input,recovered:{text:JSON.stringify({assignments:[[1,[['编程智能体','analysis']]]]}),sources:[[1,repositoryExplorationSources(input.repositories[0])]]},onResponse});
