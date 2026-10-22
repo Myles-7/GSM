@@ -42,7 +42,7 @@ export class OrganizationModelScheduler {
   private readonly limiter: AIRateLimiter;
   constructor(readonly limit: number) {
     this.effective = limit;
-    this.limiter = new AIRateLimiter({ maxConcurrency: limit, backoffCapMs: 3600000, maxRetryAfterMs: 3600000 });
+    this.limiter = new AIRateLimiter({ maxConcurrency: limit, backoffCapMs: 3600000 });
   }
   async acquire(signal: AbortSignal): Promise<() => void> {
     this.waiting++;

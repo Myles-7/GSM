@@ -42,7 +42,7 @@ export function useExploration() {
     retainPageTaskFailure(ownerId, 'exploration', reason instanceof Error ? reason.message : String(reason), { title:'保存项目探索', target:{view:'repositories',id:'project-map'} });
     explorationRuntime.error(ownerId, new Error('探索更改未保存')); return false;
   } };
-  const retry = () => { const task = account?.task; return explorationRuntime.run(ownerId, { type: task?.type ?? 'build', configId, query: task?.query, scope: task?.scope, force: task?.force, savedId: task?.savedId }); };
+  const retry = () => { const task = account?.task; return explorationRuntime.run(ownerId, { type: task?.type ?? 'build', configId, query: task?.query, scope: task?.scope, force: task?.force, resume: true, savedId: task?.savedId }); };
   return { ownerId, repositories, account, loading: runtime.loading, busy: runtime.busy, activity: runtime.activity, concurrency: runtime.concurrency,
     error: describeAgyRecoveryError(currentError), setupIssue: describeAgyRecoveryError(setupCode), canRun: isAIConfigAvailable(config) && !setupCode, checking, configId, setConfigId, configs, config, changedCount,
     recoveryStorageFull: currentError.includes('AGY_RECOVERY_STORAGE_FULL'),

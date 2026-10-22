@@ -98,6 +98,16 @@ describe('local relationship exploration', () => {
     expect(projectScene(account, [repo], { type: 'entity', id: conceptId('entity', 'Codex'), label: 'Codex' }, 'Codex').results[0].verified).toBe(true);
     expect(projectScene(account, [{ ...repo, ai_summary: 'new input' }], { type: 'entity', id: conceptId('entity', 'Codex'), label: 'Codex' }, 'Codex').results).toHaveLength(0);
   });
+
+  it('uses the active generation of a direction instead of accumulating contradictory model results', () => {
+    const repo = repositoryFixture(1), account = accountFixture([repo]);
+    account.queries = [
+      { id: 'old', query: 'Codex', model: 'old', generation: 'old', fingerprint: queryFingerprint('Codex', [repo], account.index, 'old', '', 'old'), createdAt: 'now', profiles: { '1': profileFixture(repo, 'interoperable') } },
+      { id: 'new', query: 'Codex', model: 'new', generation: 'new', fingerprint: queryFingerprint('Codex', [repo], account.index, 'new', '', 'new'), createdAt: 'now', profiles: { '1': profileFixture(repo, 'similar') } },
+    ];
+    const scene = projectScene(account, [repo], { type: 'entity', id: conceptId('entity', 'Codex'), label: 'Codex' }, 'Codex');
+    expect(scene.profiles['1'].relations.map(row => row.kind)).toEqual(['similar']);
+  });
   it('keeps deeper direction caches scoped while combining the root exploration cache', () => {
     const repo = repositoryFixture(1); const account = accountFixture([repo]);
     const focus = { type: 'branch' as const, targetId: conceptId('entity', 'Codex'), label: '工具集成', kind: 'interoperable' as const, branch: '工具集成' };

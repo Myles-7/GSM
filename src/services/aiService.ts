@@ -1,7 +1,7 @@
 import { Repository, Gist, AIConfig, AIApiType } from '../types';
 import { isToolCallCapableApiType } from '../constants/aiCapabilities';
 import { backend } from './backendAdapter';
-import { buildApiUrl, buildFinalApiUrl } from '../utils/apiUrlBuilder';
+import { buildApiUrl, buildFinalApiUrl, isSecureAIEndpoint } from '../utils/apiUrlBuilder';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
 import { deriveRepositoryHealthSnapshot } from '../utils/repositoryHealth';
 import { logger } from './logger';
@@ -14,6 +14,8 @@ import { taskForSignal, taskItemForSignal, runTrackedTask, bindTaskItemSignal } 
 import { aiTaskJournal, type AITaskKind } from './aiTaskJournal';
 import { taskObservability } from './taskObservability';
 import { useAppStore } from '../store/useAppStore';
+
+const HTTP_REQUEST_TIMEOUT_MS = 600_000;
 
 interface HttpCapture {
   sent(): void;
@@ -483,16 +485,7 @@ export class AIService {
   private requireSecureDirectEndpoint(): void {
     if (isAgyConfig(this.config)) return;
     if (backend.isAvailable) return;
-    const base = this.config.baseUrl.trim();
-    if (!/^http:\/\//i.test(base)) return;
-    let host = base.replace(/^http:\/\//i, '').split('/')[0] || '';
-    try {
-      host = new URL(base).hostname;
-    } catch {
-      // 保留字符串解析结果
-    }
-    const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|\[::1\])$/i.test(host);
-    if (!isLocal) {
+    if (!isSecureAIEndpoint(this.config.baseUrl)) {
       throw new Error(this.language === 'zh'
         ? 'AI 服务地址必须使用 HTTPS：为保护 API Key，仅 localhost / 127.0.0.1 等本机地址允许 HTTP。'
         : 'The AI endpoint must use HTTPS: to protect your API key, plain HTTP is only allowed for local addresses (localhost / 127.0.0.1).');
@@ -631,7 +624,7 @@ export class AIService {
       const rejected = error instanceof AIToolCallUnsupportedError || (typeof status === 'number' && status >= 400 && status < 500 && status !== 408);
       const outcome = dispatched && !rejected ? 'unknown' : isAbortError(error) ? 'canceled' : 'failed';
       setOutcome(outcome==='canceled'?'not_started':outcome);
-      if (outcome === 'unknown' && error instanceof Error && Object.isExtensible(error)) Object.assign(error, { providerOutcome: 'unknown' });
+      if (outcome === 'unknown' && error !== null && typeof error === 'object' && Object.isExtensible(error)) Object.assign(error, { providerOutcome: 'unknown' });
       if (task) taskObservability.complete(owner, task.id, requestId, { outcome, error: safe(error instanceof Error ? error.message : 'HTTP_REQUEST_FAILED'), usage });
       throw error;
     } finally { closed = true; }
@@ -641,7 +634,8 @@ export class AIService {
     return this.withProviderTask(options.signal, options.feature, signal => {
       const request = { ...options, signal };
       if (isAgyConfig(this.config)) return generateAgyText(this.config, request);
-      return this.observeHttp(signal, 'final', capture => this.requestTextUnobserved({ ...request, capture }), text => text);
+      return this.observeHttp(signal, 'final', capture => withDeadline(requestSignal =>
+        this.requestTextUnobserved({ ...request, signal: requestSignal, capture }), HTTP_REQUEST_TIMEOUT_MS, signal), text => text);
     });
   }
 
@@ -706,7 +700,6 @@ export class AIService {
         'Authorization': 'Bearer ***',
       };
       let responseHeaders: Record<string, string> | undefined;
-      let responseBodyPreview: string | undefined;
       let responseStatus: number | undefined;
 
       options.capture?.sent();
@@ -731,18 +724,10 @@ export class AIService {
         responseHeaders = {};
         response.headers.forEach((v, k) => { responseHeaders![k] = v; });
         responseStatus = response.status;
-        // Capture response body preview (clone to avoid consuming)
-        try {
-          const cloned = response.clone();
-          const text = await cloned.text();
-          if (text.length > 0) {
-            responseBodyPreview = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
-          }
-        } catch { /* body not readable */ }
         if (!response.ok) {
           const errorDetail = await this.extractErrorDetail(response);
           this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, {
-            url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+            url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
           });
           throw new AIRequestError(
             `AI API error: ${response.status} ${response.statusText}${errorDetail ? ` - ${errorDetail}` : ''}`,
@@ -756,7 +741,7 @@ export class AIService {
       options.capture?.response(data);
       validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
-        url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+        url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
       } : undefined;
 
       if (apiType === 'openai-responses') {
@@ -825,7 +810,6 @@ export class AIService {
         'anthropic-version': '2023-06-01',
       };
       let responseHeaders: Record<string, string> | undefined;
-      let responseBodyPreview: string | undefined;
       let responseStatus: number | undefined;
 
       options.capture?.sent();
@@ -850,18 +834,10 @@ export class AIService {
         responseHeaders = {};
         response.headers.forEach((v, k) => { responseHeaders![k] = v; });
         responseStatus = response.status;
-        // Capture response body preview
-        try {
-          const cloned = response.clone();
-          const text = await cloned.text();
-          if (text.length > 0) {
-            responseBodyPreview = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
-          }
-        } catch { /* body not readable */ }
         if (!response.ok) {
           const errorDetail = await this.extractErrorDetail(response);
           this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, {
-            url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+            url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
           });
           throw new AIRequestError(
             `AI API error: ${response.status} ${response.statusText}${errorDetail ? ` - ${errorDetail}` : ''}`,
@@ -875,7 +851,7 @@ export class AIService {
       options.capture?.response(data);
       validateResponseCompletion(apiType, data);
       const httpDetails = logger.isDebugMode() ? {
-        url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+        url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
       } : undefined;
 
       const contentBlocks = (data as { content?: unknown }).content;
@@ -928,7 +904,6 @@ ${options.user}` : options.user;
       'Accept': 'application/json',
     };
     let responseHeaders: Record<string, string> | undefined;
-    let responseBodyPreview: string | undefined;
     let responseStatus: number | undefined;
 
     options.capture?.sent();
@@ -951,18 +926,10 @@ ${options.user}` : options.user;
       responseHeaders = {};
       response.headers.forEach((v, k) => { responseHeaders![k] = v; });
       responseStatus = response.status;
-      // Capture response body preview
-      try {
-        const cloned = response.clone();
-        const text = await cloned.text();
-        if (text.length > 0) {
-          responseBodyPreview = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
-        }
-      } catch { /* body not readable */ }
       if (!response.ok) {
         const errorDetail = await this.extractErrorDetail(response);
         this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, {
-          url: maskedUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+          url: maskedUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
         });
         throw new AIRequestError(
           `AI API error: ${response.status} ${response.statusText}${errorDetail ? ` - ${errorDetail}` : ''}`,
@@ -976,7 +943,7 @@ ${options.user}` : options.user;
     options.capture?.response(data);
     validateResponseCompletion(apiType, data);
     const httpDetails = logger.isDebugMode() ? {
-      url: maskedUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+      url: maskedUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
     } : undefined;
 
     const candidates = (data as { candidates?: unknown }).candidates;
@@ -1020,7 +987,7 @@ ${options.user}` : options.user;
       if (isAgyConfig(this.config)) return generateAgyText(this.config, { ...options, signal });
       return this.observeHttp(signal, 'stream', capture => withDeadline(requestSignal => this.requestTextStreamWithinDeadline({ ...options, signal: requestSignal, capture,
         onChunk: text => { capture.answer(text); options.onChunk(text); },
-      }), 600000, signal), text => text);
+      }), HTTP_REQUEST_TIMEOUT_MS, signal), text => text);
     });
   }
 
@@ -1290,7 +1257,8 @@ ${options.user}` : options.user;
   async generateWithTools(options: Parameters<AIService['generateWithToolsUnobserved']>[0]): Promise<{ content: string; toolCalls: AIToolCall[] }> {
     if (isAgyConfig(this.config)) throw new AIToolCallUnsupportedError('AGY uses the GSM evidence loop');
     return this.withProviderTask(options.signal, options.feature ?? 'repository-chat', signal =>
-      this.observeHttp(signal, 'final', capture => this.generateWithToolsUnobserved({ ...options, signal, capture }), result => result.content));
+      this.observeHttp(signal, 'final', capture => withDeadline(requestSignal =>
+        this.generateWithToolsUnobserved({ ...options, signal: requestSignal, capture }), HTTP_REQUEST_TIMEOUT_MS, signal), result => result.content));
   }
 
   private async generateWithToolsUnobserved(options: {
@@ -1365,7 +1333,6 @@ ${options.user}` : options.user;
       'Authorization': 'Bearer ***',
     };
     let responseHeaders: Record<string, string> | undefined;
-    let responseBodyPreview: string | undefined;
     let responseStatus: number | undefined;
     let data: Record<string, unknown>;
 
@@ -1401,17 +1368,10 @@ ${options.user}` : options.user;
       responseHeaders = {};
       response.headers.forEach((v, k) => { responseHeaders![k] = v; });
       responseStatus = response.status;
-      try {
-        const cloned = response.clone();
-        const text = await cloned.text();
-        if (text.length > 0) {
-          responseBodyPreview = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
-        }
-      } catch { /* body not readable */ }
       if (!response.ok) {
         const errorDetail = await this.extractErrorDetail(response);
         this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, {
-          url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+          url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
         });
         const error = new AIRequestError(
           `AI API error: ${response.status} ${response.statusText}${errorDetail ? ` - ${errorDetail}` : ''}`,
@@ -1429,7 +1389,7 @@ ${options.user}` : options.user;
     }
 
     const httpDetails = logger.isDebugMode() ? {
-      url: requestUrl, requestHeaders, requestBody, responseHeaders, responseBody: responseBodyPreview, status: responseStatus,
+      url: requestUrl, requestHeaders, requestBody, responseHeaders, status: responseStatus,
     } : undefined;
 
     options.capture?.response(data);

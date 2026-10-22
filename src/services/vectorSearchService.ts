@@ -7,6 +7,7 @@
 
 import type { EmbeddingConfig, VectorSearchConfig, Repository, VectorIndexMode } from '../types';
 import { withDeadline } from '../utils/requestDeadline';
+import { isSecureAIEndpoint } from '../utils/apiUrlBuilder';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
 import {
   EMBEDDING_FORMAT_VERSION, VECTOR_PROTOCOL_VERSION, hashVectorContent,
@@ -40,6 +41,20 @@ export class EmbeddingClient {
   }
 
   private async embedWithinDeadline(texts: string[], purpose: 'document' | 'query', signal: AbortSignal): Promise<number[][]> {
+    if (!isSecureAIEndpoint(this.config.baseUrl)) {
+      throw new Error('Embedding endpoint must use HTTPS; HTTP is allowed only for local model servers, without embedded credentials.');
+    }
+    if (!texts.length) return [];
+    const vectors = await this.requestEmbeddings(texts, purpose, signal);
+    if (!Array.isArray(vectors) || vectors.length !== texts.length || vectors.some(vector =>
+      !Array.isArray(vector) || vector.length === 0 || vector.some(value => typeof value !== 'number' || !Number.isFinite(value))) ||
+      vectors.some(vector => vector.length !== vectors[0].length)) {
+      throw new Error('Invalid embedding response: expected one finite, nonempty vector of consistent dimensions per input.');
+    }
+    return vectors;
+  }
+
+  private async requestEmbeddings(texts: string[], purpose: 'document' | 'query', signal: AbortSignal): Promise<unknown> {
     switch (this.config.apiType) {
       case 'openai':
       case 'openai-compatible':
@@ -79,7 +94,7 @@ export class EmbeddingClient {
   // OpenAI / OpenAI-compatible
   // POST /v1/embeddings  or  custom URL
   // ----------------------------------------------------------
-  private async embedOpenAICompatible(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+  private async embedOpenAICompatible(texts: string[], signal?: AbortSignal): Promise<unknown> {
     const url =
       this.config.apiType === 'openai' || this.config.apiType === 'siliconflow'
         ? `${this.config.baseUrl.replace(/\/+$/, '')}/v1/embeddings`
@@ -91,6 +106,7 @@ export class EmbeddingClient {
     }
 
     const response = await fetch(url, {
+      redirect: 'error',
       method: 'POST',
       headers,
       body: JSON.stringify({ model: this.config.model, input: texts }),
@@ -102,21 +118,25 @@ export class EmbeddingClient {
       throw new Error(`Embedding API error ${response.status}: ${errText}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as { data?: { index: unknown; embedding: unknown }[] };
     // OpenAI 格式: { data: [{ embedding: [...], index: 0 }] }
-    return data.data
-      .sort((a: { index: number }, b: { index: number }) => a.index - b.index)
-      .map((d: { embedding: number[] }) => d.embedding);
+    if (!Array.isArray(data?.data) || data.data.length !== texts.length ||
+      data.data.some(row => !row || !Number.isInteger(row.index) || Number(row.index) < 0 || Number(row.index) >= texts.length) ||
+      new Set(data.data.map(row => row.index)).size !== texts.length) {
+      throw new Error('Invalid embedding response indexes.');
+    }
+    return data.data.sort((a, b) => Number(a.index) - Number(b.index)).map(row => row.embedding);
   }
 
   // ----------------------------------------------------------
   // Ollama 本地模型
   // POST /api/embed
   // ----------------------------------------------------------
-  private async embedOllama(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+  private async embedOllama(texts: string[], signal?: AbortSignal): Promise<unknown> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/api/embed`;
 
     const response = await fetch(url, {
+      redirect: 'error',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: this.config.model, input: texts }),
@@ -137,12 +157,13 @@ export class EmbeddingClient {
   // Google Gemini
   // POST /v1beta/models/{model}:batchEmbedContents
   // ----------------------------------------------------------
-  private async embedGemini(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<number[][]> {
+  private async embedGemini(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<unknown> {
     const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
     const url = `${baseUrl}/v1beta/models/${this.config.model}:batchEmbedContents?key=${this.config.apiKey}`;
     const taskType = purpose === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT';
 
     const response = await fetch(url, {
+      redirect: 'error',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -168,10 +189,11 @@ export class EmbeddingClient {
   // Cohere
   // POST /v1/embed
   // ----------------------------------------------------------
-  private async embedCohere(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<number[][]> {
+  private async embedCohere(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<unknown> {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/embed`;
 
     const response = await fetch(url, {
+      redirect: 'error',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -426,6 +448,7 @@ export class VectorSearchService {
   }
 
   private async requestWithinDeadline<T>(path: string, options: RequestInit, signal: AbortSignal): Promise<T> {
+    if (!isSecureAIEndpoint(this.workerUrl)) throw new Error('Vector Worker endpoint must use HTTPS; HTTP is allowed only for local servers, without embedded credentials.');
     const url = `${this.workerUrl}${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -433,7 +456,7 @@ export class VectorSearchService {
       ...(options.headers as Record<string, string>),
     };
 
-    const response = await fetch(url, { ...options, headers, signal });
+    const response = await fetch(url, { ...options, headers, signal, redirect: 'error' });
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');

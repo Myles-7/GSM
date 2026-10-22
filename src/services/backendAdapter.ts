@@ -620,12 +620,12 @@ class BackendAdapter {
           signal,
         }, 600000);
         if (res.ok) return res.json();
-        // Fall through to inline config on 404 (config not synced yet)
-        if (res.status !== 404) await this.throwTranslatedError(res, 'AI proxy error');
+        await this.throwTranslatedError(res, 'AI proxy error');
       } catch (err) {
-        // Rethrow non-404 errors; fall through to inline config on config-not-found
+        // A provider 404 is not a configuration lookup miss. Resending it can
+        // duplicate an upstream request and unnecessarily disclose the key.
         const e = err as Error & { statusCode?: number; code?: string };
-        if (e.statusCode !== 404 && e.code !== 'AI_CONFIG_NOT_FOUND') throw err;
+        if (e.statusCode !== 404 || e.code !== 'AI_CONFIG_NOT_FOUND') throw err;
       }
     }
 

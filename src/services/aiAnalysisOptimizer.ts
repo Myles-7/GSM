@@ -54,7 +54,6 @@ const DEFAULT_CONFIG: OptimizerConfig = {
     cooldownThreshold: 3,
     backoffBaseMs: 1000,
     backoffCapMs: 60000,
-    maxRetryAfterMs: 60000,
   },
 };
 

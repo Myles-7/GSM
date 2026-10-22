@@ -30,6 +30,56 @@ beforeEach(() => {
 async function existing() { const owner = String(mocks.state.user!.id); await updateExploration(owner, () => ({ ...accountFixture(mocks.state.repositories, mocks.state.repositories.map(() => 'direct')), ownerId: owner })); }
 
 describe('manual exploration tasks', () => {
+  it('honors a forced build by reanalyzing all projects instead of reusing a partial checkpoint', async () => {
+    mocks.state.repositories = Array.from({ length: 6 }, (_, i) => repositoryFixture(i + 1));
+    const owner = String(mocks.state.user!.id);
+    await updateExploration(owner, current => ({ ...current, task: { id: 'prior', type: 'build', status: 'failed', model: 'old',
+      fingerprint: 'old', startedAt: '2026-10-22', completed: 5, total: 6,
+      draft: Object.fromEntries(mocks.state.repositories.slice(0, 5).map(repo => [String(repo.id), profileFixture(repo)])) } }));
+    await explorationRuntime.run(owner, { type: 'build', configId: 'model', force: true });
+    expect(mocks.analyze.mock.calls.flatMap(call => call[0].repositories.map((repo: Repository) => repo.id)).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(mocks.analyze.mock.calls.every(call => call[0].refreshDocuments === true)).toBe(true);
+  });
+
+  it.each(['language', 'effort', 'endpoint', 'force'] as const)('invalidates completed query reuse after changing %s', async change => {
+    const owner = String(mocks.state.user!.id);
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex' });
+    if (change === 'language') mocks.state.language = mocks.state.language === 'en' ? 'zh' : 'en';
+    if (change === 'effort') mocks.state.aiConfigs[0] = { ...mocks.state.aiConfigs[0], reasoningEffort: 'high' };
+    const config = mocks.state.aiConfigs[0];
+    if (change === 'endpoint' && config.provider !== 'agy-cli') mocks.state.aiConfigs[0] = { ...config, baseUrl: 'https://another-provider.invalid' };
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex', force: change === 'force' });
+    expect(mocks.analyze).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a forced build checkpoint when explicitly continuing the interrupted task', async () => {
+    mocks.state.repositories = Array.from({ length: 6 }, (_, i) => repositoryFixture(i + 1));
+    mocks.state.aiConfigs[0].concurrency = 1;
+    mocks.analyze.mockImplementationOnce(async ({ repositories }: { repositories: Repository[] }) => repositories.map(repo => profileFixture(repo)))
+      .mockRejectedValueOnce(new Error('AGY_RECOVERY_STORAGE_FULL'));
+    const h = renderHook(useExploration); await waitFor(() => expect(h.result.current.loading).toBe(false));
+    await act(async () => { await h.result.current.build(true); });
+    expect(h.result.current.account?.task?.completed).toBe(5);
+    mocks.analyze.mockClear();
+    await act(async () => { await h.result.current.retry(); });
+    expect(mocks.analyze).toHaveBeenCalledOnce();
+    expect(mocks.analyze.mock.calls[0][0].repositories.map((repo: Repository) => repo.id)).toEqual([6]);
+  });
+
+  it('reactivates a compatible language cache without merging the other language or paying for another call', async () => {
+    mocks.state.language = 'zh';
+    mocks.analyze.mockImplementation(async ({ repositories, language }: { repositories: Repository[]; language: string }) =>
+      repositories.map(repo => ({ ...profileFixture(repo), summary: language })));
+    const owner = String(mocks.state.user!.id);
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex' });
+    mocks.state.language = 'en';
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex' });
+    mocks.state.language = 'zh';
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex' });
+    expect(mocks.analyze).toHaveBeenCalledTimes(2);
+    expect(explorationRuntime.snapshot(owner).account?.queries.at(-1)?.profiles['1'].summary).toBe('zh');
+  });
+
   it('completes all 25 remaining batches for 131 projects and reuses the 10 saved checkpoints', async () => {
     mocks.state.repositories = Array.from({ length: 131 }, (_, i) => repositoryFixture(i + 1));
     mocks.state.aiConfigs = [{ id: 'model', name: 'AGY', provider: 'agy-cli', model: 'configured-model', agyEffort: 'low', agyMode: 'model', deviceBound: true, isActive: true, concurrency: 5 }];
@@ -60,6 +110,21 @@ describe('manual exploration tasks', () => {
     const record = aiTaskJournal.snapshot().find(row => row.id === hook.result.current.account?.task?.journalId)!;
     expect(record.state).toBe('failed'); expect(record.items.filter(item => item.state === 'pending')).toHaveLength(5);
     expect(record.items[0].providerOutcome).toBe('unknown');
+  });
+
+  it.each(['unknown', 'rate-limit', 'unavailable'] as const)('stops HTTP exploration dispatch after an infrastructure failure: %s', async failure => {
+    mocks.state.repositories = Array.from({ length: 30 }, (_, i) => repositoryFixture(i + 1));
+    mocks.state.aiConfigs[0].concurrency = 1;
+    const reason = Object.assign(new Error('HTTP infrastructure failure'), failure === 'unknown'
+      ? { providerOutcome: 'unknown' } : { status: failure === 'rate-limit' ? 429 : 503 });
+    mocks.analyze.mockRejectedValueOnce(reason);
+    const owner = String(mocks.state.user!.id);
+    await explorationRuntime.run(owner, { type: 'query', configId: 'model', query: 'Codex' });
+    expect(mocks.analyze).toHaveBeenCalledOnce();
+    const record = aiTaskJournal.snapshot().find(row => row.id === explorationRuntime.snapshot(owner).account?.task?.journalId)!;
+    expect(record.state).toBe('failed');
+    expect(record.items.filter(item => item.state === 'pending')).toHaveLength(5);
+    if (failure === 'unknown') expect(record.items[0].providerOutcome).toBe('unknown');
   });
   it('marks an entirely blocked continuation as failed even when earlier checkpoints contain projects', async () => {
     mocks.state.repositories = Array.from({ length: 15 }, (_, i) => repositoryFixture(i + 1));
@@ -397,7 +462,10 @@ describe('manual exploration tasks', () => {
     await act(async () => { await result.current.addOverride({ id: 'rename', type: 'rename-topic', topicId: 'topic-id', label: 'My topic', createdAt: 'now' }); await result.current.deepen('Codex'); });
     expect(result.current.account!.index!.id).toBe('index-1'); expect(result.current.account!.queries).toHaveLength(1); const calls = mocks.analyze.mock.calls.length;
     await act(async () => { await result.current.deepen('Codex'); }); expect(mocks.analyze).toHaveBeenCalledTimes(calls);
-    await act(async () => { await result.current.build(); }); expect(result.current.account!.overrides).toHaveLength(1); expect(result.current.account!.queries).toHaveLength(1); expect(mocks.analyze).toHaveBeenCalledTimes(calls);
+    // Legacy indexes have no language/profile identity. An explicitly requested
+    // build refreshes them once, retaining corrections and query history.
+    await act(async () => { await result.current.build(); }); expect(result.current.account!.overrides).toHaveLength(1); expect(result.current.account!.queries).toHaveLength(1); expect(mocks.analyze).toHaveBeenCalledTimes(calls + 1);
+    await act(async () => { await result.current.build(); }); expect(mocks.analyze).toHaveBeenCalledTimes(calls + 1);
   });
   it('performs a separately requested direction instead of reusing the root query result', async () => {
     await existing(); const { result } = renderHook(useExploration); await waitFor(() => expect(result.current.loading).toBe(false));

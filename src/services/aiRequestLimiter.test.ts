@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AIRateLimiter } from './aiRequestLimiter';
 
 describe('AIRateLimiter', () => {
@@ -101,13 +101,29 @@ describe('AIRateLimiter', () => {
     });
 
     it('尊重 Retry-After：服务端时长作为最短等待，抖动不缩短', () => {
-      const limiter = new AIRateLimiter({ maxRetryAfterMs: 60000 });
+      const limiter = new AIRateLimiter();
       limiter.notifyRateLimit(5000);
       // 等待必须以完整 Retry-After（5000ms）为底，绝不低于它
       expect(limiter.getStatus().cooldownRemainingMs).toBeGreaterThanOrEqual(4900);
-      // 且受 backoffCap 约束
-      limiter.notifyRateLimit(999999);
-      expect(limiter.getStatus().cooldownRemainingMs).toBeLessThanOrEqual(60000);
+      // 本地退避上限不能覆盖服务端的最短等待。
+      expect(limiter.notifyRateLimit(999999)).toBeGreaterThanOrEqual(999999);
+      expect(limiter.getStatus().cooldownRemainingMs).toBeGreaterThan(999000);
+    });
+
+    it('keeps a server minimum longer than the local backoff cap and allows cancellation while waiting', async () => {
+      vi.useFakeTimers();
+      try {
+        const limiter = new AIRateLimiter({ backoffCapMs: 1000 });
+        expect(limiter.notifyRateLimit(30000)).toBeGreaterThanOrEqual(30000);
+        const controller = new AbortController();
+        let acquired = false;
+        const pending = limiter.acquire(controller.signal).then(release => { acquired = true; release(); });
+        const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(acquired).toBe(false);
+        controller.abort();
+        await rejected;
+      } finally { vi.useRealTimers(); }
     });
 
     it('冷却期间 acquire 阻塞，冷却过后放行', async () => {

@@ -1,5 +1,15 @@
 import { AIApiType } from '../types';
 
+/** Credential-bearing AI requests use HTTPS, with local inference as the only HTTP exception. */
+export function isSecureAIEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return false;
+    return url.protocol === 'https:' || (url.protocol === 'http:' &&
+      /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])$/i.test(url.hostname));
+  } catch { return false; }
+}
+
 export function buildApiUrl(baseUrl: string, pathWithVersion: string): string {
   const baseUrlWithSlash = baseUrl.endsWith('/')
     ? baseUrl

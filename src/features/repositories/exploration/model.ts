@@ -21,7 +21,7 @@ export function explorationFingerprint(repo: Repository): string {
     topics: repo.topics, custom_tags: repo.custom_tags, ai_summary: repo.ai_summary, ai_tags: repo.ai_tags, ai_platforms: repo.ai_platforms, ai_details: repo.ai_details, language: repo.language, pushed_at: repo.pushed_at })));
 }
 export const libraryFingerprint = (repositories: Repository[]) => stableId('library-v1', repositories.map(repo => [repo.id, explorationFingerprint(repo)]).sort((a, b) => Number(a[0]) - Number(b[0])).map(row => row.join(':')).join('|'));
-export const queryFingerprint = (query: string, repositories: Repository[], index: ExplorationIndex | null, model: string, scope = '') => stableId('query-v1', `${conceptId('entity', query)}:${scope}:${libraryFingerprint(repositories)}:${index?.id === 'local-preview' ? undefined : index?.id}:${model}`);
+export const queryFingerprint = (query: string, repositories: Repository[], index: ExplorationIndex | null, model: string, scope = '', generation = '') => stableId('query-v1', `${conceptId('entity', query)}:${scope}:${libraryFingerprint(repositories)}:${index?.id === 'local-preview' ? undefined : index?.id}:${model}${generation ? `:${generation}` : ''}`);
 export const relationLabels: Record<RelationKind, string> = { direct: '直接相关', interoperable: '明确互通', similar: '同类能力', discovery: '拓展发现' };
 export const relationOrder: RelationKind[] = ['direct', 'interoperable', 'similar', 'discovery'];
 export const repositorySummary = (repo: Repository) => repo.custom_description || repo.ai_details?.summary || repo.ai_summary || repo.description || '暂无项目摘要';
@@ -58,7 +58,12 @@ export function projectScene(account: ExplorationAccount, repositories: Reposito
   }
   const live = new Map(repositories.map(repo => [repo.id, repo]));
   const profiles: Record<string, ExplorationProfile> = structuredClone(account.index?.profiles ?? {});
-  const caches = account.queries.filter(row => conceptId('entity', row.query) === conceptId('entity', query) && (!row.scope || row.scope === scope) && row.fingerprint === queryFingerprint(query, repositories, account.index, row.model, row.scope));
+  const latest = new Map<string, ExplorationAccount['queries'][number]>();
+  for (const row of account.queries) if (conceptId('entity', row.query) === conceptId('entity', query) && (!row.scope || row.scope === scope) &&
+    row.fingerprint === queryFingerprint(query, repositories, account.index, row.model, row.scope, row.generation)) latest.set(row.scope ?? '', row);
+  // Different model/language generations of one direction are alternatives,
+  // not additional evidence. Apply the root before a more specific branch.
+  const caches = [...latest.values()].sort((a, b) => Number(!!a.scope) - Number(!!b.scope));
   if (query) for (const cache of caches) for (const [id, profile] of Object.entries(cache.profiles)) {
     const previous = profiles[id];
     profiles[id] = previous ? { ...profile, topics: [...new Map([...previous.topics, ...profile.topics].map(row => [row.id, row])).values()], entities: [...new Map([...previous.entities, ...profile.entities].map(row => [row.id, row])).values()],

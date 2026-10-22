@@ -21,8 +21,6 @@ export interface AIRateLimitConfig {
   backoffBaseMs?: number;
   /** 退避上限（ms）。默认 60000 */
   backoffCapMs?: number;
-  /** 尊重 Retry-After 的上限（ms）。默认 60000 */
-  maxRetryAfterMs?: number;
   /** RPM 统计窗口（ms）。默认 60000；主要供测试缩小窗口 */
   rpmWindowMs?: number;
 }
@@ -36,7 +34,6 @@ const DEFAULT_CONFIG: Required<AIRateLimitConfig> = {
   cooldownThreshold: 3,
   backoffBaseMs: 1000,
   backoffCapMs: 60000,
-  maxRetryAfterMs: 60000,
   rpmWindowMs: RPM_WINDOW_MS,
 };
 
@@ -104,7 +101,7 @@ export class AIRateLimiter {
 
     let retryWait = 0;
     if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-      retryWait = Math.min(retryAfterMs, this.config.maxRetryAfterMs ?? DEFAULT_CONFIG.maxRetryAfterMs);
+      retryWait = retryAfterMs;
     }
 
     const attempt = this.consecutiveRateLimits - 1;
@@ -114,11 +111,11 @@ export class AIRateLimiter {
     );
 
     // 抖动只作用于本地指数退避；服务端 Retry-After 作为最短等待，绝不被缩短
-    const jitteredBackoff = Math.round(backoff * (0.75 + Math.random() * 0.5));
+    const jitteredBackoff = Math.min(this.config.backoffCapMs ?? DEFAULT_CONFIG.backoffCapMs, Math.round(backoff * (0.75 + Math.random() * 0.5)));
     const waitMs = Math.max(retryWait, jitteredBackoff);
-    // 最终等待受退避上限约束，避免单次 Retry-After 造成过长停摆
-    const cappedWait = Math.min(this.config.backoffCapMs ?? DEFAULT_CONFIG.backoffCapMs, waitMs);
-    this.cooldownUntil = Math.max(this.cooldownUntil, now + cappedWait);
+    // Cap only locally generated backoff. A long server cooldown stays
+    // cancelable; it is never permission to send an earlier request.
+    this.cooldownUntil = Math.max(this.cooldownUntil, now + waitMs);
 
     const threshold = this.config.cooldownThreshold ?? DEFAULT_CONFIG.cooldownThreshold;
     const circuitOpen = this.consecutiveRateLimits >= threshold;
@@ -128,7 +125,7 @@ export class AIRateLimiter {
       circuitOpen,
       cooldownMs: Math.max(0, this.cooldownUntil - now),
     });
-    return cappedWait;
+    return waitMs;
   }
 
   getStatus(): AIRateLimitStatus {

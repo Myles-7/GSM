@@ -46,6 +46,30 @@ function make429Response(headers: Record<string, string>): Response {
 
 type BackendAdapterLike = { _backendUrl: string | null };
 
+describe('AI proxy configuration fallback', () => {
+  const adapter = backend as unknown as BackendAdapterLike;
+  const config = { baseUrl: 'https://provider.invalid', apiKey: 'fixture-only', model: 'fixture' };
+  afterEach(() => { adapter._backendUrl = null; vi.mocked(window.fetch).mockReset(); });
+
+  it.each([['UPSTREAM_DEPLOYMENT_MISSING', 404], [undefined, 404], ['AI_CONFIG_NOT_FOUND', 500]] as const)('does not resend upstream errors (%s/%s) with inline credentials', async (code, status) => {
+    adapter._backendUrl = 'http://localhost:3000/api';
+    vi.mocked(window.fetch).mockResolvedValue(new Response(JSON.stringify({ error: 'missing upstream', code }), { status }));
+    await expect(backend.proxyAIRequestWithFallback('fixture', config, {})).rejects.toMatchObject({ statusCode: status });
+    expect(window.fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(vi.mocked(window.fetch).mock.calls[0][1]!.body as string)).not.toHaveProperty('config');
+  });
+
+  it('uses inline configuration only for a backend configuration lookup miss', async () => {
+    adapter._backendUrl = 'http://localhost:3000/api';
+    vi.mocked(window.fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'AI_CONFIG_NOT_FOUND' }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ answer: 'ok' })));
+    await expect(backend.proxyAIRequestWithFallback('fixture', config, {})).resolves.toEqual({ answer: 'ok' });
+    expect(window.fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(vi.mocked(window.fetch).mock.calls[1][1]!.body as string)).toMatchObject({ config });
+  });
+});
+
 describe('backendAdapter 429 Retry-After 解析', () => {
   const adapter = backend as unknown as BackendAdapterLike;
 

@@ -25,7 +25,7 @@ export function localExplorationAccount(account: ExplorationAccount, repositorie
   const profiles = Object.fromEntries(repositories.map(repo => [String(repo.id), account.index?.profiles[String(repo.id)] ?? localProfile(repo)]));
   const build = account.task?.type === 'build' ? account.task : account.pendingTasks?.find(task=>task.type==='build');
   if (build) Object.assign(profiles, build.draft);
-  return { ...account, index: { version: 1, id: account.index?.id ?? 'local-preview', createdAt: account.index?.createdAt ?? '', model: account.index?.model ?? '本地已有分析', profiles } };
+  return { ...account, index: { version: 1, id: account.index?.id ?? 'local-preview', createdAt: account.index?.createdAt ?? '', model: account.index?.model ?? '本地已有分析', generation: account.index?.generation, profiles } };
 }
 export function snapshotRepository(repo: Repository): Repository {
   const { id, name, full_name, description, html_url, owner, stargazers_count, forks_count, forks, language, topics, created_at, updated_at, pushed_at, custom_description } = repo;

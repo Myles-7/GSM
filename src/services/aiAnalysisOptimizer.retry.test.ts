@@ -40,7 +40,7 @@ describe.each(['http', 'agy'] as const)('%s bounded analysis retries', transport
     } as AIConfig, 'en');
     const optimizer = new AIAnalysisOptimizer({
       maxRetries, retryDelayBaseMs: 1,
-      rateLimiter: { maxConcurrency: 0, requestsPerMinute: 0, cooldownThreshold: 0, maxRetryAfterMs: 1 },
+      rateLimiter: { maxConcurrency: 0, requestsPerMinute: 0, cooldownThreshold: 0 },
     });
     return {
       prompts, fetch,

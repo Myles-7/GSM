@@ -43,12 +43,11 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
         cooldownThreshold: 3,
         backoffBaseMs: 10,
         backoffCapMs: 120,
-        maxRetryAfterMs: 50,
       },
     });
 
     const analyze = vi.fn()
-      .mockRejectedValueOnce(new AIRequestError('rate limited', 429, 200000))
+      .mockRejectedValueOnce(new AIRequestError('rate limited', 429, 50))
       .mockResolvedValueOnce({ summary: 'ok', tags: [], platforms: [] });
     const fakeAi = { analyzeRepository: analyze } as unknown as AIService;
 
@@ -70,7 +69,6 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
         cooldownThreshold: 2,
         backoffBaseMs: 5,
         backoffCapMs: 50,
-        maxRetryAfterMs: 30,
       },
     });
 
@@ -115,7 +113,6 @@ describe('AIAnalysisOptimizer 与共享限流器集成', () => {
         cooldownThreshold: 1,
         backoffBaseMs: 10000,
         backoffCapMs: 10000,
-        maxRetryAfterMs: 10000,
       },
     });
 

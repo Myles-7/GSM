@@ -14,7 +14,7 @@ export interface ExplorationProfile {
   topics: ExplorationTopic[]; entities: ExplorationEntity[]; relations: ExplorationRelation[]; evidence: ExplorationEvidence[];
 }
 export interface ExplorationIndex {
-  version: 1; id: string; createdAt: string; model: string; profiles: Record<string, ExplorationProfile>;
+  version: 1; id: string; createdAt: string; model: string; generation?: string; profiles: Record<string, ExplorationProfile>;
 }
 export type ExplorationOverride = { id: string; createdAt: string } & (
   { type: 'remove-relation'; relationId: string } |
@@ -22,11 +22,11 @@ export type ExplorationOverride = { id: string; createdAt: string } & (
   { type: 'set-topics'; repositoryId: number; topics: ExplorationTopic[] }
 );
 export interface ExplorationQueryCache {
-  id: string; query: string; scope?: string; fingerprint: string; createdAt: string; model: string; profiles: Record<string, ExplorationProfile>;
+  id: string; query: string; scope?: string; fingerprint: string; createdAt: string; model: string; generation?: string; profiles: Record<string, ExplorationProfile>;
 }
 export interface ExplorationTask {
   id: string; type: 'build' | 'query'; status: 'running' | 'paused' | 'interrupted' | 'failed';
-  startedAt: string; model: string; query?: string; scope?: string; force?: boolean; fingerprint: string;
+  startedAt: string; model: string; generation?: string; query?: string; scope?: string; force?: boolean; fingerprint: string;
   completed: number; total: number; error?: string; draft: Record<string, ExplorationProfile>;
   phase?: 'profiles' | 'topics';
   savedId?: string;

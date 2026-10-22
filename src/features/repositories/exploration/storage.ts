@@ -12,7 +12,7 @@ export const profileSchema = z.object({ repositoryId: z.number().int().positive(
   evidence: z.array(evidence).max(100),
 }).strict();
 const profiles = z.record(z.string(), profileSchema).refine(rows => Object.keys(rows).length <= 1000 && Object.entries(rows).every(([key, value]) => key === String(value.repositoryId)));
-const index = z.object({ version: z.literal(1), id, createdAt: z.string().max(60), model: z.string().max(300), profiles }).strict();
+const index = z.object({ version: z.literal(1), id, createdAt: z.string().max(60), model: z.string().max(300), generation: id.optional(), profiles }).strict();
 const override = z.discriminatedUnion('type', [
   z.object({ id, createdAt: z.string(), type: z.literal('remove-relation'), relationId: id }).strict(),
   z.object({ id, createdAt: z.string(), type: z.literal('rename-topic'), topicId: id, label: z.string().trim().min(1).max(100) }).strict(),
@@ -33,12 +33,12 @@ const saved = z.object({ id, name: z.string().trim().min(1).max(100), query: z.s
   layoutPositions: z.record(z.string(), z.object({x:z.number().finite(),y:z.number().finite()})).refine(value => Object.keys(value).length <= 1100).optional(),
   path: z.array(focus).min(1).max(100), scope: focus.optional(), kindFilter: z.enum(['all','direct','interoperable','similar','discovery']), camera: z.object({ zoom: z.number().min(.1).max(4), x: z.number().finite(), y: z.number().finite() }).optional(),
   profiles, repositories: z.array(snapshotRepository).max(1000), checked: z.record(z.string(), id), resultIds: z.array(z.number().int().positive()).max(1000), overrides: z.array(override).max(10000) }).strict();
-const task = z.object({ id, type: z.enum(['build', 'query']), status: z.enum(['running', 'paused', 'interrupted', 'failed']), startedAt: z.string(), model: z.string().max(300), query: z.string().max(200).optional(), scope: z.string().max(1000).optional(), force: z.boolean().optional(), fingerprint: id,
+const task = z.object({ id, type: z.enum(['build', 'query']), status: z.enum(['running', 'paused', 'interrupted', 'failed']), startedAt: z.string(), model: z.string().max(300), generation: id.optional(), query: z.string().max(200).optional(), scope: z.string().max(1000).optional(), force: z.boolean().optional(), fingerprint: id,
   completed: z.number().int().nonnegative(), total: z.number().int().min(0).max(1000), error: z.string().max(1000).optional(), draft: profiles, phase: z.enum(['profiles', 'topics']).optional(), savedId: id.optional(), journalId: id.optional(), checked: z.record(z.string(), id).optional(),
   failures: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()), message: z.string().max(1000), unknown: z.boolean() })).optional() }).strict();
 export const accountSchema = z.object({ version: z.literal(1), ownerId: id, revision: z.number().int().nonnegative(), index: index.nullable(), overrides: z.array(override).max(10000),
   saved: z.array(saved).max(100).optional(),
-  queries: z.array(z.object({ id, query: z.string().min(1).max(200), scope: z.string().max(1000).optional(), fingerprint: id, createdAt: z.string(), model: z.string().max(300), profiles }).strict()).max(20),
+  queries: z.array(z.object({ id, query: z.string().min(1).max(200), scope: z.string().max(1000).optional(), fingerprint: id, createdAt: z.string(), model: z.string().max(300), generation: id.optional(), profiles }).strict()).max(20),
   task: task.nullable(), pendingTasks: z.array(task).max(20).optional(),
 }).strict();
 export const emptyExplorationAccount = (ownerId: string): ExplorationAccount => ({ version: 1, ownerId, revision: 0, index: null, overrides: [], queries: [], task: null });
