@@ -80,6 +80,7 @@ export async function refreshAgyDeviceState(): Promise<void> {
 }
 
 export async function generateAgyText(config: AgyAIConfig, options: {
+  responseContract?: import('../types/agy').AIResponseContract;
   system: string; user: string; maxTokens?: number; signal?: AbortSignal; onChunk?: (text: string) => void;
   feature?: import('../types/agy').AgyFeature;
   priority?: import('../types/agy').AgyPriority;
@@ -184,12 +185,13 @@ export async function generateAgyText(config: AgyAIConfig, options: {
     const request = {
       system: `${options.system}\nApplication output ceiling: ${maxChars} characters. Stay within it without dropping requested requirements. Return a complete result, never truncated JSON.`,
       user: options.user, model: config.model, effort: config.agyEffort,
+      responseContract: options.responseContract,
       profileOverride: config.agyRequestProfile,
       feature: config.agyFeature ?? options.feature ?? 'other', revision: config.agyRevision, priority: options.priority ?? config.agyPriority ?? 'interactive',
       taskId: taskForSignal(options.signal)?.id,
       itemId, step: options.recovery?.step, retryOf: options.recovery?.retryOf ?? aiTaskJournal.snapshot()
         .find(record => record.id === aiTaskJournal.snapshot().find(record => record.id === task?.id)?.parentId)?.items.find(item => item.id === itemId)?.requestId,
-      recoveryContext: options.recovery?.context,
+      recoveryContext: options.responseContract ? { ...(options.recovery?.context && typeof options.recovery.context === 'object' && !Array.isArray(options.recovery.context) ? options.recovery.context : {}), responseContract: options.responseContract } : options.recovery?.context,
     };
     if (typeof api.recoveryList === 'function') {
       const owner = String(useAppStore.getState().user?.id ?? '');

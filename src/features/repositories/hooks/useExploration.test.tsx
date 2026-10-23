@@ -30,6 +30,33 @@ beforeEach(() => {
 async function existing() { const owner = String(mocks.state.user!.id); await updateExploration(owner, () => ({ ...accountFixture(mocks.state.repositories, mocks.state.repositories.map(() => 'direct')), ownerId: owner })); }
 
 describe('manual exploration tasks', () => {
+  it('persists a partial batch and its one repair allowance before dispatch, retaining the original batch on continuation', async () => {
+    mocks.state.repositories = [repositoryFixture(1), repositoryFixture(2)];
+    mocks.state.aiConfigs[0].concurrency = 1;
+    const owner = String(mocks.state.user!.id);
+    mocks.analyze.mockImplementationOnce(async (options: Parameters<typeof import('../../../services/explorationAI').analyzeExplorationBatch>[0]) => {
+      await options.onPartial!([profileFixture(options.repositories[0])]);
+      const prepared = await options.prepareRepair!([2]);
+      expect(prepared).not.toBe(false);
+      const stored = await loadExploration(owner);
+      expect(stored.task?.completed).toBe(1);
+      expect(Object.values(stored.task?.repairs ?? {})).toEqual([expect.objectContaining({ repositoryIds:[2] })]);
+      throw Object.assign(new Error('Second project has invalid output'), { name:'ExplorationValidationError', issues:[{repositoryId:2,code:'schema_mismatch',message:'Missing fields'}] });
+    });
+    await explorationRuntime.run(owner, {type:'query',configId:'model',query:'Codex'});
+    const partial = await loadExploration(owner);
+    expect(partial.task?.failures?.[0].repositoryIds).toEqual([2]);
+    const original = structuredClone(partial.task!.draft['1']);
+    mocks.analyze.mockImplementationOnce(async (options: Parameters<typeof import('../../../services/explorationAI').analyzeExplorationBatch>[0]) => {
+      expect(options.repositories.map(repo => repo.id)).toEqual([2]);
+      expect(await options.prepareRepair!([2])).toBe(false);
+      return options.repositories.map(repo => profileFixture(repo));
+    });
+    await explorationRuntime.run(owner, {type:'query',configId:'model',query:'Codex',resume:true});
+    const complete = await loadExploration(owner);
+    expect(complete.queries.at(-1)?.profiles['1']).toEqual(original);
+    expect(complete.task).toBeNull();
+  });
   it('honors a forced build by reanalyzing all projects instead of reusing a partial checkpoint', async () => {
     mocks.state.repositories = Array.from({ length: 6 }, (_, i) => repositoryFixture(i + 1));
     const owner = String(mocks.state.user!.id);
@@ -108,7 +135,7 @@ describe('manual exploration tasks', () => {
     await act(async () => { await hook.result.current.deepen('Codex'); });
     expect(mocks.analyze).toHaveBeenCalledOnce();
     const record = aiTaskJournal.snapshot().find(row => row.id === hook.result.current.account?.task?.journalId)!;
-    expect(record.state).toBe('failed'); expect(record.items.filter(item => item.state === 'pending')).toHaveLength(5);
+    expect(record.state).toBe('failed'); expect(record.items.filter(item => item.state === 'pending')).toHaveLength(9);
     expect(record.items[0].providerOutcome).toBe('unknown');
   });
 
@@ -123,7 +150,7 @@ describe('manual exploration tasks', () => {
     expect(mocks.analyze).toHaveBeenCalledOnce();
     const record = aiTaskJournal.snapshot().find(row => row.id === explorationRuntime.snapshot(owner).account?.task?.journalId)!;
     expect(record.state).toBe('failed');
-    expect(record.items.filter(item => item.state === 'pending')).toHaveLength(5);
+    expect(record.items.filter(item => item.state === 'pending')).toHaveLength(9);
     if (failure === 'unknown') expect(record.items[0].providerOutcome).toBe('unknown');
   });
   it('marks an entirely blocked continuation as failed even when earlier checkpoints contain projects', async () => {

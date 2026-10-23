@@ -183,18 +183,11 @@ describe('RepositoryList view mode controls', () => {
 
     const card = screen.getByTestId('repository-card-1');
     expect(card).toHaveAttribute('data-view-mode', 'grid');
-    expect(screen.getByTitle('多列卡片')).toHaveAttribute('aria-pressed', 'true');
-
-    const layoutControls = screen.getByRole('group', { name: '仓库布局' });
-    const toolbar = layoutControls.closest('[data-repository-toolbar]');
-    expect(toolbar?.lastElementChild).toContainElement(layoutControls);
-
-    fireEvent.click(screen.getByTitle('单列列表'));
-
-    expect(storeState.setRepositoryViewMode).toHaveBeenCalledWith('list');
+    // The persistent workspace owns the single layout switcher.
+    expect(screen.queryByRole('group', { name: '仓库布局' })).not.toBeInTheDocument();
+    storeState.setRepositoryViewMode('list');
     rerender(<RepositoryList repositories={[repository]} selectedCategory="all" />);
     expect(screen.getByTestId('repository-card-1')).toHaveAttribute('data-view-mode', 'list');
-    expect(screen.getByTitle('单列列表')).toHaveAttribute('aria-pressed', 'true');
   });
 });
 

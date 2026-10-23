@@ -2,7 +2,7 @@ import { useT } from "../i18n/useT";
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
-import { Bot, FolderTree, LayoutGrid, List, SearchX, X, Share2 } from 'lucide-react';
+import { Bot, FolderTree, SearchX, X } from 'lucide-react';
 import { useAIOrganization } from '../hooks/useAIOrganization';
 import { AIOrganizationPanel } from './AIOrganizationPanel';
 import { RepositoryCard } from './RepositoryCard';
@@ -66,7 +66,6 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     similarView,
     resetSimilarView,
     repositoryViewMode,
-    setRepositoryViewMode,
     repositoryOrder,
     subcategories,
     subcategoryOrder,
@@ -651,13 +650,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const renderContents = () => {
   if (repositoryViewMode === 'cluster') {
     return <div className="space-y-4">
-      <ExplorationExplorer repositories={repositories} onOpenRepository={setActiveDetailRepository} viewControls={
-        <div className="flex w-fit shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/50 p-0.5" role="group" aria-label={t('repositoryList.repository-layout')}>
-          <Button type="button" variant="ghost" size="icon" onClick={() => setRepositoryViewMode('grid')} aria-pressed={false} aria-label={t('repositoryList.grid-view')} title={t('repositoryList.grid-view')} className="h-7 w-8"><LayoutGrid className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon" onClick={() => setRepositoryViewMode('list')} aria-pressed={false} aria-label={t('repositoryList.list-view')} title={t('repositoryList.list-view')} className="h-7 w-8"><List className="h-4 w-4" /></Button>
-          <Button type="button" variant="ghost" size="icon" onClick={() => setRepositoryViewMode('cluster')} aria-pressed aria-label={String(language).startsWith('zh') ? t('exploration.project-map') : 'Project map'} className="h-7 w-8 bg-accent text-accent-foreground"><Share2 className="h-4 w-4" /></Button>
-        </div>
-      } />
+      <ExplorationExplorer key={accountId} repositories={repositories} onOpenRepository={setActiveDetailRepository} />
       {activeDetailRepository && <React.Suspense fallback={null}><LazyRepositoryDetailsPanel repository={repositories.find(repo => repo.id === activeDetailRepository.id) ?? activeDetailRepository} onClose={() => { setActiveDetailRepository(null); setDetailsPinned(false); }} onAskRepository={handleAskRepository} onPinnedChange={setDetailsPinned} /></React.Suspense>}
       {chatPortal}
       {globalHistorySheet}
@@ -808,48 +801,6 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
         </div>
 
         {/* Statistics and view mode: the layout switch remains at the toolbar's far right. */}
-        <div className={`flex shrink-0 items-center gap-2 ${disableCardAnimations ? 'repository-list-syncing' : ''}`}>
-          {!isLoading && (
-            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted p-0.5 dark:border-border dark:bg-muted/40" role="group" aria-label={t('repositoryList.repository-layout')}>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setRepositoryViewMode('grid')}
-                aria-pressed={repositoryViewMode === 'grid'}
-                aria-label={t('repositoryList.grid-view')}
-                className={`flex h-7 w-8 items-center justify-center rounded-md p-0 transition-colors ${repositoryViewMode === 'grid' ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
-                title={t('repositoryList.grid-view')}
-              >
-                <LayoutGrid className="w-4 h-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setRepositoryViewMode('list')}
-                aria-pressed={repositoryViewMode === 'list'}
-                aria-label={t('repositoryList.list-view')}
-                className={`flex h-7 w-8 items-center justify-center rounded-md p-0 transition-colors ${repositoryViewMode === 'list' ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'}`}
-                title={t('repositoryList.list-view')}
-              >
-                <List className="w-4 h-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => setRepositoryViewMode('cluster')}
-                aria-pressed={false}
-                aria-label={t('exploration.project-map')}
-                className="flex h-7 w-8 items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                title={t('exploration.project-map')}
-              >
-                <Share2 className="w-4 h-4" />
-              </Button>
-            </div>
-          )}
-        </div>
       </div>
       </RepositoryToolbarPortal>
       <AIOrganizationPanel open={organizationOpen} onOpenChange={setOrganizationOpen} controller={organization} />
@@ -927,5 +878,5 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     </div>
   );
   };
-  return <div className="space-y-5">{repositoryViewMode !== 'cluster' && facetControls}{renderContents()}</div>;
+  return <div className={`space-y-5 ${disableCardAnimations ? 'repository-list-syncing' : ''}`}>{repositoryViewMode !== 'cluster' && facetControls}{renderContents()}</div>;
 };

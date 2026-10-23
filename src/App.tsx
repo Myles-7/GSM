@@ -233,7 +233,7 @@ function App() {
     <div className="ui-shell min-h-screen transition-colors duration-200">
       <UpdateNotificationBanner />
       <Header taskPanel={<AITaskPanel />} />
-      <main className={currentView === 'ai' ? 'w-full' : currentView === 'reading' ? 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-3' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
+      <main className={currentView === 'repositories' ? 'w-full px-3 sm:px-5 py-3' : currentView === 'ai' ? 'w-full' : currentView === 'reading' ? 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-3' : 'max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7'}>
         {currentViewContent}
       </main>
       <BackToTop />

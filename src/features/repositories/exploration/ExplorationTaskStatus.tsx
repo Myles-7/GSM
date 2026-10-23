@@ -23,6 +23,7 @@ export function ExplorationTaskStatus(props: Props) {
   const needsSetup = !!setupIssue || /AGY_(DISABLED|NOT_FOUND|DESKTOP_REQUIRED|TEST_REQUIRED)/.test(error);
   const retryLabel = task?.phase === 'topics' && !remaining ? t('exploration.retry-topic-organization') : remaining ? t('exploration.continue-remaining', { count: remaining }) : t('exploration.retry-unfinished-task');
   return <section className={`explore-task-status ${busy ? 'is-running' : ''}`} aria-label={t('exploration.map-task-status')}>
+    {error && !needsSetup && <p className="explore-validation-notice">{t('exploration.saved-results-preserved')}</p>}
     <div className="explore-task-status-row">
       <div className="explore-task-status-summary" role="status">
         {busy && <Loader2 size={14} className="animate-spin" />}

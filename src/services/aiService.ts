@@ -14,6 +14,7 @@ import { taskForSignal, taskItemForSignal, runTrackedTask, bindTaskItemSignal } 
 import { aiTaskJournal, type AITaskKind } from './aiTaskJournal';
 import { taskObservability } from './taskObservability';
 import { useAppStore } from '../store/useAppStore';
+import { parseAIJson } from '../utils/aiJson';
 
 const HTTP_REQUEST_TIMEOUT_MS = 600_000;
 
@@ -640,6 +641,7 @@ export class AIService {
   }
 
   private async requestTextUnobserved(options: {
+    responseContract?: import('../types/agy').AIResponseContract;
     capture?: HttpCapture;
     recovery?: import('../types/agy').AgyRecoveryOptions;
     feature?: import('../types/agy').AgyFeature;
@@ -1200,6 +1202,7 @@ ${options.user}` : options.user;
   }
 
   async generateChatText(options: {
+    responseContract?: import('../types/agy').AIResponseContract;
     feature?: import('../types/agy').AgyFeature;
     recovery?: import('../types/agy').AgyRecoveryOptions;
     system: string;
@@ -1213,6 +1216,7 @@ ${options.user}` : options.user;
     onSent?: () => void;
   }): Promise<string> {
     return await this.requestText({
+      responseContract: options.responseContract,
       feature: options.feature,
       recovery: options.recovery,
       system: options.system,
@@ -1444,6 +1448,7 @@ ${options.user}` : options.user;
         signal?.throwIfAborted();
         const attempt = ++retryState.attempts;
         const content = await this.requestText({
+          responseContract: 'repository-summary-v1',
           feature: 'repository-summary',
           system,
           user: retryState.repair
@@ -2128,54 +2133,8 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
   }
 
   private extractAndParseAIJson(content: string): Record<string, unknown> | null {
-    const direct = this.tryParseJsonObject(content);
-    if (direct) return direct;
-
-    const start = content.indexOf('{');
-    if (start === -1) return null;
-
-    let inString = false;
-    let escaped = false;
-    let depth = 0;
-
-    for (let i = start; i < content.length; i++) {
-      const char = content[i];
-
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-
-      if (char === '\\') {
-        escaped = true;
-        continue;
-      }
-
-      if (char === '"') {
-        inString = !inString;
-        continue;
-      }
-
-      if (inString) continue;
-
-      if (char === '{') depth++;
-      if (char === '}') {
-        depth--;
-        if (depth === 0) {
-          return this.tryParseJsonObject(content.slice(start, i + 1));
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private tryParseJsonObject(text: string): Record<string, unknown> | null {
-    const trimmed = text.trim();
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
-
     try {
-      const parsed = JSON.parse(trimmed);
+      const parsed = parseAIJson(content);
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : null;

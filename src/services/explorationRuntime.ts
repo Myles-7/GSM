@@ -4,7 +4,7 @@ import type { ExplorationAccount, ExplorationOverride, ExplorationProfile, Explo
 import { loadExploration, updateExploration } from '../features/repositories/exploration/storage';
 import { explorationFingerprint, projectScene, queryFingerprint, resultsForRelationKind, stableId } from '../features/repositories/exploration/model';
 import { localExplorationAccount, localProfile, savedExplorationAccount, snapshotRepository } from '../features/repositories/exploration/local';
-import { analyzeExplorationBatch, consolidateExplorationTopics, explorationCandidates } from './explorationAI';
+import { analyzeExplorationBatch, consolidateExplorationTopics, explorationCandidates, parseExplorationBatchResult, type ExplorationValidationError } from './explorationAI';
 import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
 import { assertOrganizationModelReady } from './aiOrganizationReadiness';
 import { refreshAgyDeviceState, readAgyRecovery, acknowledgeAgyRecovery } from './agyClient';
@@ -54,6 +54,7 @@ async function execute(owner: string, input: ExplorationRun) {
   const controller = new AbortController(); jobs.set(owner, controller); patch(owner, { busy: true, error: '', activity: '检查模型与本机状态' });
   const { signal } = controller;
   let task: ExplorationTask | undefined, journal: TaskHandle | undefined, executionConfig: AIConfig | undefined;
+  let initialCompleted = 0;
   try {
     guard(owner); const state = useAppStore.getState();
     executionConfig = state.aiConfigs.find(config => config.id === input.configId);
@@ -68,7 +69,7 @@ async function execute(owner: string, input: ExplorationRun) {
     const profile = taskConfigSnapshot(config, 'organization');
     // Increment the version when the exploration prompt/parser semantics change.
     // Never include credentials, timeouts or concurrency in a content identity.
-    const generation = stableId('exploration-v2', JSON.stringify({ language: state.language, id: config.id,
+    const generation = stableId('exploration-v3', JSON.stringify({ language: state.language, id: config.id,
       provider: profile.provider, model: profile.model, effort: profile.effort, apiType: config.apiType, endpoint: config.baseUrl,
       mode: config.provider === 'agy-cli' ? config.agyMode : undefined }));
     const repositories = structuredClone(state.repositories);
@@ -110,10 +111,19 @@ async function execute(owner: string, input: ExplorationRun) {
       if (context?.repositoryIds?.length && context.repositoryIds.every((id,index) => draft[String(id)]?.fingerprint === context.fingerprints?.[index]) && recovered.record.resultDigest) await acknowledgeAgyRecovery(owner, item.recovery!.requestId, recovered.record.resultDigest);
     }
     const pending = candidates.filter(repo => !draft[String(repo.id)]);
+    initialCompleted = Object.keys(draft).length;
     const failedIds = input.failedOnly && checkpoint?.failures?.length ? new Set(checkpoint.failures.flatMap(row=>row.repositoryIds)) : undefined;
     const selected = failedIds ? pending.filter(repo=>failedIds.has(repo.id)) : pending;
     const deferred = failedIds ? pending.filter(repo=>!failedIds.has(repo.id)) : [];
-    const batches = Array.from({ length: Math.ceil(selected.length / 5) }, (_, index) => selected.slice(index * 5, index * 5 + 5));
+    const size = reuseCheckpoint && !checkpoint?.batches ? 5 : input.type === 'query' ? 3 : 5;
+    // A resumed paid batch keeps its original identity, including already saved siblings.
+    const priorBatches = reuseCheckpoint ? checkpoint?.batches ?? previousJournal?.items.filter(item => item.id !== 'topics').map(item => {
+      const names = item.label.split(' · '); return candidates.filter(repo => names.includes(repo.full_name)).map(repo => repo.id);
+    }).filter(ids => ids.length) : undefined;
+    const covered = new Set(priorBatches?.flat() ?? []);
+    const remainder = selected.filter(repo => !covered.has(repo.id));
+    const batches = [...(priorBatches ?? []).filter(ids => ids.some(id => selected.some(repo => repo.id === id))).map(ids => ids.flatMap(id => candidates.find(repo => repo.id === id) ?? [])),
+      ...Array.from({ length: Math.ceil(remainder.length / size) }, (_, index) => remainder.slice(index * size, index * size + size))];
     const deferredBatches = Array.from({length:Math.ceil(deferred.length/5)},(_,index)=>deferred.slice(index*5,index*5+5));
     const itemId = (batch: Repository[]) => stableId('batch', batch.map(repo => `${repo.id}:${explorationFingerprint(repo)}`).join('|'));
     journal = aiTaskJournal.begin(owner, 'exploration', [...[...batches,...deferredBatches].map(batch => ({ id: itemId(batch), label: batch.map(repo => repo.full_name).join(' · ') })), ...(input.type === 'build' ? [{ id: 'topics', label: '合并等价主题' }] : [])], config.id, undefined,
@@ -134,7 +144,7 @@ async function execute(owner: string, input: ExplorationRun) {
     if (aiTaskJournal.storageError()) throw new Error('AI任务记录无法持久化，尚未发送模型请求。');
     const taskId = crypto.randomUUID();
     const checked = saved ? Object.fromEntries(repositories.map(repo => [String(repo.id), explorationFingerprint(repo)])) : undefined;
-    task = { id: taskId, journalId: journal.id, type: input.type, savedId: input.savedId, query: query || undefined, scope, force: input.force, status: 'running', model, generation, fingerprint, startedAt: new Date().toISOString(), completed: Object.keys(draft).length, total: candidates.length, draft, checked, failures: [] };
+    task = { id: taskId, journalId: journal.id, type: input.type, savedId: input.savedId, query: query || undefined, scope, force: input.force, status: 'running', model, generation, fingerprint, startedAt: new Date().toISOString(), completed: Object.keys(draft).length, total: candidates.length, draft, checked, failures: [], batches: [...batches, ...deferredBatches].map(batch => batch.map(repo => repo.id)), repairs: reuseCheckpoint ? checkpoint?.repairs : {} };
     await publish(owner, current => {
       if (current.task?.status === 'running' && current.task.id !== initial.task?.id) throw new Error('另一个页面正在运行地图任务。');
       const pendingTasks=(current.pendingTasks??[]).filter(row=>taskScope(row)!==taskScope(task!));
@@ -176,32 +186,72 @@ async function execute(owner: string, input: ExplorationRun) {
         const stop = () => batchController.abort(signal.reason); signal.addEventListener('abort', stop, { once: true });
         bindTaskItemSignal(batchController.signal, journal!, id); journal!.item(id, 'running');
         const started = performance.now(); let record: AgyRecoveryRecord | undefined;
+        const records: AgyRecoveryRecord[] = [];
         try {
           let recovered: Parameters<typeof analyzeExplorationBatch>[0]['recovered'];
+          let recoveredRepair: Parameters<typeof analyzeExplorationBatch>[0]['recoveredRepair'];
+          let requestRepositories = batch.filter(repo => !task!.draft[String(repo.id)]);
           const recoverable = reuseCheckpoint ? previousJournal?.items.find(item => item.id === id && item.recovery) : undefined;
-          if (recoverable?.recovery) {
-            const response = await readAgyRecovery(owner, recoverable.recovery.requestId);
+          const repairState = task!.repairs?.[id];
+          const latestRequest = recoverable?.recovery?.requestId;
+          const originalRequest = latestRequest === repairState?.requestId ? repairState?.parentRequestId : latestRequest ?? repairState?.parentRequestId;
+          if (originalRequest) {
+            const response = await readAgyRecovery(owner, originalRequest);
             const context = response.context as { exploration?: boolean; sources?: Parameters<typeof analyzeExplorationBatch>[0]['recovered'] extends infer T ? T extends { sources: infer S } ? S : never : never; fingerprints?: string[]; repositoryIds?: number[] } | undefined;
-            if (!response.result || !context?.exploration || !Array.isArray(context.sources) || JSON.stringify(context.fingerprints) !== JSON.stringify(batch.map(repo => explorationFingerprint(repo))) || JSON.stringify(context.repositoryIds) !== JSON.stringify(batch.map(repo => repo.id))) throw new Error('恢复结果与当前项目资料不一致，请核对任务记录。');
-            recovered = { text: response.result.text, sources: context.sources }; record = response.record;
+            const ids = context?.repositoryIds;
+            if (!response.result || !context?.exploration || !Array.isArray(context.sources) || !ids?.length || new Set(ids).size !== ids.length || ids.some(id => !batch.some(repo => repo.id === id)) || JSON.stringify(context.fingerprints) !== JSON.stringify(ids.map(id => explorationFingerprint(batch.find(repo => repo.id === id)!)))) throw new Error('恢复结果与当前项目资料不一致，请核对任务记录。');
+            requestRepositories = ids.map(id => batch.find(repo => repo.id === id)!);
+            recovered = { text: response.result.text, sources: context.sources }; record = response.record; records.push(response.record);
+          }
+          const priorRepair = task!.repairs?.[id];
+          if (priorRepair && config.provider === 'agy-cli' && (!latestRequest || latestRequest === priorRepair.requestId || latestRequest === priorRepair.parentRequestId)) {
+            record = undefined;
+            const response = await readAgyRecovery(owner, priorRepair.requestId);
+            const context = response.context as { sources?: [number, import('../features/repositories/exploration/types').ExplorationEvidence[]][]; repositoryIds?: number[]; fingerprints?: string[] } | undefined;
+            if (!response.result) throw Object.assign(new Error('格式修复结果尚未确认；未再次发送。请在任务中心核对原调用。'), { providerOutcome: response.record.providerOutcome });
+            if (!context?.sources || JSON.stringify(context.repositoryIds) !== JSON.stringify(priorRepair.repositoryIds) || JSON.stringify(context.fingerprints) !== JSON.stringify(priorRepair.repositoryIds.map(id => explorationFingerprint(repositories.find(repo => repo.id === id)!)))) throw new Error('格式修复结果与当前资料不一致；未再次发送。');
+            recoveredRepair = { text: response.result.text, sources: context.sources, repositoryIds: priorRepair.repositoryIds }; records.push(response.record);
+            // An explicit continuation may regenerate only unresolved rows after
+            // the one automatic repair returned a known, invalid result.
+            if (resuming && !input.recoveryOnly) {
+              const targets = batch.filter(repo => priorRepair.repositoryIds.includes(repo.id));
+              const parsed = parseExplorationBatchResult(response.result.text, targets, new Map(context.sources), new Set(repositories.map(repo => repo.id)), repositories);
+              if (parsed.profiles.length) await saveProgress(parsed.profiles.filter(value => !task!.draft[String(value.repositoryId)]));
+              if (parsed.issues.some(issue => !task!.draft[String(issue.repositoryId)])) {
+                recovered = undefined; recoveredRepair = undefined;
+                requestRepositories = batch.filter(repo => !task!.draft[String(repo.id)]);
+              }
+            }
           }
           if (input.recoveryOnly && !recovered) throw new Error('该批没有可恢复的模型结果；未发起新的调用。请使用继续未完成项。');
           let profiles: ExplorationProfile[] = [];
           for (let attempt = 0; ; attempt++) {
             try {
               guard(owner); signal.throwIfAborted();
-              profiles = await analyzeExplorationBatch({ ownerId: owner, repositories: batch, allRepositories: repositories, config, language: state.language, token: useAppStore.getState().githubToken ?? '', signal: batchController.signal, guard: () => guard(owner), knownTopics, query: input.type === 'query' ? query : undefined, context, refreshDocuments: !!input.force,
-                onSent: () => { journal!.itemExecution(id, { providerOutcome: 'in_flight' }); const items = aiTaskJournal.snapshot().find(row => row.id === journal!.id)?.items ?? []; const usage = aiTaskJournal.snapshot().find(row => row.id === journal!.id)?.usage ?? {}; journal!.metadata({ usage: { ...usage, peak_generating_concurrency: Math.max(usage.peak_generating_concurrency ?? 0, items.filter(item => item.providerOutcome === 'in_flight').length) } }); },
+              profiles = await analyzeExplorationBatch({ ownerId: owner, repositories: requestRepositories, allRepositories: repositories, config, language: state.language, token: useAppStore.getState().githubToken ?? '', signal: batchController.signal, guard: () => guard(owner), knownTopics, query: input.type === 'query' ? query : undefined, context, refreshDocuments: !!input.force,
+                onSent: () => { record = undefined; journal!.itemExecution(id, { providerOutcome: 'in_flight' }); const items = aiTaskJournal.snapshot().find(row => row.id === journal!.id)?.items ?? []; const usage = aiTaskJournal.snapshot().find(row => row.id === journal!.id)?.usage ?? {}; journal!.metadata({ usage: { ...usage, peak_generating_concurrency: Math.max(usage.peak_generating_concurrency ?? 0, items.filter(item => item.providerOutcome === 'in_flight').length) } }); },
                 onResponse: () => journal!.itemExecution(id, { providerOutcome: 'succeeded' }),
-                recovered, recovery: config.provider === 'agy-cli' && !recovered ? { requestId: crypto.randomUUID(), step: `exploration:${input.type}:${stableId('scope',query+scope+(input.savedId ?? ''))}:${id}`, onResult: value => { record = value; } } : undefined,
+                recovered, recoveredRepair,
+                onPartial: async values => { guard(owner); signal.throwIfAborted(); await saveProgress(values.filter(value => !task!.draft[String(value.repositoryId)])); },
+                prepareRepair: async repositoryIds => {
+                  if (input.recoveryOnly || task!.repairs?.[id]) return false;
+                  const requestId = crypto.randomUUID();
+                  await publish(owner, current => {
+                    if (current.task?.id !== taskId) throw new Error('任务已替换。');
+                    task = { ...current.task, repairs: { ...current.task.repairs, [id]: { requestId, repositoryIds, parentRequestId: record?.requestId } } }; return { ...current, task };
+                  });
+                  return { requestId, retryOf: record?.requestId, step: `exploration:repair:${id}`, onResult: value => { record = value; records.push(value); } };
+                },
+                recovery: config.provider === 'agy-cli' && !recovered ? { requestId: crypto.randomUUID(), step: `exploration:${input.type}:${stableId('scope',query+scope+(input.savedId ?? ''))}:${id}`, onResult: value => { record = value; records.push(value); } } : undefined,
                 onProgress: message => { if (!signal.aborted) patch(owner, { activity: `第 ${batchIndex + 1}/${batches.length} 批 · ${message}` }); } });
               break;
             } catch (reason) { if (attempt >= 2 || !retryableUnsent(reason) || signal.aborted) throw reason; await delay(Math.max(500 * 2 ** attempt, Number((reason as {retryAfterMs?:number}).retryAfterMs) || 0), signal); }
           }
           guard(owner); signal.throwIfAborted();
-          await saveProgress(profiles); journal!.itemExecution(id, { validationStatus: 'passed', commitStatus: 'saved' });
+          await saveProgress(profiles.filter(value => !task!.draft[String(value.repositoryId)])); journal!.itemExecution(id, { validationStatus: 'passed', commitStatus: 'saved' });
           for(const profile of profiles)taskObservability.result(owner,journal!.id,{id:`profile:${profile.repositoryId}`,itemId:id,repositoryId:profile.repositoryId,label:batch.find(repo=>repo.id===profile.repositoryId)?.full_name??String(profile.repositoryId),data:profile,commitStatus:'saved'});
-          if (record?.resultDigest) { await acknowledgeAgyRecovery(owner, record.requestId, record.resultDigest); journal!.itemExecution(id, { recovery: undefined }); }
+          for (const value of records) if (value.resultDigest) await acknowledgeAgyRecovery(owner, value.requestId, value.resultDigest);
+          journal!.itemExecution(id, { recovery: undefined });
           journal!.item(id, 'complete');
         } catch (reason) {
           const message = safeError(reason, config); journal!.item(id, 'failed', message);
@@ -215,7 +265,8 @@ async function execute(owner: string, input: ExplorationRun) {
           if (unknown) journal!.itemExecution(id, { providerOutcome: 'unknown', failureCode: 'unknown_provider_outcome' });
           if (!signal.aborted) try { await publish(owner, current => {
             if (current.task?.id !== taskId) throw new Error('任务已替换。');
-            task = { ...current.task, failures: [...(current.task.failures ?? []), { repositoryIds: batch.map(repo => repo.id), message, unknown }] }; return { ...current, task };
+            const repositoryIds = reason instanceof Error && reason.name === 'ExplorationValidationError' ? (reason as ExplorationValidationError).issues.map(issue => issue.repositoryId) : batch.filter(repo => !current.task!.draft[String(repo.id)]).map(repo => repo.id);
+            task = { ...current.task, failures: [...(current.task.failures ?? []), { repositoryIds, message, unknown }] }; return { ...current, task };
           }); } catch (storageError) { fatalFailure = storageError; }
           if (fatal(reason)) fatalFailure = reason;
         } finally {
@@ -277,7 +328,7 @@ async function execute(owner: string, input: ExplorationRun) {
     journal.commit('saved'); journal.finish(topicError ? 'partial' : 'complete'); await aiTaskJournal.flush(owner); patch(owner, { error: topicError ? `项目已保存；主题整理未完成：${topicError}` : '' });
   } catch (reason) {
     const message = controller.signal.aborted ? '任务已取消，检查点已保留；可手动继续。' : safeError(reason, executionConfig);
-    const completedThisRun = aiTaskJournal.snapshot().find(row => row.id === journal?.id)?.items.some(item => item.state === 'complete');
+    const completedThisRun = !!task && task.completed > initialCompleted || aiTaskJournal.snapshot().find(row => row.id === journal?.id)?.items.some(item => item.state === 'complete');
     journal?.error(message); journal?.finish(controller.signal.aborted ? 'canceled' : completedThisRun ? 'partial' : 'failed');
     if (String(useAppStore.getState().user?.id ?? '') === owner) {
       patch(owner, { error: message });

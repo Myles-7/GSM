@@ -25,6 +25,25 @@ test('validates all prefs and rejects executable, prompt or unknown fields', () 
   }
 });
 
+test('named output contracts remain recoverable and never relax protocol guards', async t => {
+  const requests = [];
+  const { service } = await setup(t, { runtime: async options => {
+    requests.push(options); return { text: requests.length === 1 ? '{"answer":"连接成功","missing":[]}' : '{"projects":[]}', usage: {} };
+  } });
+  await service.detect(1, 'contract-detect'); await service.probe(1, 'contract-probe');
+  const state = (await service.save(1, 'contract-enable', { ...DEFAULT_PREFS, enabled: true })).value;
+  const request = { system:'Return JSON', user:'Synthetic input', model:state.prefs.model, effort:state.prefs.effort, responseContract:'exploration-profiles-v3' };
+  const result = await service.generate(1, 'contract-call', request);
+  assert.equal(result.ok, true);
+  assert.match(requests[1].prompt, /Output contract exploration-profiles-v3/);
+  assert.equal(requests[1].schema, undefined, 'unverified CLI native schema support is not assumed');
+  assert.equal(result.value.recovery.providerOutcome, 'succeeded', 'business validation happens after raw-result recovery');
+  assert.equal((await service.generate(1, 'contract-call', { ...request, responseContract:'repository-summary-v1' })).code, 'REQUEST_ID_CONFLICT');
+  assert.equal((await service.generate(1, 'contract-invalid', { ...request, responseContract:'__proto__' })).code, 'INVALID_REQUEST');
+  assert.equal(requests.length, 2);
+  await service.shutdown();
+});
+
 test('bridges public observations and typed reasoning independently of answer text', async t => {
   const events = [];
   const { service } = await setup(t, { runtime: async options => {

@@ -11,12 +11,26 @@ vi.mock('../hooks/useExploration', () => ({ useExploration: () => ({ ownerId: mo
 }) }));
 vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm, toast:mocks.toast }) }));
 import { ExplorationExplorer } from './ExplorationExplorer';
-beforeEach(() => { vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
+import { clearExplorationWorkspace } from '../hooks/useExplorationWorkspace';
+beforeEach(() => { clearExplorationWorkspace(); localStorage.clear(); vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
 
 describe('project relationship exploration page', () => {
+  it('restores the exploration path and selection after switching views without another AI call', () => {
+    const first = render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    expect(screen.queryByRole('complementary', {name:'探索项目结果'})).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', {name:'探索主题'}), {target:{value:'Codex'}});
+    fireEvent.click(screen.getByRole('button', {name:'探索'}));
+    fireEvent.click(within(screen.getByRole('complementary', {name:'探索项目结果'})).getByRole('button', {name:/project-1/}));
+    first.unmount();
+    render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    expect(screen.getByRole('textbox', {name:'探索主题'})).toHaveValue('Codex');
+    expect(screen.getByRole('region', {name:'owner/project-1'})).toBeInTheDocument();
+    expect(mocks.deepen).not.toHaveBeenCalled(); expect(mocks.build).not.toHaveBeenCalled();
+  });
   it('can manually deepen a saved snapshot even when no repository metadata has changed', () => {
     const item=createSavedExploration(mocks.account!,repositories,{name:'Saved Codex',query:'Codex',path:[{type:'entity',id:'entity:codex',label:'Codex'}],kindFilter:'all'});
     mocks.account!.saved=[item];render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button', {name:'展开已保存探索'}));
     fireEvent.click(screen.getByRole('button',{name:/^Saved Codex/}));
     const button=screen.getByRole('button',{name:'AI 深入探索'});expect(button).toBeEnabled();
     fireEvent.click(button);expect(mocks.add).toHaveBeenCalledWith(item,true);
@@ -92,12 +106,14 @@ describe('project relationship exploration page', () => {
     expect(screen.getByLabelText('地图任务状态')).toHaveTextContent('2 / 368 已保存');
     expect(screen.queryByText(/未完成的项目暂用/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '任务记录' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '探索项目结果' }));
     expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('project-1');
     expect(screen.getByRole('button', { name: '继续剩余 366 项' })).toBeInTheDocument(); expect(mocks.account!.index).toBeNull();
     expect(mocks.build).not.toHaveBeenCalled();
   });
   it('shows representative repositories and a same-screen result list, then navigates a purpose topic', () => {
     render(<ExplorationExplorer onOpenRepository={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '探索项目结果' }));
     expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('project-1');
     const map = screen.getByRole('region', { name: '项目关系地图' });
     expect(within(map).getByTitle('owner/project-1')).toBeInTheDocument();
@@ -115,11 +131,11 @@ describe('project relationship exploration page', () => {
     fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button', { name: '直接相关 技能与工作流 1 个项目' }));
     expect(screen.getByRole('navigation')).toHaveTextContent('技能与工作流'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).not.toHaveTextContent('project-2');
   });
-  it('opens an anchored project card, reuses full details and exposes evidence and correction', () => {
+  it('opens a docked project inspector, reuses full details and exposes evidence and correction', () => {
     const open = vi.fn(); render(<ExplorationExplorer onOpenRepository={open} />);
     fireEvent.change(screen.getByRole('textbox', { name: '探索主题' }), { target: { value: 'Codex' } }); fireEvent.click(screen.getByRole('button', { name: '探索' }));
     fireEvent.click(within(screen.getByRole('complementary', { name: '探索项目结果' })).getByRole('button', { name: /project-1/ }));
-    const card = screen.getByRole('dialog', { name: 'owner/project-1' }); expect(card).toHaveClass('explore-project-popover');
+    const card = screen.getByRole('region', { name: 'owner/project-1' }); expect(card).toHaveClass('explore-project-popover');
     expect(within(card).getByText('This tool supports Codex workflows.')).toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: '这条关系不成立' })); expect(mocks.add).toHaveBeenCalledWith(expect.objectContaining({ type: 'remove-relation' }));
     fireEvent.click(within(card).getByRole('button', { name: '完整详情' })); expect(open).toHaveBeenCalledWith(repositories[0]);

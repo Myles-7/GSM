@@ -981,6 +981,7 @@
     },
     "more-topics": "更多主题",
     "more-branches": "更多关系方向",
-    "more-projects": "更多项目"
+    "more-projects": "更多项目",
+    "saved-results-preserved": "已保存的结果会保留。请在任务记录中查看具体原因；继续仅处理未完成项目。"
   }
 }

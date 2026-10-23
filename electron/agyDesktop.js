@@ -106,7 +106,7 @@ const probeIdentity = (prefs, executable) => `${executable?.fingerprint}:${prefs
 
 function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectDirectory = async () => null, platform = process.platform,
   defaultExecutable = path.join(process.env.LOCALAPPDATA || '', 'agy', 'bin', 'agy.exe'),
-  inspect = inspectExecutable, models = readModels, runtime = runAgy,
+  inspect = inspectExecutable, models = readModels, runtime = runAgy, nativeStructuredOutput = false,
   processCount = pendingAgyProcesses,
   cleanupWorkspace = directory => fs.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }) }) {
   const prefsFile = path.join(userDataPath, 'agy-device.json');
@@ -387,16 +387,25 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
       if (!isCurrent()) return { ok: false, code: 'CANCELED' };
       let account;
       try { account = accountFor(owner); } catch { return { ok: false, code: 'SESSION_CHANGED' }; }
+      const { contracts } = require('./agyContracts');
+      if (request?.responseContract !== undefined && (typeof request.responseContract !== 'string' || !Object.hasOwn(contracts, request.responseContract))) return { ok: false, code: 'INVALID_REQUEST' };
+      const requestContext = request?.responseContract ? { ...(request.recoveryContext && typeof request.recoveryContext === 'object' && !Array.isArray(request.recoveryContext) ? request.recoveryContext : {}), responseContract: request.responseContract } : request?.recoveryContext;
       // Retrieval is not a provider call; configuration changes cannot hide an
       // existing result or make a repeated request id dispatch again.
       try {
         const saved = await calls.read(account, id);
-        const inputDigest = createHash('sha256').update(JSON.stringify([request?.system, request?.user, saved.record.profile, request?.recoveryContext ?? null])).digest('hex');
+        const inputDigest = createHash('sha256').update(JSON.stringify([request?.system, request?.user, saved.record.profile, requestContext ?? null])).digest('hex');
         if (saved.record.inputDigest !== inputDigest) return { ok: false, code: 'REQUEST_ID_CONFLICT' };
         if (saved.result && !saved.record.receipt) return { ok: true, value: { ...saved.result, recovery: saved.record } };
         return { ok: false, code: saved.record.providerOutcome === 'unknown' ? 'UNKNOWN_PROVIDER_OUTCOME' : 'DUPLICATE_REQUEST' };
       } catch (error) { if (error.code !== 'RECOVERY_NOT_FOUND') return { ok: false, code: error.code || 'RECOVERY_IO_FAILED' }; }
       const feature = request?.feature || 'other';
+      // CLI 1.4.5 repeats schema-constrained output over four turns, without a
+      // structured_output artifact. Never relax the single-turn/tool guards or
+      // replay that paid failure. Native support is a trusted host capability.
+      const contract = contracts[request?.responseContract];
+      const outputContract = contract && nativeStructuredOutput ? { schema: contract, validate: () => true } : {};
+      const prompt = `TASK REQUIREMENTS:\n${request?.system}${contract ? `\nOutput contract ${request.responseContract} (JSON only): ${JSON.stringify(contract)}` : ''}\n\nINPUT:\n${request?.user}`;
       if (!FEATURES.includes(feature)) return { ok: false, code: 'INVALID_REQUEST' };
       const savedPrefs = request?.revision === undefined ? prefs : revisions.get(request.revision);
       if (!savedPrefs) return { ok: false, code: 'CONFIG_CHANGED' };
@@ -431,7 +440,7 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
        if (signature) { verifiedTasks.set(taskKey, { signature, found }); if (verifiedTasks.size > 50) verifiedTasks.delete(verifiedTasks.keys().next().value); }
       if (!profileReady(profile, found)) throw new AgyError('TEST_REQUIRED');
       if (!isCurrent() || accounts.get(owner) !== account) throw new AgyError('SESSION_CHANGED');
-      const reservation = await calls.reserve(account, id, { ...request, profile: probeIdentity(profile, found), context: request.recoveryContext });
+      const reservation = await calls.reserve(account, id, { ...request, profile: probeIdentity(profile, found), context: requestContext });
       if (reservation.existing) {
         const saved = await calls.read(account, id);
         if (saved.result && !saved.record.receipt) return { ...saved.result, recovery: saved.record };
@@ -444,9 +453,10 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
         const requestRuntime = runtime === runAgy ? await workerFor(owner, request.revision ?? revision, found, profile) : null;
         let generated;
         generated = await (requestRuntime ? requestRuntime.request({
+          ...outputContract,
           requestId: id, signal, timeoutMs: profile.timeoutSeconds * 1000,
           beforePrompt: () => calls.sent(account, id),
-          prompt: `TASK REQUIREMENTS:\n${request.system}\n\nINPUT:\n${request.user}`,
+          prompt,
           onPromptSent: () => { onEvent({ type: 'sent' }); onEvent({ type: 'running' }); },
           onText: text => onEvent({ type: 'text', text }),
           onReasoning: text => onEvent({ type: 'reasoning', text }),
@@ -454,8 +464,9 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
           onCleanup: () => onEvent({ type: 'cleanup' }),
           onWarning: code => onEvent({ type: 'warning', code }),
         }) : workspaceOperation(cwd => runtime({ executable: found.path, cwd, signal,
+          ...outputContract,
           beforePrompt: () => calls.sent(account, id),
-          prompt: `TASK REQUIREMENTS:\n${request.system}\n\nINPUT:\n${request.user}`,
+          prompt,
            model: profile.model || undefined, effort: profile.effort, timeoutMs: profile.timeoutSeconds * 1000,
            onPromptSent: () => { onEvent({ type: 'sent' }); onEvent({ type: 'running' }); },
           onText: text => onEvent({ type: 'text', text }),

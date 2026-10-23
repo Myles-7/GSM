@@ -47,7 +47,8 @@ export type AgyRecoveryRepairAction = 'discard-unsent' | 'abandon-unknown';
 export interface AgyRecoveryRepairResult extends AgyRecoveryIssue { action: AgyRecoveryRepairAction; }
 export type AgyPriority = 'interactive' | 'background';
 export interface AgyRecoveryOptions { context?: unknown; step?: string; requestId?: string; retryOf?: string; onResult?: (record: AgyRecoveryRecord) => void; }
-export interface AgyGenerationRequest { system: string; user: string; model: string; effort: AgyDevicePrefs['effort']; feature?: AgyFeature; revision?: number; priority?: 'interactive' | 'background'; profileOverride?: Pick<AgyProfile, 'model' | 'effort' | 'timeoutSeconds'>; taskId?: string; itemId?: string; step?: string; retryOf?: string; recoveryContext?: unknown; }
+export type AIResponseContract = 'repository-summary-v1' | 'exploration-profiles-v3' | 'exploration-assignments-v3' | 'exploration-topics-v1';
+export interface AgyGenerationRequest { responseContract?: AIResponseContract; system: string; user: string; model: string; effort: AgyDevicePrefs['effort']; feature?: AgyFeature; revision?: number; priority?: 'interactive' | 'background'; profileOverride?: Pick<AgyProfile, 'model' | 'effort' | 'timeoutSeconds'>; taskId?: string; itemId?: string; step?: string; retryOf?: string; recoveryContext?: unknown; }
 export interface AgyGenerationResult { text: string; usage: Record<string, number>; cleanupStatus?: 'pending' | 'recovered'; recovery?: AgyRecoveryRecord; }
 export interface AgyPublicObservation {
   event: 'init' | 'step_update' | 'result';

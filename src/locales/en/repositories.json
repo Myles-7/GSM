@@ -981,6 +981,7 @@
     },
     "more-topics": "More topics",
     "more-branches": "More relationship directions",
-    "more-projects": "More projects"
+    "more-projects": "More projects",
+    "saved-results-preserved": "Saved results are preserved. Open task history for details; continuing processes unfinished projects only."
   }
 }

@@ -33,6 +33,8 @@ export interface ExplorationTask {
   failures?: { repositoryIds: number[]; message: string; unknown: boolean }[];
   checked?: Record<string, string>;
   journalId?: string;
+  batches?: number[][];
+  repairs?: Record<string, { requestId: string; repositoryIds: number[]; parentRequestId?: string }>;
 }
 export interface ExplorationCamera { zoom: number; x: number; y: number }
 export interface SavedExploration {

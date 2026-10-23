@@ -12,10 +12,12 @@ interface Props {
   initialCamera?: ExplorationCamera; viewKey?: string; onCameraChange?: (camera: ExplorationCamera) => void;
   initialPositions?: Record<string,{x:number;y:number}>; onLayoutChange?: (positions: Record<string,{x:number;y:number}>) => void;
   onMoreProjects?: () => void;
+  selectedRepositoryId?: number;
+  insets?: { left: number; right: number; top: number; bottom: number };
 }
 const palette = ['#368c82', '#657dcc', '#b68035', '#a9698c', '#7a6ab3', '#63874c'];
 const lineColors = { membership: '#8b9c98', direct: '#368c82', interoperable: '#657dcc', similar: '#a77b30', discovery: '#9878a5' };
-export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, onBlank, onAllTopics, initialCamera, viewKey = '', onCameraChange, initialPositions, onLayoutChange, onMoreProjects }: Props) {
+export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, onBlank, onAllTopics, initialCamera, viewKey = '', onCameraChange, initialPositions, onLayoutChange, onMoreProjects, selectedRepositoryId, insets }: Props) {
   const t = useT('repositories');
   const viewport = useRef<HTMLDivElement>(null);
   const [camera, setCamera] = useState<ExplorationCamera>({ zoom: 1, x: 0, y: 0 });
@@ -42,8 +44,10 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
     if (!layout.nodes.length) return;
     const left = Math.min(...layout.nodes.map(node => node.x-node.width/2))-28, right = Math.max(...layout.nodes.map(node => node.x+node.width/2))+28;
     const top = Math.min(...layout.nodes.map(node => node.y-node.height/2))-28, bottom = Math.max(...layout.nodes.map(node => node.y+node.height/2))+28;
-    const zoom = Math.max(.1, Math.min(1.35, (rect.width - 16) / (right-left), (rect.height - 16) / (bottom-top)));
-    setCamera({ zoom, x: (rect.width - (right-left)*zoom)/2-left*zoom, y: (rect.height - (bottom-top)*zoom)/2-top*zoom });
+    const space = insets ?? { left: 0, right: 0, top: 0, bottom: 0 };
+    const width = Math.max(100, rect.width - space.left - space.right), height = Math.max(100, rect.height - space.top - space.bottom);
+    const zoom = Math.max(.1, Math.min(1.35, (width - 16) / (right-left), (height - 16) / (bottom-top)));
+    setCamera({ zoom, x: space.left + (width - (right-left)*zoom)/2-left*zoom, y: space.top + (height - (bottom-top)*zoom)/2-top*zoom });
   };
   const fitRef = useRef(fit); fitRef.current = fit;
   const initialRef = useRef(initialCamera); initialRef.current = initialCamera;
@@ -54,7 +58,31 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
       restored.current = firstView && !!initialRef.current;
       if (restored.current) setCamera(initialRef.current!); else fitRef.current(); }
   }, [viewKey, scopeKey]);
-  useLayoutEffect(() => { const element = viewport.current; if (!element) return; let first = true; const observer = new ResizeObserver(() => { if (first && initialRef.current) { first = false; return; } first = false; fitRef.current(); }); observer.observe(element); return () => observer.disconnect(); }, []);
+  useLayoutEffect(() => {
+    const element = viewport.current; if (!element) return;
+    let previous: { width: number; height: number } | undefined;
+    const observer = new ResizeObserver(() => {
+      const rect = element.getBoundingClientRect(); if (!rect.width || !rect.height) return;
+      if (previous) {
+        const dx = (rect.width - previous.width) / 2, dy = (rect.height - previous.height) / 2;
+        if (dx || dy) setCamera(current => ({ ...current, x: current.x + dx, y: current.y + dy }));
+      } else if (!initialRef.current) fitRef.current();
+      previous = { width: rect.width, height: rect.height };
+    });
+    observer.observe(element); return () => observer.disconnect();
+  }, []);
+  const selectionView = useRef({ layout, insets }); selectionView.current = { layout, insets };
+  const selectionRestored = useRef(!!initialCamera);
+  useEffect(() => {
+    if (selectionRestored.current) { selectionRestored.current = false; return; }
+    if (!selectedRepositoryId) return;
+    const { layout, insets } = selectionView.current;
+    const node = layout.nodes.find(node => node.repositoryId === selectedRepositoryId), rect = viewport.current?.getBoundingClientRect();
+    if (!node || !rect?.width) return;
+    setActive(node.id);
+    setCamera(current => ({ ...current, x: (rect.width - (insets?.right ?? 0) + (insets?.left ?? 0)) / 2 - node.x * current.zoom, y: rect.height / 2 - node.y * current.zoom }));
+    // Selection centers once; folding panels must not move the camera.
+  }, [selectedRepositoryId]);
   const previousNodes = useRef(''), previousExpanded = useRef(expanded);
   useLayoutEffect(() => { const key = layout.nodes.map(node => node.id).join('|'); if (!restored.current && (!previousNodes.current || previousExpanded.current !== expanded)) fitRef.current(); restored.current = false; previousNodes.current = key; previousExpanded.current = expanded; }, [layout,expanded]);
   const cameraCallback = useRef(onCameraChange); cameraCallback.current = onCameraChange;
@@ -89,7 +117,7 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
             return <g key={`${edge.source}:${edge.target}`} opacity={highlighted ? .85 : .12}><path d={`M${start.x},${start.y} Q${(start.x+end.x)/2+(start.y-end.y)*.08},${(start.y+end.y)/2+(end.x-start.x)*.08} ${end.x},${end.y}`} stroke={lineColors[edge.kind]} strokeWidth={active && highlighted ? 2.6 : 1.6} strokeDasharray={edge.verified ? undefined : '5 5'} fill="none" />
               {edge.label && <text x={start.x*.4+end.x*.6} y={start.y*.4+end.y*.6-9} textAnchor="middle" fill={lineColors[edge.kind]} fontSize="12" stroke="hsl(var(--card))" strokeWidth="4" paintOrder="stroke">{edge.label}</text>}</g>; })}
         </svg>
-        {layout.nodes.map(node => <button key={node.id} className={`explore-graph-node node-${node.type} ${active && !neighbors.has(node.id) && active !== node.id ? 'is-dimmed' : ''}`} style={{ left: node.x - node.width/2, top: node.y-node.height/2, width:node.width, height:node.height, '--node-color':palette[node.color], '--node-text-size': `${Math.max(14,12/camera.zoom)}px`, '--repo-text-size': `${Math.max(11,10/camera.zoom)}px`, '--count-text-size':`${Math.max(11,10/camera.zoom)}px`, '--overview-label-width': `${100/camera.zoom}px` } as React.CSSProperties}
+        {layout.nodes.map(node => <button key={node.id} aria-pressed={node.repositoryId ? node.repositoryId === selectedRepositoryId : undefined} className={`explore-graph-node node-${node.type} ${active && !neighbors.has(node.id) && active !== node.id ? 'is-dimmed' : ''}`} style={{ left: node.x - node.width/2, top: node.y-node.height/2, width:node.width, height:node.height, '--node-color':palette[node.color], '--node-text-size': `${Math.max(14,12/camera.zoom)}px`, '--repo-text-size': `${Math.max(11,10/camera.zoom)}px`, '--count-text-size':`${Math.max(11,10/camera.zoom)}px`, '--overview-label-width': `${100/camera.zoom}px` } as React.CSSProperties}
           title={node.repositoryId ? repos.get(node.repositoryId)?.full_name : nodeLabel(node)} aria-label={node.type === 'repository' ? t('exploration.view-project', { name: node.label }) : `${node.kind ? t(`exploration.relations.${node.kind}`) + ' ' : ''}${nodeLabel(node)}${node.count !== undefined ? t('exploration.project-count', { count: node.count }) : ''}`}
           onMouseEnter={() => setActive(node.id)} onMouseLeave={() => setActive('')} onFocus={() => setActive(node.id)} onBlur={() => setActive('')}
           onClick={event => { if (node.type === 'repository') onSelect(node.repositoryId!, event.currentTarget); else if (node.focus) onFocus(node.focus); else if (node.type === 'more') { if (node.id === 'more-topics') onAllTopics(); else if (node.id === 'more-projects' && expanded) onMoreProjects?.(); else setExpanded(true); } }}>

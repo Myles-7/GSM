@@ -35,6 +35,8 @@ const saved = z.object({ id, name: z.string().trim().min(1).max(100), query: z.s
   profiles, repositories: z.array(snapshotRepository).max(1000), checked: z.record(z.string(), id), resultIds: z.array(z.number().int().positive()).max(1000), overrides: z.array(override).max(10000) }).strict();
 const task = z.object({ id, type: z.enum(['build', 'query']), status: z.enum(['running', 'paused', 'interrupted', 'failed']), startedAt: z.string(), model: z.string().max(300), generation: id.optional(), query: z.string().max(200).optional(), scope: z.string().max(1000).optional(), force: z.boolean().optional(), fingerprint: id,
   completed: z.number().int().nonnegative(), total: z.number().int().min(0).max(1000), error: z.string().max(1000).optional(), draft: profiles, phase: z.enum(['profiles', 'topics']).optional(), savedId: id.optional(), journalId: id.optional(), checked: z.record(z.string(), id).optional(),
+  batches: z.array(z.array(z.number().int().positive()).min(1).max(5)).max(1000).optional(),
+  repairs: z.record(id, z.object({ requestId: id, parentRequestId: id.optional(), repositoryIds: z.array(z.number().int().positive()).min(1).max(5) }).strict()).optional(),
   failures: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()), message: z.string().max(1000), unknown: z.boolean() })).optional() }).strict();
 export const accountSchema = z.object({ version: z.literal(1), ownerId: id, revision: z.number().int().nonnegative(), index: index.nullable(), overrides: z.array(override).max(10000),
   saved: z.array(saved).max(100).optional(),
