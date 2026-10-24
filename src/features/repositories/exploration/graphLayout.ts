@@ -76,5 +76,9 @@ export function layoutExploration(scene: ExplorationScene, focus: ExplorationFoc
     const shown = nodes.filter(node => node.type === 'repository').length;
     if (scene.results.length > shown) nodes.push({ id: 'more-projects', type: 'more', label: '更多项目', count: scene.results.length - shown, x: 440, y: Math.max(210, ...nodes.map(node => node.y)) + 110, width: 230, height: 60, color: 0 });
   }
-  return { nodes, edges, regions, width: Math.max(1000, ...nodes.map(node => node.x + node.width / 2 + 50)), height: Math.max(550, ...nodes.map(node => node.y + node.height / 2 + 50)) };
+  // A selected project can be inserted after all branch budgets are spent.
+  const repositoryNodes = nodes.filter(node => node.type === 'repository');
+  const excess = repositoryNodes.length - 40;
+  const omitted = new Set(excess > 0 ? repositoryNodes.filter(node => node.repositoryId !== selectedId).slice(-excess).map(node => node.id) : []);
+  return { nodes: nodes.filter(node => !omitted.has(node.id)), edges: edges.filter(edge => !omitted.has(edge.source) && !omitted.has(edge.target)), regions, width: Math.max(1000, ...nodes.map(node => node.x + node.width / 2 + 50)), height: Math.max(550, ...nodes.map(node => node.y + node.height / 2 + 50)) };
 }
