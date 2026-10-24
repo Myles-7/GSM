@@ -60,8 +60,7 @@ function classifyNetFailure(summary) {
 }
 
 /**
- * Abort exceptions by NAME, mirroring the renderer-side capture policy
- * (src/services/fetchCapture.ts): AbortError (AbortController.abort() —
+ * Abort exceptions by NAME: AbortError (AbortController.abort() —
  * "signal is aborted without reason" in Chromium) and TimeoutError
  * (AbortSignal.timeout()) are normal control flow. summarizeFetchError only
  * keeps message/cause text, so a bare DOMException abort leaves no net error
