@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { writeFileAtomicSync } = require('./atomicFile');
+const { writeFileAtomicSync, writeFileAtomic } = require('./atomicFile');
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsm-atomic-'));
@@ -50,6 +50,35 @@ test('a failed temporary write cannot change the destination', t => {
   assert.throws(() => writeFileAtomicSync(filename, 'current', { fileSystem: {
     ...fs, writeFileSync() { throw Object.assign(new Error('full'), { code: 'ENOSPC' }); },
   } }), { code: 'ENOSPC' });
+  assert.equal(fs.readFileSync(filename, 'utf8'), 'previous');
+  assert.deepEqual(fs.readdirSync(root), ['state.json']);
+});
+
+test('async replacement retries a Windows lock without discarding durable data', async t => {
+  const { root, filename } = fixture(t);
+  let attempts = 0;
+  const waits = [];
+  await writeFileAtomic(filename, 'current', { platform: 'win32', wait: async ms => waits.push(ms),
+    fileSystem: { ...fs.promises, async rename(from, to) {
+      if (++attempts <= 2) {
+        assert.equal(fs.readFileSync(to, 'utf8'), 'previous');
+        throw Object.assign(new Error('locked'), { code: 'EPERM' });
+      }
+      await fs.promises.rename(from, to);
+    } },
+  });
+  assert.deepEqual(waits, [10, 20]);
+  assert.equal(fs.readFileSync(filename, 'utf8'), 'current');
+  assert.deepEqual(fs.readdirSync(root), ['state.json']);
+});
+
+test('async replacement cleans its temporary file after exhausted retries', async t => {
+  const { root, filename } = fixture(t);
+  let attempts = 0;
+  await assert.rejects(writeFileAtomic(filename, 'current', { platform: 'win32', wait: async () => {}, fileSystem: {
+    ...fs.promises, async rename() { attempts++; throw Object.assign(new Error('blocked'), { code: 'EACCES' }); },
+  } }), { code: 'EACCES' });
+  assert.equal(attempts, 5);
   assert.equal(fs.readFileSync(filename, 'utf8'), 'previous');
   assert.deepEqual(fs.readdirSync(root), ['state.json']);
 });

@@ -10,6 +10,7 @@ const { AgyQueue } = require('./agyQueue');
 const { createLocalProjects } = require('./agyLocalProjects');
 const { FEATURES, validOverrides, resolveProfile } = require('./agyProfiles');
 const { createAgyCallRegistry } = require('./agyCallRegistry');
+const { writeFileAtomic } = require('./atomicFile');
 
 const DEFAULT_PREFS = Object.freeze({ model: '', effort: 'medium', mode: 'model', timeoutSeconds: 180, maxQueued: 10, enabled: false, concurrency: 5, featureOverrides: {} });
 const PREF_KEYS = Object.keys(DEFAULT_PREFS);
@@ -211,9 +212,8 @@ function createAgyDesktop({ userDataPath, safeStorage, selectExecutable, selectD
     pool: { ...generations.state(), degraded: workerHealth || controlCleanup.size > 0 } });
   const persist = async (nextPrefs, nextExecutable) => {
     await fs.mkdir(userDataPath, { recursive: true });
-    await fs.writeFile(`${prefsFile}.tmp`, JSON.stringify({ prefs: nextPrefs, executable: nextExecutable?.path || null,
-      fingerprint: nextExecutable?.fingerprint, lastProbe, featureProbes, testedProfiles: [...testedProfiles] }), { mode: 0o600 });
-    await fs.rename(`${prefsFile}.tmp`, prefsFile);
+    await writeFileAtomic(prefsFile, JSON.stringify({ prefs: nextPrefs, executable: nextExecutable?.path || null,
+      fingerprint: nextExecutable?.fingerprint, lastProbe, featureProbes, testedProfiles: [...testedProfiles] }));
   };
   const perform = async (owner, requestId, work, options, scheduler = queue) => {
     await ready;

@@ -25,4 +25,26 @@ function writeFileAtomicSync(filename, data, {
     throw error;
   }
 }
-module.exports = { writeFileAtomicSync };
+/** Async variant for main-process preferences; waits never block the event loop. */
+async function writeFileAtomic(filename, data, {
+  fileSystem = fs.promises,
+  platform = process.platform,
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  options = { encoding: 'utf8', mode: 0o600 },
+} = {}) {
+  const temporaryPath = `${filename}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fileSystem.writeFile(temporaryPath, data, options);
+    for (let attempt = 0; ; attempt++) {
+      try { await fileSystem.rename(temporaryPath, filename); return; }
+      catch (error) {
+        if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
+        await wait(10 * (2 ** attempt));
+      }
+    }
+  } catch (error) {
+    try { await fileSystem.unlink(temporaryPath); } catch { /* Preserve the write error. */ }
+    throw error;
+  }
+}
+module.exports = { writeFileAtomicSync, writeFileAtomic };

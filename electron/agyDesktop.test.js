@@ -174,7 +174,8 @@ test('retry profile overrides apply to one request without changing scheduler pr
   const prefs = (await service.getState()).prefs;
   await service.save(1, 'test-override', { ...prefs, featureOverrides: { 'repository-summary': { model: 'old-model', effort: 'max' } } });
   await service.probe(1, 'probe-override', 'repository-summary');
-  await service.save(1, 'restore-prefs', prefs);
+  const restored = await service.save(1, 'restore-prefs', prefs);
+  assert.equal(restored.ok, true, JSON.stringify(restored));
   const result = await service.generate(1, 'retry', { system: 'test', user: 'test', model: prefs.model, effort: prefs.effort, feature: 'repository-summary',
     profileOverride: { model: 'old-model', effort: 'max', timeoutSeconds: 55 } });
   assert.equal(result.ok, true);
@@ -226,7 +227,9 @@ test('advertised tools do not block test, enabling or generation', async t => {
   assert.equal(result.value.lastProbe.code, 'SUCCESS');
   assert.equal(result.value.lastProbe.toolCount, 1);
   assert.equal(sent, true);
-  assert.equal((await service.save(1, 'enable', { ...DEFAULT_PREFS, enabled: true })).value.enabled, true);
+  const enabled = await service.save(1, 'enable', { ...DEFAULT_PREFS, enabled: true });
+  assert.equal(enabled.ok, true, JSON.stringify(enabled));
+  assert.equal(enabled.value.enabled, true);
   const generated = await service.generate(1, 'generation', { model: '', effort: 'medium', system: 'Test', user: 'Test' });
   assert.equal(generated.ok, true);
 });
