@@ -76,7 +76,7 @@ jobs:
     # Only main and release tags may publish: workflow_dispatch can target any
     # branch, and a manual run elsewhere must neither publish images nor
     # overwrite the default branch's publish-branch cache scope.
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && (github.repository == 'AmintaCCCP/GithubStarsManager' || github.event_name == 'workflow_dispatch')
     # Pinned: `ubuntu-latest` migrates to Ubuntu 26.04 between 2026-10-19 and
     # 2026-11-19 (actions/runner-images#14748).
     runs-on: ubuntu-24.04

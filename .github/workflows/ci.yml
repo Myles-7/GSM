@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - main
-      - personal/main
       - 'codex/**'
 
 concurrency:
@@ -45,6 +44,9 @@ jobs:
 
       - name: Frontend layering boundaries
         run: node scripts/check-boundaries.cjs
+
+      - name: Production source reachability
+        run: npm run check:unused
 
       - name: Standalone HTML reading boundaries
         run: npm run check:html-reading

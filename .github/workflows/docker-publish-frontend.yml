@@ -18,6 +18,8 @@ env:
 
 jobs:
   build-and-push:
+    # Personal editions publish only after an explicit manual run on main.
+    if: github.repository == 'AmintaCCCP/GithubStarsManager' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     # Pinned: `ubuntu-latest` migrates to Ubuntu 26.04 between 2026-10-19 and
     # 2026-11-19 (actions/runner-images#14748).
     runs-on: ubuntu-24.04

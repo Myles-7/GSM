@@ -50,7 +50,7 @@ npm run build:all
 npm run format:check
 ```
 
-`check` 覆盖 lint、类型、审查 fixture、模块边界、中英文词库、插件注册表、Worker 和文档链接。仓库没有全局格式化器，`format:check` 检查 diff 中的空白错误，不批量改写无关文件。
+`check` 覆盖 lint、类型、审查 fixture、模块边界、生产模块可达性、中英文词库、插件注册表、Worker 和文档链接。`npm run check:unused` 可单独检查脱离应用入口的模块。仓库没有全局格式化器，`format:check` 检查 diff 中的空白错误，不批量改写无关文件。
 
 自动测试使用合成账号和隔离存储，不能据此宣称真实 GitHub/AI/SMTP 或手机已验收。Electron 原生冒烟和安装包验证需要桌面环境，更多入口见[脚本说明](scripts/README.md)。
 
@@ -59,5 +59,7 @@ npm run format:check
 视图通过功能 hooks 调用服务；Zustand 管理应用状态，IndexedDB 保存按账号隔离的资料。Electron 校验 IPC 来源，插件页面使用能力桥；原生插件 Worker 可运行 Node 代码，只安装可信插件。
 
 不提交密钥、数据库、本机部署、依赖、构建、安装包和诊断输出。日常 push 仅运行 CI，不发布安装包，见[仓库治理](docs/personal/repository-governance.md)。
+
+`main` 是默认分支和唯一长期主分支，临时开发分支通过检查并合入后删除。个人容器发布需要在 `main` 上显式执行手动工作流。
 
 基于 [AmintaCCCP/GithubStarsManager](https://github.com/AmintaCCCP/GithubStarsManager)，采用 [MIT](LICENSE) 许可。

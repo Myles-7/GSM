@@ -43,6 +43,7 @@ The server defaults to `127.0.0.1:3000`. Set `API_SECRET` before connecting clie
 
 ```sh
 npm run check             # lint, types, fixtures, boundaries, i18n, registry, docs
+npm run check:unused      # Production modules reachable from the application entry
 npm run test:run          # Frontend, Electron and launcher regression suites
 npm --prefix server test
 npm --prefix server run typecheck
@@ -57,5 +58,7 @@ There is no global formatter; avoid unrelated formatting churn. [Scripts](script
 Views delegate remote work to feature hooks and services. Zustand owns application state; IndexedDB stores account-scoped durable data. Electron IPC checks the trusted main frame. Plugin pages use a capability bridge; native plugin Workers execute Node code and require trusted plugins.
 
 Do not commit credentials, databases, local deployments, dependencies or generated builds/reports. Git stores source history, not application data. Ordinary branch pushes run CI without publishing releases. See [governance](docs/personal/repository-governance.md).
+
+`main` is the default and only long-lived branch. Merge and delete temporary development branches after checks pass. Personal container images require an explicit manual workflow run on `main`.
 
 Licensed under [MIT](LICENSE). Based on [AmintaCCCP/GithubStarsManager](https://github.com/AmintaCCCP/GithubStarsManager).

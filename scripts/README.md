@@ -8,6 +8,7 @@
 | 后端回归 | `npm --prefix server test` | 服务端功能与协议测试 |
 | 类型与静态检查 | `npm run typecheck`、`npm run lint` | 当前源码，不以旧 dist 为准 |
 | 结构和词库 | `npm run check:boundaries`、`npm run check:i18n`、`npm run check:html-reading` | 层级、翻译和 HTML 模块边界 |
+| 无用生产模块 | `npm run check:unused` | 从主入口跟踪导入图；发现未接入模块或孤立依赖环，排除测试与 fixture |
 | 插件与向量 Worker | `npm run check:plugin-registry`、`npm run check:vector-worker` | 注册表与已生成 Worker 一致性 |
 | 离线页面审查 | `npm run audit:ui` | 127.0.0.1:5187，严格占用检测，100 个匿名仓库与 200 个 Release；Ctrl+C 停止 |
 | Release 查询基准 | `node scripts/benchmark-release-lookup.cjs` | 9 次纯 CPU 样本，不代表页面端到端延迟 |
