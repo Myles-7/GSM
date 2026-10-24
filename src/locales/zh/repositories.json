@@ -922,7 +922,7 @@
     "not-matched-in-the-current-index-record-retained": "当前索引未匹配，记录仍保留",
     "undo": "撤销",
     "project-relationship-map": "项目关系地图",
-    "drag-to-pan-ctrl-scroll-to-zoom": "拖动画布 · Ctrl + 滚轮缩放",
+    "drag-to-pan-ctrl-scroll-to-zoom": "拖动画布 · 滚轮缩放（以指针为中心）",
     "zoom-out-map": "缩小地图",
     "zoom-in-map": "放大地图",
     "fit-canvas-and-reset": "适应画布并重置",
@@ -1012,5 +1012,25 @@
     "no-match": "已有资料没有匹配结果",
     "empty-help": "调整关键词或筛选；需要新分析时，请手动启动 AI 深入探索。",
     "convert-help": "转为工作区后，将按当前全库重新查询；原历史快照继续保留。"
+  },
+  "radial": {
+    "previous-page": "上一组节点",
+    "next-page": "下一组节点",
+    "groups": {
+      "agents": "AI 与智能体",
+      "engineering": "开发与工程",
+      "data": "数据与知识",
+      "creative": "设计与媒体",
+      "automation": "自动化与运维",
+      "learning": "学习与资源",
+      "other": "其他主题"
+    },
+    "unsent-repair": "格式修复在发送前中断，可继续剩余项目。",
+    "task-reason": {
+      "storage": "调用恢复区空间不足，请到任务记录处理待保存结果。",
+      "repair": "格式修复未完成；继续时会先核对原请求的发送状态。",
+      "service": "模型服务暂不可用；已保存结果保留。",
+      "timeout": "部分调用超时；继续前将核对原调用，已保存结果保留。"
+    }
   }
 }

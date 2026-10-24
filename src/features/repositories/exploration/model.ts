@@ -1,6 +1,8 @@
 import type { Repository } from '../../../types';
 import type { ExplorationAccount, ExplorationEntity, ExplorationEvidence, ExplorationFocus, ExplorationIndex, ExplorationProfile, ExplorationResult, ExplorationScene, RelationKind } from './types';
 
+import { topicGroupId } from './topicGroups';
+
 export const normalizeConcept = (text: string) => text.normalize('NFKC').trim().toLowerCase().replace(/[\s_-]+/g, ' ');
 export function stableId(prefix: string, value: string): string {
   let first = 2166136261, second = 5381;
@@ -51,6 +53,15 @@ export function resultsForRelationKind(results: ExplorationResult[], kind: Relat
 }
 
 export function projectScene(account: ExplorationAccount, repositories: Repository[], focus: ExplorationFocus, query = '', inheritedScope?: string): ExplorationScene {
+  if(focus.type==='group') {
+    const scene=projectScene(account,repositories,{type:'all'});
+    const topics=scene.topics.filter(topic=>topicGroupId(topic.label)===focus.id),ids=new Set(topics.flatMap(topic=>topic.repositoryIds));
+    return {...scene,topics,results:scene.results.filter(row=>ids.has(row.repositoryId))};
+  }
+  if(focus.type==='relation') {
+    const scene=projectScene(account,repositories,{type:'entity',id:focus.targetId,label:query},query,inheritedScope??JSON.stringify(focus));
+    return {...scene,results:resultsForRelationKind(scene.results,focus.kind),branches:scene.branches.filter(branch=>branch.kind===focus.kind)};
+  }
   const scope = inheritedScope ?? (focus.type === 'all' || (focus.type === 'entity' || focus.type === 'search') ? '' : JSON.stringify(focus));
   if (focus.type === 'branch' && (focus.branch === '待核实与间接线索' || isLocalMentionBranch(focus.branch) || focus.branch.startsWith('相近用途：'))) {
     const scene = projectScene(account, repositories, { type: 'entity', id: focus.targetId, label: query }, query, scope);

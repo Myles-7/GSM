@@ -20,6 +20,8 @@ const override = z.discriminatedUnion('type', [
 ]);
 const focus = z.discriminatedUnion('type', [
   z.object({ type: z.literal('all') }),
+  z.object({ type: z.literal('group'), id, label:z.string().max(100) }),
+  z.object({ type:z.literal('relation'),targetId:id,kind:z.enum(['direct','interoperable','similar','discovery']),label:z.string().max(100) }),
   z.object({ type: z.literal('topic'), id, label: z.string().max(100) }),
   z.object({ type: z.literal('entity'), id, label: z.string().max(200) }),
   z.object({ type: z.literal('search'), id, label: z.string().max(200) }),
@@ -40,7 +42,7 @@ const task = z.object({ id, type: z.enum(['build', 'query']), status: z.enum(['r
   repairs: z.record(id, z.object({ requestId: id, parentRequestId: id.optional(), repositoryIds: z.array(z.number().int().positive()).min(1).max(5) }).strict()).optional(),
   failures: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()), message: z.string().max(1000), unknown: z.boolean() })).optional() }).strict();
 export const accountSchema = z.object({ version: z.literal(1), ownerId: id, revision: z.number().int().nonnegative(), index: index.nullable(), overrides: z.array(override).max(10000),
-  workspaces: z.array(z.object({ version: z.literal(1), id, name: z.string().trim().min(1).max(100), createdAt: z.string(), updatedAt: z.string(), query: z.string().max(200), path: z.array(focus).min(1).max(100), kindFilter: saved.shape.kindFilter, camera: saved.shape.camera, scopeFingerprint: id.optional() }).strict()).max(100).optional(),
+  workspaces: z.array(z.object({ version: z.literal(1), id, name: z.string().trim().min(1).max(100), createdAt: z.string(), updatedAt: z.string(), query: z.string().max(200), path: z.array(focus).min(1).max(100), kindFilter: saved.shape.kindFilter, camera: saved.shape.camera, layoutVersion:z.number().int().positive().optional(), scopeFingerprint: id.optional() }).strict()).max(100).optional(),
   saved: z.array(saved).max(100).optional(),
   queries: z.array(z.object({ id, query: z.string().min(1).max(200), scope: z.string().max(1000).optional(), fingerprint: id, createdAt: z.string(), model: z.string().max(300), generation: id.optional(), profiles }).strict()).max(20),
   task: task.nullable(), pendingTasks: z.array(task).max(20).optional(),

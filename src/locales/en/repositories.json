@@ -922,7 +922,7 @@
     "not-matched-in-the-current-index-record-retained": "Not matched in the current index; record retained",
     "undo": "Undo",
     "project-relationship-map": "Project relationship map",
-    "drag-to-pan-ctrl-scroll-to-zoom": "Drag to pan · Ctrl + scroll to zoom",
+    "drag-to-pan-ctrl-scroll-to-zoom": "Drag to pan · Scroll to zoom at pointer",
     "zoom-out-map": "Zoom out map",
     "zoom-in-map": "Zoom in map",
     "fit-canvas-and-reset": "Fit canvas and reset",
@@ -1012,5 +1012,25 @@
     "no-match": "No matching existing information",
     "empty-help": "Adjust the query or filters. Start AI exploration explicitly if new analysis is needed.",
     "convert-help": "The workspace will query the current library. The original historical snapshot is retained."
+  },
+  "radial": {
+    "previous-page": "Previous nodes",
+    "next-page": "Next nodes",
+    "groups": {
+      "agents": "AI and agents",
+      "engineering": "Development",
+      "data": "Data and knowledge",
+      "creative": "Design and media",
+      "automation": "Automation",
+      "learning": "Learning",
+      "other": "Other topics"
+    },
+    "unsent-repair": "Format repair stopped before dispatch. Continue the remaining projects.",
+    "task-reason": {
+      "storage": "Recovery storage is full. Review pending results in task history.",
+      "repair": "Format repair did not finish. Continuing checks the original dispatch status first.",
+      "service": "The model service is unavailable. Saved results are retained.",
+      "timeout": "Some calls timed out. Continuing checks the original calls and preserves saved results."
+    }
   }
 }

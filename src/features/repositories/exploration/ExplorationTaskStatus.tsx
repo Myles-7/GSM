@@ -22,7 +22,10 @@ export function ExplorationTaskStatus(props: Props) {
   const remaining = task ? Math.max(0, task.total - task.completed) : 0;
   const needsSetup = !!setupIssue || /AGY_(DISABLED|NOT_FOUND|DESKTOP_REQUIRED|TEST_REQUIRED)/.test(error);
   const retryLabel = task?.phase === 'topics' && !remaining ? t('exploration.retry-topic-organization') : remaining ? t('exploration.continue-remaining', { count: remaining }) : t('exploration.retry-unfinished-task');
+  const reasonKey = /RECOVERY_STORAGE_FULL|恢复区.*(?:满|不足)/.test(error) ? 'storage' : /格式修复/.test(error) ? 'repair' : /SERVICE_UNAVAILABLE|服务.*不可用|容量/.test(error) ? 'service' : /TIMEOUT|超时/.test(error) ? 'timeout' : '';
   return <section className={`explore-task-status ${busy ? 'is-running' : ''}`} aria-label={t('exploration.map-task-status')}>
+    {task?.failures?.some(row=>/格式修复请求尚未发送/.test(row.message)) && <p className="explore-validation-notice">{t('radial.unsent-repair')}</p>}
+    {reasonKey && !needsSetup && <p className="explore-validation-notice" role="status">{t(`radial.task-reason.${reasonKey}`)}</p>}
     {error && !needsSetup && <p className="explore-validation-notice">{t('exploration.saved-results-preserved')}</p>}
     <div className="explore-task-status-row">
       <div className="explore-task-status-summary" role="status">

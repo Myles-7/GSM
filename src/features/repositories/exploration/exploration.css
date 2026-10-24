@@ -197,3 +197,14 @@
 .is-canvas .explore-graph-node:hover strong,.is-canvas .explore-graph-node:focus-visible strong { color:var(--node-color); }
 .is-canvas .explore-command-bar form { border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--muted)/.2); padding:4px 10px; }
 .is-canvas .explore-results { box-shadow:0 6px 20px hsl(var(--foreground)/.04); }
+
+/* One-level radial canvas. Node geometry stays fixed throughout mouse gestures. */
+.explore-map-viewport { overscroll-behavior:contain; user-select:none; }
+.explore-world { will-change:transform; }
+.is-canvas .node-topic { border:1px solid color-mix(in srgb,var(--node-color) 20%,hsl(var(--border))); border-radius:18px; background:color-mix(in srgb,var(--node-color) 4%,hsl(var(--card))); box-shadow:0 4px 12px hsl(var(--foreground)/.025); }
+.is-canvas .node-topic .explore-node-mark { font-size:20px; }
+.is-canvas .explore-graph-node strong { font-size:var(--node-text-size); line-height:1.35; }
+.is-canvas .node-repository strong { max-width:100%; }
+
+
+.explore-canvas-lines { width:100%; height:100%; pointer-events:none; }

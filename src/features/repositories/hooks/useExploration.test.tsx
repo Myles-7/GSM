@@ -8,12 +8,12 @@ import { loadExploration, updateExploration } from '../exploration/storage';
 import type { Repository } from '../../../types';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { createSavedExploration, savedExplorationAccount } from '../exploration/local';
-import { conceptId, projectScene } from '../exploration/model';
+import { conceptId, projectScene, stableId, explorationFingerprint } from '../exploration/model';
 import { taskForSignal } from '../../../services/taskExecution';
 import { explorationRuntime, retryExplorationTask } from '../../../services/explorationRuntime';
 
-const mocks = vi.hoisted(() => ({ state: {} as AppStoreState, analyze: vi.fn(), refresh: vi.fn(), consolidate: vi.fn() }));
-vi.mock('../../../services/agyClient', () => ({ refreshAgyDeviceState: mocks.refresh }));
+const mocks = vi.hoisted(() => ({ state: {} as AppStoreState, analyze: vi.fn(), refresh: vi.fn(), consolidate: vi.fn(), read:vi.fn(), ack:vi.fn() }));
+vi.mock('../../../services/agyClient', () => ({ refreshAgyDeviceState: mocks.refresh, readAgyRecovery:mocks.read, acknowledgeAgyRecovery:mocks.ack }));
 vi.mock('../../../store/useAppStore', () => ({ useAppStore: Object.assign((selector: (state: AppStoreState) => unknown) => selector(mocks.state), { getState: () => mocks.state }) }));
 vi.mock('../../../services/explorationAI', () => ({ analyzeExplorationBatch: mocks.analyze, consolidateExplorationTopics: mocks.consolidate, explorationCandidates: (repositories: Repository[]) => repositories }));
 import { useExploration } from './useExploration';
@@ -56,6 +56,22 @@ describe('manual exploration tasks', () => {
     const complete = await loadExploration(owner);
     expect(complete.queries.at(-1)?.profiles['1']).toEqual(original);
     expect(complete.task).toBeNull();
+  });
+  it.each(['unsent','unknown'] as const)('handles persisted repair certainty on explicit continuation: %s',async certainty=>{
+    mocks.state.repositories=[repositoryFixture(1),repositoryFixture(2)];
+    mocks.state.aiConfigs=[{id:'model',name:'AGY',provider:'agy-cli',model:'configured-model',agyMode:'model',agyEffort:'low',deviceBound:true,isActive:true,concurrency:1}];
+    window.electronAPI={agy:{}} as typeof window.electronAPI;
+    const owner=String(mocks.state.user!.id),id=stableId('batch',mocks.state.repositories.map(repo=>`${repo.id}:${explorationFingerprint(repo)}`).join('|'));
+    const first=profileFixture(mocks.state.repositories[0]);
+    await updateExploration(owner,current=>({...current,task:{id:'old',type:'query',query:'Codex',status:'failed',startedAt:'now',model:'model:configured-model',fingerprint:'legacy',completed:1,total:2,draft:{'1':first},batches:[[1,2]],repairs:{[id]:{requestId:'repair',repositoryIds:[2]}}}}));
+    mocks.read.mockResolvedValue({record:{requestId:'repair',dispatch:certainty==='unsent'?'prepared':'sent',providerOutcome:certainty==='unsent'?'failed':'unknown',failureCode:'INIT_TIMEOUT',recoverable:false,inputDigest:'hash',profile:'low',createdAt:'now'}});
+    mocks.analyze.mockImplementationOnce(async(options:Parameters<typeof import('../../../services/explorationAI').analyzeExplorationBatch>[0])=>{
+      expect(options.repositories.map(repo=>repo.id)).toEqual([2]);expect(options.recovered).toBeUndefined();expect(await options.prepareRepair!([2])).toBe(false);return [profileFixture(mocks.state.repositories[1])];
+    });
+    await explorationRuntime.run(owner,{type:'query',query:'Codex',configId:'model',resume:true});
+    const account=await loadExploration(owner);
+    if(certainty==='unsent'){expect(mocks.analyze).toHaveBeenCalledOnce();expect(account.task).toBeNull();expect(account.queries.at(-1)?.profiles['1']).toEqual(first);}
+    else {expect(mocks.analyze).not.toHaveBeenCalled();expect(account.task?.completed).toBe(1);expect(account.task?.error).toContain('尚未确认');}
   });
   it('honors a forced build by reanalyzing all projects instead of reusing a partial checkpoint', async () => {
     mocks.state.repositories = Array.from({ length: 6 }, (_, i) => repositoryFixture(i + 1));

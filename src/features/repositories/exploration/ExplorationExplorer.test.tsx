@@ -115,8 +115,9 @@ describe('project relationship exploration page', () => {
     expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('project-1');
     const map = screen.getByRole('region', { name: '项目关系地图' });
     expect(within(map).queryByTitle('owner/project-1')).not.toBeInTheDocument();
+    fireEvent.click(within(map).getByRole('button', {name:'AI 与智能体 2 个项目'}));
     fireEvent.click(within(map).getByRole('button', { name: '编程智能体 2 个项目' }));
-    expect(screen.getByRole('navigation', { name: '探索路径' })).toHaveTextContent('全库主题/编程智能体');
+    expect(screen.getByRole('navigation', { name: '探索路径' })).toHaveTextContent('全库主题/AI 与智能体/编程智能体');
     expect(screen.getByRole('button', { name: '主题改名' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '返回' })); expect(screen.getByRole('navigation')).not.toHaveTextContent('编程智能体');
   });
@@ -126,6 +127,7 @@ describe('project relationship exploration page', () => {
     expect(mocks.deepen).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '探索' }));
     expect(screen.getByRole('navigation')).toHaveTextContent('Codex'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('直接相关'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('同类能力');
     fireEvent.click(screen.getByRole('button', { name: 'AI 深入探索' })); fireEvent.click(screen.getByRole('button',{name:'开始分析'})); expect(mocks.deepen).toHaveBeenCalledWith('Codex');
+    fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button',{name:'直接相关 直接相关 1 个项目'}));
     fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button', { name: '直接相关 技能与工作流 1 个项目' }));
     expect(screen.getByRole('navigation')).toHaveTextContent('技能与工作流'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).not.toHaveTextContent('project-2');
   });
@@ -152,7 +154,7 @@ describe('project relationship exploration page', () => {
     mocks.account!.index!.profiles['1'].topics = Array.from({ length: 6 }, (_, index) => ({ ...original, id: `topic-${index}`, label: `用途主题 ${index}` }));
     const view = render(<ExplorationExplorer onOpenRepository={vi.fn()} />);
     const map = screen.getByRole('region', { name: '项目关系地图' });
-    expect(map.querySelectorAll('.node-topic')).toHaveLength(7);
+    expect(map.querySelectorAll('.node-topic')).toHaveLength(2); // Browsing groups, with all underlying topics reachable.
     expect(within(map).getByRole('button', { name: '全部主题 (7)' })).toBeInTheDocument();
     expect(within(map).getByRole('button', { name: '全屏查看地图' })).toBeInTheDocument();
     view.unmount(); rect.mockRestore();

@@ -1,3 +1,4 @@
+import { topicGroups } from './topicGroups';
 import type { Repository } from '../../../types';
 import { explorationSearchFields, normalizeConcept, stableId } from './model';
 import type { ExplorationFocus, ExplorationScene, ExplorationWorkspace } from './types';
@@ -11,6 +12,7 @@ export function workspaceScope(scene: ExplorationScene) {
 export function restoreWorkspacePath(path: ExplorationFocus[], scene: ExplorationScene, repositories: Repository[]) {
   const valid: ExplorationFocus[] = [];
   for (const step of path) {
+    if(step.type==='group'&&!topicGroups(scene).some(group=>group.id===step.id))break;
     if (step.type === 'topic' && !scene.topics.some(row => row.id === step.id) || step.type === 'repository' && !repositories.some(row => row.id === step.id)) break;
     // Entity queries remain meaningful even if no repository currently matches them.
     if (step.type === 'branch' && !Object.values(scene.profiles).some(profile => profile.relations.some(row => row.targetId === step.targetId && row.branch === step.branch && row.kind === step.kind))) break;

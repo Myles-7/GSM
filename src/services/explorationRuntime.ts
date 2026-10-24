@@ -12,6 +12,7 @@ import { aiTaskJournal, type AITaskRecord } from './aiTaskJournal';
 import { bindTaskItemSignal, bindTaskSignal, retryTaskConfig, taskConfigSnapshot, type TaskHandle, type TaskRetryParameters } from './taskExecution';
 import { confirmTaskRecovery } from './agyRecoveryPolicy';
 import type { AgyRecoveryRecord } from '../types/agy';
+import { canContinueUnsentRepair } from './explorationRecovery';
 import { taskObservability } from './taskObservability';
 
 interface RuntimeState { account: ExplorationAccount | null; loading: boolean; busy: boolean; activity: string; error: string; concurrency: number }
@@ -208,18 +209,25 @@ async function execute(owner: string, input: ExplorationRun) {
             record = undefined;
             const response = await readAgyRecovery(owner, priorRepair.requestId);
             const context = response.context as { sources?: [number, import('../features/repositories/exploration/types').ExplorationEvidence[]][]; repositoryIds?: number[]; fingerprints?: string[] } | undefined;
-            if (!response.result) throw Object.assign(new Error('格式修复结果尚未确认；未再次发送。请在任务中心核对原调用。'), { providerOutcome: response.record.providerOutcome });
-            if (!context?.sources || JSON.stringify(context.repositoryIds) !== JSON.stringify(priorRepair.repositoryIds) || JSON.stringify(context.fingerprints) !== JSON.stringify(priorRepair.repositoryIds.map(id => explorationFingerprint(repositories.find(repo => repo.id === id)!)))) throw new Error('格式修复结果与当前资料不一致；未再次发送。');
-            recoveredRepair = { text: response.result.text, sources: context.sources, repositoryIds: priorRepair.repositoryIds }; records.push(response.record);
-            // An explicit continuation may regenerate only unresolved rows after
-            // the one automatic repair returned a known, invalid result.
-            if (resuming && !input.recoveryOnly) {
-              const targets = batch.filter(repo => priorRepair.repositoryIds.includes(repo.id));
-              const parsed = parseExplorationBatchResult(response.result.text, targets, new Map(context.sources), new Set(repositories.map(repo => repo.id)), repositories);
-              if (parsed.profiles.length) await saveProgress(parsed.profiles.filter(value => !task!.draft[String(value.repositoryId)]));
-              if (parsed.issues.some(issue => !task!.draft[String(issue.repositoryId)])) {
-                recovered = undefined; recoveredRepair = undefined;
-                requestRepositories = batch.filter(repo => !task!.draft[String(repo.id)]);
+            if (!response.result && canContinueUnsentRepair(response.record, resuming, !!input.recoveryOnly)) {
+              // Keep the repair ledger: this explicit new attempt cannot obtain
+              // a second automatic repair. Already saved siblings stay intact.
+              recovered = undefined;
+              requestRepositories = batch.filter(repo => !task!.draft[String(repo.id)]);
+            } else if (!response.result) throw Object.assign(new Error(response.record.dispatch === 'prepared' ? '格式修复请求尚未发送，可手动继续未完成项。' : '格式修复结果尚未确认；未再次发送。请在任务中心核对原调用。'), { providerOutcome: response.record.providerOutcome });
+            if (response.result) {
+              if (!context?.sources || JSON.stringify(context.repositoryIds) !== JSON.stringify(priorRepair.repositoryIds) || JSON.stringify(context.fingerprints) !== JSON.stringify(priorRepair.repositoryIds.map(id => explorationFingerprint(repositories.find(repo => repo.id === id)!)))) throw new Error('格式修复结果与当前资料不一致；未再次发送。');
+              recoveredRepair = { text: response.result.text, sources: context.sources, repositoryIds: priorRepair.repositoryIds }; records.push(response.record);
+              // An explicit continuation may regenerate only unresolved rows after
+              // the one automatic repair returned a known, invalid result.
+              if (resuming && !input.recoveryOnly) {
+                const targets = batch.filter(repo => priorRepair.repositoryIds.includes(repo.id));
+                const parsed = parseExplorationBatchResult(response.result.text, targets, new Map(context.sources), new Set(repositories.map(repo => repo.id)), repositories);
+                if (parsed.profiles.length) await saveProgress(parsed.profiles.filter(value => !task!.draft[String(value.repositoryId)]));
+                if (parsed.issues.some(issue => !task!.draft[String(issue.repositoryId)])) {
+                  recovered = undefined; recoveredRepair = undefined;
+                  requestRepositories = batch.filter(repo => !task!.draft[String(repo.id)]);
+                }
               }
             }
           }

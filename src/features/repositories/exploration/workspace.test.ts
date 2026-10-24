@@ -41,12 +41,12 @@ describe('dynamic exploration workspaces', () => {
     expect(suggestions.some(row=>row.group==='entities')).toBe(true);
     expect(explorationSuggestions('',scene,[one,two])).toEqual([]);
   });
-  it('bounds the graph to forty projects and includes an offscreen selection', () => {
+  it('keeps all immediate project children connected across outer rings', () => {
     const repositories=Array.from({length:100},(_,i)=>repositoryFixture(i+1)),account=accountFixture(repositories);
     const topic=account.index!.profiles['1'].topics[0],focus={type:'topic' as const,id:topic.id,label:topic.label};
     const scene=projectScene(account,repositories,focus),names=new Map(repositories.map(row=>[row.id,row.name]));
-    const layout=layoutExploration(scene,focus,names,true,100);
-    expect(layout.nodes.filter(row=>row.type==='repository').length).toBeLessThanOrEqual(40);
+    const layout=layoutExploration(scene,focus,names);
+    expect(layout.nodes.filter(row=>row.type==='repository').length).toBe(100);
     expect(layout.nodes.some(row=>row.repositoryId===100)).toBe(true);
     for(const edge of layout.edges)expect(layout.nodes.some(row=>row.id===edge.source)).toBe(true);
   });

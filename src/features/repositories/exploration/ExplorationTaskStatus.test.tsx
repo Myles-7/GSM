@@ -12,7 +12,8 @@ describe('compact exploration task status',()=>{
   it('keeps failure details off the page and routes users to task records',()=>{
     const input={...props(),error:describeAgyRecoveryError(task.error!)};render(<ExplorationTaskStatus {...input}/>);
     expect(screen.getByLabelText('地图任务状态')).toHaveTextContent('358 / 368 已保存');
-    expect(screen.queryByText(/超时|AGY_TIMEOUT|任务未完成/)).not.toBeInTheDocument();
+    expect(screen.getByText('部分调用超时；继续前将核对原调用，已保存结果保留。')).toBeInTheDocument();
+    expect(screen.queryByText(/AGY_TIMEOUT/)).not.toBeInTheDocument();
     expect(screen.queryByText(/当前 364/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:'继续剩余 10 项'}));expect(input.onRetry).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button',{name:'任务记录'}));

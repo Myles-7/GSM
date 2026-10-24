@@ -40,7 +40,7 @@ export interface ExplorationCamera { zoom: number; x: number; y: number }
 export interface ExplorationWorkspace {
   version: 1; id: string; name: string; createdAt: string; updatedAt: string;
   query: string; path: ExplorationFocus[]; kindFilter: RelationKind | 'all';
-  camera?: ExplorationCamera; scopeFingerprint?: string;
+  camera?: ExplorationCamera; layoutVersion?: number; scopeFingerprint?: string;
 }
 export interface SavedExploration {
   id: string; name: string; query: string; createdAt: string; updatedAt: string; model: string;
@@ -58,7 +58,7 @@ export interface ExplorationAccount {
   workspaces?: ExplorationWorkspace[];
   pendingTasks?: ExplorationTask[];
 }
-export type ExplorationFocus = { type: 'all' } | { type: 'topic'; id: string; label: string } |
+export type ExplorationFocus = { type: 'all' } | { type: 'group'; id: string; label: string } | {type:'relation';targetId:string;kind:RelationKind;label:string} | { type: 'topic'; id: string; label: string } |
   { type: 'entity'; id: string; label: string } | { type: 'search'; id: string; label: string } | { type: 'repository'; id: number; label: string } |
   { type: 'branch'; targetId: string; label: string; kind: RelationKind; branch: string };
 export interface ExplorationResult {
