@@ -9,8 +9,8 @@ vi.mock('../../../store/useAppStore', () => ({
 
 describe('English exploration interface', () => {
   it('localizes empty saved explorations and accessible navigation', () => {
-    render(<SavedExplorations items={[]} selected="" busy={false} onOpen={vi.fn()} onHome={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} onMove={vi.fn()} />);
-    expect(screen.getByRole('complementary', { name: 'Saved explorations' })).toBeInTheDocument();
+    render(<SavedExplorations workspaces={[]} snapshots={[]} selected="" atHome busy={false} onOpen={vi.fn()} onHome={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} onNew={vi.fn()} onConvert={vi.fn()} />);
+    expect(screen.getByRole('region', { name: 'Saved explorations' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Library map' })).toBeInTheDocument();
     expect(screen.getByText('No saved explorations yet')).toBeInTheDocument();
   });

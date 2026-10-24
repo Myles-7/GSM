@@ -998,12 +998,12 @@
     "rename": "重命名",
     "delete": "删除工作区",
     "history": "历史快照",
-    "convert": "转为工作区",
+    "convert": "另存为动态探索",
     "results-updated": "已按当前全库更新结果；不存在的路径已回退。",
     "ai-preview": "确认 AI 深入探索",
     "ai-scope": "范围：当前全库 {{count}} 个仓库。当前结果中 {{ready}} 个已有关系分析；实际需处理数量由资料与查询缓存决定。",
     "start-analysis": "开始分析",
-    "unsaved-description": "保存更新当前工作区，或放弃本次浏览条件的更改。",
+    "unsaved-description": "保存当前探索的更改，或放弃本次浏览条件的修改。",
     "save-leave": "保存并离开",
     "discard": "放弃修改",
     "cancel": "取消",
@@ -1011,7 +1011,7 @@
     "no-analysis": "尚无可展示的分析资料",
     "no-match": "已有资料没有匹配结果",
     "empty-help": "调整关键词或筛选；需要新分析时，请手动启动 AI 深入探索。",
-    "convert-help": "转为工作区后，将按当前全库重新查询；原历史快照继续保留。"
+    "convert-help": "保存为动态探索后，将按当前全库重新查询；原历史快照继续保留。"
   },
   "radial": {
     "previous-page": "上一组节点",
@@ -1041,5 +1041,19 @@
     "directory-hint": "此层包含 {{count}} 个项目，选择方向继续浏览。",
     "ai-scope": "候选 {{total}} 项 · 可复用 {{reused}} 项 · 需处理 {{pending}} 项",
     "open-direction": "进入{{name}}（{{count}} 个项目）"
+  },
+  "saved-library": {
+    "new": "新建探索",
+    "search": "搜索已保存探索",
+    "clear": "清空筛选",
+    "dynamic": "随仓库更新",
+    "snapshot": "历史快照",
+    "dynamic-help": "按当前全库显示结果",
+    "empty-help": "保存当前探索后，可在这里继续浏览。",
+    "no-match": "没有匹配的已保存探索",
+    "actions": "更多操作：{{name}}",
+    "convert": "另存为动态探索",
+    "delete": "删除探索",
+    "delete-confirm": "删除“{{name}}”这条保存记录？仓库、其他探索及已有分析不会被删除。"
   }
 }

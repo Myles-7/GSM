@@ -2,17 +2,18 @@ import { fireEvent, render, screen, within, waitFor } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExplorationAccount } from './types';
 import { accountFixture, repositoryFixture } from './testFixtures';
+import { conceptId } from './model';
 import { createSavedExploration } from './local';
-const mocks = vi.hoisted(() => ({ account: null as ExplorationAccount | null, preview:vi.fn(), build: vi.fn(), deepen: vi.fn(), cancel: vi.fn(), add: vi.fn(), remove: vi.fn(), confirm: vi.fn(), owner: '42', storageFull: false, openTasks: vi.fn(), setupBlocked: false, configure: vi.fn(), refresh: vi.fn(), save:vi.fn(), toast:vi.fn() }));
+const mocks = vi.hoisted(() => ({ account: null as ExplorationAccount | null, preview:vi.fn(), build: vi.fn(), deepen: vi.fn(), cancel: vi.fn(), add: vi.fn(), remove: vi.fn(), confirm: vi.fn(), owner: '42', storageFull: false, openTasks: vi.fn(), setupBlocked: false, configure: vi.fn(), refresh: vi.fn(), save:vi.fn(), deleteWorkspace:vi.fn(), deleteSaved:vi.fn(), toast:vi.fn() }));
 const repositories = [repositoryFixture(1), repositoryFixture(2)];
 vi.mock('../hooks/useExploration', () => ({ useExploration: () => ({ ownerId: mocks.owner, repositories, account: mocks.account, loading: false, error: mocks.storageFull ? 'AGY 调用恢复区额度已满' : '', recoveryStorageFull: mocks.storageFull, openTaskCenter: mocks.openTasks, busy: false,
   configId: 'model', setConfigId: vi.fn(), configs: [{ id: 'model', name: 'Test AI', model: 'test-model' }], config: { name: 'Test AI' }, changedCount: 0, canRun: !mocks.setupBlocked, setupIssue: mocks.setupBlocked ? 'AGY CLI 当前未启用，请完成保存并测试后启用' : '', configureAI: mocks.configure, refreshStatus: mocks.refresh,
-  preview:mocks.preview, build: mocks.build, deepen: mocks.deepen, updateSaved:mocks.add, retry: vi.fn(), cancel: mocks.cancel, addOverride: mocks.add, removeOverride: mocks.remove, exportData: () => '{}', importData: vi.fn(), saveExploration:mocks.save, saveWorkspace:mocks.save,
+  preview:mocks.preview, build: mocks.build, deepen: mocks.deepen, updateSaved:mocks.add, retry: vi.fn(), cancel: mocks.cancel, addOverride: mocks.add, removeOverride: mocks.remove, exportData: () => '{}', importData: vi.fn(), saveExploration:mocks.save, saveWorkspace:mocks.save,deleteWorkspace:mocks.deleteWorkspace,deleteSaved:mocks.deleteSaved,
 }) }));
 vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm, toast:mocks.toast }) }));
 import { ExplorationExplorer } from './ExplorationExplorer';
 import { clearExplorationWorkspace } from '../hooks/useExplorationWorkspace';
-beforeEach(() => { clearExplorationWorkspace(); localStorage.clear(); vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.save.mockReset().mockResolvedValue(true); mocks.preview.mockReturnValue({total:2,reused:0,pending:2,identity:'stable'});mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
+beforeEach(() => { clearExplorationWorkspace(); localStorage.clear(); vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.save.mockReset().mockResolvedValue(true); mocks.deleteWorkspace.mockReset().mockResolvedValue(true);mocks.deleteSaved.mockReset().mockResolvedValue(true);mocks.preview.mockReturnValue({total:2,reused:0,pending:2,identity:'stable'});mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
 
 describe('project relationship exploration page', () => {
   it('restores the exploration path and selection after switching views without another AI call', () => {
@@ -31,7 +32,7 @@ describe('project relationship exploration page', () => {
   it('can manually deepen a saved snapshot even when no repository metadata has changed', () => {
     const item=createSavedExploration(mocks.account!,repositories,{name:'Saved Codex',query:'Codex',path:[{type:'entity',id:'entity:codex',label:'Codex'}],kindFilter:'all'});
     mocks.account!.saved=[item];render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
-    fireEvent.click(screen.getByRole('button', {name:'工作区'}));
+    fireEvent.click(screen.getByRole('button', {name:'已保存探索'}));
     fireEvent.click(screen.getByRole('button',{name:/^Saved Codex/}));
     const button=screen.getByRole('button',{name:'AI 深入探索'});expect(button).toBeEnabled();
     fireEvent.click(button);fireEvent.click(screen.getByRole('button',{name:'开始分析'}));expect(mocks.add).toHaveBeenCalledWith(item,true);
@@ -167,6 +168,37 @@ describe('project relationship exploration page', () => {
 });
 
 describe('workspace persistence and manual save boundaries',()=>{
+  it('saves a legacy snapshot as a live exploration without changing the original or calling AI',async()=>{
+    const item=createSavedExploration(mocks.account!,repositories,{name:'Legacy Codex',query:'Codex',path:[{type:'all'},{type:'search',id:conceptId('entity','Codex'),label:'Codex'}],kindFilter:'all'});
+    mocks.account!.saved=[item];const original=structuredClone(item);
+    render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));
+    fireEvent.keyDown(screen.getByRole('button',{name:'更多操作：Legacy Codex'}),{key:'Enter',code:'Enter'});
+    fireEvent.click(await screen.findByRole('menuitem',{name:'另存为动态探索'}));
+    expect(screen.getByRole('textbox',{name:'探索名称'})).toHaveValue('Legacy Codex');
+    fireEvent.click(screen.getByRole('button',{name:'保存'}));
+    await waitFor(()=>expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({version:1,query:'Codex',name:'Legacy Codex'})));
+    expect(mocks.save.mock.calls[0][0].id).not.toBe(item.id);expect(mocks.account!.saved).toEqual([original]);
+    expect(mocks.deepen).not.toHaveBeenCalled();expect(mocks.build).not.toHaveBeenCalled();
+  });
+  it('only leaves a deleted active exploration after the write succeeds',async()=>{
+    const item={version:1 as const,id:'live',name:'My workspace',query:'Codex',path:[{type:'all' as const},{type:'search' as const,id:conceptId('entity','Codex'),label:'Codex'}],kindFilter:'all' as const,createdAt:'now',updatedAt:'now'};
+    mocks.account!.workspaces=[item];mocks.deleteWorkspace.mockResolvedValueOnce(false);
+    render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));fireEvent.click(screen.getByRole('button',{name:/^My workspace/}));
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));
+    fireEvent.keyDown(screen.getByRole('button',{name:'更多操作：My workspace'}),{key:'Enter',code:'Enter'});
+    fireEvent.click(await screen.findByRole('menuitem',{name:'删除探索'}));
+    await waitFor(()=>expect(mocks.deleteWorkspace).toHaveBeenCalledWith('live'));
+    expect(screen.getByRole('button',{name:/^My workspace/})).toHaveAttribute('aria-pressed','true');
+    mocks.deleteWorkspace.mockImplementationOnce(async()=>{mocks.account!.workspaces=[];return true;});
+    fireEvent.keyDown(screen.getByRole('button',{name:'更多操作：My workspace'}),{key:'Enter',code:'Enter'});
+    fireEvent.click(await screen.findByRole('menuitem',{name:'删除探索'}));
+    await waitFor(()=>expect(screen.getByText('暂无保存的探索')).toBeInTheDocument());
+    expect(screen.getByRole('button',{name:'全库地图'})).toHaveAttribute('aria-pressed','true');
+    expect(Object.keys(mocks.account!.index!.profiles)).toHaveLength(2);
+    expect(mocks.deepen).not.toHaveBeenCalled();expect(mocks.build).not.toHaveBeenCalled();
+  });
   it('keeps unsubmitted search separate and refreshes a stale analysis preview before dispatch',()=>{
     render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
     const search=screen.getByRole('combobox',{name:'探索主题'});
@@ -187,8 +219,8 @@ describe('workspace persistence and manual save boundaries',()=>{
     const item={version:1 as const,id:'live',name:'My workspace',query:'Codex',path:[{type:'all' as const},{type:'search' as const,id:'query',label:'Codex'}],kindFilter:'all' as const,createdAt:'now',updatedAt:'now'};
     mocks.account!.workspaces=[item];mocks.save.mockResolvedValue(true);
     const view=render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
-    fireEvent.click(screen.getByRole('button',{name:'工作区'}));
-    fireEvent.click(screen.getByRole('button',{name:/My workspace/}));
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));
+    fireEvent.click(screen.getByRole('button',{name:/^My workspace/}));
     fireEvent.change(screen.getByRole('combobox',{name:'探索主题'}),{target:{value:'browser'}});
     fireEvent.click(screen.getByRole('button',{name:'探索'}));
     expect(screen.getByText(/My workspace · 未保存/)).toBeInTheDocument();
@@ -206,9 +238,9 @@ describe('workspace persistence and manual save boundaries',()=>{
   it('guards workspace switches and cancel preserves the draft',()=>{
     mocks.account!.workspaces=[{version:1,id:'live',name:'My workspace',query:'',path:[{type:'all'}],kindFilter:'all',createdAt:'now',updatedAt:'now'}];
     render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
-    fireEvent.click(screen.getByRole('button',{name:'工作区'}));fireEvent.click(screen.getByRole('button',{name:/My workspace/}));
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));fireEvent.click(screen.getByRole('button',{name:/^My workspace/}));
     fireEvent.change(screen.getByRole('combobox',{name:'探索主题'}),{target:{value:'draft'}});fireEvent.click(screen.getByRole('button',{name:'探索'}));
-    fireEvent.click(screen.getByRole('button',{name:'工作区'}));fireEvent.click(screen.getByRole('button',{name:'新建探索工作区'}));
+    fireEvent.click(screen.getByRole('button',{name:'已保存探索'}));fireEvent.click(screen.getByRole('button',{name:'新建探索'}));
     expect(screen.getByRole('button',{name:'保存并离开'})).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(screen.getByRole('combobox',{name:'探索主题'})).toHaveValue('draft');
     expect(mocks.save).not.toHaveBeenCalled();

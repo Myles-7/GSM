@@ -58,7 +58,6 @@ export function useExploration() {
     saveWorkspace: (input: ExplorationWorkspace) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, workspaces: current.workspaces?.some(row => row.id === input.id) ? current.workspaces.map(row => row.id === input.id ? input : row) : [...(current.workspaces ?? []), input] }))),
     deleteWorkspace: (id: string) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, workspaces: current.workspaces?.filter(row => row.id !== id) }))),
     editSaved: (id: string, update: Partial<Pick<SavedExploration, 'name' | 'camera' | 'path' | 'kindFilter' | 'layoutPositions'>>) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: current.saved?.map(row => row.id === id ? { ...row, ...update } : row) }))),
-    reorderSaved: (ids: string[]) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: ids.flatMap(id => current.saved?.find(row => row.id === id) ?? []) }))),
     deleteSaved: (id: string) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: current.saved?.filter(row => row.id !== id) }))),
     exportData: () => serializeExploration(account ?? emptyExplorationAccount(ownerId)),
     importData: async (content: string) => { if (runtime.busy) throw new Error('请先取消任务再导入。'); const imported = parseExplorationBackup(content, ownerId); await explorationRuntime.update(ownerId, () => imported); },

@@ -998,12 +998,12 @@
     "rename": "Rename",
     "delete": "Delete workspace",
     "history": "Historical snapshots",
-    "convert": "Convert to workspace",
+    "convert": "Save as a live exploration",
     "results-updated": "Results updated from the current library; unavailable paths were restored to a valid level.",
     "ai-preview": "Review AI exploration",
     "ai-scope": "Scope: {{count}} library repositories. {{ready}} current results have relationship analysis; source and query caches determine the work needed.",
     "start-analysis": "Start analysis",
-    "unsaved-description": "Update this workspace or discard the changed browsing conditions.",
+    "unsaved-description": "Save changes to this exploration or discard the edited browsing conditions.",
     "save-leave": "Save and leave",
     "discard": "Discard changes",
     "cancel": "Cancel",
@@ -1011,7 +1011,7 @@
     "no-analysis": "No analysis available yet",
     "no-match": "No matching existing information",
     "empty-help": "Adjust the query or filters. Start AI exploration explicitly if new analysis is needed.",
-    "convert-help": "The workspace will query the current library. The original historical snapshot is retained."
+    "convert-help": "A live exploration queries the current library. The original snapshot is retained."
   },
   "radial": {
     "previous-page": "Previous nodes",
@@ -1041,5 +1041,19 @@
     "directory-hint": "This level contains {{count}} projects. Choose a direction to continue.",
     "ai-scope": "{{total}} candidates · {{reused}} reusable · {{pending}} to process",
     "open-direction": "Open {{name}} ({{count}} projects)"
+  },
+  "saved-library": {
+    "new": "New exploration",
+    "search": "Search saved explorations",
+    "clear": "Clear filter",
+    "dynamic": "Live library",
+    "snapshot": "Snapshot",
+    "dynamic-help": "Results follow the current library",
+    "empty-help": "Save an exploration to return to it here.",
+    "no-match": "No matching saved explorations",
+    "actions": "More actions for {{name}}",
+    "convert": "Save as a live exploration",
+    "delete": "Delete exploration",
+    "delete-confirm": "Delete the saved record “{{name}}”? Repositories, other explorations and existing analyses will be kept."
   }
 }

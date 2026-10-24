@@ -1,7 +1,10 @@
 import { topicGroups } from './topicGroups';
 import type { Repository } from '../../../types';
 import { explorationSearchFields, normalizeConcept, stableId } from './model';
-import type { ExplorationFocus, ExplorationScene, ExplorationWorkspace } from './types';
+import type { ExplorationFocus, ExplorationScene, ExplorationWorkspace, SavedExploration } from './types';
+
+export type SavedExplorationEntry = { kind: 'workspace'; item: ExplorationWorkspace } | { kind: 'snapshot'; item: SavedExploration };
+export const savedExplorationKey = (entry: SavedExplorationEntry) => `${entry.kind}:${entry.item.id}`;
 
 export function workspaceContent(value: Pick<ExplorationWorkspace, 'query' | 'path' | 'kindFilter'>) {
   return JSON.stringify([value.query, value.path, value.kindFilter]);
