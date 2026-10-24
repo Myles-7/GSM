@@ -397,8 +397,8 @@ describe('AIService.searchRepositoriesWithSelection — LLM 精选', () => {
     await service.searchRepositoriesWithSelection([repo], 'foo');
 
     // 扩展请求给思考模型留足余量；精选请求复用重排序的 4096 预算（推理 token 共享预算）
-    expect(requests[0].max_tokens).toBe(2000);
-    expect(requests[1].max_tokens).toBe(4096);
+    expect(requests[0].max_completion_tokens).toBe(2000);
+    expect(requests[1].max_completion_tokens).toBe(4096);
   });
 
   it('AI 请求失败时通过 onFallback 通知调用方，并回退词法得分序', async () => {

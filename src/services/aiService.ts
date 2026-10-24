@@ -498,6 +498,23 @@ export class AIService {
     return effort ? { effort } : undefined;
   }
 
+  /** Chat Completions and Responses use different reasoning/token fields. */
+  private chatCompletionOptions(maxTokens: number, temperature: number): Record<string, unknown> {
+    const apiType = this.getApiType();
+    const effort = this.config.reasoningEffort;
+    if (apiType === 'openai' && (effort || /^(?:o[134](?:-|$)|gpt-[5-9](?:[.-]|$))/i.test(this.config.model.trim()))) {
+      return { max_completion_tokens: maxTokens, ...(effort ? { reasoning_effort: effort } : {}) };
+    }
+    return { max_tokens: maxTokens, ...(!this.isDeepSeekReasonerModel() ? { temperature } : {}) };
+  }
+
+  private responsesOptions(maxTokens: number, temperature: number): Record<string, unknown> {
+    const reasoning = this.getOpenAIReasoningPayload();
+    const reasoningModel = /^(?:o[134](?:-|$)|gpt-[5-9](?:[.-]|$))/i.test(this.config.model.trim());
+    return { max_output_tokens: maxTokens, ...(reasoning ? { reasoning } : {}),
+      ...(!reasoning && !reasoningModel ? { temperature } : {}) };
+  }
+
   private isDeepSeekModel(): boolean {
     return this.getApiType() === 'deepseek';
   }
@@ -662,7 +679,6 @@ export class AIService {
     const apiType = this.getApiType();
     const model = this.config.model;
     const configId = this.config.id;
-    const reasoning = this.getOpenAIReasoningPayload();
 
     if (apiType === 'openai' || apiType === 'openai-responses' || apiType === 'openai-compatible' || apiType === 'deepseek' || apiType === 'mimo') {
       const messages = [
@@ -671,7 +687,6 @@ export class AIService {
           : []),
         { role: 'user', content: options.user },
       ];
-      const isDeepSeekReasoner = this.isDeepSeekReasonerModel();
       const isDeepSeekThinking = this.isDeepSeekThinkingModel();
       const isMiMoModel = this.isMiMoModel();
 
@@ -679,17 +694,13 @@ export class AIService {
         ? {
             model: this.config.model,
             input: messages,
-            temperature: options.temperature,
-            max_output_tokens: options.maxTokens,
-            ...(reasoning ? { reasoning } : {}),
+            ...this.responsesOptions(options.maxTokens, options.temperature),
             ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
           }
         : {
             model: this.config.model,
             messages,
-            max_tokens: options.maxTokens,
-            ...(!isDeepSeekReasoner ? { temperature: options.temperature } : {}),
-            ...(!isDeepSeekReasoner && !isDeepSeekThinking && !isMiMoModel && reasoning && apiType !== 'openai-compatible' ? { reasoning } : {}),
+            ...this.chatCompletionOptions(options.maxTokens, options.temperature),
             ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
           };
 
@@ -775,14 +786,8 @@ export class AIService {
           return content;
         }
 
-        // Only fall back to reasoning_content for the dedicated deepseek-reasoner model.
-        // Other DeepSeek models (e.g. deepseek-v4-flash, deepseek-v4-pro) may also return
-        // reasoning_content (the thinking chain), but we must not use it as the final answer.
+        // Reasoning is diagnostic content, never a substitute for a final answer.
         const reasoningContent = message?.reasoning_content;
-        if (reasoningContent && isDeepSeekReasoner) {
-          this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: reasoningContent.length }, httpDetails);
-          return reasoningContent;
-        }
 
         if (!content && reasoningContent) {
           logger.warn('ai', 'Model returned reasoning_content but empty content', { model, configId });
@@ -1001,12 +1006,6 @@ ${options.user}` : options.user;
   }): Promise<string> {
     if (isAgyConfig(this.config)) return generateAgyText(this.config, options);
     if (!backend.isAvailable) this.requireSecureDirectEndpoint();
-    if (this.isDeepSeekReasonerModel()) {
-      // deepseek-reasoner 的最终文本可能仅存在于 reasoning_content（思考链），
-      // 非流式路径对此有专门处理（且思考链不得用于其他 DeepSeek 模型）。流式
-      // 增量无法安全区分思考与正文，直接走阻塞路径以复用既有语义。
-      throw new AIStreamUnsupportedError();
-    }
 
     const apiType = this.getApiType();
     const model = this.config.model;
@@ -1055,28 +1054,22 @@ ${options.user}` : options.user;
         ...(options.system.trim() ? [{ role: 'system', content: options.system }] : []),
         { role: 'user', content: options.user },
       ];
-      const isDeepSeekReasoner = this.isDeepSeekReasonerModel();
       const isDeepSeekThinking = this.isDeepSeekThinkingModel();
       const isMiMoModel = this.isMiMoModel();
-      const reasoning = this.getOpenAIReasoningPayload();
 
       body = apiType === 'openai-responses'
         ? {
             model,
             input: messages,
             stream: true,
-            temperature: options.temperature,
-            max_output_tokens: options.maxTokens,
-            ...(reasoning ? { reasoning } : {}),
+            ...this.responsesOptions(options.maxTokens, options.temperature),
             ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
           }
         : {
             model,
             messages,
             stream: true,
-            max_tokens: options.maxTokens,
-            ...(!isDeepSeekReasoner ? { temperature: options.temperature } : {}),
-            ...(!isDeepSeekReasoner && !isDeepSeekThinking && !isMiMoModel && reasoning && apiType !== 'openai-compatible' ? { reasoning } : {}),
+            ...this.chatCompletionOptions(options.maxTokens, options.temperature),
             ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
           };
       requestUrl = buildFinalApiUrl(this.config.baseUrl, apiType);
@@ -1284,10 +1277,8 @@ ${options.user}` : options.user;
     const startTime = Date.now();
     const model = this.config.model;
     const configId = this.config.id;
-    const isDeepSeekReasoner = this.isDeepSeekReasonerModel();
     const isDeepSeekThinking = this.isDeepSeekThinkingModel();
     const isMiMoModel = this.isMiMoModel();
-    const reasoning = this.getOpenAIReasoningPayload();
 
     const messages = [
       ...(options.system.trim() ? [{ role: 'system', content: options.system }] : []),
@@ -1324,9 +1315,7 @@ ${options.user}` : options.user;
         function: { name: tool.name, description: tool.description, parameters: tool.parameters },
       })),
       tool_choice: 'auto',
-      max_tokens: options.maxTokens ?? 4_000,
-      ...(!isDeepSeekReasoner ? { temperature: options.temperature ?? 0 } : {}),
-      ...(!isDeepSeekReasoner && !isDeepSeekThinking && !isMiMoModel && reasoning && apiType !== 'openai-compatible' ? { reasoning } : {}),
+      ...this.chatCompletionOptions(options.maxTokens ?? 4_000, options.temperature ?? 0),
       ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
     };
 
@@ -1397,6 +1386,7 @@ ${options.user}` : options.user;
     } : undefined;
 
     options.capture?.response(data);
+    validateResponseCompletion(apiType, data);
     const message = (data as { choices?: OpenAIResponseChoice[] }).choices?.[0]?.message;
     const rawToolCalls = (message as { tool_calls?: unknown } | undefined)?.tool_calls;
     const toolCalls = Array.isArray(rawToolCalls)

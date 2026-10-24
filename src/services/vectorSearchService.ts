@@ -7,7 +7,7 @@
 
 import type { EmbeddingConfig, VectorSearchConfig, Repository, VectorIndexMode } from '../types';
 import { withDeadline } from '../utils/requestDeadline';
-import { isSecureAIEndpoint } from '../utils/apiUrlBuilder';
+import { buildApiUrl, isSecureAIEndpoint } from '../utils/apiUrlBuilder';
 import { NO_LICENSE_SENTINEL, normalizeLicense } from '../utils/licenseFilter';
 import {
   EMBEDDING_FORMAT_VERSION, VECTOR_PROTOCOL_VERSION, hashVectorContent,
@@ -97,7 +97,7 @@ export class EmbeddingClient {
   private async embedOpenAICompatible(texts: string[], signal?: AbortSignal): Promise<unknown> {
     const url =
       this.config.apiType === 'openai' || this.config.apiType === 'siliconflow'
-        ? `${this.config.baseUrl.replace(/\/+$/, '')}/v1/embeddings`
+        ? buildApiUrl(this.config.baseUrl, 'v1/embeddings')
         : this.config.baseUrl;
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -158,17 +158,18 @@ export class EmbeddingClient {
   // POST /v1beta/models/{model}:batchEmbedContents
   // ----------------------------------------------------------
   private async embedGemini(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<unknown> {
-    const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
-    const url = `${baseUrl}/v1beta/models/${this.config.model}:batchEmbedContents?key=${this.config.apiKey}`;
+    const model = this.config.model.trim().replace(/^models\//, '');
+    const url = new URL(buildApiUrl(this.config.baseUrl, `v1beta/models/${encodeURIComponent(model)}:batchEmbedContents`));
+    url.searchParams.set('key', this.config.apiKey);
     const taskType = purpose === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT';
 
-    const response = await fetch(url, {
+    const response = await fetch(url.toString(), {
       redirect: 'error',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         requests: texts.map((text) => ({
-          model: `models/${this.config.model}`,
+          model: `models/${model}`,
           content: { parts: [{ text }] },
           taskType,
         })),
@@ -190,7 +191,7 @@ export class EmbeddingClient {
   // POST /v1/embed
   // ----------------------------------------------------------
   private async embedCohere(texts: string[], purpose: 'document' | 'query' = 'document', signal?: AbortSignal): Promise<unknown> {
-    const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/embed`;
+    const url = buildApiUrl(this.config.baseUrl, 'v1/embed');
 
     const response = await fetch(url, {
       redirect: 'error',

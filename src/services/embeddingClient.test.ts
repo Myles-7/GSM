@@ -8,6 +8,19 @@ const config: EmbeddingConfig = { id: 'embedding', name: 'Test', model: 'fixture
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Embedding transport and response validation', () => {
+  it.each(['openai', 'siliconflow', 'gemini', 'cohere'] as const)('accepts an already versioned base URL for %s', async apiType => {
+    const payload = apiType === 'gemini' ? { embeddings: [{ values: [0.1, 0.2] }] }
+      : apiType === 'cohere' ? { embeddings: [[0.1, 0.2]] }
+        : { data: [{ index: 0, embedding: [0.1, 0.2] }] };
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload)));
+    vi.stubGlobal('fetch', fetch);
+    await new EmbeddingClient({ ...config, apiType, baseUrl: `https://provider.invalid/${apiType === 'gemini' ? 'v1beta' : 'v1'}`,
+      ...(apiType === 'gemini' ? { model: 'models/embedding-fixture' } : {}) }).embed(['fixture'], 'query');
+    const url = new URL(fetch.mock.calls[0][0]);
+    expect(url.pathname).toBe(apiType === 'gemini' ? '/v1beta/models/embedding-fixture:batchEmbedContents'
+      : apiType === 'cohere' ? '/v1/embed' : '/v1/embeddings');
+    if (apiType === 'gemini') expect(JSON.parse(fetch.mock.calls[0][1].body).requests[0].model).toBe('models/embedding-fixture');
+  });
   it.each(['http://provider.invalid', 'http://127.attacker.invalid', 'ftp://provider.invalid', 'https://user:pass@provider.invalid'])('rejects unsafe endpoint %s before sending credentials', async baseUrl => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const result = await new EmbeddingClient({ ...config, baseUrl }).testConnection();

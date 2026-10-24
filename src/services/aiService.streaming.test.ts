@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AIConfig } from '../types';
 import {
   AIService,
-  AIStreamUnsupportedError,
   consumeSseStream,
   extractClaudeDelta,
   extractGeminiDelta,
@@ -243,7 +242,7 @@ describe('requestTextStream gating', () => {
       expect(onChunk).toHaveBeenCalledWith('partial');
     } finally { vi.unstubAllGlobals(); }
   });
-  it('rejects streaming for deepseek-reasoner so reasoning_content stays on the blocking path', async () => {
+  it('streams DeepSeek final content without including reasoning deltas', async () => {
     const config: AIConfig = {
       id: 'ai-reasoner',
       name: 'DeepSeek Reasoner',
@@ -255,7 +254,13 @@ describe('requestTextStream gating', () => {
     };
     const service = new AIService(config, 'en');
 
-    await expect(service.generateChatTextStream({ system: 's', user: 'u', onChunk: () => {} }))
-      .rejects.toBeInstanceOf(AIStreamUnsupportedError);
+    const body = 'data: {"choices":[{"delta":{"reasoning_content":"Internal reasoning"}}]}\n\n'
+      + 'data: {"choices":[{"delta":{"content":"Final answer"},"finish_reason":"stop"}]}\n\n';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } })));
+    const onChunk = vi.fn();
+    try {
+      await expect(service.generateChatTextStream({ system: 's', user: 'u', onChunk })).resolves.toBe('Final answer');
+      expect(onChunk.mock.calls).toEqual([['Final answer']]);
+    } finally { vi.unstubAllGlobals(); }
   });
 });
