@@ -208,3 +208,22 @@
 
 
 .explore-canvas-lines { width:100%; height:100%; pointer-events:none; }
+
+/* One compact desktop command surface; geometry is measured by useCanvasInsets. */
+.is-canvas .explore-command-dock { top:0; padding:10px 16px 8px; }
+.explore-workspace-name { font-size:14px; max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; }
+.is-canvas .explore-command-bar { align-items:center; }
+.is-canvas .explore-command-bar .explore-search { min-width:140px; flex:1; }
+.is-canvas .explore-navigation { top:var(--explore-command-bottom,100px); }
+.is-canvas .explore-status-dock { top:var(--explore-command-bottom,100px); }
+.is-canvas .explore-results-toggle { top:calc(var(--explore-command-bottom,100px) + 42px); }
+.is-canvas .explore-results { top:calc(var(--explore-command-bottom,100px) + 82px); }
+.explore-draft-notice { position:absolute; z-index:6; top:calc(var(--explore-command-bottom,100px) + 42px); left:16px; padding:5px 10px; border-radius:7px; background:hsl(var(--card)); color:hsl(var(--muted-foreground)); font-size:12px; max-width:calc(100% - 400px); pointer-events:none; }
+.explore-directory-hint { padding:12px 14px; color:hsl(var(--muted-foreground)); font-size:12px; }
+.explore-directory-item { width:100%; text-align:left; display:flex; align-items:center; gap:12px; justify-content:space-between; padding:16px; border-bottom:1px solid var(--explore-line); }
+.explore-directory-item:hover,.explore-directory-item:focus-visible { background:hsl(var(--accent)); }
+.explore-directory-item strong { font-size:14px; }
+.explore-directory-item span { font-size:12px; white-space:nowrap; color:hsl(var(--muted-foreground)); }
+.is-canvas .explore-graph-node.is-overview-node { border:1px solid var(--node-color); border-radius:12px; background:hsl(var(--card)); box-shadow:0 5px 16px hsl(var(--foreground)/.12); pointer-events:auto; }
+.is-canvas .is-overview-node strong { font-size:14px; }
+.is-canvas .is-overview-node .explore-node-description { display:none; }

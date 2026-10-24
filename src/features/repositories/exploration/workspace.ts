@@ -9,13 +9,15 @@ export function workspaceContent(value: Pick<ExplorationWorkspace, 'query' | 'pa
 export function workspaceScope(scene: ExplorationScene) {
   return stableId('workspace-scope-v1', JSON.stringify([scene.results.map(row => [row.repositoryId,row.kind,row.relations.map(relation=>relation.id)]).sort((a,b)=>Number(a[0])-Number(b[0])),scene.topics.map(row=>[row.id,row.label]).sort(),scene.branches.map(row=>[row.id,row.count]).sort()]));
 }
-export function restoreWorkspacePath(path: ExplorationFocus[], scene: ExplorationScene, repositories: Repository[]) {
+export function restoreWorkspacePath(path: ExplorationFocus[], scene: ExplorationScene, repositories: Repository[], resolve?: (focus: ExplorationFocus) => ExplorationScene) {
   const valid: ExplorationFocus[] = [];
   for (const step of path) {
+    const current=resolve?.(step)??scene;
+    if(step.type==='relation'&&resolve&&!current.results.length)break;
     if(step.type==='group'&&!topicGroups(scene).some(group=>group.id===step.id))break;
-    if (step.type === 'topic' && !scene.topics.some(row => row.id === step.id) || step.type === 'repository' && !repositories.some(row => row.id === step.id)) break;
+    if (step.type === 'topic' && !current.topics.some(row => row.id === step.id) || step.type === 'repository' && !repositories.some(row => row.id === step.id)) break;
     // Entity queries remain meaningful even if no repository currently matches them.
-    if (step.type === 'branch' && !Object.values(scene.profiles).some(profile => profile.relations.some(row => row.targetId === step.targetId && row.branch === step.branch && row.kind === step.kind))) break;
+    if (step.type === 'branch' && !(resolve?current.results.length>0:Object.values(scene.profiles).some(profile => profile.relations.some(row => row.targetId === step.targetId && row.branch === step.branch && row.kind === step.kind)))) break;
     valid.push(step);
   }
   return valid.length ? valid : [{type:'all'} as const];

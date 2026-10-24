@@ -9,13 +9,24 @@ export interface MapNode {
 }
 export interface MapEdge { source: string; target: string; kind: 'membership' | RelationKind; verified: boolean; label?: string }
 export interface MapLayout { nodes: MapNode[]; edges: MapEdge[]; regions: { id: string; x: number; y: number; color: number; radius: number }[]; width: number; height: number }
-export const EXPLORATION_LAYOUT_VERSION = 3;
+export const EXPLORATION_LAYOUT_VERSION = 4;
+
+export interface ExplorationLevel {
+  center: MapNode; children: MapNode[]; projectCount: number; layout: MapLayout;
+}
+export function explorationLevel(scene: ExplorationScene, focus: ExplorationFocus, names: Map<number, string>): ExplorationLevel {
+  const layout = layoutExploration(scene, focus, names);
+  return { center: layout.nodes[0], children: layout.nodes.slice(1), projectCount: new Set(scene.results.map(row => row.repositoryId)).size, layout };
+}
+export function explorationNodeLabel(node: MapNode, t: (key: string) => string) {
+  return node.label === 'library-overview' ? t('exploration.all-library-topics') : node.label.startsWith('group:') ? t(`radial.groups.${node.label.slice(6)}`) : node.label.startsWith('relation:') ? t(`exploration.relations.${node.label.slice(9)}`) : node.label;
+}
 
 /** Each page contains exactly one centre and its direct children. */
 export function layoutExploration(scene: ExplorationScene, focus: ExplorationFocus, names: Map<number, string>): MapLayout {
   const children: MapNode[]=[];
   const base = {x:0,y:0,width:192,height:86,color:0};
-  const projectNodes=()=>scene.results.map((row,index): MapNode=>({...base,id:`repo-${row.repositoryId}`,type:'repository',repositoryId:row.repositoryId,label:names.get(row.repositoryId)??String(row.repositoryId),description:scene.profiles[String(row.repositoryId)]?.summary,kind:row.kind,verified:row.verified,width:218,height:80,color:index%6}));
+  const projectNodes=()=>scene.results.map((row): MapNode=>({...base,id:`repo-${row.repositoryId}`,type:'repository',repositoryId:row.repositoryId,label:names.get(row.repositoryId)??String(row.repositoryId),description:scene.profiles[String(row.repositoryId)]?.summary,kind:row.kind,verified:row.verified,width:218,height:80,color:row.relations.length?relationOrder.indexOf(row.kind):0}));
   if(focus.type==='all') {
     children.push(...topicGroups(scene).map((group,index):MapNode=>({...base,id:`group-${group.id}`,type:'topic',label:`group:${group.id}`,count:group.repositoryIds.size,color:index%6,focus:{type:'group',id:group.id,label:`group:${group.id}`}})));
   } else if(focus.type==='group') {
@@ -44,6 +55,6 @@ export function layoutExploration(scene: ExplorationScene, focus: ExplorationFoc
     const angle=index/Math.max(1,ring.nodes.length)*Math.PI*2-Math.PI/2+(ringIndex%2?Math.PI/ring.nodes.length:0);
     nodes.push({...node,x:cx+Math.cos(angle)*ring.radius,y:cy+Math.sin(angle)*ring.radius});
   });
-  const edges:MapEdge[]=children.map(node=>({source:'focus',target:node.id,kind:node.kind??'membership',verified:!!node.verified}));
+  const edges:MapEdge[]=children.map(node=>({source:'focus',target:node.id,kind:node.type==='repository'?node.kind??'membership':'membership',verified:node.type==='repository'&&!!node.verified}));
   return {nodes,edges,regions:[],width:extent*2,height:extent*2};
 }

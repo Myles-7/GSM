@@ -6,10 +6,11 @@ const owners = new Map<string, Map<string, unknown>>();
 const listeners = new Set<() => void>();
 const panelKeys = new Set(['sidebar', 'results', 'commands', 'status', 'unified-panel']);
 const defaults = new Map<string, unknown>();
-const viewports = new Map<string, { camera?: ExplorationCamera; positions?: SavedExploration['layoutPositions'] }>();
+interface ViewportSnapshot { camera?: ExplorationCamera; positions?: SavedExploration['layoutPositions']; selection?: number | null; scrollTop?: number; visibleCount?: number }
+const viewports = new Map<string, ViewportSnapshot>();
 export const explorationViewportCache = {
   read: (owner: string) => viewports.get(owner),
-  write: (owner: string, value: { camera?: ExplorationCamera; positions?: SavedExploration['layoutPositions'] }) => { viewports.set(owner, { ...viewports.get(owner), ...value }); },
+  write: (owner: string, value: ViewportSnapshot) => { viewports.set(owner, { ...viewports.get(owner), ...value }); },
 };
 export function clearExplorationWorkspace() { owners.clear(); defaults.clear(); viewports.clear(); }
 /** Small UI snapshots survive view unmounts; no repository trees or DOM nodes are retained. */

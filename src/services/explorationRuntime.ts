@@ -2,9 +2,9 @@ import { useAppStore } from '../store/useAppStore';
 import type { AIConfig, Repository } from '../types';
 import type { ExplorationAccount, ExplorationOverride, ExplorationProfile, ExplorationTask, SavedExploration } from '../features/repositories/exploration/types';
 import { loadExploration, updateExploration } from '../features/repositories/exploration/storage';
-import { explorationFingerprint, projectScene, queryFingerprint, resultsForRelationKind, stableId } from '../features/repositories/exploration/model';
-import { localExplorationAccount, localProfile, savedExplorationAccount, snapshotRepository } from '../features/repositories/exploration/local';
-import { analyzeExplorationBatch, consolidateExplorationTopics, explorationCandidates, parseExplorationBatchResult, type ExplorationValidationError } from './explorationAI';
+import { explorationFingerprint, projectScene, resultsForRelationKind, stableId } from '../features/repositories/exploration/model';
+import { localProfile, savedExplorationAccount, snapshotRepository } from '../features/repositories/exploration/local';
+import { analyzeExplorationBatch, consolidateExplorationTopics, parseExplorationBatchResult, type ExplorationValidationError } from './explorationAI';
 import { assertRepositoryIdentityWritable } from './repositoryIdentityGate';
 import { assertOrganizationModelReady } from './aiOrganizationReadiness';
 import { refreshAgyDeviceState, readAgyRecovery, acknowledgeAgyRecovery } from './agyClient';
@@ -12,6 +12,7 @@ import { aiTaskJournal, type AITaskRecord } from './aiTaskJournal';
 import { bindTaskItemSignal, bindTaskSignal, retryTaskConfig, taskConfigSnapshot, type TaskHandle, type TaskRetryParameters } from './taskExecution';
 import { confirmTaskRecovery } from './agyRecoveryPolicy';
 import type { AgyRecoveryRecord } from '../types/agy';
+import { planExploration, analysisPreview, explorationGeneration, explorationTaskScope } from './explorationPlan';
 import { canContinueUnsentRepair } from './explorationRecovery';
 import { taskObservability } from './taskObservability';
 
@@ -48,7 +49,7 @@ async function delay(ms: number, signal: AbortSignal) {
   await new Promise<void>((resolve, reject) => { signal.throwIfAborted(); const abort = () => { clearTimeout(timer); reject(signal.reason); }; const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms); signal.addEventListener('abort', abort, { once: true }); });
 }
 export interface ExplorationRun { type: 'build' | 'query'; configId: string; query?: string; scope?: string; force?: boolean; resume?: boolean; savedId?: string; previousTask?: AITaskRecord; parameters?: TaskRetryParameters; recoveryOnly?: boolean; failedOnly?: boolean }
-const taskScope = (task: Pick<ExplorationTask,'type'|'query'|'scope'|'savedId'>) => task.type==='build' ? 'build' : JSON.stringify([task.type,task.savedId??'',task.query?.trim()??'',task.scope??'']);
+const taskScope = explorationTaskScope;
 function resumePending(account:ExplorationAccount) { return {task:account.pendingTasks?.[0]??null,pendingTasks:account.pendingTasks?.slice(1)}; }
 async function execute(owner: string, input: ExplorationRun) {
   if (jobs.has(owner)) return;
@@ -67,20 +68,12 @@ async function execute(owner: string, input: ExplorationRun) {
     else if (!executionConfig) throw new Error('缺少原任务配置，请先返回设置恢复配置。');
     if (input.previousTask) executionConfig = retryTaskConfig(executionConfig, input.previousTask, input.parameters);
     const config = executionConfig, model = `${config.id}:${config.model}`, query = input.query?.trim() ?? '', scope = input.scope ?? '';
-    const profile = taskConfigSnapshot(config, 'organization');
-    // Increment the version when the exploration prompt/parser semantics change.
-    // Never include credentials, timeouts or concurrency in a content identity.
-    const generation = stableId('exploration-v3', JSON.stringify({ language: state.language, id: config.id,
-      provider: profile.provider, model: profile.model, effort: profile.effort, apiType: config.apiType, endpoint: config.baseUrl,
-      mode: config.provider === 'agy-cli' ? config.agyMode : undefined }));
+    const generation = explorationGeneration(config,state.language);
     const repositories = structuredClone(state.repositories);
     if (!repositories.length || repositories.length > 1000) throw new Error('项目地图支持1–1000个本地仓库。');
     if (query.length > 200) throw new Error('探索主题请控制在200字符内。');
     const initial = await loadExploration(owner); guard(owner); signal.throwIfAborted();
-    const saved = input.savedId ? initial.saved?.find(row => row.id === input.savedId) : undefined;
-    if (input.savedId && !saved) throw new Error('已保存探索已被删除，请返回全库。');
-    const fingerprint = input.type === 'query' ? queryFingerprint(query, repositories, initial.index, model, scope, generation) : stableId('build', `${repositories.map(repo => explorationFingerprint(repo)).sort().join('|')}:${generation}:${input.force}`);
-    const cachedQuery = initial.queries.find(row => row.fingerprint === fingerprint);
+    const {saved,fingerprint,cachedQuery,changed,context,local,candidates,checkpoint,resuming,reuseCheckpoint,draft}=planExploration(initial,repositories,input,config,state.language);
     if (input.type === 'query' && !saved && !input.force && !input.resume && !input.previousTask && !input.recoveryOnly && cachedQuery) {
       // Activating an older compatible generation must also select it for the
       // projection, without another paid request or merging conflicting caches.
@@ -91,17 +84,6 @@ async function execute(owner: string, input: ExplorationRun) {
       else patch(owner, { account: initial });
       return;
     }
-    const changed = saved && !input.force ? repositories.filter(repo => saved.checked[String(repo.id)] !== explorationFingerprint(repo)) : repositories;
-    const context = scope ? JSON.parse(scope)?.label?.slice(0, 200) ?? '' : '';
-    const local = localExplorationAccount(initial, repositories);
-    const candidates = input.type === 'build' ? repositories : explorationCandidates(changed, `${query} ${context}`.trim(), { ...local.index!.profiles, ...(saved?.profiles ?? {}) });
-    const previous = input.type === 'build' && !input.force && initial.index?.generation === generation ? initial.index.profiles : {};
-    const checkpoint = [initial.task,...initial.pendingTasks??[]].find(task=>task && taskScope(task)===taskScope({...input,query,scope})) ?? undefined;
-    const resuming = !!(input.resume || input.previousTask || input.recoveryOnly || input.failedOnly);
-    const reuseCheckpoint = !!checkpoint && (!input.force || resuming) &&
-      (resuming || !checkpoint.generation || checkpoint.generation === generation);
-    const draft: Record<string, ExplorationProfile> = {};
-    for (const repo of candidates) { const existing = (reuseCheckpoint ? checkpoint?.draft[String(repo.id)] : undefined) ?? previous[String(repo.id)]; if (existing?.fingerprint === explorationFingerprint(repo)) draft[String(repo.id)] = existing; }
     if (input.type === 'build' && !input.force && !checkpoint && Object.keys(draft).length === repositories.length) { patch(owner, { account: initial }); return; }
     await aiTaskJournal.load(owner);
     const previousJournal = input.previousTask ?? (checkpoint?.journalId ? aiTaskJournal.snapshot().find(row => row.id === checkpoint.journalId) : undefined);
@@ -346,6 +328,11 @@ async function execute(owner: string, input: ExplorationRun) {
 }
 export const explorationRuntime = {
   snapshot,
+  preview(owner: string, input: ExplorationRun) {
+    const state=useAppStore.getState(),account=snapshot(owner).account,config=state.aiConfigs.find(row=>row.id===input.configId);
+    if(String(state.user?.id??'')!==owner||!account||!config)throw new Error('MODEL_CONFIGURATION');
+    return analysisPreview(planExploration(account,state.repositories,input,config,state.language),input);
+  },
   subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
   async load(owner: string) {
     if (!owner || snapshot(owner).account || loading.has(owner)) return loading.get(owner);

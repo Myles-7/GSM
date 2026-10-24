@@ -3,16 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExplorationAccount } from './types';
 import { accountFixture, repositoryFixture } from './testFixtures';
 import { createSavedExploration } from './local';
-const mocks = vi.hoisted(() => ({ account: null as ExplorationAccount | null, build: vi.fn(), deepen: vi.fn(), cancel: vi.fn(), add: vi.fn(), remove: vi.fn(), confirm: vi.fn(), owner: '42', storageFull: false, openTasks: vi.fn(), setupBlocked: false, configure: vi.fn(), refresh: vi.fn(), save:vi.fn(), toast:vi.fn() }));
+const mocks = vi.hoisted(() => ({ account: null as ExplorationAccount | null, preview:vi.fn(), build: vi.fn(), deepen: vi.fn(), cancel: vi.fn(), add: vi.fn(), remove: vi.fn(), confirm: vi.fn(), owner: '42', storageFull: false, openTasks: vi.fn(), setupBlocked: false, configure: vi.fn(), refresh: vi.fn(), save:vi.fn(), toast:vi.fn() }));
 const repositories = [repositoryFixture(1), repositoryFixture(2)];
 vi.mock('../hooks/useExploration', () => ({ useExploration: () => ({ ownerId: mocks.owner, repositories, account: mocks.account, loading: false, error: mocks.storageFull ? 'AGY 调用恢复区额度已满' : '', recoveryStorageFull: mocks.storageFull, openTaskCenter: mocks.openTasks, busy: false,
   configId: 'model', setConfigId: vi.fn(), configs: [{ id: 'model', name: 'Test AI', model: 'test-model' }], config: { name: 'Test AI' }, changedCount: 0, canRun: !mocks.setupBlocked, setupIssue: mocks.setupBlocked ? 'AGY CLI 当前未启用，请完成保存并测试后启用' : '', configureAI: mocks.configure, refreshStatus: mocks.refresh,
-  build: mocks.build, deepen: mocks.deepen, updateSaved:mocks.add, retry: vi.fn(), cancel: mocks.cancel, addOverride: mocks.add, removeOverride: mocks.remove, exportData: () => '{}', importData: vi.fn(), saveExploration:mocks.save, saveWorkspace:mocks.save,
+  preview:mocks.preview, build: mocks.build, deepen: mocks.deepen, updateSaved:mocks.add, retry: vi.fn(), cancel: mocks.cancel, addOverride: mocks.add, removeOverride: mocks.remove, exportData: () => '{}', importData: vi.fn(), saveExploration:mocks.save, saveWorkspace:mocks.save,
 }) }));
 vi.mock('../../../hooks/useDialog', () => ({ useDialog: () => ({ confirm: mocks.confirm, toast:mocks.toast }) }));
 import { ExplorationExplorer } from './ExplorationExplorer';
 import { clearExplorationWorkspace } from '../hooks/useExplorationWorkspace';
-beforeEach(() => { clearExplorationWorkspace(); localStorage.clear(); vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.save.mockReset().mockResolvedValue(true); mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
+beforeEach(() => { clearExplorationWorkspace(); localStorage.clear(); vi.clearAllMocks(); mocks.account = accountFixture(repositories, ['direct', 'similar']); mocks.owner = '42'; mocks.storageFull = false; mocks.setupBlocked = false; mocks.save.mockReset().mockResolvedValue(true); mocks.preview.mockReturnValue({total:2,reused:0,pending:2,identity:'stable'});mocks.add.mockResolvedValue(true); mocks.confirm.mockResolvedValue(true); });
 
 describe('project relationship exploration page', () => {
   it('restores the exploration path and selection after switching views without another AI call', () => {
@@ -20,6 +20,7 @@ describe('project relationship exploration page', () => {
     expect(screen.getByRole('complementary', {name:'探索项目结果'})).toBeInTheDocument();
     fireEvent.change(screen.getByRole('combobox', {name:'探索主题'}), {target:{value:'Codex'}});
     fireEvent.click(screen.getByRole('button', {name:'探索'}));
+    fireEvent.click(within(screen.getByRole('complementary',{name:'探索项目结果'})).getByRole('button',{name:/^进入直接相关/}));fireEvent.click(within(screen.getByRole('complementary',{name:'探索项目结果'})).getByRole('button',{name:/^进入技能与工作流/}));
     fireEvent.click(within(screen.getByRole('complementary', {name:'探索项目结果'})).getByRole('button', {name:/project-1/}));
     first.unmount();
     render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
@@ -51,7 +52,7 @@ describe('project relationship exploration page', () => {
   it('opens AI setup when exploration is requested with an unavailable model instead of leaving a dead button', () => {
     mocks.setupBlocked=true;render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
     fireEvent.change(screen.getByRole('combobox',{name:'探索主题'}),{target:{value:'Codex'}});
-    const button=screen.getByRole('button',{name:'AI 深入探索'});expect(button).toBeEnabled();
+    const button=screen.getByRole('button',{name:'AI 深入探索'});expect(button).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'探索'}));expect(button).toBeEnabled();
     fireEvent.click(button);expect(mocks.configure).toHaveBeenCalledOnce();expect(mocks.deepen).not.toHaveBeenCalled();
   });
   it('allows exporting saved snapshots before a full index has been published', async () => {
@@ -66,15 +67,18 @@ describe('project relationship exploration page', () => {
     mocks.account!.task={id:'partial',type:'build',status:'failed',startedAt:'now',model:'test',fingerprint:'fp',completed:1,total:2,draft:{'1':mocks.account!.index!.profiles['1']}};
     mocks.account!.index=null;render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
     fireEvent.change(screen.getByRole('combobox',{name:'探索主题'}),{target:{value:'Codex'}});
-    expect(screen.getByRole('button',{name:'AI 深入探索'})).toBeEnabled();
-    fireEvent.click(screen.getByRole('button',{name:'AI 深入探索'}));fireEvent.click(screen.getByRole('button',{name:'开始分析'}));expect(mocks.deepen).toHaveBeenCalledWith('Codex');
+    expect(screen.getByRole('button',{name:'AI 深入探索'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'探索'}));
+    fireEvent.click(screen.getByRole('button',{name:'AI 深入探索'}));fireEvent.click(screen.getByRole('button',{name:'开始分析'}));expect(mocks.deepen).toHaveBeenCalledWith('Codex','');
   });
-  it('asks for an ambiguous object before sending a manually requested AI exploration',()=>{
+  it('lets users explicitly choose among same-name tool suggestions without an implicit AI call',()=>{
     mocks.account!.index!.profiles['2'].entities.push({id:'different-codex',label:'另一种 Codex',aliases:['Codex'],description:'同名对象'});
     render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
     fireEvent.change(screen.getByRole('combobox',{name:'探索主题'}),{target:{value:'Codex'}});
+    expect(screen.getByRole('button',{name:'AI 深入探索'})).toBeDisabled();
+    fireEvent.click(screen.getByRole('option',{name:'另一种 Codex'}));
+    expect(screen.getByRole('navigation')).toHaveTextContent('另一种 Codex');expect(mocks.deepen).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button',{name:'AI 深入探索'}));fireEvent.click(screen.getByRole('button',{name:'开始分析'}));
-    expect(mocks.deepen).not.toHaveBeenCalled();expect(screen.getByText('请选择你要探索的对象')).toBeInTheDocument();
+    expect(mocks.deepen).toHaveBeenCalledWith('另一种 Codex','');
   });
   it('blocks building when AGY is disabled and offers setup and a read-only state refresh', () => {
     mocks.account = null; mocks.setupBlocked = true; render(<ExplorationExplorer onOpenRepository={vi.fn()} />);
@@ -106,13 +110,13 @@ describe('project relationship exploration page', () => {
     expect(screen.getByLabelText('地图任务状态')).toHaveTextContent('2 / 368 已保存');
     expect(screen.queryByText(/未完成的项目暂用/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '任务记录' })).toBeInTheDocument();
-    expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('project-1');
+    expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('AI 与智能体');
     expect(screen.getByRole('button', { name: '继续剩余 366 项' })).toBeInTheDocument(); expect(mocks.account!.index).toBeNull();
     expect(mocks.build).not.toHaveBeenCalled();
   });
   it('shows representative repositories and a same-screen result list, then navigates a purpose topic', () => {
     render(<ExplorationExplorer onOpenRepository={vi.fn()} />);
-    expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('project-1');
+    expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('AI 与智能体');
     const map = screen.getByRole('region', { name: '项目关系地图' });
     expect(within(map).queryByTitle('owner/project-1')).not.toBeInTheDocument();
     fireEvent.click(within(map).getByRole('button', {name:'AI 与智能体 2 个项目'}));
@@ -126,14 +130,15 @@ describe('project relationship exploration page', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '探索主题' }), { target: { value: 'Codex' } });
     expect(mocks.deepen).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '探索' }));
     expect(screen.getByRole('navigation')).toHaveTextContent('Codex'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('直接相关'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).toHaveTextContent('同类能力');
-    fireEvent.click(screen.getByRole('button', { name: 'AI 深入探索' })); fireEvent.click(screen.getByRole('button',{name:'开始分析'})); expect(mocks.deepen).toHaveBeenCalledWith('Codex');
-    fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button',{name:'直接相关 直接相关 1 个项目'}));
+    fireEvent.click(screen.getByRole('button', { name: 'AI 深入探索' })); fireEvent.click(screen.getByRole('button',{name:'开始分析'})); expect(mocks.deepen).toHaveBeenCalledWith('Codex','');
+    fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button',{name:'直接相关 1 个项目'}));
     fireEvent.click(within(screen.getByRole('region', { name: '项目关系地图' })).getByRole('button', { name: '直接相关 技能与工作流 1 个项目' }));
     expect(screen.getByRole('navigation')).toHaveTextContent('技能与工作流'); expect(screen.getByRole('complementary', { name: '探索项目结果' })).not.toHaveTextContent('project-2');
   });
   it('opens a docked project inspector, reuses full details and exposes evidence and correction', () => {
     const open = vi.fn(); render(<ExplorationExplorer onOpenRepository={open} />);
     fireEvent.change(screen.getByRole('combobox', { name: '探索主题' }), { target: { value: 'Codex' } }); fireEvent.click(screen.getByRole('button', { name: '探索' }));
+    fireEvent.click(within(screen.getByRole('complementary',{name:'探索项目结果'})).getByRole('button',{name:/^进入直接相关/}));fireEvent.click(within(screen.getByRole('complementary',{name:'探索项目结果'})).getByRole('button',{name:/^进入技能与工作流/}));
     fireEvent.click(within(screen.getByRole('complementary', { name: '探索项目结果' })).getByRole('button', { name: /project-1/ }));
     const card = screen.getByRole('region', { name: 'owner/project-1' }); expect(card).toHaveClass('explore-project-popover');
     expect(within(card).getByText('This tool supports Codex workflows.')).toBeInTheDocument();
@@ -162,6 +167,22 @@ describe('project relationship exploration page', () => {
 });
 
 describe('workspace persistence and manual save boundaries',()=>{
+  it('keeps unsubmitted search separate and refreshes a stale analysis preview before dispatch',()=>{
+    render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    const search=screen.getByRole('combobox',{name:'探索主题'});
+    fireEvent.change(search,{target:{value:'Codex'}});fireEvent.click(screen.getByRole('button',{name:'探索'}));
+    const navigation=screen.getByRole('navigation').textContent;
+    fireEvent.change(search,{target:{value:'different draft'}});
+    expect(screen.getByRole('button',{name:'AI 深入探索'})).toBeDisabled();
+    expect(screen.getByRole('navigation').textContent).toBe(navigation);expect(mocks.preview).not.toHaveBeenCalled();
+    fireEvent.change(search,{target:{value:'Codex'}});
+    mocks.preview.mockReturnValueOnce({total:1,reused:0,pending:1,identity:'before'}).mockReturnValue({total:2,reused:1,pending:1,identity:'after'});
+    fireEvent.click(screen.getByRole('button',{name:'AI 深入探索'}));
+    expect(screen.getByText('候选 1 项 · 可复用 0 项 · 需处理 1 项')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'开始分析'}));expect(mocks.deepen).not.toHaveBeenCalled();
+    expect(screen.getByText('候选 2 项 · 可复用 1 项 · 需处理 1 项')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'开始分析'}));expect(mocks.deepen).toHaveBeenCalledWith('Codex','');
+  });
   it('updates the same workspace id, leaves it dirty after failure and never starts AI',async()=>{
     const item={version:1 as const,id:'live',name:'My workspace',query:'Codex',path:[{type:'all' as const},{type:'search' as const,id:'query',label:'Codex'}],kindFilter:'all' as const,createdAt:'now',updatedAt:'now'};
     mocks.account!.workspaces=[item];mocks.save.mockResolvedValue(true);

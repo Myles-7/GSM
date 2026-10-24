@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { accountFixture, repositoryFixture } from './testFixtures';
-import { projectScene } from './model';
+import { conceptId, projectScene } from './model';
 import { explorationSuggestions, restoreWorkspacePath, workspaceContent, workspaceScope } from './workspace';
 import { parseExplorationBackup, serializeExploration, validateExplorationAccount } from './storage';
 import { createSavedExploration } from './local';
@@ -8,6 +8,18 @@ import { layoutExploration } from './graphLayout';
 import type { ExplorationWorkspace } from './types';
 
 describe('dynamic exploration workspaces', () => {
+  it('preserves local mention directions and accepts overview cameras below ten percent',()=>{
+    const repositories=[repositoryFixture(1,{description:'Codex workflow'})],account=accountFixture(repositories),root=projectScene(account,repositories,{type:'all'});
+    const targetId=conceptId('entity','Codex');
+    const path=[{type:'all'} as const,{type:'search' as const,id:targetId,label:'Codex'},{type:'branch' as const,targetId,kind:'discovery' as const,branch:'明确提及',label:'明确提及'}];
+    expect(restoreWorkspacePath(path,root,repositories,step=>projectScene(account,repositories,step,'Codex'))).toEqual(path);
+    const removedDirection=[path[0],path[1],{type:'relation' as const,targetId,kind:'direct' as const,label:'direct'}];
+    expect(restoreWorkspacePath(removedDirection,root,repositories,step=>projectScene(account,repositories,step,'Codex'))).toEqual(path.slice(0,2));
+    const workspace:ExplorationWorkspace={version:1,id:'overview',name:'Large',query:'Codex',path,kindFilter:'all',createdAt:'now',updatedAt:'now',layoutVersion:4,camera:{zoom:.04,x:100,y:100}};
+    account.workspaces=[workspace];
+    expect(parseExplorationBackup(serializeExploration(account),'42').workspaces![0].camera?.zoom).toBe(.04);
+    expect(()=>validateExplorationAccount({...account,workspaces:[{...workspace,camera:{zoom:0,x:0,y:0}}]},'42')).toThrow();
+  });
   it('round trips lean workspaces together with untouched legacy snapshots', () => {
     const repositories=[repositoryFixture(1)],account=accountFixture(repositories);
     const snapshot=createSavedExploration(account,repositories,{name:'Historical',query:'',path:[{type:'all'}],kindFilter:'all'});

@@ -48,6 +48,7 @@ export function useExploration() {
     recoveryStorageFull: currentError.includes('AGY_RECOVERY_STORAGE_FULL'),
     refreshStatus: async () => { setChecking(true); try { if (!window.electronAPI?.agy) throw new Error('AGY_DESKTOP_REQUIRED'); await refreshAgyDeviceState(); explorationRuntime.error(ownerId, ''); } catch (reason) { explorationRuntime.error(ownerId, reason); } finally { setChecking(false); } },
     build: (force = false) => explorationRuntime.run(ownerId, { type: 'build', configId, force }),
+    preview: (query: string, scope = '', savedId?:string, force=false) => explorationRuntime.preview(ownerId,{type:'query',configId,query,scope,savedId,force}),
     deepen: (query: string, scope = '') => explorationRuntime.run(ownerId, { type: 'query', configId, query, scope }), retry,
     updateSaved: (saved: SavedExploration, force = false) => explorationRuntime.run(ownerId, { type: 'query', configId, query: saved.query, scope: JSON.stringify(saved.scope ?? saved.path.at(-1)), savedId: saved.id, force }),
     cancel: () => explorationRuntime.cancel(ownerId),

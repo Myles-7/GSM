@@ -893,7 +893,7 @@
     "similar-purpose": "Similar purpose:",
     "no-longer-in-the-library": "· No longer in the library",
     "explicitly-mentioned-relationship-unverified": "Explicitly mentioned · Relationship unverified",
-    "verified": "Source quote matched · AI-assessed relationship",
+    "verified": "Source cited",
     "inferred": "Inferred",
     "explore-from-this-project": "Explore from this project",
     "full-details": "Full details",
@@ -925,7 +925,7 @@
     "drag-to-pan-ctrl-scroll-to-zoom": "Drag to pan · Scroll to zoom at pointer",
     "zoom-out-map": "Zoom out map",
     "zoom-in-map": "Zoom in map",
-    "fit-canvas-and-reset": "Fit canvas and reset",
+    "fit-canvas-and-reset": "Full overview",
     "exit-map-fullscreen": "Exit map fullscreen",
     "view-map-fullscreen": "View map fullscreen",
     "relationship-canvas-arrow-keys-pan-home-resets": "Relationship canvas; arrow keys pan, Home resets",
@@ -1032,5 +1032,14 @@
       "service": "The model service is unavailable. Saved results are retained.",
       "timeout": "Some calls timed out. Continuing checks the original calls and preserves saved results."
     }
+  },
+  "browser": {
+    "locate-selection": "Locate selected project",
+    "submit-first": "Submit your search before changing the exploration target.",
+    "preview-unavailable": "Analysis preview unavailable. Check the model and current workspace.",
+    "directory": "Current level",
+    "directory-hint": "This level contains {{count}} projects. Choose a direction to continue.",
+    "ai-scope": "{{total}} candidates · {{reused}} reusable · {{pending}} to process",
+    "open-direction": "Open {{name}} ({{count}} projects)"
   }
 }

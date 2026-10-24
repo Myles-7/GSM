@@ -893,7 +893,7 @@
     "similar-purpose": "相近用途：",
     "no-longer-in-the-library": "· 已不在本地库",
     "explicitly-mentioned-relationship-unverified": "明确提及 · 关系待核实",
-    "verified": "原文引用已匹配 · 关系由 AI 判断",
+    "verified": "有原文依据",
     "inferred": "推断",
     "explore-from-this-project": "沿此项目探索",
     "full-details": "完整详情",
@@ -925,7 +925,7 @@
     "drag-to-pan-ctrl-scroll-to-zoom": "拖动画布 · 滚轮缩放（以指针为中心）",
     "zoom-out-map": "缩小地图",
     "zoom-in-map": "放大地图",
-    "fit-canvas-and-reset": "适应画布并重置",
+    "fit-canvas-and-reset": "完整概览",
     "exit-map-fullscreen": "退出地图全屏",
     "view-map-fullscreen": "全屏查看地图",
     "relationship-canvas-arrow-keys-pan-home-resets": "关系画布，方向键平移，Home重置",
@@ -1032,5 +1032,14 @@
       "service": "模型服务暂不可用；已保存结果保留。",
       "timeout": "部分调用超时；继续前将核对原调用，已保存结果保留。"
     }
+  },
+  "browser": {
+    "locate-selection": "定位当前选中项",
+    "submit-first": "搜索内容尚未提交，请先搜索以切换探索目标。",
+    "preview-unavailable": "无法准备分析预览，请检查模型与当前工作区。",
+    "directory": "当前层目录",
+    "directory-hint": "此层包含 {{count}} 个项目，选择方向继续浏览。",
+    "ai-scope": "候选 {{total}} 项 · 可复用 {{reused}} 项 · 需处理 {{pending}} 项",
+    "open-direction": "进入{{name}}（{{count}} 个项目）"
   }
 }
