@@ -6,7 +6,7 @@ import { describeAgyRecoveryError } from '../../../services/agyErrors';
 import { refreshAgyDeviceState } from '../../../services/agyClient';
 import { explorationFingerprint } from '../exploration/model';
 import { emptyExplorationAccount, parseExplorationBackup, serializeExploration } from '../exploration/storage';
-import type { ExplorationOverride, SavedExploration } from '../exploration/types';
+import type { ExplorationOverride, ExplorationWorkspace, SavedExploration } from '../exploration/types';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import { retainPageTaskFailure } from '../../../services/pageTaskFailure';
 import { openTaskDetails, type TaskDetailTab } from '../../../services/taskDetailsNavigation';
@@ -54,6 +54,8 @@ export function useExploration() {
     addOverride: (input: ExplorationOverride) => operation(() => explorationRuntime.override(ownerId, input)),
     removeOverride: (id: string) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, overrides: current.overrides.filter(row => row.id !== id) }))),
     saveExploration: (input: SavedExploration) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: [...(current.saved ?? []).filter(row => row.id !== input.id), input] }))),
+    saveWorkspace: (input: ExplorationWorkspace) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, workspaces: current.workspaces?.some(row => row.id === input.id) ? current.workspaces.map(row => row.id === input.id ? input : row) : [...(current.workspaces ?? []), input] }))),
+    deleteWorkspace: (id: string) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, workspaces: current.workspaces?.filter(row => row.id !== id) }))),
     editSaved: (id: string, update: Partial<Pick<SavedExploration, 'name' | 'camera' | 'path' | 'kindFilter' | 'layoutPositions'>>) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: current.saved?.map(row => row.id === id ? { ...row, ...update } : row) }))),
     reorderSaved: (ids: string[]) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: ids.flatMap(id => current.saved?.find(row => row.id === id) ?? []) }))),
     deleteSaved: (id: string) => operation(() => explorationRuntime.update(ownerId, current => ({ ...current, saved: current.saved?.filter(row => row.id !== id) }))),

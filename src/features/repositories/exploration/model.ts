@@ -51,7 +51,7 @@ export function resultsForRelationKind(results: ExplorationResult[], kind: Relat
 }
 
 export function projectScene(account: ExplorationAccount, repositories: Repository[], focus: ExplorationFocus, query = '', inheritedScope?: string): ExplorationScene {
-  const scope = inheritedScope ?? (focus.type === 'all' || focus.type === 'entity' ? '' : JSON.stringify(focus));
+  const scope = inheritedScope ?? (focus.type === 'all' || (focus.type === 'entity' || focus.type === 'search') ? '' : JSON.stringify(focus));
   if (focus.type === 'branch' && (focus.branch === '待核实与间接线索' || isLocalMentionBranch(focus.branch) || focus.branch.startsWith('相近用途：'))) {
     const scene = projectScene(account, repositories, { type: 'entity', id: focus.targetId, label: query }, query, scope);
     return { ...scene, results: scene.results.filter(row => focus.branch === '待核实与间接线索' ? !row.relations.length : row.localBranch === (isLocalMentionBranch(focus.branch)?localMentionBranch:focus.branch) || row.relations.some(relation=>relation.branch===focus.branch)), branches: [] };
@@ -88,7 +88,7 @@ export function projectScene(account: ExplorationAccount, repositories: Reposito
     for (const topic of profile.topics) { const row = topics.get(topic.id) ?? { ...topic, repositoryIds: [] }; row.repositoryIds.push(profile.repositoryId); topics.set(row.id, row); }
     for (const entity of profile.entities) { const old = entities.get(entity.id); entities.set(entity.id, { ...entity, aliases: [...new Set([...(old?.aliases ?? []), ...entity.aliases])] }); }
   }
-  const targetId = focus.type === 'entity' ? focus.id : focus.type === 'branch' ? focus.targetId : '';
+  const targetId = (focus.type === 'entity' || focus.type === 'search') ? focus.id : focus.type === 'branch' ? focus.targetId : '';
   const queryText = normalizeConcept(query);
   const queryTerms = [...new Set([queryText, ...(targetId === conceptId('entity', 'Codex') ? ['codex'] : []), ...(entities.get(targetId)?.aliases.map(normalizeConcept) ?? [])])].filter(Boolean);
   const mentions = new Map(repositories.map(repo=>[repo.id,explorationSearchFields(repo,profiles[String(repo.id)]).find(field=>queryTerms.some(term=>normalizeConcept(field.text).includes(term)))]));
@@ -106,7 +106,7 @@ export function projectScene(account: ExplorationAccount, repositories: Reposito
     if (focus.type === 'all') { include = true; reason = profile?.status === 'ready' ? profile.topics.map(topic => topic.label).join(' · ') : '资料不足，尚未形成探索主题'; }
     else if (focus.type === 'topic') { include = !!profile?.topics.some(topic => topic.id === focus.id); reason = `${account.overrides.some(item => item.type === 'set-topics' && item.repositoryId === repo.id) ? '人工调整的探索归属' : '用途与能力主题'}：${focus.label}`; }
     else if (relations.length) { include = true; reason = relations[0].reason; }
-    else if (focus.type === 'entity') {
+    else if ((focus.type === 'entity' || focus.type === 'search')) {
       const matched = mentions.get(repo.id);
       if (matched) {
         include = true; reason = `${matched.label}提及该主题，仅作为召回线索；关系尚未核实`;
@@ -120,7 +120,7 @@ export function projectScene(account: ExplorationAccount, repositories: Reposito
       if (common.length) { include = true; reason = `与焦点项目共享用途主题：${common.map(topic => topic.label).join('、')}；属于间接线索`; }
     }
     if (!include) continue;
-    if(focus.type==='entity') {
+    if((focus.type==='entity' || focus.type==='search')) {
       if(mentions.get(repo.id)) localBranch=localMentionBranch;
       else { const common=profile?.topics.find(topic=>sharedTopics.has(topic.id));if(common)localBranch=`相近用途：${common.label}`; }
     }
@@ -130,10 +130,10 @@ export function projectScene(account: ExplorationAccount, repositories: Reposito
     const evidence = [...new Map([...[...(profile?.evidence ?? []), ...(focus.type === 'repository' ? selectedRepository?.evidence ?? [] : [])].filter(item => evidenceIds.has(item.id)), ...fallbackEvidence].map(item => [item.id, item])).values()];
     rows.push({ repositoryId: repo.id, kind: relations[0]?.kind ?? 'discovery', reason: relations[0]?.reason ?? reason, relations, evidence, verified: !!relations[0]?.verified, ...(localBranch ? {localBranch} : {}) });
   }
-  const relevance = (row:ExplorationResult) => row.verified && ['direct','interoperable'].includes(row.kind) ? 1000-relationOrder.indexOf(row.kind) : mentions.get(row.repositoryId) ? 600+mentions.get(row.repositoryId)!.weight : row.relations.length ? 400-relationOrder.indexOf(row.kind) : 100;
+  const relevance = (row:ExplorationResult) => normalizeConcept(live.get(row.repositoryId)?.full_name ?? '') === queryText || normalizeConcept(live.get(row.repositoryId)?.name ?? '') === queryText ? 2000 : queryText && normalizeConcept(live.get(row.repositoryId)?.full_name ?? '').includes(queryText) ? 1500 : row.verified && ['direct','interoperable'].includes(row.kind) ? 1000-relationOrder.indexOf(row.kind) : mentions.get(row.repositoryId) ? 600+mentions.get(row.repositoryId)!.weight : row.relations.length ? 400-relationOrder.indexOf(row.kind) : 100;
   rows.sort((a, b) => relevance(b)-relevance(a) || Number(b.verified) - Number(a.verified) || (live.get(b.repositoryId)?.stargazers_count ?? 0) - (live.get(a.repositoryId)?.stargazers_count ?? 0) || a.repositoryId - b.repositoryId);
   const branches = new Map<string, ExplorationScene['branches'][number]>();
-  if (focus.type === 'entity') for (const row of rows) {
+  if ((focus.type === 'entity' || focus.type === 'search')) for (const row of rows) {
     const values = [...row.relations, ...(row.localBranch || !row.relations.length ? [{ kind: 'discovery' as const, branch: row.localBranch ?? '待核实与间接线索' }] : [])];
     for (const value of new Map(values.map(relation => [`${relation.kind}:${relation.branch}`, relation])).values()) {
       const id = stableId('branch', `${targetId}:${value.kind}:${value.branch}`); const branch = branches.get(id) ?? { id, label: value.branch, kind: value.kind, count: 0 }; branch.count++; branches.set(id, branch);

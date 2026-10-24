@@ -28,28 +28,28 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
   const placements = useRef(new Map<string,Record<string,{x:number;y:number}>>());
   const initialView = useRef('');
   const layout = useMemo(() => {
-    let next = layoutExploration(scene, focus, new Map(repositories.map(repo => [repo.id, repo.name])), expanded);
+    let next = layoutExploration(scene, focus, new Map(repositories.map(repo => [repo.id, repo.name])), expanded, selectedRepositoryId);
     const prior = placements.current.get(layoutKey) ?? (initialView.current !== viewKey ? initialPositions : undefined);
     if (prior) next = retainLayoutPositions(next,prior);
     initialView.current = viewKey;
     placements.current.set(layoutKey,Object.fromEntries(next.nodes.map(node=>[node.id,{x:node.x,y:node.y}])));
     if(placements.current.size>40) placements.current.delete(placements.current.keys().next().value!);
     return next;
-  }, [scene, focus, repositories, expanded, layoutKey, viewKey, initialPositions]);
+  }, [scene, focus, repositories, expanded, layoutKey, viewKey, initialPositions, selectedRepositoryId]);
   const layoutCallback = useRef(onLayoutChange);layoutCallback.current=onLayoutChange;
   useEffect(()=>{layoutCallback.current?.(Object.fromEntries(layout.nodes.map(node=>[node.id,{x:node.x,y:node.y}])));},[layout]);
   const byId = useMemo(() => new Map(layout.nodes.map(node => [node.id, node])), [layout]);
   const neighbors = new Set(layout.edges.filter(edge => edge.source === active || edge.target === active).flatMap(edge => [edge.source, edge.target]));
-  const fit = () => { const rect = viewport.current?.getBoundingClientRect(); if (!rect?.width || !rect.height) return;
+  const fit = (readable = false) => { const rect = viewport.current?.getBoundingClientRect(); if (!rect?.width || !rect.height) return;
     if (!layout.nodes.length) return;
     const left = Math.min(...layout.nodes.map(node => node.x-node.width/2))-28, right = Math.max(...layout.nodes.map(node => node.x+node.width/2))+28;
     const top = Math.min(...layout.nodes.map(node => node.y-node.height/2))-28, bottom = Math.max(...layout.nodes.map(node => node.y+node.height/2))+28;
     const space = insets ?? { left: 0, right: 0, top: 0, bottom: 0 };
     const width = Math.max(100, rect.width - space.left - space.right), height = Math.max(100, rect.height - space.top - space.bottom);
-    const zoom = Math.max(.1, Math.min(1.35, (width - 16) / (right-left), (height - 16) / (bottom-top)));
-    setCamera({ zoom, x: space.left + (width - (right-left)*zoom)/2-left*zoom, y: space.top + (height - (bottom-top)*zoom)/2-top*zoom });
+    const zoom = Math.max(readable ? .75 : .1, Math.min(1.15, (width - 16) / (right-left), (height - 16) / (bottom-top)));
+    setCamera({ zoom, x: space.left + (width - (right-left)*zoom)/2-left*zoom, y: space.top + Math.max(0,(height - (bottom-top)*zoom)/2)-top*zoom });
   };
-  const fitRef = useRef(fit); fitRef.current = fit;
+  const fitRef = useRef(() => fit(true)); fitRef.current = () => fit(true);
   const initialRef = useRef(initialCamera); initialRef.current = initialCamera;
   const lastKey = useRef(''), restored = useRef(false);
   useLayoutEffect(() => {
@@ -92,11 +92,11 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
   const zoomRef = useRef(zoom); zoomRef.current = zoom;
   useEffect(() => { const element = viewport.current; if (!element) return; const wheel = (event: WheelEvent) => { if (event.ctrlKey || event.metaKey) { event.preventDefault(); zoomRef.current(event.deltaY > 0 ? .9 : 1.1); } }; element.addEventListener('wheel', wheel, { passive: false }); return () => element.removeEventListener('wheel', wheel); }, []);
   useEffect(() => { if (!full) return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setFull(false); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [full]);
-  const nodeLabel = (node: MapNode) => node.type === 'more' ? t(`exploration.${node.id}`) : node.label;
+  const nodeLabel = (node: MapNode) => node.id==='library-overview' ? t('exploration.all-library-topics') : node.type === 'more' ? t(`exploration.${node.id}`) : node.label;
   return <section className={`explore-map-shell ${full ? 'is-fullscreen' : ''} ${camera.zoom < .5 ? 'is-overview-scale' : ''}`} aria-label={t('exploration.project-relationship-map')}>
     <div className="explore-map-toolbar"><span title={t('exploration.drag-to-pan-ctrl-scroll-to-zoom')}><Move size={13} /></span><div>
       <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-out-map')} onClick={() => zoom(.85)}><Minus size={15} /></Button><span>{Math.round(camera.zoom * 100)}%</span>
-      <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-in-map')} onClick={() => zoom(1.15)}><Plus size={15} /></Button><Button size="icon" variant="ghost" aria-label={t('exploration.fit-canvas-and-reset')} onClick={fit}><Expand size={15} /></Button>
+      <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-in-map')} onClick={() => zoom(1.15)}><Plus size={15} /></Button><Button size="icon" variant="ghost" aria-label={t('exploration.fit-canvas-and-reset')} onClick={() => fit()}><Expand size={15} /></Button>
       <Button size="icon" variant="ghost" aria-label={full ? t('exploration.exit-map-fullscreen') : t('exploration.view-map-fullscreen')} onClick={() => setFull(value => !value)}>{full ? <X size={15} /> : <Maximize2 size={15} />}</Button>
     </div></div>
     <div ref={viewport} className="explore-map-viewport" tabIndex={0} aria-label={t('exploration.relationship-canvas-arrow-keys-pan-home-resets')} onKeyDown={event => {
@@ -121,7 +121,7 @@ export function ExplorationMap({ scene, focus, repositories, onFocus, onSelect, 
           title={node.repositoryId ? repos.get(node.repositoryId)?.full_name : nodeLabel(node)} aria-label={node.type === 'repository' ? t('exploration.view-project', { name: node.label }) : `${node.kind ? t(`exploration.relations.${node.kind}`) + ' ' : ''}${nodeLabel(node)}${node.count !== undefined ? t('exploration.project-count', { count: node.count }) : ''}`}
           onMouseEnter={() => setActive(node.id)} onMouseLeave={() => setActive('')} onFocus={() => setActive(node.id)} onBlur={() => setActive('')}
           onClick={event => { if (node.type === 'repository') onSelect(node.repositoryId!, event.currentTarget); else if (node.focus) onFocus(node.focus); else if (node.type === 'more') { if (node.id === 'more-topics') onAllTopics(); else if (node.id === 'more-projects' && expanded) onMoreProjects?.(); else setExpanded(true); } }}>
-          {node.type === 'repository' ? <><span className="explore-graph-dot">{repos.get(node.repositoryId!)?.owner.avatar_url ? <img src={repos.get(node.repositoryId!)!.owner.avatar_url} alt="" loading="lazy" /> : node.label[0]?.toUpperCase()}</span><strong>{nodeLabel(node)}</strong></> : <><span className="explore-node-mark">{node.type === 'focus' ? '◎' : node.type === 'more' ? '+' : '◉'}</span><strong>{nodeLabel(node)}</strong>{node.count !== undefined && <small>{node.count} {node.id === 'more-topics' ? t('exploration.topics') : node.id === 'more-branches' ? t('exploration.directions') : t('exploration.projects')}</small>}</>}
+          {node.type === 'repository' ? <><span className="explore-graph-dot">{repos.get(node.repositoryId!)?.owner.avatar_url ? <img src={repos.get(node.repositoryId!)!.owner.avatar_url} alt="" loading="lazy" /> : node.label[0]?.toUpperCase()}</span><strong>{nodeLabel(node)}</strong>{node.description && <small className="explore-node-description">{node.description}</small>}</> : <><span className="explore-node-mark">{node.type === 'focus' ? '◎' : node.type === 'more' ? '+' : '◉'}</span><strong>{nodeLabel(node)}</strong>{node.count !== undefined && <small>{node.count} {node.id === 'more-topics' ? t('exploration.topics') : node.id === 'more-branches' ? t('exploration.directions') : t('exploration.projects')}</small>}</>}
         </button>)}
       </div>
       {!layout.nodes.length && <div className="explore-map-empty">{t('exploration.no-topics-yet')}</div>}

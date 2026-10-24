@@ -37,6 +37,11 @@ export interface ExplorationTask {
   repairs?: Record<string, { requestId: string; repositoryIds: number[]; parentRequestId?: string }>;
 }
 export interface ExplorationCamera { zoom: number; x: number; y: number }
+export interface ExplorationWorkspace {
+  version: 1; id: string; name: string; createdAt: string; updatedAt: string;
+  query: string; path: ExplorationFocus[]; kindFilter: RelationKind | 'all';
+  camera?: ExplorationCamera; scopeFingerprint?: string;
+}
 export interface SavedExploration {
   id: string; name: string; query: string; createdAt: string; updatedAt: string; model: string;
   path: ExplorationFocus[]; kindFilter: RelationKind | 'all'; camera?: ExplorationCamera;
@@ -50,10 +55,11 @@ export interface ExplorationAccount {
   version: 1; ownerId: string; revision: number; index: ExplorationIndex | null;
   overrides: ExplorationOverride[]; queries: ExplorationQueryCache[]; task: ExplorationTask | null;
   saved?: SavedExploration[];
+  workspaces?: ExplorationWorkspace[];
   pendingTasks?: ExplorationTask[];
 }
 export type ExplorationFocus = { type: 'all' } | { type: 'topic'; id: string; label: string } |
-  { type: 'entity'; id: string; label: string } | { type: 'repository'; id: number; label: string } |
+  { type: 'entity'; id: string; label: string } | { type: 'search'; id: string; label: string } | { type: 'repository'; id: number; label: string } |
   { type: 'branch'; targetId: string; label: string; kind: RelationKind; branch: string };
 export interface ExplorationResult {
   repositoryId: number; kind: RelationKind; reason: string; relations: ExplorationRelation[];

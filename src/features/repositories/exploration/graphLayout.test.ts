@@ -12,13 +12,14 @@ describe('spatial relationship layout',()=>{
     for(const node of before.nodes) expect(after.nodes.find(value=>value.id===node.id)).toMatchObject({x:node.x,y:node.y});
     expect(after.nodes.some(node=>node.id==='new-community')).toBe(true);
   });
-  it('keeps every nonempty direction and only shows branch nodes on an entity first screen',()=>{
+  it('keeps every nonempty direction and expands confirmed projects while keeping indirect branches collapsed',()=>{
     const repos=[1,2,3,4].map(id=>repositoryFixture(id)); const account=accountFixture(repos,['direct','interoperable','similar','discovery']);
     const focus={type:'entity' as const,id:conceptId('entity','Codex'),label:'Codex'}; const scene=projectScene(account,repos,focus,'Codex');
     const layout=layoutExploration(scene,focus,new Map(repos.map(repo=>[repo.id,repo.name])));
-    expect(layout.nodes.filter(node=>node.type==='branch')).toHaveLength(scene.branches.length);
-    expect(layout.nodes.some(node=>node.type==='repository')).toBe(false);
-    expect(layout.edges.filter(edge=>edge.verified)).toHaveLength(2);
+    expect(layout.nodes.filter(node=>node.type==='branch')).toHaveLength(scene.branches.filter(branch=>scene.results.some(row=>row.relations.some(relation=>relation.branch===branch.label && relation.kind===branch.kind))).length);
+    expect(layoutExploration(scene,focus,new Map(repos.map(repo=>[repo.id,repo.name])),true).nodes.filter(node=>node.type==='branch')).toHaveLength(scene.branches.length);
+    expect(layout.nodes.filter(node=>node.type==='repository')).toHaveLength(2);
+    expect(layout.edges.filter(edge=>edge.source==='focus' && edge.verified)).toHaveLength(2);
   });
   it('is deterministic, has unique shared project nodes and resolves label collisions',()=>{
     const repos=Array.from({length:30},(_,i)=>repositoryFixture(i+1)); const account=accountFixture(repos);
@@ -27,8 +28,8 @@ describe('spatial relationship layout',()=>{
     const scene=projectScene(account,repos,{type:'all'}),names=new Map(repos.map(repo=>[repo.id,repo.name]));
     const layout=layoutExploration(scene,{type:'all'},names);
     expect(layoutExploration(scene,{type:'all'},names)).toEqual(layout);
-    expect(layout.nodes.filter(node=>node.repositoryId===1)).toHaveLength(1);
-    expect(layout.edges.filter(edge=>edge.target==='repo-1')).toHaveLength(2);
+    expect(layout.nodes.filter(node=>node.type==='repository')).toHaveLength(0);
+    expect(layout.nodes.filter(node=>node.type==='topic')).toHaveLength(6);
     for(let i=0;i<layout.nodes.length;i++) for(let j=i+1;j<layout.nodes.length;j++) {const a=layout.nodes[i],b=layout.nodes[j]; expect(Math.abs(a.x-b.x)>=(a.width+b.width)/2 || Math.abs(a.y-b.y)>=(a.height+b.height)/2).toBe(true);}
   });
 });

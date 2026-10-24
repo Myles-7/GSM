@@ -4,6 +4,7 @@ import { REQUIRED_HEADER_MENU_IDS } from '../schema';
 import { normalizeThemeTokens } from '../../utils/themeTokens';
 import { normalizeRepositoryCardFields } from '../../utils/repositoryCardFields';
 import { blockReadingNavigation } from '../../components/reading/readingNavigation';
+import { blockExplorationNavigation } from '../../services/explorationNavigation';
 
 export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppActions,
   | 'setTheme'
@@ -50,7 +51,7 @@ export const createPreferenceSlice: AppStoreSlice<Pick<import('../types').AppAct
         themeTokens: normalizeThemeTokens({ ...state.themeTokens, ...patch }),
       })),
       setCurrentView: (currentView) => {
-        if (!blockReadingNavigation(get().currentView, currentView)) set({ currentView });
+        if (!blockReadingNavigation(get().currentView, currentView) && !blockExplorationNavigation(get().currentView, currentView)) set({ currentView });
       },
       setSelectedCategory: (selectedCategory) => set({ selectedCategory }),
       setLanguage: (language) => set({ language }),

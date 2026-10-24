@@ -22,6 +22,7 @@ const focus = z.discriminatedUnion('type', [
   z.object({ type: z.literal('all') }),
   z.object({ type: z.literal('topic'), id, label: z.string().max(100) }),
   z.object({ type: z.literal('entity'), id, label: z.string().max(200) }),
+  z.object({ type: z.literal('search'), id, label: z.string().max(200) }),
   z.object({ type: z.literal('repository'), id: z.number().int().positive(), label: z.string().max(200) }),
   z.object({ type: z.literal('branch'), targetId: id, label: z.string().max(200), kind: z.enum(['direct','interoperable','similar','discovery']), branch: z.string().max(100) }),
 ]);
@@ -39,6 +40,7 @@ const task = z.object({ id, type: z.enum(['build', 'query']), status: z.enum(['r
   repairs: z.record(id, z.object({ requestId: id, parentRequestId: id.optional(), repositoryIds: z.array(z.number().int().positive()).min(1).max(5) }).strict()).optional(),
   failures: z.array(z.object({ repositoryIds: z.array(z.number().int().positive()), message: z.string().max(1000), unknown: z.boolean() })).optional() }).strict();
 export const accountSchema = z.object({ version: z.literal(1), ownerId: id, revision: z.number().int().nonnegative(), index: index.nullable(), overrides: z.array(override).max(10000),
+  workspaces: z.array(z.object({ version: z.literal(1), id, name: z.string().trim().min(1).max(100), createdAt: z.string(), updatedAt: z.string(), query: z.string().max(200), path: z.array(focus).min(1).max(100), kindFilter: saved.shape.kindFilter, camera: saved.shape.camera, scopeFingerprint: id.optional() }).strict()).max(100).optional(),
   saved: z.array(saved).max(100).optional(),
   queries: z.array(z.object({ id, query: z.string().min(1).max(200), scope: z.string().max(1000).optional(), fingerprint: id, createdAt: z.string(), model: z.string().max(300), generation: id.optional(), profiles }).strict()).max(20),
   task: task.nullable(), pendingTasks: z.array(task).max(20).optional(),
@@ -48,6 +50,7 @@ export const emptyExplorationAccount = (ownerId: string): ExplorationAccount => 
 export function validateExplorationAccount(input: unknown, ownerId: string): ExplorationAccount {
   const parsed = accountSchema.parse(input);
   if (parsed.ownerId !== ownerId) throw new Error('图谱属于其他账号，不能写入当前账号。');
+  if (new Set(parsed.workspaces?.map(row => row.id)).size !== (parsed.workspaces?.length ?? 0)) throw new Error('探索工作区包含重复标识。');
   if (new Set(parsed.saved?.map(row => row.id)).size !== (parsed.saved?.length ?? 0)) throw new Error('已保存探索包含重复标识。');
   for (const row of parsed.saved ?? []) if (new Set(row.repositories.map(repo => repo.id)).size !== row.repositories.length || row.resultIds.some(key => !row.repositories.some(repo => repo.id === key))) throw new Error('探索快照的项目引用无效。');
   const collections = [parsed.index?.profiles, ...parsed.queries.map(row => row.profiles), parsed.task?.draft, ...(parsed.pendingTasks??[]).map(row=>row.draft), ...(parsed.saved ?? []).map(row => row.profiles)];
