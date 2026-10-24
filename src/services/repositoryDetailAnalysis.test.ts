@@ -42,8 +42,16 @@ describe('repository detail analysis evidence and validation', () => {
     expect(mocks.generate.mock.calls[0][0].system).toContain('"platforms":10');
     expect(readRepositoryDetails(result)).toEqual(result);
   });
-  it('still rejects invalid list values even beyond the retained prefix', async () => {
-    mocks.generate.mockResolvedValue(JSON.stringify({ ...content, platforms: [...Array.from({ length: 10 }, (_, i) => `runtime-${i}`), 123] }));
+  it.each([
+    ['platforms', 10, 'Linux', 123],
+    ['tags', 10, 'tool', 'x'.repeat(81)],
+    ['features', 30, 'feature', null],
+    ['scenarios', 30, 'scenario', 123],
+    ['quickstart', 20, { description: 'Install', command: null }, { description: 'Invalid', command: 123 }],
+    ['software_forms', 7, 'cli', 'windows'],
+    ['deployment_modes', 4, 'local', 'free'],
+  ])('still rejects invalid %s values even beyond the retained prefix', async (field, count, valid, invalid) => {
+    mocks.generate.mockResolvedValue(JSON.stringify({ ...content, [field]: [...Array.from({ length: count as number }, () => valid), invalid] }));
     await expect(analyzeRepositoryDetails(options)).rejects.toThrow();
   });
   it('rejects command prefixes that omit documented flags or chained steps', async () => {

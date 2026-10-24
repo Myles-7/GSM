@@ -71,8 +71,17 @@ export async function analyzeRepositoryDetails(options: {
   let content: ReturnType<typeof repositoryDetailContentSchema.parse>;
   try {
     const raw = JSON.parse(fenced ? fenced[1] : response.trim());
-    const validation = repositoryDetailContentSchema.safeParse(raw);
     const listFields = ['tags', 'platforms', 'features', 'scenarios', 'quickstart', 'software_forms', 'deployment_modes'] as const;
+    // Zod can stop at an array's size limit before validating its elements.
+    // Validate every entry before trimming so an invalid tail cannot be hidden.
+    for (const field of listFields) {
+      if (Array.isArray(raw?.[field])) {
+        const fieldSchema = repositoryDetailContentSchema.shape[field];
+        const arraySchema = fieldSchema instanceof z.ZodDefault ? fieldSchema.unwrap() : fieldSchema;
+        arraySchema.element.array().parse(raw[field]);
+      }
+    }
+    const validation = repositoryDetailContentSchema.safeParse(raw);
     if (!validation.success && validation.error.issues.some(issue => issue.code !== 'too_big' || issue.origin !== 'array'
       || issue.path.length !== 1 || !listFields.includes(issue.path[0] as typeof listFields[number]))) throw validation.error;
     const normalized = validation.success ? validation.data : raw;
