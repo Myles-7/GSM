@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { writeFileAtomicSync } = require('./atomicFile');
 const { mailFailure } = require('./htmlReadingNetwork');
 const beijingDay = (now = new Date()) => new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
 const beijingMinute = (now = new Date()) => new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(now);
@@ -19,7 +20,7 @@ function createHtmlReadingService({fs,path,userData,safeStorage,createTransport,
     data={formatVersion:2,plan:saved.plan??null,runs:saved.runs,baselines:saved.baselines??{}};
   } catch(error) {if(error?.code!=='ENOENT')throw Error('日报送达记录无法读取；原文件已保留，请恢复备份后重启。');}
   let active=null;
-  const persist=()=>{fs.writeFileSync(stateFile+'.tmp',JSON.stringify(data),{mode:0o600});fs.renameSync(stateFile+'.tmp',stateFile);};
+  const persist=()=>writeFileAtomicSync(stateFile,JSON.stringify(data),{fileSystem:fs});
   const scheduleRetry=(run,retryable)=>{
     const mode=data.plan?.retryMode??'safe';
     const allowed=run.kind==='scheduled' && data.plan?.enabled && data.plan.accountId===run.accountId && retryable && mode!=='manual' && (mode!=='generation'||run.phase==='generation') && (run.retryCount??0)<2 && run.date===beijingDay(now());
@@ -69,7 +70,7 @@ function createHtmlReadingService({fs,path,userData,safeStorage,createTransport,
       const password=typeof input.password==='string'?input.password.replace(/\s/g,''):'';
       if(!/^[a-zA-Z0-9]{16}$/.test(password))throw Error('请填写 Google 的 16 位应用专用密码，不是账户登录密码。');
       if(!safeStorage.isEncryptionAvailable())throw Error('系统安全存储不可用，授权信息未保存。');
-      fs.writeFileSync(credentialFile+'.tmp',safeStorage.encryptString(JSON.stringify({accountId:input.accountId,from:input.from.trim(),to:input.to.trim(),password})),{mode:0o600});fs.renameSync(credentialFile+'.tmp',credentialFile);return status();
+      writeFileAtomicSync(credentialFile,safeStorage.encryptString(JSON.stringify({accountId:input.accountId,from:input.from.trim(),to:input.to.trim(),password})),{fileSystem:fs});return status();
     },
     clearCredential(){if(active)throw Error('任务执行中，完成后再清除邮箱配置。');if(fs.existsSync(credentialFile))fs.unlinkSync(credentialFile);data.plan=null;persist();return status();},
     async verify(accountId){
@@ -115,7 +116,7 @@ function createHtmlReadingService({fs,path,userData,safeStorage,createTransport,
       run.snapshotId=snapshotId;run.generatedAt=generatedAt??now().toISOString();run.comparisonIndex=comparisonIndex;run.warnings=Array.isArray(warnings)?warnings.filter(x=>typeof x==='string').slice(0,20).map(x=>x.slice(0,500)):[];
       let t;
       try{
-        fs.writeFileSync(filePath(filename)+'.tmp',html,{encoding:'utf8',mode:0o600});fs.renameSync(filePath(filename)+'.tmp',filePath(filename));run.filename=filename;
+        writeFileAtomicSync(filePath(filename),html,{fileSystem:fs});run.filename=filename;
         run.status='verifying';run.phase='verification';persist();
         const proxy=getMailProxy?await getMailProxy():undefined;run.networkRoute=proxy?'proxy':'direct';
         t=transport(c,proxy);persist();await t.verify();

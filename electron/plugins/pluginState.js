@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { writeFileAtomicSync } = require('../atomicFile');
 
 const { searchUrl } = require('./webSearch');
 
@@ -67,29 +67,7 @@ function createPluginStateStore(statePath, {
     save(state) {
       const normalized = normalizeState(state);
       fileSystem.mkdirSync(path.dirname(resolvedPath), { recursive: true });
-      const temporaryPath = `${resolvedPath}.${process.pid}.${randomUUID()}.tmp`;
-      try {
-        fileSystem.writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`, {
-          encoding: 'utf8',
-          mode: 0o600,
-        });
-        // Windows scanners can briefly lock the destination after a successful read.
-        // Retry only the same atomic replacement; never unlink the durable old state.
-        for (let attempt = 0; ; attempt++) {
-          try { fileSystem.renameSync(temporaryPath, resolvedPath); break; }
-          catch (error) {
-            if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
-            wait(10 * (2 ** attempt));
-          }
-        }
-      } catch (error) {
-        try {
-          fileSystem.unlinkSync(temporaryPath);
-        } catch {
-          // Ignore cleanup errors; the original save error is more useful.
-        }
-        throw error;
-      }
+      writeFileAtomicSync(resolvedPath, `${JSON.stringify(normalized, null, 2)}\n`, { fileSystem, platform, wait });
     },
   };
 }
