@@ -40,10 +40,12 @@ export function BuiltinRepositoryResults({
   items,
   channelId,
   desktopSafeMode,
+  displayMode = 'card',
 }: {
   items: DiscoveryRepo[];
   channelId: DiscoveryChannelId;
   desktopSafeMode?: boolean;
+  displayMode?: 'card' | 'compact';
 }) {
   const language = useAppStore((s) => s.language);
   const config = useAppStore((s) =>
@@ -63,6 +65,7 @@ export function BuiltinRepositoryResults({
   const [activeId, setActiveId] = useState<number | null>(null);
   const [chatId, setChatId] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<Repository[] | null>(null);
+  const isUltraWideScreen = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 1600px)').matches : false;
   const repos = items.map((repo) => ({
     ...repo,
     ...analyzedRepository(repo, data, language, config),
@@ -205,7 +208,7 @@ export function BuiltinRepositoryResults({
         className="relative flex min-w-0 items-start gap-4"
         data-testid="builtin-results-layout"
       >
-        <div className="min-w-0 flex-1 space-y-4">
+        <div className={displayMode === 'card' ? 'min-w-0 flex-1 grid grid-cols-1 xl:grid-cols-2 gap-4' : 'min-w-0 flex-1 space-y-4'}>
           {repos.map((repo, i) => {
             const task = tasksByKey.get(analysisKey(repo, language, config));
             const status =
@@ -223,6 +226,7 @@ export function BuiltinRepositoryResults({
                 <SubscriptionRepoCard
                   repo={repo}
                   desktopSafeMode={desktopSafeMode}
+                  displayMode={displayMode}
                   active={repo.id === activeId}
                   selected={selected.has(repo.id)}
                   onDetails={() => setActiveId(repo.id)}
@@ -254,7 +258,7 @@ export function BuiltinRepositoryResults({
         <RepositoryDetailsPanel
           repository={repos[index] ?? null}
           onClose={() => setActiveId(null)}
-          defaultDocked
+          defaultDocked={isUltraWideScreen}
           onAskRepository={(repo) => setChatId(repo.id)}
           analysisStatus={{
             running: tasks.some(

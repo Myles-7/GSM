@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronRight, Copy, Download, ExternalLink, FolderPlus, Layers, LayoutGrid, List, Loader2, Plus, Search, Square, Star, X } from 'lucide-react';
+import { Check, ChevronRight, Copy, Download, ExternalLink, FolderPlus, Layers, LayoutGrid, List, Loader2, Plus, Search, SlidersHorizontal, Square, Star, X } from 'lucide-react';
 import type { WorkbenchCandidate, WorkbenchSearchBatch } from '../../../types/aiWorkbench';
 import type { Repository } from '../../../types';
 import type { useAIWorkbench } from '../hooks/useAIWorkbench';
 import { useT } from '../../../i18n/useT';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '../../../components/ui/popover';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '../../../components/ui/sheet';
 import { safeWriteText } from '../../../utils/clipboardUtils';
 import { workbenchOverviewMarkdown } from '../../../services/workbenchOverview';
@@ -34,6 +35,7 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<string | null>(null);
   const [pendingStars, setPendingStars] = useState<Set<number>>(new Set());
+  const [libraryQuery, setLibraryQuery] = useState('');
   const [layout, setLayout] = useState<'list' | 'grid'>(() => {
     try { return localStorage.getItem('gsm:overview-layout') === 'grid' ? 'grid' : 'list'; } catch { return 'list'; }
   });
@@ -62,6 +64,15 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
   if (sort === 'stars') visible.sort((a, b) => b.repository.stargazers_count - a.repository.stargazers_count);
   if (sort === 'name') visible.sort((a, b) => a.repository.full_name.localeCompare(b.repository.full_name));
   const selection = candidates.filter(item => selected.has(item.repository.full_name.toLowerCase()));
+  const hiddenSelectionCount = selection.filter(item => !visible.includes(item)).length;
+  const filters = [
+    ...(query ? [{ key: 'query', label: `${t('overview.search')}: ${query}`, clear: () => setQuery('') }] : []),
+    ...(category !== 'all' ? [{ key: 'category', label: category, clear: () => setCategory('all') }] : []),
+    ...(kind !== 'all' ? [{ key: 'kind', label: t(`overview.${kind}`), clear: () => setKind('all') }] : []),
+    ...(starFilter !== 'all' ? [{ key: 'star', label: t(`workbench.${starFilter}`), clear: () => setStarFilter('all') }] : []),
+    ...(sort !== 'original' ? [{ key: 'sort', label: `${t('overview.sort')}: ${t(`overview.${sort}`)}`, clear: () => setSort('original') }] : []),
+  ];
+  const clearFilters = () => { setQuery(''); setCategory('all'); setKind('all'); setStarFilter('all'); setSort('original'); };
   const activeDetail = candidates.find(item => item.repository.full_name === detail);
   const ready = candidates.filter(item => item.overview && item.overview.status !== 'failed').length;
   const toggle = (name: string) => setSelected(previous => {
@@ -89,7 +100,7 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
         <div className="flex items-center gap-4" role="tablist" aria-label={t('workbench.repositories')}>
           {(['results', 'selected'] as const).map(value => <button key={value} type="button" role="tab" aria-selected={tab === value}
             className={`border-b-2 pb-1 text-xs ${tab === value ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
-            onClick={() => onTabChange(value)}>{t(`workbench.${value}`)}</button>)}
+            onClick={() => onTabChange(value)}>{t(value === 'selected' ? 'workbench.researchContext' : 'workbench.results')}</button>)}
         </div>
         <div className="flex items-center gap-1">
           {(['list', 'grid'] as const).map(value => <Button key={value} size="icon" variant={layout === value ? 'secondary' : 'ghost'} className="h-8 w-8" title={t(`overview.${value}Layout`)} aria-label={t(`overview.${value}Layout`)} aria-pressed={layout === value} onClick={() => {
@@ -132,25 +143,31 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-0 flex-[1_1_180px]"><Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
               <Input className="h-8 pl-8 text-xs" aria-label={t('overview.search')} placeholder={t('overview.search')} value={query} onChange={event => setQuery(event.target.value)} /></div>
-            <WorkbenchSelect
-              value={kind}
-              ariaLabel={t('overview.allTypes')}
-              onValueChange={setKind}
-              items={['all', 'tool', 'library', 'resource', 'other'].map((value) => ({ value, label: t(`overview.${value === 'all' ? 'allTypes' : value}`) }))}
-            />
-            <WorkbenchSelect
-              value={starFilter}
-              ariaLabel={t('workbench.filter')}
-              onValueChange={setStarFilter}
-              items={['all', 'starred', 'unstarred'].map((value) => ({ value, label: t(`workbench.${value}`) }))}
-            />
-            <WorkbenchSelect
-              value={sort}
-              ariaLabel={t('overview.sort')}
-              onValueChange={setSort}
-              items={['original', 'stars', 'name'].map((value) => ({ value, label: t(`overview.${value}`) }))}
-            />
+            <Popover>
+              <PopoverTrigger asChild><Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5 px-2 text-xs" aria-label={t('overview.filtersCount', { count: filters.length })}>
+                <SlidersHorizontal className="h-3.5 w-3.5" />{t('overview.filters')}{filters.length > 0 && <span className="rounded bg-accent px-1.5 text-[11px]">{filters.length}</span>}
+              </Button></PopoverTrigger>
+              <PopoverContent align="end" aria-label={t('overview.filters')} className="w-72 max-w-[calc(100vw-2rem)] space-y-3 p-3">
+                <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">{t('overview.filters')}</h3><Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={!filters.length} onClick={clearFilters}>{t('overview.clearFilters')}</Button></div>
+                <div className="space-y-1"><p className="text-xs text-muted-foreground">{t('overview.allTypes')}</p><WorkbenchSelect
+                  value={kind} ariaLabel={t('overview.allTypes')} onValueChange={setKind} className="w-full"
+                  items={['all', 'tool', 'library', 'resource', 'other'].map((value) => ({ value, label: t(`overview.${value === 'all' ? 'allTypes' : value}`) }))}
+                /></div>
+                <div className="space-y-1"><p className="text-xs text-muted-foreground">{t('overview.starStatus')}</p><WorkbenchSelect
+                  value={starFilter} ariaLabel={t('overview.starStatus')} onValueChange={setStarFilter} className="w-full"
+                  items={['all', 'starred', 'unstarred'].map((value) => ({ value, label: t(`workbench.${value}`) }))}
+                /></div>
+                <div className="space-y-1"><p className="text-xs text-muted-foreground">{t('overview.sort')}</p><WorkbenchSelect
+                  value={sort} ariaLabel={t('overview.sort')} onValueChange={setSort} className="w-full"
+                  items={['original', 'stars', 'name'].map((value) => ({ value, label: t(`overview.${value}`) }))}
+                /></div>
+              </PopoverContent>
+            </Popover>
           </div>
+          {filters.length > 0 && <div className="flex flex-wrap items-center gap-1.5" aria-label={t('overview.appliedFilters')}>
+            {filters.map(filter => <Button key={filter.key} size="sm" variant="secondary" className="h-auto max-w-full gap-1 py-1 pl-2 pr-1.5 text-xs" aria-label={t('overview.removeFilter', { filter: filter.label })} onClick={filter.clear}><span className="min-w-0 truncate">{filter.label}</span><X className="h-3 w-3 shrink-0" /></Button>)}
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={clearFilters}>{t('overview.clearFilters')}</Button>
+          </div>}
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <label className="flex items-center gap-2"><input type="checkbox" checked={selectAll} disabled={!visible.length} onChange={() => setSelected(previous => {
               const next = new Set(previous); visible.forEach(item => { if (selectAll) next.delete(item.repository.full_name.toLowerCase()); else next.add(item.repository.full_name.toLowerCase()); }); return next;
@@ -159,7 +176,7 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
           </div>
         </>}
         {!candidates.length ? <div className="py-16 text-center"><Layers className="mx-auto mb-4 h-8 w-8 text-muted-foreground/60" /><h3 className="text-sm font-medium">{t('overview.empty')}</h3><p className="mt-2 text-xs text-muted-foreground">{t('overview.emptyHint')}</p></div>
-          : !visible.length ? <div className="py-8 text-center text-sm text-muted-foreground">{t('overview.noMatches')}<Button size="sm" variant="ghost" onClick={() => { setQuery(''); setCategory('all'); setKind('all'); setStarFilter('all'); }}>{t('overview.clearFilters')}</Button></div>
+          : !visible.length ? <div className="py-8 text-center text-sm text-muted-foreground">{t('overview.noMatches')}<Button size="sm" variant="ghost" onClick={clearFilters}>{t('overview.clearFilters')}</Button></div>
           : (grouping ? [t('overview.allCategories')] : [...new Set(visible.map(categoryName))]).map(group => <section key={group} className="space-y-3" aria-label={group}>
             <h3 className="flex items-baseline gap-2 text-sm font-semibold">{group}<span className="text-xs font-normal text-muted-foreground">{visible.filter(item => grouping || categoryName(item) === group).length}</span></h3>
             <div className={layout === 'list' ? 'space-y-2' : 'grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr))]'}>
@@ -176,7 +193,7 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
                   <div className="overview-status mt-2 flex min-h-5 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                     {item.overview && <span className="font-medium text-foreground/75">{t(`overview.${item.overview.kind}`)}</span>}
                     <span className={status === 'failed' || status === 'insufficient' ? 'text-amber-700 dark:text-amber-400' : ''}>{t(`overview.${status}`)}</span>
-                    {inContext && <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400"><Check className="h-3 w-3" />{t('workbench.added')}</span>}
+                    {inContext && <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400"><Check className="h-3 w-3" />{t('overview.inResearchContext')}</span>}
                   </div>
                   <div className="overview-metadata mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground"><span className="inline-flex items-center gap-1"><Star className="h-3 w-3" />{r.stargazers_count.toLocaleString()}</span><span>{resolveLanguage(r)}</span></div>
                   <div className="overview-actions mt-2 flex flex-wrap items-center gap-1">
@@ -185,8 +202,8 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
                       void w.guard(async () => { try { await w.star(r); } finally { setPendingStars(previous => { const next = new Set(previous); next.delete(r.id); return next; }); } });
                     }}><Star className={`h-3.5 w-3.5 ${starred.has(r.id) ? 'fill-current text-amber-500' : ''}`} /></Button>
                     <Button size="sm" variant="ghost" className={`h-7 px-1.5 text-xs ${inContext ? 'text-emerald-700 dark:text-emerald-400' : ''}`} disabled={readonly}
-                      aria-label={inContext ? t('workbench.addedToContext') : t('workbench.context')} title={inContext ? t('workbench.addedToContextTooltip') : t('workbench.context')}
-                      onClick={() => void w.guard(() => inContext ? remove(r) : w.addRepository(r))}>{inContext ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}{t(inContext ? 'workbench.added' : 'workbench.context')}</Button>
+                      aria-label={inContext ? t('workbench.removeContext') : t('overview.addResearchContext')} title={inContext ? t('workbench.removeContext') : t('overview.addResearchContext')}
+                      onClick={() => void w.guard(() => inContext ? remove(r) : w.addRepository(r))}>{inContext ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}{t(inContext ? 'overview.inResearchContext' : 'overview.addResearchContext')}</Button>
                     <Button size="icon" variant="ghost" className="h-7 w-7" title={t('workbench.addToProject')} aria-label={t('workbench.addToProject')} disabled={!w.project || readonly} onClick={() => void w.guard(() => w.addRepository(r, true))}><FolderPlus className="h-3.5 w-3.5" /></Button>
                     <Button size="sm" variant="ghost" className="ml-auto h-7 px-1.5 text-xs" aria-label={`${t('overview.details')}: ${r.full_name}`} onClick={() => setDetail(r.full_name)}>{t('overview.details')}<ChevronRight className="h-3.5 w-3.5" /></Button>
                     {tab === 'selected' && <Button size="icon" variant="ghost" className="h-7 w-7" aria-label={t('workbench.removeContext')} disabled={readonly} onClick={() => void w.guard(() => remove(r))}><X className="h-3 w-3" /></Button>}
@@ -201,19 +218,54 @@ export function WorkbenchResults({ workbench: w, candidates, tab, onTabChange, b
             const targets = batchId === 'all' ? w.data.searchBatches : batch ? [batch] : [];
             for (const target of targets) if (target.candidates.some(item => !item.overview || item.overview.status === 'failed')) await w.retryOverview(target.id);
           })}>{t(candidates.some(item => item.overview?.status === 'failed') ? 'overview.retryFailed' : 'overview.retry')}</Button>}
-          {tab === 'selected' && <details className="w-full text-xs"><summary className="cursor-pointer py-2">{t('workbench.addSelected')}</summary>{w.repositories.map(r => <button key={r.id} className="block w-full truncate py-2 text-left hover:underline" onClick={() => void w.guard(() => w.addRepository(r))}>{r.full_name}</button>)}</details>}
+          {tab === 'selected' && (
+            <details className="w-full rounded-lg border border-border/70 bg-muted/20 p-2.5 text-xs">
+              <summary className="cursor-pointer font-medium py-1">{t('workbench.addSelected')}</summary>
+              <div className="mt-2 space-y-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    className="h-7 pl-8 text-xs"
+                    value={libraryQuery}
+                    onChange={event => setLibraryQuery(event.target.value)}
+                    placeholder={t('overview.search')}
+                    aria-label={t('workbench.addSelected')}
+                  />
+                </div>
+                <div className="max-h-56 overflow-y-auto divide-y divide-border/40">
+                  {w.repositories
+                    .filter(r => !w.data.selectedRepositories.some(sel => sel.id === r.id))
+                    .filter(r => !libraryQuery.trim() || `${r.full_name} ${r.description || ''} ${r.ai_summary || ''}`.toLowerCase().includes(libraryQuery.trim().toLowerCase()))
+                    .slice(0, 50)
+                    .map(r => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        className="flex w-full items-center justify-between gap-2 px-1.5 py-1.5 text-left hover:bg-muted/60 rounded transition-colors"
+                        onClick={() => void w.guard(() => w.addRepository(r))}
+                      >
+                        <span className="truncate font-medium">{r.full_name}</span>
+                        <Plus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      </button>
+                    ))}
+                </div>
+              </div>
+            </details>
+          )}
         </div>
       </div>
     </div>
     <footer className="shrink-0 border-t border-border bg-background px-4 py-3 text-xs">
       <div className="mx-auto flex max-w-[1100px] flex-wrap items-center gap-2">
-        <span className="mr-auto basis-full text-muted-foreground sm:basis-auto">{t('overview.selected', { count: selection.length })}</span>
+        <div className="mr-auto min-w-0 flex-1 text-muted-foreground"><p>{t('overview.checkedCount', { count: selection.length })}</p><p className="mt-0.5 text-[11px]">{t('overview.savedContextCount', { count: w.data.selectedRepositories.length })}{hiddenSelectionCount > 0 && <> · {t('overview.hiddenChecked', { count: hiddenSelectionCount })}</>}</p></div>
         {selection.length > 0 && <Button size="icon" variant="ghost" className="h-7 w-7" title={t('overview.clear')} aria-label={t('overview.clear')} onClick={() => setSelected(new Set())}><X className="h-3.5 w-3.5" /></Button>}
-        <Button size="sm" variant="outline" className="h-8 px-2 text-xs" title={t('overview.add')} aria-label={t('overview.add')} disabled={!selection.length || readonly} onClick={() => void w.guard(() => w.addRepositories(selection.map(item => item.repository)))}><Plus className="h-3.5 w-3.5" /><span className="hidden sm:inline">{t('overview.add')}</span></Button>
-        <Button size="sm" variant="outline" className="h-8 px-2 text-xs" disabled={!exportItems.length || exportItems.length > 120 || busy || readonly} onClick={() => onAsk(exportItems)}>{t('overview.ask')}</Button>
-        <Button size="sm" className="h-8 px-2 text-xs" disabled={!selection.length || busy || readonly} onClick={() => onResearch(selection.map(item => item.repository))}>{t('overview.research')}</Button>
+        <div className="flex w-full flex-wrap gap-2">
+          <Button size="sm" variant="outline" className="h-auto min-h-8 flex-[1_1_160px] whitespace-normal px-2 py-1.5 text-xs" disabled={!selection.length || readonly} onClick={() => void w.guard(() => w.addRepositories(selection.map(item => item.repository)))}><Plus className="h-3.5 w-3.5 shrink-0" />{t('overview.addResearchContextCount', { count: selection.length })}</Button>
+          <Button size="sm" variant="outline" className="h-auto min-h-8 flex-[1_1_120px] whitespace-normal px-2 py-1.5 text-xs" disabled={!selection.length || selection.length > 120 || busy || readonly} onClick={() => onAsk(selection)}>{t('overview.askCheckedCount', { count: selection.length })}</Button>
+          <Button size="sm" className="h-auto min-h-8 flex-[1_1_120px] whitespace-normal px-2 py-1.5 text-xs" disabled={!selection.length || busy || readonly} onClick={() => onResearch(selection.map(item => item.repository))}>{t('overview.researchCheckedCount', { count: selection.length })}</Button>
+        </div>
       </div>
-      {exportItems.length > 120 && <p role="status" className="mx-auto mt-2 max-w-[1100px] text-muted-foreground">{t('overview.scopeLimit', { count: exportItems.length })}</p>}
+      {selection.length > 120 && <p role="status" className="mx-auto mt-2 max-w-[1100px] text-muted-foreground">{t('overview.scopeLimit', { count: selection.length })}</p>}
     </footer>
     <Sheet open={Boolean(activeDetail)} onOpenChange={open => { if (!open) setDetail(null); }}><SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
       <SheetHeader><SheetTitle className="break-words">{activeDetail?.repository.full_name}</SheetTitle><SheetDescription>{activeDetail?.overview ? t(`overview.${activeDetail.overview.basis}`) : t('overview.metadata')}</SheetDescription></SheetHeader>

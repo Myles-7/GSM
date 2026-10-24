@@ -4,6 +4,7 @@ import type { OrganizationDraft } from './aiOrganization';
 export type WorkbenchScope = 'github' | 'selected' | 'project' | 'library' | 'local' | 'mixed';
 export type WorkbenchDepth = 'quick' | 'standard' | 'deep';
 export type WorkbenchInputIntent = 'search' | 'results' | 'research';
+export type WorkbenchTaskMode = 'discover' | 'research' | 'organize';
 export interface WorkbenchOverview {
   summary: string;
   category: string;
@@ -20,6 +21,7 @@ export interface WorkbenchRequirements {
   excluded: string[];
   questions: string[];
   queries: string[];
+  questionOptions?: Record<string, string[]>;
 }
 export interface WorkbenchCandidate {
   repository: Repository;
@@ -36,6 +38,7 @@ export interface WorkbenchSearchBatch {
   requirements: WorkbenchRequirements;
   candidates: WorkbenchCandidate[];
   queries: string[];
+  questionOptions?: Record<string, string[]>;
   nextPage: number;
   overviewSummary?: string;
 }
@@ -85,6 +88,7 @@ export interface WorkbenchSessionData {
   requirements?: WorkbenchRequirements;
   searchBatches: WorkbenchSearchBatch[];
   inputIntent?: WorkbenchInputIntent;
+  taskMode?: WorkbenchTaskMode;
 }
 export interface WorkbenchTaskState {
   taskId?: string;

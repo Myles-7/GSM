@@ -148,6 +148,7 @@ const requirementsSchema = z.object({
   excluded: z.array(z.string().trim().min(1).max(500)).max(12),
   questions: z.array(z.string().trim().min(1).max(500)).max(3),
   queries: z.array(z.string().trim().min(1).max(300)).min(1).max(6),
+  questionOptions: z.record(z.string(), z.array(z.string().trim().min(1).max(80)).max(5)).optional(),
 }).strict();
 
 const assessmentSchema = z.object({
@@ -232,8 +233,8 @@ export async function prepareWorkbenchRequirements(input: {
   const raw = await ai.generateChatText({
     system: [
       '你是 GitHub 仓库研究需求分析器。只返回一个 JSON 对象，不要 Markdown、代码围栏或额外文字。',
-      '对象必须且只能包含 purpose、required、preferred、excluded、questions、queries。',
-      'required/preferred/excluded/questions/queries 必须是字符串数组。',
+      '对象必须包含 purpose、required、preferred、excluded、questions、queries，可选包含 questionOptions。',
+      'required/preferred/excluded/questions/queries 必须是字符串数组；questionOptions 是以 question 原文为 key、2~4 个简短候选项字符串数组为 value 的对象。',
       'questions 只保留会实质改变搜索范围或判断标准、且当前上下文无法推断的必要澄清问题，最多 3 个；信息充分时必须返回空数组。',
       'queries 是可直接提交给 GitHub repository search 的检索词，最多 6 个，避免虚构仓库名。',
       'previous 已有结论要复用，project instructions/conclusions 是约束，不要重复追问已经回答的信息。',
@@ -261,6 +262,7 @@ export async function prepareWorkbenchRequirements(input: {
     excluded: uniqueStrings(result.excluded),
     questions: uniqueStrings(result.questions),
     queries: uniqueStrings(result.queries),
+    ...(result.questionOptions ? { questionOptions: result.questionOptions } : {}),
   };
 }
 

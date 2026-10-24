@@ -33,6 +33,8 @@ import {
   Settings2,
   ArrowUp,
   ListRestart,
+  LayoutGrid,
+  List,
   Square
 } from 'lucide-react';
 import { SiAndroid, SiApple, SiLinux, SiX, SiTelegram } from '@icons-pack/react-simple-icons';
@@ -492,6 +494,10 @@ export const DiscoveryView: React.FC = React.memo(() => {
   const accountIdentity = useAppStore(state => `${state.user?.id ?? ''}\u0000${state.githubToken ?? ''}`);
   const account = useAppStore(state => state.user ? String(state.user.id) : '');
   const [readingSettingsOpen, setReadingSettingsOpen] = useState(false);
+  const [queuedChannels, setQueuedChannels] = useState<DiscoveryChannelId[]>([]);
+  const [displayMode, setDisplayMode] = useState<'card' | 'compact'>(() => {
+    try { return localStorage.getItem('gsm:discovery-display-mode') === 'compact' ? 'compact' : 'card'; } catch { return 'card'; }
+  });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const toggleDiscoveryChannel = useAppStore(state => state.toggleDiscoveryChannel);
   const {
@@ -699,7 +705,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
   // 处理滚动事件：保存滚动位置、控制工具栏显示、控制侧栏固定
   const handleScroll = useCallback(() => {
     // 获取页面滚动位置（支持window滚动和元素滚动）
-    const currentScrollY = window.scrollY || window.pageYOffset || 0;
+    const currentScrollY = scrollContainerRef.current?.scrollTop || window.scrollY || window.pageYOffset || 0;
 
     // 控制工具栏显示/隐藏
     if (scrollTimeoutRef.current) {
@@ -770,7 +776,19 @@ export const DiscoveryView: React.FC = React.memo(() => {
     const request = startExternalFeedRequest(useAppStore);
     try {
       const enabledChannels = safeDiscoveryChannels.filter(ch => ch.enabled && ch.id !== 'code-search');
-      for (const channel of enabledChannels) {
+      const queue = [...enabledChannels.map(ch => ch.id)];
+      setQueuedChannels(queue);
+      const runWorker = async () => {
+        while (queue.length > 0 && request.isCurrent()) {
+          const nextId = queue.shift();
+          if (!nextId) break;
+          setQueuedChannels([...queue]);
+          await refreshChannel(nextId, 1, false);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, enabledChannels.length) }, () => runWorker()));
+      setQueuedChannels([]);
+      for (const channel of [] as typeof enabledChannels) {
         if (!request.isCurrent()) return;
         await refreshChannel(channel.id, 1, false);
       }
@@ -848,6 +866,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
             isLoading={discoveryIsLoading}
             lastRefresh={discoveryLastRefresh}
             isAnalyzing={isAnalyzing}
+            queuedChannels={queuedChannels}
             language={language}
           />
         </div>
@@ -855,7 +874,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
         {customChannel ? <CustomChannelView key={customChannel.id} channel={customChannel} onEdit={() => setChannelEditor(customChannel)} /> : <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
           {/* 顶部工具栏 - 随滚动显示/隐藏 */}
           <div 
-            className={`flex-shrink-0 pr-2 transition-transform duration-300 ease-in-out z-10 ${
+            className={`sticky top-0 flex-shrink-0 pr-2 transition-transform duration-300 ease-in-out z-20 ${
               isToolbarVisible ? 'translate-y-0' : '-translate-y-full opacity-0 pointer-events-none'
             }`}
           >
@@ -880,6 +899,32 @@ export const DiscoveryView: React.FC = React.memo(() => {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  {selectedDiscoveryChannel !== 'code-search' && (
+                    <div className="inline-flex items-center rounded-lg border border-border/60 bg-muted/40 p-0.5 mr-1" role="group" aria-label={language.startsWith('zh') ? '视图模式' : 'Display mode'}>
+                      <Button
+                        variant={displayMode === 'card' ? 'secondary' : 'ghost'}
+                        size="icon"
+                        className="h-7 w-7 rounded-md"
+                        aria-pressed={displayMode === 'card'}
+                        aria-label={language.startsWith('zh') ? '卡片视图' : 'Card view'}
+                        title={language.startsWith('zh') ? '卡片视图' : 'Card view'}
+                        onClick={() => { setDisplayMode('card'); try { localStorage.setItem('gsm:discovery-display-mode', 'card'); } catch { /* ignore */ } }}
+                      >
+                        <LayoutGrid className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant={displayMode === 'compact' ? 'secondary' : 'ghost'}
+                        size="icon"
+                        className="h-7 w-7 rounded-md"
+                        aria-pressed={displayMode === 'compact'}
+                        aria-label={language.startsWith('zh') ? '紧凑阅读' : 'Compact view'}
+                        title={language.startsWith('zh') ? '紧凑阅读' : 'Compact view'}
+                        onClick={() => { setDisplayMode('compact'); try { localStorage.setItem('gsm:discovery-display-mode', 'compact'); } catch { /* ignore */ } }}
+                      >
+                        <List className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
                   <Button variant="ghost" size="icon" title={language.startsWith('zh') ? '回到顶部' : 'Back to top'} aria-label={language.startsWith('zh') ? '回到顶部' : 'Back to top'} onClick={() => window.scrollTo({ top: 0, behavior: 'auto' })}><ArrowUp className="h-4 w-4" /></Button>
                   {selectedDiscoveryChannel !== 'code-search' && <Button variant="ghost" size="icon" title={language.startsWith('zh') ? '频道设置' : 'Channel settings'} aria-label={language.startsWith('zh') ? '频道设置' : 'Channel settings'} onClick={() => setReadingSettingsOpen(true)}><Settings2 className="h-4 w-4" /></Button>}
                 {selectedDiscoveryChannel !== 'code-search' && (
@@ -1295,7 +1340,7 @@ export const DiscoveryView: React.FC = React.memo(() => {
               <TrendingHistoryPanel period={trendingTimeRange} platform={discoveryPlatform} />
             )}
 
-            <BuiltinRepositoryResults key={`${selectedDiscoveryChannel}:${accountIdentity}`} items={allRepos} channelId={selectedDiscoveryChannel} desktopSafeMode={isDesktopSafeMode} />
+            <BuiltinRepositoryResults key={`${selectedDiscoveryChannel}:${accountIdentity}`} items={allRepos} channelId={selectedDiscoveryChannel} desktopSafeMode={isDesktopSafeMode} displayMode={displayMode} />
 
             {currentIsLoadingMore && (
               <div className="flex items-center justify-center py-6 gap-3">

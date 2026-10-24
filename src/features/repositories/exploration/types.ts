@@ -65,6 +65,7 @@ export interface ExplorationResult {
   repositoryId: number; kind: RelationKind; reason: string; relations: ExplorationRelation[];
   evidence: ExplorationEvidence[]; verified: boolean;
   localBranch?: string;
+  tier?: 'core' | 'extended';
 }
 export interface ExplorationScene {
   topics: (ExplorationTopic & { repositoryIds: number[] })[]; entities: ExplorationEntity[];

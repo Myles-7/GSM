@@ -1,11 +1,13 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { AIWorkbench } from './AIWorkbench';
-import type { WorkbenchProposal, WorkbenchScope, WorkbenchSearchBatch } from '../../../types/aiWorkbench';
+import type { WorkbenchProposal, WorkbenchScope, WorkbenchSearchBatch, WorkbenchTaskMode, WorkbenchInputIntent } from '../../../types/aiWorkbench';
+import type { RepositoryChatSession } from '../../../types/repositoryChat';
 import type { Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 
 const mockWorkbench = {
+  ownerId: 'u1',
   active: { id: 's1', title: 'Test Session', createdAt: new Date().toISOString() },
   activeId: 's1',
   repositories: [],
@@ -13,6 +15,8 @@ const mockWorkbench = {
   projects: [],
   data: {
     scope: 'github' as WorkbenchScope,
+    taskMode: undefined as WorkbenchTaskMode | undefined,
+    inputIntent: undefined as WorkbenchInputIntent | undefined,
     depth: 'standard' as const,
     requirements: undefined,
     selectedRepositories: [] as Repository[],
@@ -49,7 +53,9 @@ const mockWorkbench = {
   claim: vi.fn(),
   star: vi.fn(),
   addRepository: vi.fn(),
-  chooseLocalProject: vi.fn(),
+  chooseLocalProject: vi.fn().mockResolvedValue(false),
+  chooseTask: vi.fn<(mode: WorkbenchTaskMode, scope?: WorkbenchScope, callback?: (record: RepositoryChatSession) => void) => Promise<RepositoryChatSession>>(),
+  addRepositories: vi.fn(),
   exportBackup: vi.fn().mockResolvedValue({}),
   importBackup: vi.fn(),
 };
@@ -81,13 +87,30 @@ vi.mock('../../../store/useAppStore', () => ({
 describe('AIWorkbench Component (Phase 1)', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.setItem('gsm:ai-workbench-session', 's1');
     vi.clearAllMocks();
     mockWorkbench.activeId = 's1';
     mockWorkbench.error = null;
     mockWorkbench.messages = [];
     mockWorkbench.proposals = [];
     mockWorkbench.settings.retainSessionDays = 90;
-    mockWorkbench.data.scope = 'github';
+    mockWorkbench.data = { scope: 'github', taskMode: undefined, inputIntent: undefined, depth: 'standard', requirements: undefined, selectedRepositories: [], searchBatches: [] };
+    mockWorkbench.active = { id: 's1', title: 'Test Session', createdAt: new Date().toISOString() };
+    mockWorkbench.repositories = [];
+    mockWorkbench.sessions = [{ id: 's1', title: 'Test Session', repoFullName: 'user/repo' }];
+    mockWorkbench.evidence = [];
+    mockWorkbench.task.running = false;
+    mockWorkbench.chooseLocalProject.mockResolvedValue(false);
+    mockWorkbench.patchData.mockReset().mockResolvedValue(undefined);
+    mockWorkbench.chooseTask.mockImplementation(async (taskMode, scope, callback) => {
+      const next = { ...mockWorkbench.data, taskMode, scope: taskMode === 'discover' ? 'github' : taskMode === 'organize' ? 'library' : scope ?? 'selected', inputIntent: taskMode === 'discover' ? 'search' : 'research' };
+      const record = { id: mockWorkbench.activeId ?? 's2', ownerId: 'u1', title: 'New', workbench: next } as RepositoryChatSession;
+      if (!mockWorkbench.activeId) callback?.(record);
+      Object.assign(mockWorkbench, { active: record, activeId: record.id });
+      mockWorkbench.data = next as typeof mockWorkbench.data;
+      sessionStorage.setItem('gsm:ai-workbench-session', record.id);
+      return record;
+    });
   });
 
   it('routes errors to task records without showing raw failure text on the business page', () => {
@@ -152,7 +175,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
     mockWorkbench.data = { ...originalData, searchBatches: [] };
     try {
       const { rerender } = render(<AIWorkbench />);
-      expect(screen.getByRole('button', { name: '搜新项目', pressed: true })).toBeVisible();
+      expect(screen.queryByRole('button', { name: '搜新项目' })).not.toBeInTheDocument();
       Object.assign(mockWorkbench, { active: { id: 's1' } });
       Object.assign(mockWorkbench.data, { inputIntent: 'results' });
       rerender(<AIWorkbench />);
@@ -169,18 +192,95 @@ describe('AIWorkbench Component (Phase 1)', () => {
     }
   });
 
-  it('1.1 renders InspirationGrid in empty state and clicking a prompt capsule populates the input and updates scope', async () => {
+  it('renders dynamic scenario templates and fills the textarea on click without auto-sending', () => {
     render(<AIWorkbench />);
+    expect(screen.getByTestId('workbench-scenario-grid')).toBeInTheDocument();
+    expect(screen.queryByRole('tablist', { name: 'AI 工作台' })).not.toBeInTheDocument();
+    const cardBtn = screen.getByRole('button', { name: /寻找轻量级自托管替代方案/ });
+    fireEvent.click(cardBtn);
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue(
+      '寻找轻量化、支持 Docker 一键自托管的知识库与文档协作开源替代项目，优先推荐近期活跃维护且对个人免费友好的方案。'
+    );
+    expect(mockWorkbench.send).not.toHaveBeenCalled();
+  });
 
-    expect(screen.getByText('💡 灵感看板')).toBeInTheDocument();
-    expect(screen.getByText('⚖️ 技术选型与横向对比')).toBeInTheDocument();
+  it('replaces inspiration cards with task entries without sending or overwriting a draft', async () => {
+    localStorage.setItem('gsm_custom_inspiration_cards', '[{"title":"custom"}]');
+    render(<AIWorkbench />);
+    expect(screen.queryByText('💡 灵感看板')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /找开源项目/ })).toBeVisible();
+    fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '保留我的目标' } });
+    fireEvent.click(screen.getByRole('button', { name: /整理收藏/ }));
+    await waitFor(() => expect(mockWorkbench.chooseTask).toHaveBeenCalledWith('organize', undefined, expect.any(Function)));
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('保留我的目标');
+    expect(mockWorkbench.send).not.toHaveBeenCalled();
+    expect(localStorage.getItem('gsm_custom_inspiration_cards')).toBe('[{"title":"custom"}]');
+  });
 
-    const pill = screen.getByText('对比 Zustand 与 Redux Toolkit 的性能与体积');
-    fireEvent.click(pill);
+  it('migrates the first draft before activating a newly created research session', async () => {
+    Object.assign(mockWorkbench, { active: null, activeId: null });
+    render(<AIWorkbench />);
+    fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '比较我选择的仓库' } });
+    fireEvent.click(screen.getByRole('button', { name: /研究与对比/ }));
+    await screen.findByRole('dialog', { name: '添加研究仓库' });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('比较我选择的仓库');
+    expect(localStorage.getItem('gsm:workbench-draft:u1:s2')).toBe('比较我选择的仓库');
+    expect(localStorage.getItem('gsm:workbench-draft:u1:new')).toBeNull();
+    expect(mockWorkbench.send).not.toHaveBeenCalled();
+  });
 
-    expect(mockWorkbench.patchData).toHaveBeenCalledWith('s1', { scope: 'selected' });
-    const textarea = screen.getByLabelText('问题') as HTMLTextAreaElement;
-    expect(textarea.value).toBe('对比 Zustand 与 Redux Toolkit 的性能与体积');
+  it('does not send with Enter when research sources are missing', async () => {
+    mockWorkbench.data.scope = 'selected';
+    render(<AIWorkbench />);
+    fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '比较架构' } });
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    fireEvent.submit(screen.getByTestId('workbench-composer'));
+    expect(mockWorkbench.send).not.toHaveBeenCalled();
+    expect(screen.getByText('请先添加至少一个仓库，作为研究与对比的资料来源。')).toBeVisible();
+  });
+
+  it('preserves the draft and task when local folder selection is canceled', async () => {
+    Object.assign(window, { electronAPI: { agy: {} } });
+    try {
+      render(<AIWorkbench />);
+      fireEvent.change(screen.getByRole('textbox', { name: '问题' }), { target: { value: '本地研究目标' } });
+      fireEvent.click(screen.getByRole('button', { name: '研究本地项目' }));
+      await waitFor(() => expect(mockWorkbench.chooseLocalProject).toHaveBeenCalledOnce());
+      expect(screen.getByRole('textbox', { name: '问题' })).toHaveValue('本地研究目标');
+      expect(mockWorkbench.data.scope).toBe('github');
+      expect(mockWorkbench.send).not.toHaveBeenCalled();
+    } finally { Object.assign(window, { electronAPI: undefined }); }
+  });
+
+  it('keeps local sources enabled when saving repositories for mixed research', async () => {
+    mockWorkbench.data.scope = 'mixed';
+    render(<AIWorkbench />);
+    fireEvent.click(screen.getByRole('button', { name: '添加研究仓库' }));
+    await screen.findByRole('dialog', { name: '添加研究仓库' });
+    fireEvent.click(screen.getByRole('button', { name: '使用所选仓库' }));
+    await waitFor(() => expect(mockWorkbench.patchData).toHaveBeenCalledWith('s1', {
+      taskMode: 'research', scope: 'mixed', inputIntent: 'research', selectedRepositories: [],
+    }));
+  });
+
+  it('does not apply an old result question scope after switching sessions during a save', async () => {
+    const repo = { id: 101, full_name: 'fixture/tools', name: 'tools', description: '', stargazers_count: 0, language: 'TypeScript', owner: { login: 'fixture', avatar_url: '' } } as Repository;
+    mockWorkbench.data.searchBatches = [{ id: 'b1', requirements: { purpose: 'Tools', required: [], preferred: [], excluded: [], questions: [], queries: [] },
+      candidates: [{ repository: repo, summary: '', reasons: [], limitations: [], sources: [], status: 'candidate' }], nextPage: 2 }];
+    let release!: () => void;
+    mockWorkbench.patchData.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const { rerender } = render(<AIWorkbench />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /fixture\/tools/ }));
+    fireEvent.click(screen.getByRole('button', { name: '询问所选（1）' }));
+    await waitFor(() => expect(mockWorkbench.patchData).toHaveBeenCalledWith('s1', { inputIntent: 'results' }));
+    Object.assign(mockWorkbench, { activeId: 's2', active: { id: 's2', title: 'New Session' } });
+    mockWorkbench.data = { ...mockWorkbench.data, inputIntent: 'search', searchBatches: [] };
+    sessionStorage.setItem('gsm:ai-workbench-session', 's2');
+    rerender(<AIWorkbench />);
+    await act(async () => { release(); });
+    expect(screen.getByRole('button', { name: '搜新项目', pressed: true })).toBeVisible();
+    expect(screen.queryByText(/将基于所选范围的 1 个项目回答/)).not.toBeInTheDocument();
   });
 
   it('1.3 OperationPreview renders diffs cleanly with Tag Badges and (未设置) without JSON.stringify quotes', () => {
@@ -323,11 +423,11 @@ describe('AIWorkbench Component (Phase 1)', () => {
     const { rerender } = render(<AIWorkbench />);
 
     // Mobile toolbar button displays currentScopeLabel
-    expect(screen.getByTitle('参数设置')).toHaveTextContent(/本地项目/);
+    expect(screen.getByRole('combobox', { name: '范围' })).toHaveTextContent(/本地项目/);
 
     mockWorkbench.data.scope = 'mixed';
     rerender(<AIWorkbench />);
-    expect(screen.getByTitle('参数设置')).toHaveTextContent(/本地 \+ 所选仓库/);
+    expect(screen.getByRole('combobox', { name: '范围' })).toHaveTextContent(/本地 \+ 所选仓库/);
   });
 
   describe('Phase 2: Interaction Integrity & UX Fixes', () => {
@@ -393,17 +493,18 @@ describe('AIWorkbench Component (Phase 1)', () => {
       mockWorkbench.data.selectedRepositories = [];
       const { rerender } = render(<AIWorkbench />);
 
-      const contextBtn = screen.getByRole('button', { name: /用于对话/ });
+      const contextBtn = screen.getByRole('button', { name: '加入研究上下文' });
       expect(contextBtn).toBeInTheDocument();
       fireEvent.click(contextBtn);
       expect(mockWorkbench.addRepository).toHaveBeenCalledWith(repo1);
 
       // Now re-render with repo1 in selectedRepositories
       mockWorkbench.data.selectedRepositories = [repo1 as Repository];
+      mockWorkbench.data.scope = 'selected';
       rerender(<AIWorkbench />);
 
       // Candidate card button should now show "已添加"
-      expect(screen.getByRole('button', { name: /已加入对话上下文/ })).toHaveTextContent('已添加');
+      expect(screen.getByRole('button', { name: '移出上下文' })).toHaveTextContent('已加入研究上下文');
 
       // Context badge should be displayed above textarea
       expect(screen.getByText('对话上下文:')).toBeInTheDocument();
@@ -411,7 +512,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       expect(screen.getByRole('link', { name: 'react' })).toHaveAttribute('href', 'https://github.com/facebook/react');
 
       // Click remove button in context badge
-      const removeBtn = screen.getByTitle('移出上下文');
+      const removeBtn = within(screen.getByTestId('workbench-composer')).getByTitle('移出上下文');
       fireEvent.click(removeBtn);
       expect(mockWorkbench.patchData).toHaveBeenCalledWith('s1', {
         selectedRepositories: [],
@@ -508,6 +609,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       };
 
       mockWorkbench.data.selectedRepositories = [repo1 as Repository, repo2 as Repository];
+      mockWorkbench.data.scope = 'selected';
       render(<AIWorkbench />);
 
       expect(screen.getByText('facebook/react')).toBeInTheDocument();
@@ -643,7 +745,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       const header = container.querySelector('header') as HTMLElement;
 
       // Before keyboard opens: normal height
-      expect(rootDiv.className).toContain('h-[calc(100dvh-4.5rem)]');
+      expect(rootDiv.style.height).toBe('844px');
       expect(header.className).toContain('h-11');
 
       // Virtual keyboard popup: visualViewport height drops to 400px (diff > 140px)
@@ -656,7 +758,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       }
 
       // After keyboard opens: adapts to 100dvh and compact h-9 header
-      expect(rootDiv.className).toContain('h-[100dvh]');
+      expect(rootDiv.style.height).toBe('400px');
       expect(header.className).toContain('h-9');
 
       // Virtual keyboard closes: visualViewport height returns to 844px
@@ -669,7 +771,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       }
 
       // Reverts back to normal height
-      expect(rootDiv.className).toContain('h-[calc(100dvh-4.5rem)]');
+      expect(rootDiv.style.height).toBe('844px');
       expect(header.className).toContain('h-11');
 
       // Restores mocks

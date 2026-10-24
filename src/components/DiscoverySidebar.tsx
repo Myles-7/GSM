@@ -34,6 +34,7 @@ interface DiscoverySidebarProps {
   lastRefresh: Partial<Record<DiscoveryChannelId, string | null>>;
   isAnalyzing: boolean;
   language: AppLanguage;
+  queuedChannels?: DiscoveryChannelId[];
 }
 
 export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
@@ -50,6 +51,7 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
   language,
   customNavigation,
   createChannelButton,
+  queuedChannels,
 }) => {
   const t = useT('discovery');
 
@@ -106,6 +108,7 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
             const isSelected = selectedChannel === channel.id;
             const ChannelIcon = discoveryChannelIconMap[channel.icon] || Crown;
             const channelLoading = isLoading && typeof isLoading === 'object' ? !!(isLoading as Record<string, unknown>)[channel.id] : false;
+            const channelQueued = !channelLoading && Array.isArray(queuedChannels) && queuedChannels.includes(channel.id);
 
             return (
               <Button
@@ -128,6 +131,9 @@ export const DiscoverySidebar: React.FC<DiscoverySidebarProps> = ({
                 <span className="flex shrink-0 items-center gap-2.5">
                   {channelLoading && (
                     <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                  )}
+                  {channelQueued && (
+                    <span className="h-2 w-2 rounded-full bg-primary/50 animate-pulse" title={language.startsWith('zh') ? '排队刷新中' : 'Queued for refresh'} />
                   )}
                   {(lastRefresh && typeof lastRefresh === 'object' && (lastRefresh as Record<string, unknown>)[channel.id]) ? (
                     <span className="text-xs text-muted-foreground dark:text-muted-foreground">

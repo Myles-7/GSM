@@ -15,10 +15,14 @@ const signature = (value: WorkbenchRequirements) => JSON.stringify([
 ]);
 const clean = (items: string[]) => [...new Set(items.map((item) => item.trim()).filter(Boolean))];
 
-function extractQuestionOptions(question: string, isZh: boolean): string[] {
+function extractQuestionOptions(question: string, isZh: boolean, structuredOptions?: Record<string, string[]>): string[] {
   const q = question.trim();
 
   // 1. Explicit bracketed options: [A / B / C] or (A / B / C) or 【A / B / C】 or （A / B / C）
+  const explicit = structuredOptions?.[question] ?? structuredOptions?.[q];
+  if (explicit && explicit.length >= 2) {
+    return explicit.map((item) => item.trim()).filter(Boolean);
+  }
   const bracketMatch = q.match(/[([（【]([^()（）[\]【】]{3,})[)\]）】]/);
   if (bracketMatch) {
     const candidate = bracketMatch[1].trim();
@@ -113,7 +117,7 @@ function extractQuestionOptions(question: string, isZh: boolean): string[] {
     return isZh ? ['是 (需要)', '否 (暂不考虑)'] : ['Yes', 'No']; // i18n-allow-literal
   }
 
-  return isZh ? ['推荐方案', '轻量首选'] : ['Recommended', 'Lightweight']; // i18n-allow-literal
+  return [];
 }
 
 export function RequirementsEditor({ value, disabled, depth, searchedValue, onSearch }: {
@@ -428,7 +432,7 @@ export function RequirementsEditor({ value, disabled, depth, searchedValue, onSe
             </div>
             <div className="space-y-2.5">
               {draft.questions.map((question, index) => {
-                const options = extractQuestionOptions(question, isZh);
+                const options = extractQuestionOptions(question, isZh, draft.questionOptions);
                 const isAnsweringThis = editor && editor.questionIndex === index;
 
                 return (
@@ -511,7 +515,7 @@ export function RequirementsEditor({ value, disabled, depth, searchedValue, onSe
                         </Button>
                       </div>
                     ) : (
-                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      options.length > 0 && <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                         <span className="text-[11px] text-muted-foreground mr-0.5">{t('requirementsEditor.quickOptions')}</span>
                         {options.map((opt) => (
                           <Button

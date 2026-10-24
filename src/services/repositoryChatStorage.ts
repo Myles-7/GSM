@@ -387,7 +387,7 @@ const PROJECT_KEYS = ['id', 'ownerId', 'name', 'instructions', 'conclusions', 'r
 const PROPOSAL_KEYS = ['id', 'ownerId', 'sessionId', 'createdAt', 'updatedAt', 'operations', 'syncError', 'organization'] as const;
 const OPERATION_KEYS = ['id', 'repository', 'kind', 'classificationSchemeId', 'reason', 'before', 'after', 'selected', 'overrideLocked', 'status', 'error'] as const;
 const EDITABLE_KEYS = ['category_id', 'subcategory_id', 'custom_category', 'category_locked', 'custom_tags', 'custom_description'] as const;
-const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject', 'inputIntent'] as const;
+const WORKBENCH_KEYS = ['scope', 'depth', 'selectedRepositories', 'requirements', 'searchBatches', 'localProject', 'inputIntent', 'taskMode'] as const;
 const REQUIREMENTS_KEYS = ['purpose', 'required', 'preferred', 'excluded', 'questions', 'queries'] as const;
 const SEARCH_BATCH_KEYS = ['id', 'createdAt', 'requirements', 'candidates', 'queries', 'nextPage', 'overviewSummary'] as const;
 const CANDIDATE_KEYS = ['repository', 'summary', 'reasons', 'limitations', 'sources', 'status', 'overview'] as const;
@@ -570,6 +570,7 @@ const validateWorkbenchData = (value: unknown, label: string): WorkbenchSessionD
   }
   asEnum(record.depth, `${label}.depth`, ['quick', 'standard', 'deep'] as const);
   asOptionalEnum(record.inputIntent, `${label}.inputIntent`, ['search', 'results', 'research'] as const);
+  asOptionalEnum(record.taskMode, `${label}.taskMode`, ['discover', 'research', 'organize'] as const);
   asArray(record.selectedRepositories, `${label}.selectedRepositories`, MAX_REPOSITORIES_PER_COLLECTION)
     .forEach((repository, index) => validateRepository(repository, `${label}.selectedRepositories[${index}]`));
   if (record.requirements !== undefined) validateRequirements(record.requirements, `${label}.requirements`);

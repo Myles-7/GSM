@@ -33,8 +33,9 @@ import type { ClassificationTarget } from '../store/helpers/classificationEdits'
 import { RepositoryDetailAnalysisAction } from './RepositoryDetailAnalysisAction';
 import { useRepositoryAnalysisPresentation } from '../features/repositories/hooks/useRepositoryAnalysisPresentation';
 import { ExplorationExplorer } from '../features/repositories/exploration/ExplorationExplorer';
-import { classificationFacetOptions, matchesFacetSelection, type FacetSelection } from '../utils/classificationFacets';
-import { RepositoryFacetWindow } from '../features/repositories/components/RepositoryFacetWindow';
+import { matchesFacetSelection, type FacetSelection } from '../utils/classificationFacets';
+import { latestRepositoryRelease } from '../utils/latestRepositoryRelease';
+import { usePluginActions } from '../plugins/hooks/usePluginActions';
 
 const LazyRepositoryDetailsPanel = React.lazy(() =>
   import('./RepositoryDetailsPanel').then(module => ({ default: module.RepositoryDetailsPanel }))
@@ -74,6 +75,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     classificationNavigation,
     setClassificationLocation,
     setClassificationExpanded,
+    releases,
   } = useAppStore(useShallow((state) => ({
     language: state.language,
     customCategories: state.customCategories,
@@ -95,13 +97,16 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     classificationNavigation: state.classificationNavigation,
     setClassificationLocation: state.setClassificationLocation,
     setClassificationExpanded: state.setClassificationExpanded,
+    releases: state.releases,
   })));
+  const cardPluginActions = usePluginActions('repository-card');
 
-  // 空状态的"清除全部筛选"出口：只重置筛选条件，保留查询词——查询词是
-  // SearchBar 的本地输入状态，这里不重置以免输入框与结果列表失同步。
+  // 空状态的"清除全部筛选"出口：同步重置全局筛选条件与顶部 SearchBar 搜索词
   const clearAllFilters = useCallback(() => {
     setFacetFilters({});
+    window.dispatchEvent(new CustomEvent('gsm:clear-search-query'));
     setSearchFilters({
+      query: '',
       tags: [],
       languages: [],
       platforms: [],
@@ -161,6 +166,23 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   const [facetFilters, setFacetFilters] = useState<FacetSelection>({});
   const hasActiveFacetFilters = Object.values(facetFilters).some(values => values?.length);
   useEffect(() => { setFacetFilters({}); }, [selectedCategory, activeClassificationScheme, accountId]);
+  useEffect(() => {
+    const clearFacets = () => setFacetFilters({});
+    window.addEventListener('gsm:clear-facet-filters', clearFacets);
+    return () => window.removeEventListener('gsm:clear-facet-filters', clearFacets);
+  }, []);
+  const [isUltraWideScreen, setIsUltraWideScreen] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 1600px)').matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 1600px)');
+    const update = (e: MediaQueryListEvent) => setIsUltraWideScreen(e.matches);
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
   const [isExitingSelection, setIsExitingSelection] = useState(false);
   const selectionExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeChatRepository, setActiveChatRepository] = useState<Repository | null>(null);
@@ -229,7 +251,6 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
           ? presentedRepositories.filter(repo => matchesCategory(repo, selectedCategoryObj, categoryMatchMode))
           : [];
       })(), [presentedRepositories, selectedCategory, allCategories, categoryMatchMode, similarView?.active, subcategories]);
-  const availableFacets = useMemo(() => classificationFacetOptions(categoryRepositories, activeClassificationScheme), [categoryRepositories, activeClassificationScheme]);
   const filteredRepositories = useMemo(() => {
     const facetRepositories = categoryRepositories.filter(repository => matchesFacetSelection(repository, facetFilters, activeClassificationScheme));
     // Similar results arrive pre-ranked by the vector worker's cosine score.
@@ -243,7 +264,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     return sortRepositories(facetRepositories, searchFilters.sortBy, searchFilters.sortOrder);
   }, [categoryRepositories, searchFilters.sortBy, searchFilters.sortOrder, similarView?.active, repositoryOrder, facetFilters, activeClassificationScheme]);
   const grouped = selectedCategory !== 'all' && selectedCategory !== 'pending' &&
-    !similarView?.active && !searchFilters.query?.trim() &&
+    !similarView?.active &&
     allCategories.some(category => category.id === selectedCategory);
 
   // 根据当前筛选的仓库中是否有AI分析内容来动态设置默认显示模式
@@ -645,19 +666,31 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     {selectedCategory !== 'all' && <><span aria-hidden="true" className="text-muted-foreground">/</span>{selectedSubgroup ? <button type="button" className="rounded px-1 py-1 hover:bg-muted" onClick={() => navigateCategory(parentCategory?.id ?? selectedSubgroup.parentId)}>{categoryLabel}</button> : <span aria-current="page" className="break-words font-medium">{categoryLabel}</span>}</>}
     {selectedSubgroup && <><span aria-hidden="true" className="text-muted-foreground">/</span><span aria-current="page" className="break-words font-medium">{selectedSubgroup.name}</span></>}
   </nav>;
-  const facetControls = <RepositoryFacetWindow account={accountId} language={language} options={availableFacets.filter(item => item.group !== 'confidence')} selection={facetFilters} onChange={setFacetFilters} resultCount={filteredRepositories.length} baseCount={categoryRepositories.length} breadcrumb={breadcrumb} />;
+  const facetControls = (
+    <div className="space-y-2" data-repository-facet-controls>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {breadcrumb}
+          <span role="status" className="text-xs tabular-nums text-muted-foreground">
+            {filteredRepositories.length} / {categoryRepositories.length} {zh ? '个仓库' : 'repositories'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+  const hasActiveQueryOrFilters = hasActiveNonQueryFilters || hasActiveFacetFilters || Boolean(searchFilters?.query?.trim());
 
   const renderContents = () => {
   if (repositoryViewMode === 'cluster') {
     return <div className="space-y-4">
       <ExplorationExplorer key={accountId} repositories={repositories} onOpenRepository={setActiveDetailRepository} />
-      {activeDetailRepository && <React.Suspense fallback={null}><LazyRepositoryDetailsPanel repository={repositories.find(repo => repo.id === activeDetailRepository.id) ?? activeDetailRepository} onClose={() => { setActiveDetailRepository(null); setDetailsPinned(false); }} onAskRepository={handleAskRepository} onPinnedChange={setDetailsPinned} /></React.Suspense>}
+      {activeDetailRepository && <React.Suspense fallback={null}><LazyRepositoryDetailsPanel repository={repositories.find(repo => repo.id === activeDetailRepository.id) ?? activeDetailRepository} defaultDocked={isUltraWideScreen} onClose={() => { setActiveDetailRepository(null); setDetailsPinned(false); }} onAskRepository={handleAskRepository} onPinnedChange={setDetailsPinned} /></React.Suspense>}
       {chatPortal}
       {globalHistorySheet}
     </div>;
   }
 
-  if (filteredRepositories.length === 0 && !grouped) {
+  if (filteredRepositories.length === 0 && (!grouped || hasActiveQueryOrFilters)) {
     const selectedCategoryObj = allCategories.find(cat => cat.id === selectedCategory);
     const categoryName = selectedCategoryObj?.name || selectedCategory;
 
@@ -687,7 +720,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
               )
           }
         </p>
-        {(hasActiveNonQueryFilters || hasActiveFacetFilters) && (
+        {hasActiveQueryOrFilters && (
           <Button
             type="button"
             variant="outline"
@@ -738,6 +771,8 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       onViewDetails={setActiveDetailRepository}
       onAnalyzeRepository={requestAnalysis}
       organizationActions={organizationActions}
+      latestRelease={latestRepositoryRelease(releases, repo.id) ?? null}
+      pluginActions={cardPluginActions.actions}
     />
     </div>
   );
@@ -813,7 +848,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
         onDoubleClick={handleDoubleClick}
       >
         {grouped ? <RepositoryGroups key={selectedCategory} categoryId={selectedCategory}
-          repositories={filteredRepositories} filtered={hasActiveNonQueryFilters || Object.values(facetFilters).some(values => values?.length)} customSort={searchFilters.sortBy === 'custom'}
+          repositories={filteredRepositories} filtered={hasActiveQueryOrFilters} customSort={searchFilters.sortBy === 'custom'}
           filterKey={JSON.stringify(filterResetKey)} viewMode={repositoryViewMode === 'list' ? 'list' : 'grid'} renderRepository={renderRepository} />
           : selectedCategory === 'pending' ? <PendingClassification repositories={filteredRepositories} visibleCount={visibleCount} categories={allCategories}
             selectedIds={selectedRepoIds} onSelect={handleSelectRepo} onSelectAll={handleSelectAll} onAssigned={handleDeselectAll}
@@ -823,6 +858,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
       {activeDetailRepository &&
         <React.Suspense fallback={null}>
           <LazyRepositoryDetailsPanel repository={repositories.find(repo => repo.id === activeDetailRepository.id) ?? activeDetailRepository}
+            defaultDocked={isUltraWideScreen}
             onClose={() => { setActiveDetailRepository(null); setDetailsPinned(false); }}
             onAskRepository={handleAskRepository} onPinnedChange={setDetailsPinned}
             onPrevious={activeDetailIndex > 0 ? () => setActiveDetailRepository(detailRepositories[activeDetailIndex - 1]) : undefined}

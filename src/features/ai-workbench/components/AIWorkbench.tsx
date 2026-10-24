@@ -1,25 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
-  Archive, Bot, Check, ChevronDown, ClipboardList, Copy, Download, ExternalLink, FolderGit2, FolderOpen, FolderPlus,
+  Archive, Bot, Check, ClipboardList, Copy, Download, ExternalLink, FolderGit2, FolderOpen, FolderPlus,
   Github, History, LayoutGrid, Loader2, MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Pin, Plus, RefreshCw,
-  RotateCcw, Send, ShieldCheck, SlidersHorizontal, Square, Trash2, Upload, X,
+  RotateCcw, ShieldCheck, Square, Trash2, Upload,
 } from 'lucide-react';
 import { useAIWorkbench } from '../hooks/useAIWorkbench';
 import { useAIOrganization } from '../../../hooks/useAIOrganization';
 import { AIOrganizationPanel } from '../../../components/AIOrganizationPanel';
 import { useT } from '../../../i18n/useT';
 import type { RepositoryChatSession } from '../../../types/repositoryChat';
+import type { Repository } from '../../../types';
 import type { WorkbenchCandidate, WorkbenchProject, WorkbenchProposal } from '../../../types/aiWorkbench';
 import { RequirementsEditor } from './RequirementsEditor';
-import { InspirationGrid } from './InspirationGrid';
+import { WorkbenchComposer } from './WorkbenchComposer';
+import { WorkbenchStart } from './WorkbenchStart';
+import { WorkbenchRepositoryPicker } from './WorkbenchRepositoryPicker';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
 import { Textarea } from '../../../components/ui/textarea';
 import { Badge } from '../../../components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '../../../components/ui/popover';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '../../../components/ui/select';
+
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from '../../../components/ui/dialog';
@@ -38,7 +39,7 @@ import { WorkbenchSelect } from './WorkbenchSelect';
 import { mergeWorkbenchCandidates } from '../../../services/workbenchOverview';
 import { isAIConfigAvailable } from '../../../utils/aiConfig';
 import { retainPageTaskFailure } from '../../../services/pageTaskFailure';
-import type { WorkbenchInputIntent } from '../../../types/aiWorkbench';
+import type { WorkbenchInputIntent, WorkbenchScope, WorkbenchTaskMode } from '../../../types/aiWorkbench';
 import './workbench-layout.css';
 
 const download = (filename: string, content: string, type: string) => {
@@ -374,7 +375,8 @@ export function AIWorkbench() {
   const isZh = language === 'zh' || language === 'zh-TW';
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
-  const [leftOpen, setLeftOpen] = useState(() => { try { return localStorage.getItem('gsm:workbench-history') !== 'false'; } catch { return true; } });
+  const [leftOpen, setLeftOpen] = useState<boolean | null>(() => { try { const saved = localStorage.getItem('gsm:workbench-history'); return saved === null ? null : saved !== 'false'; } catch { return null; } });
+  const historyOpen = leftOpen ?? w.sessions.length > 0;
   const [view, setView] = useState<'chat' | 'overview'>('chat');
   const [docked, setDocked] = useState(() => { try { return localStorage.getItem('gsm:workbench-dock') !== 'false'; } catch { return true; } });
   const [resultRatio, setResultRatio] = useState(() => {
@@ -385,12 +387,19 @@ export function AIWorkbench() {
   const splitRef = useRef<HTMLDivElement>(null);
   const seenResults = useRef(new Set<string>());
   const draftKey = `gsm:workbench-draft:${w.ownerId}:${w.activeId ?? 'new'}`;
+  const pendingDraft = useRef<{ ownerId: string; sessionId: string; value: string } | null>(null);
   const [loadedDraftKey, setLoadedDraftKey] = useState<string | null>(null);
   const [mobileLeft, setMobileLeft] = useState(false);
   const [tab, setTab] = useState<'results' | 'selected'>('results');
   const [batchId, setBatchId] = useState('');
-  const [manage, setManage] = useState(false);
-  const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+  const [pickerSession, setPickerSession] = useState<string | null>(null);
+  const pickerOwner = useRef(w.ownerId);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [frameHeight, setFrameHeight] = useState<number>();
+  const taskChangeRevision = useRef(0);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [editor, setEditor] = useState<{ kind: 'project' | 'newProject' | 'session'; title: string; project?: WorkbenchProject; session?: RepositoryChatSession } | null>(null);
@@ -426,21 +435,32 @@ export function AIWorkbench() {
     };
   }, []);
 
+  useEffect(() => {
+    const measure = () => {
+      if (!frameRef.current) return;
+      const viewport = window.visualViewport;
+      const top = Math.max(0, frameRef.current.getBoundingClientRect().top - (viewport?.offsetTop ?? 0));
+      setFrameHeight(Math.max(0, (viewport?.height ?? window.innerHeight) - top));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('scroll', measure);
+    return () => { window.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('scroll', measure); };
+  }, []);
+  useEffect(() => {
+    const ownerChanged = pickerOwner.current !== w.ownerId;
+    pickerOwner.current = w.ownerId;
+    setPickerSession(current => !ownerChanged && current === w.activeId ? current : null);
+  }, [w.ownerId, w.activeId]);
+
   const batch = w.data.searchBatches.find((b) => b.id === batchId) ?? w.data.searchBatches[w.data.searchBatches.length - 1];
   const busy = w.task.running;
   const activeBusy = busy && w.task.sessionId === w.activeId;
   const readonly = Boolean(w.active?.deletedAt || w.active?.archived);
   const visibleSessions = w.sessions.filter((s) => `${s.title} ${s.repoFullName}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  const currentScopeLabel =
-    w.data.scope === 'local'
-      ? t('localResearch.local')
-      : w.data.scope === 'mixed'
-        ? t('research.mixed')
-        : t(`workbench.scope-${w.data.scope}`);
   const selectedModel = w.aiConfigs.find((c) => c.id === w.modelId);
   const modelReady = isAIConfigAvailable(selectedModel);
-  const currentModelLabel = selectedModel?.name ?? t('workbench.model');
-  const currentDepthLabel = t(`workbench.${w.data.depth}`);
   const candidates: WorkbenchCandidate[] = tab === 'results' ? batchId === 'all'
     ? mergeWorkbenchCandidates(...w.data.searchBatches.map(item => item.candidates)) : batch?.candidates ?? []
     : w.data.selectedRepositories.map((repository) =>
@@ -455,12 +475,20 @@ export function AIWorkbench() {
   const hasPendingRequirements = Boolean(w.data.requirements && !readonly);
   const hasProposals = w.proposals.length > 0;
   const hasPendingProposals = hasPendingRequirements || hasProposals;
+  useEffect(() => {
+    if (!hasNewCandidates && !w.data.selectedRepositories.length) setView('chat');
+  }, [w.activeId, hasNewCandidates, w.data.selectedRepositories.length]);
 
   useEffect(() => {
-    try { setDraft(localStorage.getItem(draftKey) ?? ''); } catch { setDraft(''); }
+    const pending = pendingDraft.current;
+    if (pending?.ownerId === w.ownerId && pending.sessionId === w.activeId) {
+      setDraft(pending.value); pendingDraft.current = null;
+    } else {
+      try { setDraft(localStorage.getItem(draftKey) ?? ''); } catch { setDraft(''); }
+    }
     setLoadedDraftKey(draftKey);
     setBatchId('');
-  }, [draftKey]);
+  }, [draftKey, w.ownerId, w.activeId]);
   useEffect(() => {
     if (!w.activeId || w.active?.id !== w.activeId) {
       inputIntentSessionRef.current = null;
@@ -476,14 +504,14 @@ export function AIWorkbench() {
     try { if (draft) localStorage.setItem(draftKey, draft); else localStorage.removeItem(draftKey); } catch { /* Storage can be unavailable. */ }
   }, [draft, draftKey, loadedDraftKey]);
   useEffect(() => {
-    try { localStorage.setItem('gsm:workbench-ratio', String(resultRatio)); localStorage.setItem('gsm:workbench-dock', String(docked)); localStorage.setItem('gsm:workbench-history', String(leftOpen)); } catch { /* Keep the current layout in memory. */ }
+    try { localStorage.setItem('gsm:workbench-ratio', String(resultRatio)); localStorage.setItem('gsm:workbench-dock', String(docked)); if (leftOpen !== null) localStorage.setItem('gsm:workbench-history', String(leftOpen)); } catch { /* Keep the current layout in memory. */ }
   }, [resultRatio, docked, leftOpen]);
   useEffect(() => {
     if (!w.activeId || w.active?.id !== w.activeId || !hasNewCandidates || seenResults.current.has(w.activeId)) return;
     seenResults.current.add(w.activeId);
     if (w.data.scope === 'github') setInputIntent('results');
-    if (document.activeElement !== textareaRef.current && !window.getSelection()?.toString()) setView('overview');
-  }, [w.activeId, w.active?.id, hasNewCandidates, w.data.scope]);
+    if (!w.task.running && document.activeElement !== textareaRef.current && !window.getSelection()?.toString()) setView('overview');
+  }, [w.activeId, w.active?.id, hasNewCandidates, w.data.scope, w.task.running]);
   const resizeResults = (clientX: number) => {
     const rect = splitRef.current?.getBoundingClientRect();
     if (rect) setResultRatio(Math.max(35, Math.min(70, (clientX - rect.left) / rect.width * 100)));
@@ -633,18 +661,117 @@ export function AIWorkbench() {
     </div>
   );
 
+  const taskMode: WorkbenchTaskMode = w.data.taskMode ?? (w.data.scope === 'github' ? 'discover' : 'research');
+  const isStart = !w.messages.length && !hasNewCandidates && !hasPendingRequirements && !hasProposals && !busy && !readonly;
+  const researchCandidates = [...new Map([
+    ...w.repositories, ...(w.project?.repositories ?? []), ...w.data.selectedRepositories,
+    ...w.data.searchBatches.flatMap(item => item.candidates.map(candidate => candidate.repository)),
+  ].map(repo => [repo.full_name.toLowerCase(), repo])).values()];
+  const seedSessionDraft = useCallback((record: RepositoryChatSession) => {
+    try {
+      const key = `gsm:workbench-draft:${w.ownerId}:${record.id}`;
+      if (draftRef.current) localStorage.setItem(key, draftRef.current);
+      localStorage.removeItem(`gsm:workbench-draft:${w.ownerId}:new`);
+    } catch { /* The in-memory draft is retained below if persistence is unavailable. */ }
+    pendingDraft.current = { ownerId: w.ownerId, sessionId: record.id, value: draftRef.current };
+  }, [w.ownerId]);
+  const isCurrentSession = (id: string) => liveWorkbench.current.ownerId === w.ownerId
+    && sessionStorage.getItem('gsm:ai-workbench-session') === id;
+  const startTask = async (mode: WorkbenchTaskMode, scope?: WorkbenchScope) => {
+    if (busy || readonly) return;
+    const revision = ++taskChangeRevision.current;
+    setTransitioning(true);
+    await w.guard(async () => {
+      const record = await w.chooseTask(mode, scope ?? (mode === 'research' ? 'selected' : undefined), seedSessionDraft);
+      if (revision !== taskChangeRevision.current || !isCurrentSession(record.id)) return;
+      setView('chat');
+      setInputIntent(mode === 'discover' ? 'search' : 'research');
+      if (mode === 'research' && record.workbench?.scope === 'selected' && !record.workbench.selectedRepositories.length) setPickerSession(record.id);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    });
+    if (revision === taskChangeRevision.current) setTransitioning(false);
+  };
+  const startLocal = async (scope?: 'local' | 'mixed') => {
+    if (busy || readonly) return;
+    const revision = ++taskChangeRevision.current;
+    setTransitioning(true);
+    await w.guard(async () => {
+      const record = await w.chooseLocalProject(seedSessionDraft, scope);
+      if (!record || revision !== taskChangeRevision.current || liveWorkbench.current.ownerId !== w.ownerId
+        || sessionStorage.getItem('gsm:ai-workbench-session') !== record.id) return;
+      setView('chat'); setInputIntent('research');
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    });
+    if (revision === taskChangeRevision.current) setTransitioning(false);
+  };
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('gsm:workbench-prefill-research');
+      if (!raw) return;
+      sessionStorage.removeItem('gsm:workbench-prefill-research');
+      const payload = JSON.parse(raw) as { query?: string; repositories?: Repository[] };
+      const repos = Array.isArray(payload.repositories) ? payload.repositories : [];
+      const promptText = payload.query
+        ? (isZh ? `围绕「${payload.query}」方向，深入分析并对比这批相关项目的核心定位、互通方式、架构特点与适用场景。` : `Analyze and compare the core positioning, interoperability, architecture, and use cases of these repositories around "${payload.query}".`) /* i18n-allow-literal */
+        : '';
+      if (promptText) {
+        draftRef.current = promptText;
+        setDraft(promptText);
+      }
+      if (repos.length > 0) {
+        const workbench = liveWorkbench.current;
+        void workbench.guard(async () => {
+          const record = await workbench.chooseTask('research', 'selected', seedSessionDraft);
+          await workbench.patchData(record.id, { taskMode: 'research', scope: 'selected', inputIntent: 'research', selectedRepositories: repos });
+          setView('chat');
+          setInputIntent('research');
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        });
+      }
+    } catch { /* Ignore malformed prefill payload */ }
+  }, [w.ownerId, isZh, seedSessionDraft]);
+  const submitQuestion = (event: FormEvent) => {
+    event.preventDefault();
+    if (!draft.trim() || busy || readonly || !modelReady || invalidOverviewScope || transitioning) return;
+    const question = draft;
+    setFollow(true);
+    void w.guard(async () => {
+      try {
+        if (!w.active) await w.chooseTask(taskMode, w.data.scope, seedSessionDraft);
+        await w.send(question, taskMode === 'organize', false, { intent: taskMode === 'discover' ? inputIntent : 'research', candidates: askedCandidates });
+      } catch (error) {
+        const latest = liveWorkbench.current;
+        if (latest.ownerId === w.ownerId && (latest.activeId === w.activeId || latest.activeId === latest.task.sessionId)) setDraft(current => current || question);
+        throw error;
+      }
+      const latest = liveWorkbench.current;
+      if (latest.ownerId === w.ownerId && (latest.activeId === w.activeId || latest.activeId === latest.task.sessionId)) setDraft(current => current === question ? '' : current);
+    });
+  };
+  const composer = <WorkbenchComposer workbench={w} draft={draft} onDraftChange={setDraft} onSubmit={submitQuestion} textareaRef={textareaRef}
+    taskMode={taskMode} inputIntent={inputIntent} onIntentChange={intent => { setInputIntent(intent); if (w.activeId) void w.guard(() => w.patchData(w.activeId!, { inputIntent: intent })); }}
+    onTaskChange={mode => void startTask(mode)} onScopeChange={scope => { if (scope === 'local' || scope === 'mixed') { if (w.localProject) void startTask('research', scope); else void startLocal(scope); } else void startTask('research', scope); }}
+    onChooseRepositories={() => { if (w.activeId) setPickerSession(w.activeId); else void startTask('research'); }} onChooseLocal={() => void startLocal()}
+    onChooseResults={() => setView('overview')} onSessionReady={seedSessionDraft} askedCount={askedCandidates.length} invalidOverviewScope={invalidOverviewScope} keyboardOpen={isKeyboardOpen} transitioning={transitioning} />;
+
   const results = <WorkbenchResults workbench={w} candidates={candidates} tab={tab} onTabChange={setTab}
     batch={batch} batchId={batchId} onBatchChange={setBatchId} resolveLanguage={repository => resolveRepoLanguage(repository, t)}
-    onAsk={items => { setOverviewScope(items); setInputIntent('results'); setView('chat'); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+    onAsk={items => { void w.guard(async () => {
+      const record = await w.chooseTask('discover', 'github', seedSessionDraft);
+      await w.patchData(record.id, { inputIntent: 'results' });
+      if (!isCurrentSession(record.id)) return;
+      setOverviewScope(items); setInputIntent('results'); setView('chat');
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }); }}
     onResearch={repositories => {
       setView('chat'); setInputIntent('research');
       void w.guard(() => w.send(t('overview.researchQuestion'), false, false, { intent: 'research', repositories }));
     }} />;
   return (
-    <div className={`flex flex-col overflow-hidden bg-background text-foreground transition-all duration-150 ${isKeyboardOpen ? 'h-[100dvh] min-h-0' : 'h-[calc(100dvh-4.5rem)] min-h-[420px]'}`}>
+    <div ref={frameRef} className="workbench-frame flex min-h-0 flex-col overflow-hidden bg-background text-foreground" style={{ height: frameHeight ?? 'calc(100dvh - 3.5rem)' }}>
       <header className={`grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border transition-all ${isKeyboardOpen ? 'h-9 px-2' : 'h-11 px-3'}`}>
         <div className="flex min-w-0 items-center gap-1">
-        <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" aria-label={t('workbench.history')} title={t('workbench.history')} onClick={() => setLeftOpen(!leftOpen)}><PanelLeft className="h-4 w-4" /></Button>
+        <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" aria-label={t('workbench.history')} title={t('workbench.history')} onClick={() => setLeftOpen(!historyOpen)}><PanelLeft className="h-4 w-4" /></Button>
         <Button size="icon" variant="ghost" className="relative h-8 w-8 lg:hidden" aria-label={t('workbench.history')} onClick={() => setMobileLeft(true)}>
           <PanelLeft className="h-4 w-4" />
           {hasPendingProposals && (
@@ -659,14 +786,16 @@ export function AIWorkbench() {
         <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">{w.active?.title ?? t('workbench.title')}</h1>
         {(w.error || (w.task.error && w.task.sessionId === w.activeId)) && <Button size="sm" variant="ghost" onClick={() => useAppStore.getState().setCurrentView('tasks')}>{t('workbench.taskRecords')}</Button>}
         </div>
-        <div className="flex shrink-0 items-center justify-center" role="tablist" aria-label={t('workbench.title')}>
-          {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
-            className={`flex h-8 items-center gap-1.5 border-b-2 px-2.5 text-xs transition-colors hover:text-foreground ${view === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
-            onClick={() => setView(item)}>{item === 'chat' ? <MessageSquare className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}</span>{item === 'overview' && hasNewCandidates && <span className="text-[11px] text-muted-foreground">{candidates.length}</span>}</button>)}
-        </div>
+        {(hasNewCandidates || w.data.selectedRepositories.length > 0 || view === 'overview') ? (
+          <div className="flex shrink-0 items-center justify-center" role="tablist" aria-label={t('workbench.title')}>
+            {(['chat', 'overview'] as const).map(item => <button key={item} type="button" role="tab" aria-selected={view === item} aria-label={t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}
+              className={`flex h-8 items-center gap-1.5 border-b-2 px-2.5 text-xs transition-colors hover:text-foreground ${view === item ? 'border-primary font-semibold' : 'border-transparent text-muted-foreground'}`}
+              onClick={() => setView(item)}>{item === 'chat' ? <MessageSquare className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}<span className="hidden sm:inline">{t(`overview.${item === 'chat' ? 'chat' : 'view'}`)}</span>{item === 'overview' && hasNewCandidates && <span className="text-[11px] text-muted-foreground">{candidates.length}</span>}</button>)}
+          </div>
+        ) : <div />}
         <div className="flex min-w-0 items-center justify-end gap-0.5">
-        {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.dock')} aria-label={t('overview.dock')} aria-pressed={docked} onClick={() => setDocked(!docked)}><PanelRight className="h-4 w-4" /></Button>}
-        {view === 'overview' && <Button size="icon" variant="ghost" className="hidden h-8 w-8 xl:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(60); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
+        {hasNewCandidates && <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" title={t('overview.dock')} aria-label={t('overview.dock')} aria-pressed={docked} onClick={() => setDocked(!docked)}><PanelRight className="h-4 w-4" /></Button>}
+        {hasNewCandidates && <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(55); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
         {w.project && !isKeyboardOpen && <button className="hidden max-w-40 truncate text-xs text-muted-foreground sm:block" onClick={() => editProject(w.project!)}>{w.project.name}</button>}
         <Button size="icon" variant="ghost" className="h-8 w-8" title={t('workbench.exportMarkdown')} aria-label={t('workbench.exportMarkdown')} disabled={!w.messages.length}
           onClick={() => download('conversation.md', conversationMarkdown(w.messages, w.evidence), 'text/markdown')}><Download className="h-4 w-4" /></Button>
@@ -683,8 +812,8 @@ export function AIWorkbench() {
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        {leftOpen && <aside className="hidden w-[220px] shrink-0 border-r border-border lg:block">{history}</aside>}
-        <div ref={splitRef} className="workbench-split min-h-0 min-w-0 flex-1" data-view={view} data-docked={view === 'overview' && docked} style={{ '--result-ratio': `${resultRatio}%` } as React.CSSProperties}>
+        {historyOpen && <aside className="hidden w-[220px] shrink-0 border-r border-border lg:block">{history}</aside>}
+        <div ref={splitRef} className="workbench-split min-h-0 min-w-0 flex-1" data-view={view} data-docked={docked && hasNewCandidates} style={{ '--result-ratio': `${resultRatio}%` } as React.CSSProperties}>
           <div className="workbench-results-pane min-h-0 min-w-0">{results}</div>
           <div className="workbench-separator" role="separator" aria-label={t('overview.resize')} aria-orientation="vertical" aria-valuemin={35} aria-valuemax={70} aria-valuenow={Math.round(resultRatio)} tabIndex={0}
             onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); resizeResults(event.clientX); }}
@@ -700,21 +829,28 @@ export function AIWorkbench() {
             {!activeBusy && <Button size="sm" variant="ghost" onClick={() => w.select(w.task.sessionId)}>{t('workbench.returnTask')}</Button>}
             <Button size="icon" variant="ghost" className="h-6 w-6" aria-label={t('workbench.stop')} onClick={w.stop}><Square className="h-3 w-3" /></Button>
           </div>}
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          {isStart && <section className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-10" aria-label={t('workbench.startTitle')}>
+            <div className="mx-auto mb-5 max-w-3xl">
+              <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/8 px-2.5 py-0.5 text-[11px] font-medium text-primary">
+                <Bot className="h-3 w-3" />
+                <span>{t(`workbench.task-${taskMode}`)}</span>
+              </div>
+              <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">{t('workbench.startTitle')}</h2>
+              <p className="mt-1.5 text-sm leading-6 text-muted-foreground">{t('workbench.startHint')}</p>
+            </div>
+            {composer}
+            {!isKeyboardOpen && <WorkbenchStart taskMode={taskMode} onSelectPrompt={(promptText) => {
+              draftRef.current = promptText;
+              setDraft(promptText);
+              requestAnimationFrame(() => {
+                const el = textareaRef.current;
+                if (el) { el.focus(); el.setSelectionRange(promptText.length, promptText.length); }
+              });
+            }} disabled={busy || readonly || transitioning} libraryCount={w.repositories.length} />}
+          </section>}
+          <div className={isStart ? 'hidden' : 'relative flex min-h-0 flex-1 flex-col'}>
             <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" onScroll={checkScrollState}>
               <div className="mx-auto max-w-3xl space-y-5">
-              {!w.messages.length && !hasNewCandidates && (
-                <InspirationGrid
-                  onSelectPrompt={(prompt, scope) => {
-                    setDraft(prompt);
-                    void w.guard(async () => {
-                      const record = w.active ?? (await w.createSession());
-                      await w.patchData(record.id, { scope: scope as typeof w.data.scope });
-                    });
-                    textareaRef.current?.focus();
-                  }}
-                />
-              )}
               {w.messages.map((message) =>
                 message.role === 'user' ? (
                   <article
@@ -917,309 +1053,24 @@ export function AIWorkbench() {
             </div>
           )}
         </div>
-          <form className={`shrink-0 border-t border-border sm:px-5 transition-all duration-150 ${isKeyboardOpen ? 'p-1.5 bg-background' : 'p-3'}`} onSubmit={(e) => {
-            e.preventDefault();
-            if (!draft.trim() || busy || readonly || !modelReady || invalidOverviewScope) return;
-            const question = draft; setFollow(true);
-            requestAnimationFrame(() => {
-              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-            });
-            void w.guard(async () => {
-              try {
-                await w.send(question, manage, false, { intent: w.data.scope === 'github' ? inputIntent : 'research', candidates: askedCandidates });
-              } catch (error) {
-                const latest = liveWorkbench.current;
-                if (String(useAppStore.getState().user?.id ?? '') === w.ownerId && latest.ownerId === w.ownerId
-                  && (latest.activeId === w.activeId || latest.activeId === latest.task.sessionId)) setDraft(current => current || question);
-                throw error;
-              }
-              const latest = liveWorkbench.current;
-              if (String(useAppStore.getState().user?.id ?? '') === w.ownerId && latest.ownerId === w.ownerId
-                && latest.activeId === (w.activeId ?? latest.task.sessionId)) setDraft(current => current === question ? '' : current);
-            });
-          }}>
-            {w.data.selectedRepositories.length > 0 && (
-              <div className={`flex items-center gap-1.5 text-xs ${isKeyboardOpen ? 'mb-1 max-h-8 overflow-x-auto flex-nowrap py-0.5' : 'mb-2 max-h-24 overflow-y-auto flex-wrap'}`}>
-                <span className="flex items-center gap-1 font-medium text-muted-foreground shrink-0">
-                  <FolderGit2 className="h-3.5 w-3.5 text-primary" />
-                  <span>{t('workbench.contextPrefix')}</span>
-                </span>
-                {w.data.selectedRepositories.map((repo) => (
-                  <Badge
-                    key={repo.id}
-                    variant="secondary"
-                    className="flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 pl-2.5 pr-1 py-0.5 text-xs font-normal text-primary transition-all hover:bg-primary/15 shrink-0"
-                  >
-                    <span className="truncate max-w-[160px] sm:max-w-[240px]">{repo.full_name}</span>
-                    <button
-                      type="button"
-                      disabled={readonly}
-                      className="ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-primary/20 hover:text-foreground transition-colors"
-                      onClick={() => void w.guard(async () => {
-                        const sid = w.activeId ?? (await w.createSession()).id;
-                        await w.patchData(sid, {
-                          selectedRepositories: w.data.selectedRepositories.filter((x) => x.id !== repo.id),
-                        });
-                      })}
-                      aria-label={t('workbench.removeContext')}
-                      title={t('workbench.removeContext')}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                ))}
-                {w.data.selectedRepositories.length > 1 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-destructive shrink-0"
-                    disabled={readonly}
-                    onClick={() => void w.guard(async () => {
-                      const sid = w.activeId ?? (await w.createSession()).id;
-                      await w.patchData(sid, { selectedRepositories: [] });
-                    })}
-                  >
-                    {t('workbench.clearAll')}
-                  </Button>
-                )}
-              </div>
-            )}
-            {!modelReady && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status">
-              <span>{t(w.aiConfigs.length ? 'workbench.modelUnavailableHint' : 'workbench.noModelHint')}</span>
-              <Button type="button" variant="outline" size="sm" onClick={w.openAISettings}>{t('workbench.configureModel')}</Button>
-            </div>}
-            {w.data.scope === 'github' && inputIntent === 'results' && <div role="status" className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span>{t(invalidOverviewScope ? 'overview.scopeLimit' : 'overview.askScope', { count: askedCandidates.length })}</span>
-              <Button type="button" variant="outline" size="sm" onClick={() => setView('overview')}>{t('overview.chooseScope')}</Button>
-            </div>}
-            <div className="rounded-xl border border-border bg-card p-2.5 transition-all focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
-            <Textarea
-              ref={textareaRef}
-              value={draft}
-              disabled={readonly}
-              onChange={(e) => setDraft(e.target.value)}
-              className={`resize-y border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0 ${isKeyboardOpen ? 'min-h-[42px] max-h-24 text-xs' : 'min-h-20 max-h-40'}`}
-              aria-label={t('repositoryChatSheet.question')}
-              placeholder={t(w.data.scope === 'github' ? inputIntent === 'results' ? 'overview.askPlaceholder' : 'workbench.emptyQuestion' : 'research.question')}
-            />
-            {w.data.scope === 'github' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={t('overview.brief')}>
-              {(['search', 'results'] as const).map(intent => <button type="button" key={intent} aria-pressed={inputIntent === intent} disabled={busy || readonly || (intent === 'results' && !hasNewCandidates)}
-                className={`rounded-full px-2.5 py-0.5 transition-colors ${inputIntent === intent ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => { setInputIntent(intent); if (w.activeId) void w.guard(() => w.patchData(w.activeId!, { inputIntent: intent })); }}>{t(intent === 'search' ? 'overview.newSearch' : 'overview.ask')}</button>)}
-              {inputIntent === 'search' && <span className="text-muted-foreground">{t('overview.brief')}</span>}
-            </div>}
-            {(w.data.scope === 'local' || w.data.scope === 'mixed') && !isKeyboardOpen && <div className="mt-2 space-y-2 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="break-all">{w.data.localProject?.name ?? t('localResearch.local')}</span>
-                <span>{t('localResearch.deviceOnly')}</span>
-                <Button type="button" size="sm" variant="outline" disabled={busy || readonly} onClick={() => void w.guard(w.chooseLocalProject)}><FolderOpen className="mr-1 h-4 w-4" />{t('localResearch.choose')}</Button>
-              </div>
-              {!w.localProject && <p role="status">{t('localResearch.rebind')}</p>}
-              {w.localProject && <details><summary className="cursor-pointer">{t('localResearch.scope')} ({w.localProject.entries.length})</summary>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap">{w.localProject.entries.map(item => item.path).join('\n')}</pre></details>}
-            </div>}
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {/* Mobile (<640px) compact semantic pill */}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setMobileToolbarOpen(true)}
-                disabled={busy || readonly}
-                className={`flex sm:hidden h-8 items-center rounded-full border-border/60 bg-muted/40 text-xs text-muted-foreground hover:text-foreground ${isKeyboardOpen ? 'w-8 px-0 justify-center' : 'max-w-[210px] gap-1.5 px-2.5'}`}
-                title={isZh ? '参数设置' : 'Parameters'} /* i18n-allow-literal */
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
-                {!isKeyboardOpen && (
-                  <>
-                    <span className="truncate">
-                      {currentScopeLabel} · {currentModelLabel} · {currentDepthLabel}
-                    </span>
-                    <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
-                  </>
-                )}
-              </Button>
-
-              {/* Desktop (>=640px) inline Radix Selects */}
-              <div className="hidden sm:flex items-center gap-2">
-                <Select
-                  value={w.data.scope}
-                  disabled={busy || readonly}
-                  onValueChange={(val) => void w.guard(async () => {
-                    const record = w.active ?? (await w.createSession());
-                    await w.patchData(record.id, { scope: val as typeof w.data.scope });
-                    setManage(false);
-                  })}
-                >
-                  <SelectTrigger className="h-8 max-w-36 text-xs bg-muted/40 hover:bg-muted/70 border-border/60" aria-label={t('workbench.scope')}>
-                    <SelectValue placeholder={t('workbench.scope')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="github">{t('workbench.scope-github')}</SelectItem>
-                    <SelectItem value="selected">{t('workbench.scope-selected')}</SelectItem>
-                    <SelectItem value="project">{t('workbench.scope-project')}</SelectItem>
-                    <SelectItem value="library">{t('workbench.scope-library')}</SelectItem>
-                    {window.electronAPI?.agy && <SelectItem value="local">{t('localResearch.local')}</SelectItem>}
-                    {window.electronAPI?.agy && <SelectItem value="mixed">{t('research.mixed')}</SelectItem>}
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={w.modelId || '__default__'}
-                  disabled={busy}
-                  onValueChange={(val) => w.setSettings({ chatConfigId: val === '__default__' ? null : val })}
-                >
-                  <SelectTrigger className="h-8 max-w-44 text-xs bg-muted/40 hover:bg-muted/70 border-border/60" aria-label={t('workbench.model')}>
-                    <SelectValue placeholder={t('workbench.model')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">{t('workbench.model')}</SelectItem>
-                    {w.aiConfigs.map((c) => (
-                      <SelectItem key={c.id} value={c.id} disabled={!isAIConfigAvailable(c)}>
-                        {c.name} · {c.model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <Select
-                  value={w.data.depth}
-                  disabled={busy || readonly}
-                  onValueChange={(val) => void w.guard(async () => {
-                    const record = w.active ?? (await w.createSession());
-                    await w.patchData(record.id, { depth: val as typeof w.data.depth });
-                  })}
-                >
-                  <SelectTrigger className="h-8 w-24 text-xs bg-muted/40 hover:bg-muted/70 border-border/60" aria-label={t('repositoryChatSheet.task-depth')}>
-                    <SelectValue placeholder={t('repositoryChatSheet.task-depth')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="quick">{t('workbench.quick')}</SelectItem>
-                    <SelectItem value="standard">{t('workbench.standard')}</SelectItem>
-                    <SelectItem value="deep">{t('workbench.deep')}</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                {w.data.scope === 'library' && (
-                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-                    <input type="checkbox" checked={manage} onChange={(e) => setManage(e.target.checked)} disabled={busy} className="rounded" />
-                    <span>{t('workbench.manage')}</span>
-                  </label>
-                )}
-              </div>
-
-              <Button type={busy ? 'button' : 'submit'} size="icon" className={`ml-auto h-8 w-8 shrink-0 rounded-lg ${busy ? 'animate-pulse' : ''}`} disabled={!busy && (!draft.trim() || readonly || !modelReady || invalidOverviewScope)} onClick={busy ? w.stop : undefined}
-                aria-label={t(busy ? 'workbench.stop' : 'workbench.send')} title={t(busy ? 'workbench.stop' : 'workbench.send')}>
-                {busy ? <Square className="h-3 w-3" /> : <Send className="h-4 w-4" />}
-              </Button>
-            </div>
-            </div>
-            <p className="mt-1.5 hidden items-center gap-3 text-[11px] text-muted-foreground/70 sm:flex">
-              <span>Enter {t('workbench.send')}</span>
-              <span>Shift+Enter</span>
-            </p>
-          </form>
+          {!isStart && <div className={`shrink-0 border-t border-border px-4 sm:px-6 ${isKeyboardOpen ? 'py-1.5' : 'py-3'}`}>{composer}</div>}
         </main>
         </div>
       </div>
       <Sheet open={mobileLeft} onOpenChange={setMobileLeft}><SheetContent side="left" className="w-80 max-w-[90vw] p-0"><SheetHeader className="px-4 pt-4"><SheetTitle>{t('workbench.history')}</SheetTitle></SheetHeader>{history}</SheetContent></Sheet>
 
-      {/* Mobile Toolbar Settings Sheet */}
-      <Sheet open={mobileToolbarOpen} onOpenChange={setMobileToolbarOpen}>
-        <SheetContent side="bottom" className="rounded-t-2xl p-4 space-y-4 max-h-[85vh] overflow-y-auto">
-          <SheetHeader className="pb-2 border-b border-border/60">
-            <SheetTitle className="text-sm font-semibold flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <SlidersHorizontal className="h-4 w-4 text-primary" />
-                <span>{isZh ? '参数与模型配置' : 'Parameter & Model Config'}</span> {/* i18n-allow-literal */}
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => setMobileToolbarOpen(false)}
-              >
-                {isZh ? '完成' : 'Done'} {/* i18n-allow-literal */}
-              </Button>
-            </SheetTitle>
-          </SheetHeader>
-          <div className="space-y-3 pt-1">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground">{t('workbench.scope')}</label>
-              <Select
-                value={w.data.scope}
-                disabled={busy || readonly}
-                onValueChange={(val) => void w.guard(async () => {
-                  const record = w.active ?? (await w.createSession());
-                  await w.patchData(record.id, { scope: val as typeof w.data.scope });
-                  setManage(false);
-                })}
-              >
-                <SelectTrigger className="h-9 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="github">{t('workbench.scope-github')}</SelectItem>
-                  <SelectItem value="selected">{t('workbench.scope-selected')}</SelectItem>
-                  <SelectItem value="project">{t('workbench.scope-project')}</SelectItem>
-                  <SelectItem value="library">{t('workbench.scope-library')}</SelectItem>
-                  {window.electronAPI?.agy && <SelectItem value="local">{t('localResearch.local')}</SelectItem>}
-                  {window.electronAPI?.agy && <SelectItem value="mixed">{t('research.mixed')}</SelectItem>}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground">{t('workbench.model')}</label>
-              <Select
-                value={w.modelId || '__default__'}
-                disabled={busy}
-                onValueChange={(val) => w.setSettings({ chatConfigId: val === '__default__' ? null : val })}
-              >
-                <SelectTrigger className="h-9 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__default__">{t('workbench.model')}</SelectItem>
-                  {w.aiConfigs.map((c) => (
-                    <SelectItem key={c.id} value={c.id} disabled={!isAIConfigAvailable(c)}>
-                      {c.name} · {c.model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-foreground">{t('repositoryChatSheet.task-depth')}</label>
-              <Select
-                value={w.data.depth}
-                disabled={busy || readonly}
-                onValueChange={(val) => void w.guard(async () => {
-                  const record = w.active ?? (await w.createSession());
-                  await w.patchData(record.id, { depth: val as typeof w.data.depth });
-                })}
-              >
-                <SelectTrigger className="h-9 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="quick">{t('workbench.quick')}</SelectItem>
-                  <SelectItem value="standard">{t('workbench.standard')}</SelectItem>
-                  <SelectItem value="deep">{t('workbench.deep')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {w.data.scope === 'library' && (
-              <label className="flex items-center gap-2 text-xs pt-1 cursor-pointer">
-                <input type="checkbox" checked={manage} onChange={(e) => setManage(e.target.checked)} disabled={busy} className="rounded" />
-                <span>{t('workbench.manage')}</span>
-              </label>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-
+      {pickerSession && <WorkbenchRepositoryPicker key={`${w.ownerId}:${pickerSession}`} repositories={researchCandidates} selected={w.data.selectedRepositories} disabled={busy || readonly || transitioning}
+        onReturnFocus={() => textareaRef.current?.focus()}
+        onClose={() => setPickerSession(null)} onDiscover={() => { setPickerSession(null); void startTask('discover'); }}
+        onSave={async items => {
+          await w.guard(async () => {
+            if (liveWorkbench.current.ownerId !== w.ownerId || liveWorkbench.current.activeId !== pickerSession) return;
+            await w.patchData(pickerSession, { taskMode: 'research', scope: w.data.scope === 'mixed' ? 'mixed' : 'selected', inputIntent: 'research', selectedRepositories: items });
+            if (!isCurrentSession(pickerSession)) return;
+            setPickerSession(null); setInputIntent('research');
+            requestAnimationFrame(() => textareaRef.current?.focus());
+          });
+        }} />}
       <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => {
         const file = e.target.files?.[0]; e.target.value = '';
         if (file) void w.guard(async () => { if (file.size > 25 * 1024 * 1024) throw new Error(t('workbench.backupTooLarge')); await w.importBackup(JSON.parse(await file.text())); });

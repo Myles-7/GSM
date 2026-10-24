@@ -358,6 +358,26 @@ describe('repositoryChatStorage local fallback', () => {
     });
   });
 
+  it('round-trips optional task modes while keeping legacy workbench backups valid', async () => {
+    const ownerId = 'task-owner';
+    for (const taskMode of [undefined, 'discover', 'research', 'organize'] as const) {
+      await repositoryChatStorage.saveSession({ ...createSession(`task-${taskMode ?? 'legacy'}`, 0, '2026-10-01T00:00:00.000Z'),
+        ownerId, kind: 'workbench', workbench: { scope: taskMode === 'organize' ? 'library' : 'github',
+          depth: 'standard', selectedRepositories: [], searchBatches: [], ...(taskMode ? { taskMode } : {}) } });
+    }
+    const backup = await repositoryChatStorage.exportWorkbench(ownerId);
+    await repositoryChatStorage.importWorkbench(ownerId, backup);
+    for (const taskMode of [undefined, 'discover', 'research', 'organize'] as const) {
+      const imported = await repositoryChatStorage.getSession(`task-${taskMode ?? 'legacy'}-import-1`);
+      expect(imported?.workbench?.taskMode).toBe(taskMode);
+      expect(imported?.workbench?.searchBatches).toEqual([]);
+    }
+    const invalid = structuredClone(backup) as { sessions: RepositoryChatSession[] };
+    Object.assign(invalid.sessions[0].workbench!, { taskMode: 'automatic' });
+    await expect(repositoryChatStorage.importWorkbench(ownerId, invalid)).rejects.toThrow('taskMode');
+    expect(await repositoryChatStorage.listWorkbenchSessions(ownerId)).toHaveLength(8);
+  });
+
   it('keeps retained proposal journals detached when an orphaned session id collides on import', async () => {
     const ownerId = 'owner-a';
     await repositoryChatStorage.saveProposal(createProposal('orphan-proposal', ownerId, 'orphan-session'));

@@ -149,7 +149,7 @@ export function useAIOrganization(input: { filteredRepositories: Repository[]; s
       id = crypto.randomUUID();
       const date = new Date().toISOString();
       await storage.saveSession({ id, ownerId, kind: 'workbench', title: t('aiOrganization.title'), repoId: 0, repoFullName: '', sourceRefSha: '', createdAt: date, updatedAt: date,
-        workbench: { scope: 'library', depth: 'standard', selectedRepositories: [], searchBatches: [] } });
+        workbench: { taskMode: 'organize', inputIntent: 'research', scope: 'library', depth: 'standard', selectedRepositories: [], searchBatches: [] } });
       setSessionId(id);
       sessionStorage.setItem(`gsm:organization-session:${ownerId}`, id);
     }

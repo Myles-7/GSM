@@ -152,6 +152,9 @@ export function applyRepoFilters<T extends Repository>(
         ...(repo.ai_tags || []),
         ...(repo.topics || []),
         ...(repo.custom_tags || []),
+        ...(repo.ai_details?.tags || []),
+        ...(repo.ai_details?.scenarios || []),
+        ...(repo.ai_details?.technologies || []),
       ];
       return tags.some((tag) => repoTags.includes(tag));
     });

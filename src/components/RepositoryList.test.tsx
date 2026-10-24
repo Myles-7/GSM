@@ -192,52 +192,24 @@ describe('RepositoryList view mode controls', () => {
 });
 
 
-describe('RepositoryList floating evidence facets', () => {
+describe('RepositoryList breadcrumb, filter recovery, and grouped search', () => {
   const repos = [
     { ...repository, id: 1, name: 'react-web', ai_details: { technologies: ['React'], platforms: ['web'] } },
     { ...repository, id: 2, name: 'python-web', ai_details: { technologies: ['Python'], platforms: ['web'] } },
     { ...repository, id: 3, name: 'react-desktop', ai_details: { technologies: ['React'], platforms: ['desktop'] } },
   ] as Repository[];
-  const openFilters = () => fireEvent.click(screen.getByRole('button', { name: /^特征筛选/ }));
-  it('starts closed, keeps base counts after intersection reaches zero, and removes active chips', () => {
-    render(<RepositoryList repositories={repos} selectedCategory="all" />);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Python 1' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'desktop 1' }));
-    expect(screen.queryAllByTestId(/repository-card-/)).toHaveLength(0);
-    expect(screen.getByRole('checkbox', { name: 'React 2' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '移除 desktop' }));
-    expect(screen.getByTestId('repository-card-2')).toBeInTheDocument();
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '清除全部特征' }));
-    expect(screen.getAllByTestId(/repository-card-/)).toHaveLength(3);
-  });
-  it('keeps exploration independent of normal category selection and hides the facet window', () => {
+
+  it('keeps exploration independent of normal category selection and hides the breadcrumb bar', () => {
     storeState.repositoryViewMode = 'cluster';
     const view = render(<RepositoryList repositories={repos} selectedCategory="all" />);
-    expect(screen.queryByRole('button', { name: /^特征筛选/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: '分类路径' })).not.toBeInTheDocument();
     expect(screen.getByTestId('cluster-repositories')).toHaveTextContent('react-web');
     expect(screen.getByTestId('cluster-repositories')).toHaveTextContent('react-desktop');
     view.rerender(<RepositoryList repositories={repos} selectedCategory="pending" />);
     expect(screen.getByTestId('cluster-repositories')).toHaveTextContent('python-web');
     expect(screen.getByTestId('cluster-repositories')).toHaveTextContent('react-web');
   });
-  it('clears facets after scheme and account switches, retaining query and closing the account window', () => {
-    searchFilters.query = 'saved query';
-    const view = render(<RepositoryList repositories={repos} selectedCategory="all" />);
-    openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'React 2' }));
-    storeState.activeClassificationScheme = 'technology';
-    view.rerender(<RepositoryList repositories={repos} selectedCategory="all" />);
-    expect(screen.getAllByTestId(/repository-card-/)).toHaveLength(3);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Python 1' }));
-    storeState.user = { id: 2 };
-    storeState.activeClassificationScheme = 'purpose';
-    view.rerender(<RepositoryList repositories={repos} selectedCategory="all" />);
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getAllByTestId(/repository-card-/)).toHaveLength(3);
-    expect(searchFilters.query).toBe('saved query');
-  });
+
   it('limits counts to subgroup and uses scheme-bound breadcrumb navigation without clearing query', () => {
     storeState.subcategories = [{ id: 'react', parentId: 'web', name: 'React group', icon: '' }];
     searchFilters.query = 'existing query';
@@ -245,43 +217,21 @@ describe('RepositoryList floating evidence facets', () => {
       { ...repos[0], category_id: 'web', subcategory_id: 'react' },
       { ...repos[1], category_id: 'web', subcategory_id: 'python' },
     ]} selectedCategory="react" />);
-    openFilters();
-    expect(screen.getByRole('checkbox', { name: 'React 1' })).toBeInTheDocument();
-    expect(screen.queryByRole('checkbox', { name: 'Python 1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('1 / 1 个仓库');
     fireEvent.click(within(screen.getByRole('navigation', { name: '分类路径' })).getByRole('button', { name: 'web' }));
     expect(storeState.setClassificationLocation).toHaveBeenCalledWith('purpose', 'web');
     expect(storeState.setClassificationExpanded).toHaveBeenCalledWith('purpose', ['web']);
     expect(searchFilters.query).toBe('existing query');
   });
-  it('searches all choices and keeps a missing selected facet removable outside the window', () => {
-    const many = Array.from({ length: 20 }, (_, index) => ({ ...repository, id: index + 1, ai_details: { technologies: [`stack-${String(index).padStart(2, '0')}`] } })) as Repository[];
-    const view = render(<RepositoryList repositories={many} selectedCategory="all" />);
-    openFilters();
-    expect(screen.getAllByRole('checkbox', { name: /stack-/ })).toHaveLength(20);
-    fireEvent.change(screen.getByRole('searchbox', { name: '技术 特征搜索' }), { target: { value: 'stack-19' } });
-    expect(screen.getAllByRole('checkbox', { name: /stack-/ })).toHaveLength(1);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'stack-19 1' }));
-    view.rerender(<RepositoryList repositories={many.slice(0, 19)} selectedCategory="all" />);
-    fireEvent.click(screen.getByRole('button', { name: '关闭特征筛选' }));
-    fireEvent.click(screen.getByRole('button', { name: '移除 stack-19' }));
-    expect(screen.getAllByTestId(/repository-card-/)).toHaveLength(19);
-  });
-  it('omits classification reports, manual refinement, and confidence filters', () => {
-    render(<RepositoryList repositories={repos} selectedCategory="all" />);
-    openFilters();
-    expect(screen.queryByText(/分类报告|继续细分|置信度/)).not.toBeInTheDocument();
-  });
-  it('clears both global and facet filters from the zero-result recovery action', () => {
-    render(<RepositoryList repositories={repos} selectedCategory="all" />);
-    openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Python 1' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'desktop 1' }));
-    expect(screen.queryAllByTestId(/repository-card-/)).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: '关闭特征筛选' }));
-    expect(screen.getByText('没有符合当前筛选条件的项目')).toBeInTheDocument();
+
+  it('clears both search query and global filters from the zero-result recovery action', () => {
+    searchFilters.query = 'no-match-keyword';
+    const clearSpy = vi.fn();
+    window.addEventListener('gsm:clear-search-query', clearSpy);
+    render(<RepositoryList repositories={[]} selectedCategory="all" />);
     fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));
-    expect(storeState.setSearchFilters).toHaveBeenCalled();
-    expect(screen.getAllByTestId(/repository-card-/)).toHaveLength(3);
-    expect(screen.queryByLabelText('已选特征')).not.toBeInTheDocument();
+    expect(storeState.setSearchFilters).toHaveBeenCalledWith(expect.objectContaining({ query: '' }));
+    expect(clearSpy).toHaveBeenCalledOnce();
+    window.removeEventListener('gsm:clear-search-query', clearSpy);
   });
 });

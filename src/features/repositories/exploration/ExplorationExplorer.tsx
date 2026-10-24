@@ -223,12 +223,25 @@ export function ExplorationExplorer({ onOpenRepository }: Props) {
     } catch (error) { record.error(error); record.finish('failed'); setMessage('task-record'); }
   };
   const startEditTopics = (id: number) => { setEditingRepository(id); setChosenTopics(scene?.profiles[String(id)]?.topics.map(topic => topic.id) ?? []); setSelection(null); setDialog('edit-project'); };
+  const [showExtended, setShowExtended] = useState(false);
+  useEffect(() => { setShowExtended(false); }, [focus.type, effectiveQuery]);
   const results=useMemo(()=>{
     const rows=[...resultsForRelationKind(scene?.results??[],kindFilter)];
     if(activeSaved){const order=new globalThis.Map(activeSaved.resultIds.map((id,index)=>[id,index]));rows.sort((a,b)=>(order.get(a.repositoryId)??1000)-(order.get(b.repositoryId)??1000));}
     return rows;
   },[scene,kindFilter,activeSaved]);
-  const mapScene=useMemo(()=>scene?{...scene,results,branches:scene.branches.filter(branch=>kindFilter==='all'||branch.kind===kindFilter)}:null,[scene,results,kindFilter]);
+  const coreResults = useMemo(() => results.filter(row => row.tier !== 'extended'), [results]);
+  const extendedResults = useMemo(() => results.filter(row => row.tier === 'extended'), [results]);
+  const displayedResults = useMemo(() => (coreResults.length > 0 && !showExtended) ? coreResults : results, [coreResults, showExtended, results]);
+  const verifiedCount = useMemo(() => displayedResults.filter(row => row.verified).length, [displayedResults]);
+  const sendToWorkbench = () => {
+    const targetRepos = displayedResults.slice(0, 12).map(r => repositoryMap.get(r.repositoryId)).filter((r): r is Repository => Boolean(r));
+    try {
+      sessionStorage.setItem('gsm:workbench-prefill-research', JSON.stringify({ query: effectiveQuery, repositories: targetRepos }));
+    } catch { /* ignore */ }
+    allowExplorationNavigation(() => useAppStore.getState?.()?.setCurrentView?.('ai'));
+  };
+  const mapScene=useMemo(()=>scene?{...scene,results:displayedResults,branches:scene.branches.filter(branch=>(kindFilter==='all'||branch.kind===kindFilter)&&(showExtended||!coreResults.length||!branch.label.startsWith(t('exploration.similar-purpose'))))}:null,[scene,displayedResults,kindFilter,showExtended,coreResults.length,t]);
   const level=useMemo(()=>mapScene?explorationLevel(mapScene,focus,new globalThis.Map(sceneRepositories.map(repo=>[repo.id,repo.name]))):null,[mapScene,focus,sceneRepositories]);
   const directory=level?.children.filter(node=>node.type!=='repository')??[];
   const selectedModel = controller.config?.provider === 'agy-cli' ? controller.config.agyFeatureOverrides?.organization?.model || controller.config.model : controller.config?.model;
@@ -275,13 +288,28 @@ export function ExplorationExplorer({ onOpenRepository }: Props) {
     </details>
     {controller.loading ? <div className="explore-onboarding" role="status">{t('exploration.loading-local-map')}</div> : !account?.index ? <div className="explore-onboarding"><span className="explore-onboarding-icon"><Layers3 size={32} /></span><h2>{t('exploration.no-project-map-yet')}</h2><Button disabled={!canRun || controller.busy || !repositories.length} onClick={() => void controller.build()}><Sparkles size={16} /> {' '}{t('exploration.build-project-map')}{' '}{repositories.length} {' '}{t('exploration.repositories')}</Button>{!controller.ownerId && <p>{t('exploration.sign-in-first')}</p>}{!controller.configs.length && <Button variant="outline" onClick={controller.configureAI}>{t('exploration.configure-ai-in-settings')}</Button>}</div> : <>
       {choices.length > 0 && <div className="explore-disambiguation"><Button variant="ghost" onClick={()=>setChoices([])}>{t('workspace.cancel')}</Button><strong>{t('exploration.choose-what-to-explore')}</strong>{choices.map(entity => <button key={entity.id} onClick={() => choose(entity)}><b>{entity.label}</b><span>{entity.description}</span></button>)}</div>}
-      <div className="explore-navigation"><nav aria-label={t('exploration.exploration-path')}>{path.map((item, index) => <span key={index}>{index > 0 && <span className="explore-path-separator">/</span>}{index === path.length - 1 ? <strong>{item.type === 'all' ? t('exploration.all-library-topics') : item.label}</strong> : <button onClick={() => navigateBack(index)}>{item.type === 'all' ? t('exploration.all-library-topics') : item.label}</button>}</span>)}</nav><div>{path.length > 1 && <Button variant="ghost" size="sm" onClick={() => navigateBack(path.length - 2)}><ArrowLeft size={13} /> {' '}{t('exploration.back')}</Button>}{focus.type === 'topic' && <Button variant="ghost" size="sm" onClick={() => { setName(focus.label); setDialog('rename'); }}><PencilLine size={13} />{t('exploration.rename-topic')}</Button>}</div></div>
+      <div className="explore-navigation"><nav aria-label={t('exploration.exploration-path')}>{path.map((item, index) => <span key={index}>{index > 0 && <span className="explore-path-separator">/</span>}{index === path.length - 1 ? <strong>{item.type === 'all' ? t('exploration.all-library-topics') : item.label}</strong> : <button onClick={() => navigateBack(index)}>{item.type === 'all' ? t('exploration.all-library-topics') : item.label}</button>}</span>)}</nav>
+        {!sidebarOpen && ((savedAccount?.workspaces?.length ?? 0) > 0 || (savedAccount?.saved?.length ?? 0) > 0) && (
+          <div className="explore-bookmarks-bar" role="region" aria-label="快捷探索书签"> {/* i18n-allow-literal */}
+            {(savedAccount?.workspaces ?? []).slice(0, 5).map(ws => (
+              <button key={`ws-${ws.id}`} type="button" aria-label={`书签：${ws.name}`} className={`explore-bookmark-pill ${workspaceId === ws.id ? 'is-active' : ''}`} onClick={() => guardNavigation(() => applyWorkspace(ws))}>
+                <Bookmark size={11} /><span>{ws.name}</span>
+              </button>
+            ))}
+            {(savedAccount?.saved ?? []).slice(0, 4).map(snap => (
+              <button key={`snap-${snap.id}`} type="button" aria-label={`书签：${snap.name}`} className={`explore-bookmark-pill ${selectedSavedId === snap.id ? 'is-active' : ''}`} onClick={() => guardNavigation(() => openSaved(snap))}>
+                <Bookmark size={11} /><span>{snap.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div>{path.length > 1 && <Button variant="ghost" size="sm" onClick={() => navigateBack(path.length - 2)}><ArrowLeft size={13} /> {' '}{t('exploration.back')}</Button>}{focus.type === 'topic' && <Button variant="ghost" size="sm" onClick={() => { setName(focus.label); setDialog('rename'); }}><PencilLine size={13} />{t('exploration.rename-topic')}</Button>}</div></div>
       {activeSaved && <div className="explore-snapshot-status"><Button size="sm" onClick={()=>{setRenameWorkspace(null);setName(activeSaved.name);setDialog('save-exploration');}}>{t('workspace.convert')}</Button><span><Bookmark size={14} />{activeSaved.name} {' '}{t('exploration.saved-snapshot')}{' '}{new Date(activeSaved.updatedAt).toLocaleDateString()}<small>{t('exploration.new')}{' '}{changes?.added} {' '}{t('exploration.changed')}{' '}{changes?.changed} {' '}{t('exploration.removed')}{' '}{changes?.removed}</small></span><Button size="sm" variant="outline" disabled={controller.busy || !canRun || !((changes?.added ?? 0)+(changes?.changed ?? 0))} onClick={() => void controller.updateSaved(activeSaved)}>{t('exploration.analyze-new-and-changed-projects')}</Button></div>}
       <div className="explore-browser">
       {scene && <div className="explore-workspace">
         <ExplorationMap level={level!} scene={mapScene!} focus={focus} repositories={sceneRepositories} viewKey={viewKey} initialCamera={initialCamera} onCameraChange={onCameraChange} initialPositions={initialPositions} onLayoutChange={positions=>{positionsRef.current=positions;}} selectedRepositoryId={selection?.id} insets={insets} onFocus={navigate} onSelect={selectProject} onBlank={closeCard} onAllTopics={()=>{setTopicQuery('');setDialog('topics');}} />
-        <Button ref={resultsToggle} className="explore-results-toggle" size="sm" variant="outline" aria-expanded={resultsOpen} aria-label={t('exploration.exploration-project-results')} onClick={() => setResultsOpen(value => !value)}><List size={14}/>{t(directory.length?'browser.directory':'exploration.results')} · {directory.length||results.length}</Button>
-        <aside hidden={!resultsOpen} className="explore-results" aria-label={t('exploration.exploration-project-results')}><div className="explore-panel-tabs"><Button variant={!sidebarOpen?'secondary':'ghost'} aria-pressed={!sidebarOpen} onClick={()=>setSidebarOpen(false)}>{t(directory.length?'browser.directory':'exploration.results')} · {directory.length||results.length}</Button><Button variant={sidebarOpen?'secondary':'ghost'} aria-pressed={sidebarOpen} onClick={()=>setSidebarOpen(true)}>{t('exploration.saved-explorations')}</Button></div>
+        <Button ref={resultsToggle} className="explore-results-toggle" size="sm" variant="outline" aria-expanded={resultsOpen} aria-label={t('exploration.exploration-project-results')} onClick={() => setResultsOpen(value => !value)}><List size={14}/>{t(directory.length?'browser.directory':'exploration.results')} · {displayedResults.length||directory.length}</Button>
+        <aside hidden={!resultsOpen} className="explore-results" aria-label={t('exploration.exploration-project-results')}><div className="explore-panel-tabs"><Button variant={!sidebarOpen?'secondary':'ghost'} aria-pressed={!sidebarOpen} onClick={()=>setSidebarOpen(false)}>{t(directory.length?'browser.directory':'exploration.results')} · {displayedResults.length||directory.length}</Button><Button variant={sidebarOpen?'secondary':'ghost'} aria-pressed={sidebarOpen} onClick={()=>setSidebarOpen(true)}>{t('exploration.saved-explorations')}</Button></div>
           {sidebarOpen ? <div className="explore-workspace-library"><SavedExplorations key={owner} workspaces={savedAccount?.workspaces??[]} snapshots={savedAccount?.saved??[]} selected={workspaceId?`workspace:${workspaceId}`:selectedSavedId?`snapshot:${selectedSavedId}`:''} atHome={!workspaceId&&!selectedSavedId&&focus.type==='all'&&!query} busy={controller.busy||saving}
             onOpen={entry=>guardNavigation(()=>entry.kind==='workspace'?applyWorkspace(entry.item):openSaved(entry.item))}
             onHome={()=>guardNavigation(()=>{home();setSidebarOpen(false);})}
@@ -290,22 +318,62 @@ export function ExplorationExplorer({ onOpenRepository }: Props) {
             onDelete={entry=>void deleteExploration(entry)}
             onConvert={item=>guardNavigation(()=>{openSaved(item);setRenameWorkspace(null);setName(item.name);setDialog('save-exploration');})}/>
 </div> : <>
-<header><div><h2>{directory.length?t('browser.directory'):focus.type==='all'?t('exploration.all-projects'):t('exploration.current-exploration-projects')}</h2><b>{directory.length||results.length}</b><Button size="icon" variant="ghost" aria-label={t('exploration.results')} onClick={() => { setResultsOpen(false); resultsToggle.current?.focus(); }}><X size={14}/></Button></div>{focus.type !== 'all' && focus.type !== 'topic' && focus.type !== 'group' && focus.type !== 'branch' && <div className="explore-kind-filters"><button aria-pressed={kindFilter === 'all'} onClick={() => setKindFilter('all')}>{t('exploration.all')}</button>{(focus.type==='entity' || focus.type==='search') && scene.branches.filter(branch=>branch.label===t('exploration.explicitly-mentioned')||branch.label.startsWith(t('exploration.similar-purpose'))).map(branch=><button key={branch.id} onClick={()=>navigate({type:'branch',targetId:focus.id,branch:branch.label,kind:branch.kind,label:branch.label})}>{branch.label===t('exploration.explicitly-mentioned')?t('exploration.explicitly-mentioned'):branch.label} {branch.count}</button>)}{relationOrder.filter(kind => resultsForRelationKind(scene.results.filter(row=>row.relations.length), kind).length > 0).map(kind => <button key={kind} aria-pressed={kindFilter === kind} onClick={() => setKindFilter(kind)}>{t(`exploration.relations.${kind}`)} {resultsForRelationKind(scene.results.filter(row=>row.relations.length), kind).length}</button>)}</div>}</header>
+<header><div><h2>{directory.length?t('browser.directory'):focus.type==='all'?t('exploration.all-projects'):t('exploration.current-exploration-projects')}</h2><b>{displayedResults.length||directory.length}</b><Button size="icon" variant="ghost" aria-label={t('exploration.results')} onClick={() => { setResultsOpen(false); resultsToggle.current?.focus(); }}><X size={14}/></Button></div>{focus.type !== 'all' && focus.type !== 'topic' && focus.type !== 'group' && focus.type !== 'branch' && <div className="explore-kind-filters"><button aria-pressed={kindFilter === 'all'} onClick={() => setKindFilter('all')}>{t('exploration.all')} {coreResults.length || results.length}</button>{(focus.type==='entity' || focus.type==='search') && scene.branches.filter(branch=>branch.label===t('exploration.explicitly-mentioned')).map(branch=><button key={branch.id} onClick={()=>navigate({type:'branch',targetId:focus.id,branch:branch.label,kind:branch.kind,label:branch.label})}>{t('exploration.explicitly-mentioned')} {branch.count}</button>)}{relationOrder.filter(kind => resultsForRelationKind(scene.results.filter(row=>row.relations.length), kind).length > 0).map(kind => <button key={kind} aria-pressed={kindFilter === kind} onClick={() => setKindFilter(kind)}>{t(`exploration.relations.${kind}`)} {resultsForRelationKind(scene.results.filter(row=>row.relations.length), kind).length}</button>)}{extendedResults.length > 0 && coreResults.length > 0 && <button type="button" className="explore-extended-toggle" aria-pressed={showExtended} onClick={() => setShowExtended(v => !v)}>{showExtended ? '仅看核心相关' : `+ 同类拓展 (${extendedResults.length})`}</button> /* i18n-allow-literal */}</div>}</header>
           {selectedRepository && selection && <ExplorationProjectCard docked repository={selectedRepository} result={selectedResult} positionKey={JSON.stringify(focus)} onClose={closeCard} onOpen={() => { const live = repositories.find(repo => repo.id === selectedRepository.id); if (live) onOpenRepository(live); }} onExplore={() => navigate({ type: 'repository', id: selectedRepository.id, label: selectedRepository.name })} onEditTopics={() => startEditTopics(selectedRepository.id)} onRemoveRelation={id => void appendOverride({ type: 'remove-relation', relationId: id })} topics={scene?.profiles[String(selectedRepository.id)]?.topics ?? []} entities={scene?.profiles[String(selectedRepository.id)]?.entities ?? []} onFocus={next => { if (next.type === 'entity') { setQuery(next.label); setSearch(next.label); } navigate(next); }} />}<div hidden={!!selectedRepository} className="explore-results-body">{directionControls}<div className="explore-results-scroll" ref={listRef} onScroll={event=>{scrollLive.current=event.currentTarget.scrollTop;}}>
+            {focus.type !== 'all' && displayedResults.length > 0 && (
+              <div className="explore-ai-digest" data-testid="explore-ai-digest">
+                <div className="explore-ai-digest-head">
+                  <span><Sparkles size={13} /> <strong>{effectiveQuery || focus.label}</strong> 生态速览</span> {/* i18n-allow-literal */}
+                  <small>{verifiedCount > 0 ? `已核实 ${verifiedCount} 项` : `核心线索 ${displayedResults.length} 项`}</small> {/* i18n-allow-literal */}
+                </div>
+                <div className="explore-ai-digest-actions">
+                  <button type="button" className="explore-workbench-link" onClick={sendToWorkbench}>
+                    <Sparkles size={12} /> <span>送入 AI 工作台深研 ({Math.min(12, displayedResults.length)})</span> {/* i18n-allow-literal */}
+                  </button>
+                </div>
+              </div>
+            )}
             {directory.length>0&&<><p className="explore-directory-hint">{t('browser.directory-hint',{count:level?.projectCount})}</p>{directory.map(node=><button key={node.id} className="explore-directory-item" aria-label={t('browser.open-direction',{name:explorationNodeLabel(node,t),count:node.count??0})} onClick={()=>node.focus&&navigate(node.focus.type==='all'?node.focus:{...node.focus,label:explorationNodeLabel(node,t)})}><strong>{explorationNodeLabel(node,t)}</strong><span>{t('exploration.project-count',{count:node.count??0})} →</span></button>)}</>}
-            {(directory.length?[]:results).slice(0, visible).map(row => { const repo = repositoryMap.get(row.repositoryId)!; return <article className="explore-result" key={repo.id}>
+            {directory.length > 0 && displayedResults.length > 0 && <div className="explore-results-subheading"><span>匹配相关项目</span><b>{displayedResults.length}</b></div> /* i18n-allow-literal */}
+            {displayedResults.slice(0, visible).map(row => { const repo = repositoryMap.get(row.repositoryId)!; return <article className="explore-result" key={repo.id}>
             <button className="explore-result-title" title={repo.full_name} aria-pressed={selection?.id === repo.id} onClick={event => selectProject(repo.id, event.currentTarget)}><span className="explore-initial">{repo.name[0]?.toUpperCase()}</span><strong>{repo.name}</strong><ArrowUpRight size={13} /></button>
             <p className="explore-result-owner">{repo.full_name}{removedIds.has(repo.id) && <strong> {' '}{t('exploration.no-longer-in-the-library')}</strong>}</p><p className="explore-result-summary">{scene.profiles[String(repo.id)]?.summary || repositorySummary(repo)}</p>
             <p className="explore-result-reason">{focus.type !== 'all' && focus.type !== 'topic' && <span className={row.verified ? 'is-verified' : 'is-inferred'}>{!row.relations.length && row.localBranch === t('exploration.explicitly-mentioned') ? t('exploration.explicitly-mentioned-relationship-unverified') : `${t(`exploration.relations.${row.kind}`)} · ${row.verified ? t('exploration.verified') : t('exploration.inferred')}`}</span>}{row.reason}</p>
             <div className="explore-result-actions"><button onClick={() => navigate({ type: 'repository', id: repo.id, label: repo.name })}>{t('exploration.explore-from-this-project')}</button><button disabled={removedIds.has(repo.id)} onClick={() => onOpenRepository(repositories.find(live => live.id === repo.id) ?? repo)}>{t('exploration.full-details')}</button><button onClick={() => startEditTopics(repo.id)}>{t('exploration.edit-topics')}</button></div>
             {row.evidence.length > 0 && <details><summary>{t('exploration.relationship-evidence')}{row.evidence.length})</summary><ExplorationEvidenceList evidence={row.evidence} />{row.relations.map(relation => <button className="explore-dismiss-relation" key={relation.id} onClick={() => void appendOverride({ type: 'remove-relation', relationId: relation.id })}>{t('exploration.ignore-incorrect-relationship')}{relation.branch}</button>)}</details>}
-          </article>; })}{!results.length && <div className="explore-empty-results"><Search size={25} /><h3>{t(kindFilter !== 'all' && scene.results.length ? 'workspace.filtered-empty' : focus.type === 'all' ? 'workspace.no-analysis' : 'workspace.no-match')}</h3><p>{t('workspace.empty-help')}</p></div>}{!directory.length && visible < results.length && <Button variant="outline" className="explore-more-results" onClick={()=>{explorationViewportCache.write(levelKey,{visibleCount:visible+40});setVisible(current=>current+40);}}>{t('exploration.show-more')}{visible} / {results.length})</Button>}</div></div>
+          </article>; })}{!displayedResults.length && <div className="explore-empty-results"><Search size={25} /><h3>{t(kindFilter !== 'all' && scene.results.length ? 'workspace.filtered-empty' : focus.type === 'all' ? 'workspace.no-analysis' : 'workspace.no-match')}</h3><p>{t('workspace.empty-help')}</p></div>}{visible < displayedResults.length && <Button variant="outline" className="explore-more-results" onClick={()=>{explorationViewportCache.write(levelKey,{visibleCount:visible+40});setVisible(current=>current+40);}}>{t('exploration.show-more')}{visible} / {displayedResults.length})</Button>}</div></div>
         </>} </aside>
       </div>}
       </div>
       {focus.type === 'all' && globalScene && globalScene.entities.length > 0 && <div className="explore-ecosystems"><span>{t('exploration.cross-topic-tool-ecosystems')}</span>{globalScene.entities.slice(0, 12).map(entity => <button key={entity.id} onClick={() => { setQuery(entity.label); setSearch(entity.label); choose(entity); }}>{entity.label} ↗</button>)}</div>}
     </>}
-    <Modal isOpen={!!aiPreview} onClose={()=>setAiPreview(null)} title={t('workspace.ai-preview')} maxWidth="max-w-lg"><p>{deepenQuery}</p><p>{t('browser.ai-scope',{total:aiPreview?.total??0,reused:aiPreview?.reused??0,pending:aiPreview?.pending??0})}</p><Button onClick={deepen}>{t('workspace.start-analysis')}</Button></Modal>
+    <Modal isOpen={!!aiPreview} onClose={()=>setAiPreview(null)} title={t('workspace.ai-preview')} maxWidth="max-w-lg">
+      <div className="explore-ai-preview-dialog">
+        <div className="explore-ai-preview-target">
+          <Sparkles size={16} />
+          <div>
+            <strong>{deepenQuery}</strong>
+            <span>AI 将逐项核实候选仓库的 README、功能特征与依赖关系，生成可追溯的实证连接。</span> {/* i18n-allow-literal */}
+          </div>
+        </div>
+        <p className="explore-ai-preview-scope">{t('browser.ai-scope',{total:aiPreview?.total??0,reused:aiPreview?.reused??0,pending:aiPreview?.pending??0})}</p>
+        {displayedResults.length > 0 && (
+          <div className="explore-ai-preview-list">
+            <small>优先核实的核心相关仓库预览：</small> {/* i18n-allow-literal */}
+            <div>
+              {displayedResults.slice(0, 5).map(row => {
+                const repo = repositoryMap.get(row.repositoryId);
+                return repo ? <span key={repo.id} className="explore-ai-preview-chip">{repo.full_name}</span> : null;
+              })}
+            </div>
+          </div>
+        )}
+        <div className="explore-dialog-actions">
+          <Button onClick={deepen}><Sparkles size={14} /> {' '}{t('workspace.start-analysis')}</Button>
+          <Button variant="ghost" onClick={()=>setAiPreview(null)}>{t('workspace.cancel')}</Button>
+        </div>
+      </div>
+    </Modal>
     <Modal isOpen={!!pendingNavigation} onClose={()=>setPendingNavigation(null)} title={t('workspace.unsaved')} maxWidth="max-w-lg"><p>{t('workspace.unsaved-description')}</p><div className="explore-dialog-actions"><Button disabled={saving} onClick={()=>void (async()=>{setSaving(true);try{if(activeWorkspace && await writeWorkspace(activeWorkspace.name)){const action=pendingNavigation;setPendingNavigation(null);action?.();}}finally{setSaving(false);}})()}>{t('workspace.save-leave')}</Button><Button variant="outline" onClick={()=>{const action=pendingNavigation;if(activeWorkspace)applyWorkspace(activeWorkspace);setPendingNavigation(null);action?.();}}>{t('workspace.discard')}</Button><Button variant="ghost" onClick={()=>setPendingNavigation(null)}>{t('workspace.cancel')}</Button></div></Modal>
     <Modal isOpen={dialog !== null} onClose={() => { if (!saving) setDialog(null); }} title={dialog === 'save-exploration' ? t('exploration.save-current-exploration') : dialog === 'rename-saved' ? t('exploration.rename-exploration') : dialog === 'corrections' ? t('exploration.manual-corrections') : dialog === 'rename' ? t('exploration.rename-exploration-topic') : dialog === 'edit-project' ? t('exploration.edit-project-exploration-topics') : t('exploration.all-exploration-topics')} maxWidth="max-w-lg">
       {dialog === 'save-exploration' && activeSaved && <p>{t('workspace.convert-help')}</p>}

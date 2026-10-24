@@ -63,7 +63,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
   const root = useRef<HTMLDivElement>(null);
   const headingRefs = useRef(new Map<string, HTMLElement>());
   const canReorder = customSort && !filtered;
-  const sections = [...groups.map(g => ({ ...g, key: g.id })), { id: null, key: `${UNGROUPED}:${categoryId}`, name: t('organization.ungrouped'), icon: '' }];
+  const sections = useMemo(() => [...groups.map(g => ({ ...g, key: g.id })), { id: null, key: `${UNGROUPED}:${categoryId}`, name: t('organization.ungrouped'), icon: '' }], [groups, categoryId, t]);
   const startEditing = (input: { id?: string; name: string; icon: string }) => {
     setEditError(''); setEditing({ ...input, capture: captureClassificationEdit(state.scheme) });
   };
@@ -153,14 +153,27 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
     }
   };
 
+  const sectionEntries = useMemo(() => {
+    const raw = sections.map((section, index) => {
+      const members = repositories.filter(repo => section.id === null
+        ? !groups.some(g => g.id === repo.subcategory_id)
+        : repo.subcategory_id === section.id);
+      return { section, index, members };
+    });
+    if (filtered && raw.some(entry => entry.members.length > 0)) {
+      return raw.filter(entry => entry.members.length > 0);
+    }
+    return raw;
+  }, [sections, repositories, groups, filtered]);
+
   return (
     <div ref={root} className="min-w-0" onDragEnd={() => setDropTarget(null)}>
       <div className="sticky top-16 z-20 mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/95 backdrop-blur-md py-2.5">
         <nav aria-label={t('organization.outline')} className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto whitespace-nowrap py-0.5">
-          {sections.map(section => (
+          {sectionEntries.map(({ section, members }) => (
             <button type="button" key={section.key} onClick={() => jump(section.key)} aria-current={active === section.key ? 'location' : undefined}
               className={`shrink-0 rounded-full px-2.5 py-1 text-xs transition-all ${active === section.key ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'}`}>
-              {section.name}
+              {section.name}{filtered ? ` (${members.length})` : ''}
             </button>
           ))}
         </nav>
@@ -168,10 +181,7 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
           <Plus className="h-4 w-4" />{t('organization.createGroup')}
         </Button>
       </div>
-      {sections.map((section, index) => {
-        const members = repositories.filter(repo => section.id === null
-          ? !groups.some(g => g.id === repo.subcategory_id)
-          : repo.subcategory_id === section.id);
+      {sectionEntries.map(({ section, index, members }) => {
         const ordered = customSort
           ? orderedIds(state.repositoryOrder ?? [], members.map(r => r.id)).map(id => members.find(r => r.id === id)!)
           : members;
@@ -265,10 +275,46 @@ export function RepositoryGroups({ categoryId, repositories, filtered, customSor
           <DialogTitle>{t('organization.addExisting')}</DialogTitle>
           <DialogDescription className="sr-only">{t('organization.currentCategory')}</DialogDescription>
           <input aria-label={t('organization.searchRepositories')} className="ui-field w-full p-2" value={query} onChange={event => setQuery(event.target.value)} />
-          <div className="max-h-80 space-y-2 overflow-y-auto">
-            {allCurrent.filter(repo => repo.subcategory_id !== addingTo && repo.full_name.toLowerCase().includes(query.toLowerCase())).map(repo => (
-              <label key={repo.id} className="flex items-start gap-2 text-sm"><input type="checkbox" checked={chosen.has(repo.id)} onChange={() => setChosen(previous => { const next = new Set(previous); if (next.has(repo.id)) next.delete(repo.id); else next.add(repo.id); return next; })} /><span className="break-all">{repo.full_name}</span></label>
-            ))}
+          <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+            {allCurrent.filter(repo => {
+              if (repo.subcategory_id === addingTo) return false;
+              const q = query.trim().toLowerCase();
+              if (!q) return true;
+              const summary = (repo.custom_description || repo.ai_summary || repo.description || '').toLowerCase();
+              return repo.full_name.toLowerCase().includes(q) || summary.includes(q);
+            }).map(repo => {
+              const summary = repo.custom_description || repo.ai_summary || repo.description || '';
+              const currentGroup = groups.find(g => g.id === repo.subcategory_id);
+              return (
+                <label key={repo.id} className="flex cursor-pointer items-start gap-2.5 rounded-md border border-transparent p-2 text-sm transition-colors hover:border-border/60 hover:bg-muted/40">
+                  <input
+                    type="checkbox"
+                    aria-label={repo.full_name}
+                    className="mt-0.5 shrink-0 accent-primary"
+                    checked={chosen.has(repo.id)}
+                    onChange={() => setChosen(previous => {
+                      const next = new Set(previous);
+                      if (next.has(repo.id)) next.delete(repo.id);
+                      else next.add(repo.id);
+                      return next;
+                    })}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="break-all font-medium">{repo.full_name}</span>
+                      {currentGroup && (
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                          {currentGroup.name}
+                        </span>
+                      )}
+                    </div>
+                    {summary && (
+                      <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{summary}</p>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
           </div>
           {editError && <p role="alert" className="text-xs text-destructive">{editError}</p>}
           <div className="flex justify-end gap-2"><Button variant="ghost" disabled={editBusy} onClick={() => setAddingTo(null)}>{t('organization.cancel')}</Button><Button disabled={editBusy || !chosen.size} onClick={async () => {

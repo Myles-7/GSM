@@ -28,9 +28,10 @@ interface SubscriptionRepoCardProps {
   selected?: boolean;
   onSelect?: () => void;
   analysisStatus?: React.ReactNode;
+  displayMode?: 'card' | 'compact';
 }
 
-export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo, onStar, onAnalyze, desktopSafeMode = false, onDetails, onAsk, onRequestAnalysis, active, selected, onSelect, analysisStatus }) => {
+export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo, onStar, onAnalyze, desktopSafeMode = false, onDetails, onAsk, onRequestAnalysis, active, selected, onSelect, analysisStatus, displayMode = 'card' }) => {
   const language = useAppStore(state => state.language);
   const githubToken = useAppStore(state => state.githubToken);
 
@@ -108,6 +109,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
   // 处理单个项目AI分析（校验/中止/patch/toast 均在 hook）
   const handleAnalyze = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (onRequestAnalysis) { onRequestAnalysis(); return; }
     void analyze(onAnalyze);
   };
 
@@ -117,8 +119,9 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
 
   // 点击卡片打开 README
   const handleCardClick = useCallback(() => {
+    if (onDetails) { onDetails(); return; }
     setReadmeModalOpen(true);
-  }, []);
+  }, [onDetails]);
 
   // 周刊频道：查看原贴（GitHub 渲染样式的投稿 issue）
   const handleOpenIssue = useCallback((e: React.MouseEvent) => {
@@ -153,7 +156,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
 
   return (
     <>
-    {onDetails ? <RepositoryTextBlock repo={repo} onDetails={onDetails} active={active} selected={selected} onSelect={onSelect} status={analysisStatus}
+    {displayMode === 'compact' && onDetails ? <RepositoryTextBlock repo={repo} onDetails={onDetails} active={active} selected={selected} onSelect={onSelect} status={analysisStatus}
       actions={<>
         {onAsk && <Button variant="ghost" size="icon" aria-label={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'} title={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'} onClick={onAsk}><MessageSquareText className="h-4 w-4" /></Button>}
         <Button variant="ghost" size="icon" title={t('subscriptionRepoCard.ai-analyze')} aria-label={t('subscriptionRepoCard.ai-analyze')} onClick={onRequestAnalysis ?? (() => void analyze(onAnalyze))}><Sparkles className="h-4 w-4" /></Button>
@@ -172,7 +175,7 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
       onClick={event => { if (event.target instanceof Element && event.target.closest('button,a,input,summary,details')) return; if (!window.getSelection()?.toString()) handleCardClick(); }}
       tabIndex={0}
       onKeyDown={event => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); handleCardClick(); } }}
-      className="ui-card p-5 transition-all duration-200 cursor-pointer"
+      className={`ui-card p-5 transition-all duration-200 cursor-pointer ${active || selected ? 'ring-2 ring-primary/40 border-primary/50' : ''}`}
     >
       <div className="flex items-start gap-3 sm:gap-4">
         {/* Rank badge */}
@@ -185,6 +188,16 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
           {/* Header */}
           <div className="flex items-start justify-between gap-3 mb-2">
             <div className="flex items-center gap-2 min-w-0">
+              {onSelect && (
+                <input
+                  type="checkbox"
+                  checked={!!selected}
+                  onChange={() => onSelect()}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={language.startsWith('zh') ? `选择 ${cardTitle}` : `Select ${cardTitle}`}
+                  className="h-4 w-4 rounded border-border shrink-0"
+                />
+              )}
               {!desktopSafeMode && repo.owner?.avatar_url && (
                 <img
                   src={repo.owner.avatar_url}
@@ -195,10 +208,36 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
               <span className="font-semibold text-foreground dark:text-foreground truncate">
                 {cardTitle}
               </span>
+              <span>{analysisStatus}
+              </span>
             </div>
 
             {/* Action buttons */}
             <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+              {onAsk && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={(e) => { e.stopPropagation(); onAsk(); }}
+                  aria-label={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'}
+                  title={language.startsWith('zh') ? '问答此仓库' : 'Ask repository'}
+                  className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  <MessageSquareText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                </Button>
+              )}
+              {onDetails && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={(e) => { e.stopPropagation(); setReadmeModalOpen(true); }}
+                  aria-label="README"
+                  title="README"
+                  className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                </Button>
+              )}
               {/* AI Analyze button */}
               <Button
                 size="icon"
@@ -413,6 +452,23 @@ export const SubscriptionRepoCard: React.FC<SubscriptionRepoCardProps> = ({ repo
           )}
 
           {/* Stats */}
+          {repo.recentRelease && (
+            <a
+              href={repo.recentRelease.html_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="mb-3 inline-flex flex-wrap items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:underline"
+            >
+              <Tag className="h-3.5 w-3.5" />
+              <span>{repo.recentRelease.tag_name}</span>
+              <span>·</span>
+              <span>{new Date(repo.recentRelease.published_at).toLocaleDateString(getIntlLocale(language))}</span>
+              {repo.recentRelease.prerelease && (
+                <span>· {language.startsWith('zh') ? '预发布' : 'Prerelease'}</span>
+              )}
+            </a>
+          )}
           <div className="flex items-center gap-4 text-sm text-muted-foreground dark:text-muted-foreground">
             {repo.language && (
               <div className="flex items-center gap-1">

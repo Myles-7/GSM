@@ -135,11 +135,13 @@ describe('organization conversation and task lifecycle', () => {
     await waitFor(() => expect(hook.result.current.proposal?.organization?.status).toBe('ready'));
     const proposal = hook.result.current.proposal!;
     expect(useAppStore.getState().repositories[0].category_id).toBeNull();
+    expect((await storage.getSession(proposal.sessionId))?.workbench).toMatchObject({ taskMode: 'organize', inputIntent: 'research' });
     expect(await storage.listMessages(proposal.sessionId)).toHaveLength(1);
     act(() => hook.result.current.continueInWorkbench());
     hook.unmount();
     const workbench = renderHook(useAIWorkbench);
     await waitFor(() => expect(workbench.result.current.active?.id).toBe(proposal.sessionId));
+    expect(workbench.result.current.data.taskMode).toBe('organize');
     expect(workbench.result.current.proposals).toHaveLength(1);
     await act(async () => { await workbench.result.current.send('Use existing categories only'); });
     await waitFor(() => expect(workbench.result.current.proposals).toHaveLength(2));

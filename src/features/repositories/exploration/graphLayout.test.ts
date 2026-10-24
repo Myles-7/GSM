@@ -1,9 +1,20 @@
 import {describe,it,expect} from 'vitest';
 import {accountFixture,repositoryFixture} from './testFixtures';
 import {conceptId,projectScene} from './model';
-import {layoutExploration} from './graphLayout';
+import {layoutExploration, computeLayerSatellites} from './graphLayout';
 import {topicGroups} from './topicGroups';
 describe('one-level radial exploration',()=>{
+  it('enriches category nodes with previewIds and generates outer satellite nodes when category count <= 8',()=>{
+    const repos=Array.from({length:4},(_,i)=>repositoryFixture(i+1)),account=accountFixture(repos);
+    const names=new Map(repos.map(repo=>[repo.id,repo.name])),scene=projectScene(account,repos,{type:'all'}),root=layoutExploration(scene,{type:'all'},names);
+    const groupNodes=root.nodes.filter(node=>node.type!=='focus');
+    expect(groupNodes.length).toBeGreaterThan(0);
+    expect(groupNodes[0].previewIds?.length).toBeGreaterThan(0);
+    expect(groupNodes[0].subLabels?.length).toBeGreaterThan(0);
+    const satellites=computeLayerSatellites(root,scene,{type:'all'},names);
+    expect(satellites.length).toBeGreaterThan(0);
+    expect(satellites[0].parentId).toBe(groupNodes[0].id);
+  });
   it('shows only browse groups at the root and only topics after choosing one',()=>{
     const repos=Array.from({length:30},(_,i)=>repositoryFixture(i+1)),account=accountFixture(repos);
     repos.forEach((repo,i)=>{account.index!.profiles[String(repo.id)].topics=[{id:`topic-${i}`,label:`编程主题 ${i}`}];});

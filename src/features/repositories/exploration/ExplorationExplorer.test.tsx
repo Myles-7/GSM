@@ -168,6 +168,22 @@ describe('project relationship exploration page', () => {
 });
 
 describe('workspace persistence and manual save boundaries',()=>{
+  it('shows matched repositories alongside sub-categories in the right panel, supports bookmark switching, and hands off to AI Workbench',()=>{
+    const item={version:1 as const,id:'live-bm',name:'Codex 书签',query:'Codex',path:[{type:'all' as const},{type:'entity' as const,id:conceptId('entity','Codex'),label:'Codex'}],kindFilter:'all' as const,createdAt:'now',updatedAt:'now'};
+    mocks.account!.workspaces=[item];
+    render(<ExplorationExplorer onOpenRepository={vi.fn()}/>);
+    const bookmarkBtn=screen.getByRole('button',{name:'书签：Codex 书签'});
+    expect(bookmarkBtn).toBeInTheDocument();
+    fireEvent.click(bookmarkBtn);
+    const aside=screen.getByRole('complementary',{name:'探索项目结果'});
+    expect(within(aside).getByRole('button',{name:/^进入直接相关/})).toBeInTheDocument();
+    expect(within(aside).getByRole('button',{name:/project-1/})).toBeInTheDocument();
+    const handoffBtn=within(aside).getByRole('button',{name:/送入 AI 工作台深研/});
+    fireEvent.click(handoffBtn);
+    const payload=JSON.parse(sessionStorage.getItem('gsm:workbench-prefill-research')||'{}');
+    expect(payload.query).toBe('Codex');
+    expect(payload.repositories.map((r:{id:number})=>r.id)).toContain(1);
+  });
   it('saves a legacy snapshot as a live exploration without changing the original or calling AI',async()=>{
     const item=createSavedExploration(mocks.account!,repositories,{name:'Legacy Codex',query:'Codex',path:[{type:'all'},{type:'search',id:conceptId('entity','Codex'),label:'Codex'}],kindFilter:'all'});
     mocks.account!.saved=[item];const original=structuredClone(item);

@@ -11,7 +11,7 @@ import {
 } from './platformMeta';
 import { useRepositoryPlatforms } from '../hooks/useRepositoryPlatforms';
 import { GripVertical, StarOff, ExternalLink, Calendar, Bell, BellOff, Bot, Sparkles, Terminal, Edit3, BookOpen, Square, CheckSquare, Loader2, HelpCircle, Search, Scale, MoreHorizontal, PackageOpen, MessageSquareText, Plug, ArrowRight } from 'lucide-react';
-import { Repository, Category } from '../types';
+import { Repository, Category, Release } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { isRepositoryCardFieldVisible } from '../utils/repositoryCardFields';
 import { useRepositoryDragStore } from '../store/useRepositoryDragStore';
@@ -156,6 +156,8 @@ interface RepositoryCardProps {
   onViewDetails?: (repository: Repository) => void;
   onAnalyzeRepository?: (repository: Repository) => void;
   organizationActions?: React.ReactNode;
+  latestRelease?: Release | null;
+  pluginActions?: RegisteredPluginAction[];
 }
 
 const PluginRepositoryActionItems: React.FC<{
@@ -195,7 +197,7 @@ const PluginRepositoryActionItems: React.FC<{
   ));
 };
 
-const MAX_CACHE_SIZE = 500;
+const MAX_CACHE_SIZE = 3000;
 
 const highlightCache = new Map<string, React.ReactNode>();
 
@@ -392,19 +394,23 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   onViewDetails,
   onAnalyzeRepository,
   organizationActions,
+  latestRelease: propLatestRelease,
+  pluginActions: propPluginActions,
 }) => {
     const t = useT('repositories');
   const language = useAppStore((state) => state.language);
-  const latestRelease = useAppStore(useCallback(
-    (state) => latestRepositoryRelease(state.releases, repository.id), [repository.id],
+  const storeLatestRelease = useAppStore(useCallback(
+    (state) => propLatestRelease !== undefined ? null : latestRepositoryRelease(state.releases, repository.id), [propLatestRelease, repository.id],
   ));
+  const latestRelease = propLatestRelease !== undefined ? propLatestRelease : storeLatestRelease;
   // 卡片可见字段（开发守则 §14）：未提供时按默认（显示）处理
   const cardFields = useAppStore((state) => state.repositoryCardFields);
   const softwareForms = useMemo(() => showAISummary && isRepositoryCardFieldVisible(cardFields, 'tags')
     ? [...new Set(readRepositoryDetails(repository.ai_details)?.software_forms || [])].slice(0, 2)
     : [], [showAISummary, cardFields, repository.ai_details]);
   const showDescription = isRepositoryCardFieldVisible(cardFields, 'description');
-  const pluginActions = usePluginActions('repository-card');
+  const fallbackPluginActions = usePluginActions('repository-card');
+  const pluginActions = propPluginActions ?? fallbackPluginActions.actions;
   const {
     analyze: handleAIAnalyze,
     findSimilar: handleFindSimilar,
@@ -962,7 +968,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
                 vectorSearchAvailable={vectorSearchAvailable}
                 isFindingSimilar={isFindingSimilar}
                 onFindSimilar={handleFindSimilar}
-                pluginActions={pluginActions.actions}
+                pluginActions={pluginActions}
                 isActionsMenuOpen={isActionsMenuOpen}
                 onActionsMenuOpenChange={setIsActionsMenuOpen}
                 onAnalyze={() => onAnalyzeRepository ? onAnalyzeRepository(repository) : handleAIAnalyze()}
@@ -1049,7 +1055,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           isAnalyzing={isAnalyzing}
           isSubscribed={isSubscribed}
           unstarring={unstarring}
-          pluginActions={pluginActions.actions}
+          pluginActions={pluginActions}
           isActionsMenuOpen={isActionsMenuOpen}
           onActionsMenuOpenChange={setIsActionsMenuOpen}
           onAnalyze={() => onAnalyzeRepository ? onAnalyzeRepository(repository) : handleAIAnalyze()}
@@ -1318,15 +1324,19 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
 
 // 使用 React.memo 优化，避免不必要的重渲染
 export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, nextProps) => {
-  const allCategoriesEqual = 
-    prevProps.allCategories.length === nextProps.allCategories.length &&
-    prevProps.allCategories.every((cat, i) => {
-      const nextCat = nextProps.allCategories[i];
-      return nextCat && 
-             cat.id === nextCat.id && 
-             cat.name === nextCat.name && 
-             JSON.stringify(cat.keywords) === JSON.stringify(nextCat.keywords);
-    });
+  const allCategoriesEqual =
+    prevProps.allCategories === nextProps.allCategories || (
+      prevProps.allCategories.length === nextProps.allCategories.length &&
+      prevProps.allCategories.every((cat, i) => {
+        const nextCat = nextProps.allCategories[i];
+        return Boolean(
+          nextCat &&
+          cat.id === nextCat.id &&
+          cat.name === nextCat.name &&
+          cat.keywords === nextCat.keywords
+        );
+      })
+    );
 
   return (
     prevProps.repository.id === nextProps.repository.id &&
@@ -1363,6 +1373,8 @@ export const RepositoryCard = React.memo(RepositoryCardComponent, (prevProps, ne
     prevProps.onViewDetails === nextProps.onViewDetails &&
     prevProps.onAnalyzeRepository === nextProps.onAnalyzeRepository &&
     prevProps.organizationActions === nextProps.organizationActions &&
+    prevProps.latestRelease === nextProps.latestRelease &&
+    prevProps.pluginActions === nextProps.pluginActions &&
     allCategoriesEqual
   );
 });

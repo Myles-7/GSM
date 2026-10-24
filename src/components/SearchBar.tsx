@@ -129,6 +129,9 @@ export const SearchBar: React.FC = () => {
   } = useSearchActions();
 
   const [showFilters, setShowFilters] = useState(false);
+  const [showAllLanguages, setShowAllLanguages] = useState(false);
+  const [showAllTags, setShowAllTags] = useState(false);
+  const [tagFilterQuery, setTagFilterQuery] = useState('');
   const [searchQuery, setSearchQuery] = useState(searchFilters.query);
   const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
@@ -246,15 +249,47 @@ export const SearchBar: React.FC = () => {
     return counts;
   }, [presentedRepositories]);
 
+  const languageCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const repo of presentedRepositories) {
+      if (repo.language) {
+        counts[repo.language] = (counts[repo.language] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [presentedRepositories]);
+
+  const tagCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const repo of presentedRepositories) {
+      const repoTags = new Set([
+        ...(repo.ai_tags || []),
+        ...(repo.topics || []),
+        ...(repo.custom_tags || []),
+        ...(repo.ai_details?.tags || []),
+        ...(repo.ai_details?.scenarios || []),
+        ...(repo.ai_details?.technologies || []),
+      ]);
+      for (const tag of repoTags) {
+        if (tag) counts[tag] = (counts[tag] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [presentedRepositories]);
+
   useEffect(() => {
-    // Extract unique languages, tags, and platforms from repositories
-    const languages = [...new Set(presentedRepositories.map(r => r.language).filter(Boolean))] as string[];
-    // 标签包含AI标签、GitHub topics和用户自定义标签
+    // Extract unique languages, tags, and platforms from repositories, sorted by frequency
+    const languages = ([...new Set(presentedRepositories.map(r => r.language).filter(Boolean))] as string[])
+      .sort((a, b) => (languageCounts[b] || 0) - (languageCounts[a] || 0) || a.localeCompare(b));
+    // 标签包含AI标签、AI场景/技术特征、GitHub topics和用户自定义标签，按出现频次降序排列
     const tags = [...new Set([
       ...presentedRepositories.flatMap(r => r.ai_tags || []),
       ...presentedRepositories.flatMap(r => r.topics || []),
-      ...presentedRepositories.flatMap(r => r.custom_tags || [])
-    ])];
+      ...presentedRepositories.flatMap(r => r.custom_tags || []),
+      ...presentedRepositories.flatMap(r => r.ai_details?.tags || []),
+      ...presentedRepositories.flatMap(r => r.ai_details?.scenarios || []),
+      ...presentedRepositories.flatMap(r => r.ai_details?.technologies || []),
+    ])].sort((a, b) => (tagCounts[b] || 0) - (tagCounts[a] || 0) || a.localeCompare(b));
     const platformsSet = new Set(presentedRepositories.flatMap(r => getCanonicalPlatforms(r.ai_platforms)));
     const platforms = CANONICAL_PLATFORMS.filter(p => platformsSet.has(p)) as string[];
     // 开源许可：归一化为 SPDX id 或 NO_LICENSE_SENTINEL，排序并把「无」项放最后
@@ -287,7 +322,28 @@ export const SearchBar: React.FC = () => {
         console.warn('Failed to load search history:', error);
       }
     }
-  }, [presentedRepositories]);
+  }, [presentedRepositories, languageCounts, tagCounts]);
+
+  // Sync local searchQuery when searchFilters.query transitions from non-empty to empty externally
+  const prevStoreQueryRef = useRef(searchFilters.query);
+  useEffect(() => {
+    const wasNonEmpty = Boolean(prevStoreQueryRef.current);
+    prevStoreQueryRef.current = searchFilters.query;
+    if (wasNonEmpty && !searchFilters.query && !isComposing) {
+      setSearchQuery('');
+      setIsRealTimeSearch(false);
+    }
+  }, [searchFilters.query, isComposing]);
+
+  useEffect(() => {
+    const handleExternalClear = () => {
+      clearSubmittedSearch();
+      setSearchQuery('');
+      setIsRealTimeSearch(false);
+    };
+    window.addEventListener('gsm:clear-search-query', handleExternalClear);
+    return () => window.removeEventListener('gsm:clear-search-query', handleExternalClear);
+  }, [clearSubmittedSearch]);
 
   useEffect(() => {
     const performSearch = async () => {
@@ -602,8 +658,11 @@ export const SearchBar: React.FC = () => {
   };
 
   const clearFilters = () => {
+    clearSubmittedSearch();
     setSearchQuery('');
     setIsRealTimeSearch(false);
+    setTagFilterQuery('');
+    window.dispatchEvent(new CustomEvent('gsm:clear-facet-filters'));
     setSearchFilters({
       query: '',
       tags: [],
@@ -1138,23 +1197,41 @@ export const SearchBar: React.FC = () => {
           {/* Languages */}
           {availableLanguages.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-foreground dark:text-foreground mb-3">
-                {t('searchBar.programming-languages')}
-              </h4>
-              <div className="flex flex-wrap gap-2">
-                {availableLanguages.slice(0, 12).map(language => (
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-medium text-foreground dark:text-foreground">
+                  {t('searchBar.programming-languages')}
+                </h4>
+                {availableLanguages.length > 12 && (
                   <Button
-                    key={language}
-                    onClick={() => handleLanguageToggle(language)}
-                    aria-pressed={searchFilters.languages.includes(language)}
+                    type="button"
                     variant="ghost"
-                    className={`${filterTagBaseClass} ${
-                      searchFilters.languages.includes(language)
+                    size="sm"
+                    onClick={() => setShowAllLanguages(prev => !prev)}
+                    className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {showAllLanguages
+                      ? (language.startsWith('zh') ? '收起' : 'Show less')
+                      : (language.startsWith('zh') ? `展开全部 (${availableLanguages.length})` : `Show all (${availableLanguages.length})`)}
+                  </Button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(showAllLanguages ? availableLanguages : availableLanguages.slice(0, 12)).map(lang => (
+                  <Button
+                    key={lang}
+                    onClick={() => handleLanguageToggle(lang)}
+                    aria-pressed={searchFilters.languages.includes(lang)}
+                    variant="ghost"
+                    className={`${filterChipBaseClass} ${
+                      searchFilters.languages.includes(lang)
                         ? filterChipActiveClass
                         : filterChipInactiveClass
                     }`}
                   >
-                    {language}
+                    <span>{lang}</span>
+                    {languageCounts[lang] ? (
+                      <span className="text-xs opacity-70">({languageCounts[lang]})</span>
+                    ) : null}
                   </Button>
                 ))}
               </div>
@@ -1219,28 +1296,62 @@ export const SearchBar: React.FC = () => {
             </div>
           )}
 
-          {/* Tags */}
+          {/* Tags & Scenarios */}
           {availableTags.length > 0 && (
             <div>
-              <h4 className="text-sm font-medium text-foreground dark:text-foreground mb-3">
-                {t('searchBar.tags')}
-              </h4>
-              <div className="flex flex-wrap gap-2">
-                {availableTags.slice(0, 15).map(tag => (
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-medium text-foreground dark:text-foreground">
+                  {t('searchBar.tags')}
+                </h4>
+                {availableTags.length > 15 && (
                   <Button
-                    key={tag}
-                    onClick={() => handleTagToggle(tag)}
-                    aria-pressed={searchFilters.tags.includes(tag)}
+                    type="button"
                     variant="ghost"
-                    className={`${filterTagBaseClass} ${
-                      searchFilters.tags.includes(tag)
-                        ? filterChipActiveClass
-                        : filterChipInactiveClass
-                    }`}
+                    size="sm"
+                    onClick={() => setShowAllTags(prev => !prev)}
+                    className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
                   >
-                    {tag}
+                    {showAllTags
+                      ? (language.startsWith('zh') ? '收起' : 'Show less')
+                      : (language.startsWith('zh') ? `展开全部 (${availableTags.length})` : `Show all (${availableTags.length})`)}
                   </Button>
-                ))}
+                )}
+              </div>
+              {availableTags.length > 15 && (
+                <Input
+                  type="search"
+                  value={tagFilterQuery}
+                  onChange={(e) => setTagFilterQuery(e.target.value)}
+                  placeholder={language.startsWith('zh') ? '筛选标签或场景特征…' : 'Filter tags or facets…'}
+                  aria-label={language.startsWith('zh') ? '筛选标签或场景特征' : 'Filter tags or facets'}
+                  className="mb-2.5 h-8 text-xs"
+                />
+              )}
+              <div className="flex max-h-52 flex-wrap gap-2 overflow-y-auto">
+                {(() => {
+                  const normalizedTagQuery = tagFilterQuery.trim().toLowerCase();
+                  const filteredTags = normalizedTagQuery
+                    ? availableTags.filter(tag => tag.toLowerCase().includes(normalizedTagQuery))
+                    : (showAllTags ? availableTags : availableTags.slice(0, 15));
+                  return filteredTags.map(tag => (
+                    <Button
+                      key={tag}
+                      onClick={() => handleTagToggle(tag)}
+                      aria-pressed={searchFilters.tags.includes(tag)}
+                      variant="ghost"
+                      className={`${filterChipBaseClass} ${
+                        searchFilters.tags.includes(tag)
+                          ? filterChipActiveClass
+                          : filterChipInactiveClass
+                      }`}
+                    >
+                      <span>{tag}</span>
+                      {tagCounts[tag] ? (
+                        <span className="text-xs opacity-70">({tagCounts[tag]})</span>
+                      ) : null}
+                    </Button>
+                  ));
+                })()}
               </div>
             </div>
           )}

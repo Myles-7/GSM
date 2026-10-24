@@ -14,6 +14,7 @@ import type { Repository } from '../../../types';
 import type { RepositoryChatMessage, RepositoryChatSession, ToolEvidence } from '../../../types/repositoryChat';
 import type {
   WorkbenchCandidate, WorkbenchInputIntent, WorkbenchProject, WorkbenchProposal, WorkbenchRequirements, WorkbenchSessionData,
+  WorkbenchScope, WorkbenchTaskMode,
 } from '../../../types/aiWorkbench';
 import { AIService } from '../../../services/aiService';
 import { taskForSignal } from '../../../services/taskExecution';
@@ -57,9 +58,15 @@ export function useAIWorkbench() {
   const mounted = useRef(true);
   const activeRef = useRef(activeId);
   activeRef.current = activeId;
+  const configurationQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingConfigurations = useRef(0);
+  const localPickerQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const selectionVersion = useRef(0);
+  const taskChoiceVersion = useRef(0);
+  const pendingTaskSession = useRef<{ selection: number; record: RepositoryChatSession }>();
 
   const refresh = useCallback(async () => {
-    if (!ownerId || activeRef.current !== activeId || String(useAppStore.getState().user?.id ?? '') !== ownerId) return;
+    if (!ownerId || pendingConfigurations.current || activeRef.current !== activeId || String(useAppStore.getState().user?.id ?? '') !== ownerId) return;
     const request = ++revision.current;
     const [nextSessions, nextProjects, nextActive] = await Promise.all([
       storage.listWorkbenchSessions(ownerId, mode), storage.listProjects(ownerId),
@@ -70,7 +77,7 @@ export function useAIWorkbench() {
       ? await Promise.all([storage.listMessages(owned.id), storage.listProposals(ownerId, owned.id)])
       : [[], []];
     const nextEvidence = await storage.listEvidence(nextMessages.flatMap((m) => m.evidenceIds));
-    if (!mounted.current || request !== revision.current || activeRef.current !== activeId
+    if (!mounted.current || pendingConfigurations.current || request !== revision.current || activeRef.current !== activeId
       || String(useAppStore.getState().user?.id ?? '') !== ownerId) return;
     setSessions(nextSessions.sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt.localeCompare(a.updatedAt))); setProjects(nextProjects); setActive(owned);
     setMessages(nextMessages.map(message => message.status === 'streaming'
@@ -103,6 +110,9 @@ export function useAIWorkbench() {
   }, [ownerId, settings.retainSessionDays]);
 
   const select = useCallback((id: string | null) => {
+    ++selectionVersion.current;
+    activeRef.current = id;
+    ++revision.current;
     setActiveId(id); setError('');
     if (id) sessionStorage.setItem(ACTIVE_KEY, id);
     else sessionStorage.removeItem(ACTIVE_KEY);
@@ -118,7 +128,7 @@ export function useAIWorkbench() {
 
   const guard = useCallback(async (action: () => Promise<unknown>) => {
     try { setError(''); await action(); if (mounted.current) await refresh(); }
-    catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); }
+    catch (e) { if (mounted.current && !(e instanceof Error && e.name === 'AbortError')) setError(e instanceof Error ? e.message : String(e)); }
   }, [refresh]);
 
   const requireOwned = async (id: string) => {
@@ -129,12 +139,17 @@ export function useAIWorkbench() {
     return record;
   };
 
-  const patchSession = async (id: string, patch: Partial<RepositoryChatSession>) => {
+  const patchSession = async (id: string, patch: Partial<RepositoryChatSession>, assertCurrent?: () => void) => {
     const record = await requireOwned(id);
+    assertCurrent?.();
     if (task.running && task.sessionId === id && (patch.deletedAt || patch.archived)) {
       throw new Error(t('workbench.stopFirst'));
     }
-    await storage.saveSession({ ...record, ...patch, id: record.id, ownerId, updatedAt: now() });
+    const next = { ...record, ...patch, id: record.id, ownerId, updatedAt: now() };
+    await storage.saveSession(next);
+    assertCurrent?.();
+    if (mounted.current && activeRef.current === id) setActive(next);
+    return next;
   };
 
   const patchData = async (id: string, patch: Partial<WorkbenchSessionData>) => {
@@ -142,19 +157,82 @@ export function useAIWorkbench() {
     const initial = record.repoId ? {
       ...defaults(), scope: 'selected' as const, selectedRepositories: repositories.filter((r) => r.id === record.repoId),
     } : defaults();
-    await patchSession(id, { workbench: { ...initial, ...record.workbench, ...patch } });
+    return patchSession(id, { workbench: { ...initial, ...record.workbench, ...patch } });
   };
 
-  const createSession = async (projectId?: string) => {
-    if (!ownerId) throw new Error(t('workbench.accountChanged'));
-    const record: RepositoryChatSession = {
-      id: crypto.randomUUID(), ownerId, kind: 'workbench', projectId,
-      repoId: 0, repoFullName: '', sourceRefSha: '', title: t('workbench.newChat'),
-      createdAt: now(), updatedAt: now(), workbench: defaults(),
+  const newSessionRecord = (projectId?: string, workbench = defaults()): RepositoryChatSession => ({
+    id: crypto.randomUUID(), ownerId, kind: 'workbench', projectId,
+    repoId: 0, repoFullName: '', sourceRefSha: '', title: t('workbench.newChat'),
+    createdAt: now(), updatedAt: now(), workbench,
+  });
+
+  const createSession = async (projectId?: string, workbench = defaults(), onSessionReady?: (record: RepositoryChatSession) => void) => {
+    if (!ownerId || String(useAppStore.getState().user?.id ?? '') !== ownerId) throw new Error(t('workbench.accountChanged'));
+    const selection = selectionVersion.current;
+    const assertSelection = () => {
+      if (selection !== selectionVersion.current) throw new DOMException('Conversation selection changed', 'AbortError');
     };
+    const record = newSessionRecord(projectId, workbench);
     await storage.saveSession(record);
-    setMode('active'); select(record.id);
+    if (String(useAppStore.getState().user?.id ?? '') !== ownerId) throw new Error(t('workbench.accountChanged'));
+    assertSelection();
+    onSessionReady?.(record);
+    assertSelection();
+    setMode('active'); select(record.id); setActive(record);
     return record;
+  };
+
+  const configure = <T,>(action: () => Promise<T>): Promise<T> => {
+    pendingConfigurations.current++;
+    const pending = configurationQueue.current.catch(() => undefined).then(action).finally(() => {
+      pendingConfigurations.current--;
+      if (mounted.current && !pendingConfigurations.current) void refresh().catch((e: unknown) => setError(String(e)));
+    });
+    configurationQueue.current = pending;
+    return pending;
+  };
+
+  const chooseTask = (taskMode: WorkbenchTaskMode, scope?: WorkbenchScope,
+    onSessionReady?: (record: RepositoryChatSession) => void): Promise<RepositoryChatSession> => {
+    const choice = ++taskChoiceVersion.current;
+    const selection = selectionVersion.current;
+    const assertCurrent = () => {
+      if (!ownerId || String(useAppStore.getState().user?.id ?? '') !== ownerId) throw new Error(t('workbench.accountChanged'));
+      if (choice !== taskChoiceVersion.current || selection !== selectionVersion.current) {
+        throw new DOMException('Task selection changed', 'AbortError');
+      }
+    };
+    return configure(async () => {
+      assertCurrent();
+      if (workbenchRuntime.getSnapshot().running) throw new Error(t('workbench.stopFirst'));
+      const pending = pendingTaskSession.current;
+      const id = activeRef.current ?? (pending?.selection === selection ? pending.record.id : undefined);
+      const record = id ? await requireOwned(id) : undefined;
+      assertCurrent();
+      if (record?.deletedAt || record?.archived) throw new Error(t('workbench.restoreFirst'));
+      const initial = record?.workbench ?? (record?.repoId ? { ...defaults(), scope: 'selected' as const,
+        selectedRepositories: repositories.filter(item => item.id === record.repoId) } : defaults());
+      const researchScope = scope && scope !== 'github' ? scope : initial.scope !== 'github' ? initial.scope
+        : record?.projectId ? 'project' : 'selected';
+      const next: WorkbenchSessionData = { ...initial, taskMode,
+        scope: taskMode === 'organize' ? 'library' : taskMode === 'discover' ? 'github' : researchScope,
+        inputIntent: taskMode === 'discover' ? 'search' : 'research' };
+      let configured: RepositoryChatSession;
+      if (record) configured = await patchSession(record.id, { workbench: next }, assertCurrent);
+      else {
+        configured = newSessionRecord(undefined, next);
+        pendingTaskSession.current = { selection, record: configured };
+        await storage.saveSession(configured);
+      }
+      assertCurrent();
+      if (!activeRef.current) {
+        onSessionReady?.(configured);
+        assertCurrent();
+        setMode('active'); select(configured.id); setActive(configured);
+        pendingTaskSession.current = undefined;
+      }
+      return configured;
+    });
   };
 
   const saveProject = async (project: WorkbenchProject) => {
@@ -190,22 +268,25 @@ export function useAIWorkbench() {
     intent?: WorkbenchInputIntent; candidates?: WorkbenchCandidate[]; repositories?: Repository[];
   }) => {
     if (!question.trim()) return;
-    if (task.running) throw new Error(t('workbench.busy'));
-    const record = active ?? await createSession();
+    if (workbenchRuntime.getSnapshot().running) throw new Error(t('workbench.busy'));
+    let record = activeRef.current ? await requireOwned(activeRef.current) : await createSession();
     if (record.deletedAt || record.archived) throw new Error(t('workbench.restoreFirst'));
+    if (options?.repositories) record = await patchData(record.id, { scope: 'selected',
+      selectedRepositories: options.repositories, inputIntent: 'research', taskMode: 'research' });
+    const context = record.workbench ?? data;
+    const organizing = !options?.repositories && (context.taskMode === 'organize' || (!context.taskMode && manage));
     const organization = (await storage.listProposals(ownerId, record.id)).filter(p => p.organization)
       .sort((a, b) => b.organization!.revision - a.organization!.revision)[0];
-    if (organization && options?.intent !== 'results' && !options?.repositories) {
+    if (organization && organizing
+      && options?.intent !== 'results' && !options?.repositories) {
       await runOrganizationGeneration({ sessionId: record.id, previous: organization,
         repositories: useAppStore.getState().repositories.filter(r => organization.organization!.scope.repositoryIds.includes(r.id)),
         scopeName: organization.organization!.scope.name, configId: settings.chatConfigId ?? organization.organization!.configId,
         instruction: question.trim(), maxNewSubcategories: organization.organization!.maxNewSubcategories });
       return;
     }
-    const context = record.workbench ?? data;
-    if (options?.repositories) await patchData(record.id, { scope: 'selected', selectedRepositories: options.repositories, inputIntent: 'research' });
-    const intent = options?.intent ?? context.inputIntent ?? 'search';
-    if (intent === 'results' && !manage) {
+    const intent = options?.repositories ? 'research' : options?.intent ?? context.inputIntent ?? 'search';
+    if (intent === 'results' && !organizing) {
       const scope = options?.candidates ?? mergeWorkbenchCandidates(...context.searchBatches.map(batch => batch.candidates));
       if (!scope.length || scope.length > 120) throw new Error(t('overview.scopeLimit', { count: scope.length }));
     }
@@ -234,7 +315,7 @@ export function useAIWorkbench() {
       await storage.saveMessage(reply);
       await patchSession(record.id, { title: history.length ? record.title : question.trim().slice(0, 72) });
       try {
-        if (intent === 'results' && !manage) {
+        if (intent === 'results' && !organizing) {
           stage('answer');
           const result = await answerWorkbenchOverview({ question, candidates: options?.candidates
             ?? mergeWorkbenchCandidates(...context.searchBatches.map(batch => batch.candidates)), messages: history, signal,
@@ -269,7 +350,7 @@ export function useAIWorkbench() {
           Object.assign(reply, { content: result.content, evidenceIds: result.evidences.map(item => item.id),
             answerPhase: 'final', quality: result.quality ?? 'unreviewed', claims: result.claims, coverage: result.coverage,
             missing: result.missing, researchSources: result.researchSources });
-        } else if (manage) {
+        } else if (organizing) {
           stage('planning');
           const proposal = await proposeWorkbenchOperations({ question, sessionId: record.id, signal });
           signal.throwIfAborted();
@@ -300,8 +381,9 @@ export function useAIWorkbench() {
             if (config && sources.length) {
               const matches = await new AIService(forAgyFeature(config, 'workbench'), state.language).searchRepositoriesWithSelection(sources, question, { signal });
               signal.throwIfAborted();
-              const ids = new Set(matches.map((r) => r.id));
-              sources = sources.filter((r) => ids.has(r.id));
+              const allowed = new Map(sources.map(repository => [repository.id, repository]));
+              sources = [...new Set(matches.map(repository => repository.id))]
+                .flatMap(id => { const repository = allowed.get(id); return repository ? [repository] : []; });
             }
           }
           const result = await answerWorkbench({
@@ -401,8 +483,9 @@ export function useAIWorkbench() {
       if (!project) throw new Error(t('workbench.chooseProject'));
       await saveProject({ ...project, repositories: [...project.repositories.filter((r) => r.id !== repository.id), repository], ...(project.selectedRepositoryNames ? { selectedRepositoryNames: [...new Set([...project.selectedRepositoryNames, repository.full_name])] } : {}) });
     } else {
+      const latest = await requireOwned(active.id);
       await patchData(active.id, {
-        selectedRepositories: [...data.selectedRepositories.filter((r) => r.id !== repository.id), repository],
+        selectedRepositories: [...(latest.workbench?.selectedRepositories ?? data.selectedRepositories).filter((r) => r.id !== repository.id), repository],
       });
     }
   };
@@ -430,14 +513,17 @@ export function useAIWorkbench() {
       sessionStorage.setItem('gsm:pending-settings-tab', 'ai');
       useAppStore.getState().setCurrentView('settings');
     },
-    createSession, createProject, saveProject, patchSession, patchData, send, search, addRepository,
-    addRepositories: async (items: Repository[]) => {
-      const record = active ?? await createSession();
+    createSession, chooseTask, createProject, saveProject, patchSession, patchData, send, search, addRepository,
+    addRepositories: (items: Repository[]) => configure(async () => {
+      const record = activeRef.current ? await requireOwned(activeRef.current) : await createSession();
+      if (record.deletedAt || record.archived) throw new Error(t('workbench.restoreFirst'));
       const latest = await requireOwned(record.id);
-      const merged = new Map((latest.workbench?.selectedRepositories ?? []).map(item => [item.full_name.toLowerCase(), item]));
+      const selected = latest.workbench?.selectedRepositories ?? repositories.filter(item => item.id === latest.repoId);
+      const merged = new Map(selected.map(item => [item.full_name.toLowerCase(), item]));
       items.forEach(item => merged.set(item.full_name.toLowerCase(), item));
-      await patchData(record.id, { selectedRepositories: [...merged.values()] });
-    },
+      const scope = latest.workbench?.scope === 'mixed' || latest.workbench?.scope === 'local' ? 'mixed' : 'selected';
+      return patchData(record.id, { selectedRepositories: [...merged.values()], scope, inputIntent: 'research', taskMode: 'research' });
+    }),
     retryOverview: async (batchId: string) => {
       if (!active) return;
       const record = active;
@@ -450,23 +536,65 @@ export function useAIWorkbench() {
     },
     execute, stop: workbenchRuntime.stop,
     localProject: active ? getLocalResearchGrant(active.id, ownerId) : undefined,
-    chooseLocalProject: async () => {
-      if (task.running) throw new Error(t('workbench.stopFirst'));
-      let record = active ?? await createSession();
+    chooseLocalProject: async (onSessionReady?: (record: RepositoryChatSession) => void, scope?: 'local' | 'mixed') => {
+      const choice = ++taskChoiceVersion.current;
+      const selection = selectionVersion.current;
+      const assertCurrent = () => {
+        if (!ownerId || String(useAppStore.getState().user?.id ?? '') !== ownerId) throw new Error(t('workbench.accountChanged'));
+        if (choice !== taskChoiceVersion.current || selection !== selectionVersion.current) {
+          throw new DOMException('Local project selection changed', 'AbortError');
+        }
+      };
+      assertCurrent();
+      if (workbenchRuntime.getSnapshot().running) throw new Error(t('workbench.stopFirst'));
+      let isNew = !activeRef.current;
+      let record = activeRef.current ? await requireOwned(activeRef.current) : newSessionRecord();
+      assertCurrent();
+      if (record.deletedAt || record.archived) throw new Error(t('workbench.restoreFirst'));
+      const targetScope = scope ?? (record.workbench?.scope === 'mixed' ? 'mixed' : 'local');
       // Older local transcripts have no stable directory identity; keep them readable,
       // but do not attach a newly chosen folder to their evidence.
-      if (record.workbench?.localProject && !record.workbench.localProject.identity
-        && (await storage.listMessages(record.id)).length) record = await createSession(record.projectId);
+      if (record.workbench?.localProject && !record.workbench.localProject.identity) {
+        const history = await storage.listMessages(record.id);
+        assertCurrent();
+        if (history.length) {
+          isNew = true;
+          record = newSessionRecord(record.projectId, { ...defaults(), scope: targetScope,
+            selectedRepositories: record.workbench.selectedRepositories });
+        }
+      }
       let grant;
       try {
-        grant = await bindLocalResearchGrant(record.id, ownerId, record.workbench?.localProject?.identity);
+        // Keep folder bindings ordered so a late native chooser cannot replace a newer grant.
+        const binding = localPickerQueue.current.catch(() => undefined).then(() => {
+          assertCurrent();
+          return bindLocalResearchGrant(record.id, ownerId, record.workbench?.localProject?.identity);
+        });
+        localPickerQueue.current = binding;
+        grant = await binding;
       } catch (e) {
+        if (e instanceof Error && e.message === 'AGY_CANCELED') return false as const;
         if (e instanceof Error && e.message === 'LOCAL_PROJECT_CHANGED') throw new Error(t('localResearch.projectChanged'));
         throw e;
       }
-      await patchSession(record.id, { deviceOnly: true });
-      await patchData(record.id, { scope: record.workbench?.scope === 'mixed' ? 'mixed' : 'local',
-        localProject: { name: grant.name, identity: grant.identity } });
+      assertCurrent();
+      return configure(async () => {
+        assertCurrent();
+        const latest = isNew ? record : await requireOwned(record.id);
+        assertCurrent();
+        if (latest.deletedAt || latest.archived) throw new Error(t('workbench.restoreFirst'));
+        const patch: Pick<RepositoryChatSession, 'deviceOnly' | 'workbench'> = { deviceOnly: true, workbench: { ...defaults(), ...latest.workbench,
+          scope: targetScope, inputIntent: 'research', taskMode: 'research',
+          localProject: { name: grant.name, identity: grant.identity } } };
+        if (!isNew) return patchSession(record.id, patch, assertCurrent);
+        const configured = { ...latest, ...patch, updatedAt: now() };
+        await storage.saveSession(configured);
+        assertCurrent();
+        onSessionReady?.(configured);
+        assertCurrent();
+        setMode('active'); select(configured.id); setActive(configured);
+        return configured;
+      });
     },
     star: starWorkbenchRepository,
     claim: async (id: string) => { await storage.claimSession(id, ownerId); setMode('active'); select(id); },
