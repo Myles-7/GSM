@@ -100,4 +100,39 @@ describe('exploration AI and evidence integration', () => {
     mocks.generate.mockResolvedValueOnce(JSON.stringify({ groups: [{ sourceIds: [target], targetId: source }] }));
     await expect(consolidateExplorationTopics(profiles, config, 'zh', new Set([target]), new AbortController().signal, () => {})).rejects.toThrow('主题身份');
   });
+  it('resolves reciprocal equivalences locally using a stable existing topic without losing citations', async () => {
+    const profiles = Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+      const profile = profileFixture(repositoryFixture(index + 1));
+      profile.topics = [{ id: conceptId('topic', `topic ${index}`), label: `topic ${index}`, evidenceIds: [`evidence-${index}`] }];
+      return [String(index + 1), profile];
+    }));
+    const first = profiles['1'].topics[0], second = profiles['2'].topics[0], tail = profiles['3'].topics[0];
+    profiles['4'].topics.push({ ...first, evidenceIds: ['additional-evidence'] });
+    mocks.generate.mockResolvedValueOnce(JSON.stringify({ groups: [
+      { sourceIds: [first.id], targetId: second.id },
+      { sourceIds: [second.id, tail.id], targetId: first.id },
+    ] }));
+    const result = await consolidateExplorationTopics(profiles, config, 'zh', new Set(), new AbortController().signal, () => {});
+    expect(mocks.generate).toHaveBeenCalledOnce();
+    for (const id of ['1', '2', '3']) expect(result[id].topics[0].id).toBe(first.id);
+    expect(result['2'].topics[0].evidenceIds).toEqual(['evidence-1']);
+    expect(result['4'].topics.find(topic => topic.id === first.id)?.evidenceIds).toEqual(['additional-evidence']);
+    expect(profiles['2'].topics[0]).toEqual(second);
+    expect(Object.keys(result)).toEqual(Object.keys(profiles));
+  });
+  it('accepts a complete fenced topic response but rejects unknown identities and conflicting redirects', async () => {
+    const profiles = Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+      const profile = profileFixture(repositoryFixture(index + 1)); profile.topics = [{ id: `topic-${index}`, label: `topic ${index}` }];
+      return [String(index + 1), profile];
+    }));
+    mocks.generate.mockResolvedValueOnce('\uFEFF```json\n{"groups":[{"sourceIds":["topic-1"],"targetId":"topic-0"}]}\n```');
+    expect((await consolidateExplorationTopics(profiles, config, 'zh', new Set(), new AbortController().signal, () => {}))['2'].topics[0].id).toBe('topic-0');
+    for (const groups of [
+      [{ sourceIds: ['topic-1'], targetId: 'invented-topic' }],
+      [{ sourceIds: ['topic-1'], targetId: 'topic-0' }, { sourceIds: ['topic-1'], targetId: 'topic-2' }],
+    ]) {
+      mocks.generate.mockResolvedValueOnce(JSON.stringify({ groups }));
+      await expect(consolidateExplorationTopics(profiles, config, 'zh', new Set(), new AbortController().signal, () => {})).rejects.toThrow('主题身份');
+    }
+  });
 });
