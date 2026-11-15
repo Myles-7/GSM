@@ -27,6 +27,9 @@ Module._extensions['.js'] = (module, filename) => {
   const source = fs.readFileSync(filename, 'utf8');
   const target = "preload: path.join(__dirname, 'preload.js')";
   if (source.split(target).length !== 2) throw new Error('Diagnostic preload path drift');
+  // A contained candidate can live in diagnostic output before dist/ exists.
+  const renderer = "path.join(__dirname, '../dist/index.html')";
+  if (!source.includes(renderer)) throw new Error('Diagnostic renderer path drift');
   const desktopDiagnostic = process.env.GSM_DIAG_DESKTOP === '1' ? `
 global.gsmDesktopDiagnostic = {
   clickTray: () => tray.emit('click'),
@@ -34,6 +37,8 @@ global.gsmDesktopDiagnostic = {
   state: () => ({ visible:mainWindow.isVisible(), minimized:mainWindow.isMinimized(), focused:mainWindow.isFocused(), quitting:isQuitting, prefs:{...desktopPrefs} }),
   session: name => { let prevented=false; mainWindow.emit(name, { preventDefault(){prevented=true;} }); return {prevented,quitting:isQuitting}; },
 };` : '';
-  module._compile(source.replace(target, "preload: path.join(process.env.GSM_DIAG_BUILD, 'startup-preload.cjs')") + desktopDiagnostic, filename);
+  module._compile(source
+    .replace(target, "preload: path.join(process.env.GSM_DIAG_BUILD, 'startup-preload.cjs')")
+    .replaceAll(renderer, "path.join(process.env.GSM_DIAG_BUILD, 'index.html')") + desktopDiagnostic, filename);
 };
 require('./render-performance-electron.cjs');
