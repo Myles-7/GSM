@@ -119,7 +119,7 @@ const mockUseAppStore = vi.mocked(useAppStore);
 
 const renderRepositoryCard = (
   viewMode: 'list' | 'grid',
-  options: { onAskRepository?: (repository: Repository) => void; onViewDetails?: (repository: Repository) => void; selectionMode?: boolean } = {},
+  options: { onAskRepository?: (repository: Repository) => void; onViewDetails?: (repository: Repository) => void; onSelect?: (id: number) => void; selectionMode?: boolean } = {},
 ) => render(
   <TooltipProvider>
     <RepositoryCard repository={repository} allCategories={[]} viewMode={viewMode} {...options} />
@@ -259,6 +259,22 @@ describe('RepositoryCard view modes', () => {
     expect(screen.getByRole('menuitem', { name: '查找同类仓库' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menuitem', { name: '查找同类仓库' })).not.toBeInTheDocument());
+  });
+
+  it('keeps list selection and detail controls independent of the card click', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onViewDetails = vi.fn();
+    const { container } = renderRepositoryCard('list', { onSelect, onViewDetails });
+
+    await user.click(screen.getByRole('button', { name: '选择' }));
+    expect(onSelect).toHaveBeenCalledWith(repository.id);
+    expect(onViewDetails).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '查看深度详情' }));
+    fireEvent.keyDown(container.firstElementChild!, { key: 'Enter' });
+    expect(onViewDetails).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledOnce();
   });
 
   it('only exposes similar-repository search in the menu when vector search is available', async () => {
