@@ -1289,13 +1289,13 @@
     "empty-title": "設定向量語義搜尋",
     "empty-description": "按語義而非關鍵字查找儲存庫。三步完成：設定嵌入模型、連線 Cloudflare Worker、建立向量索引。",
     "empty-cta": "開始設定",
-    "empty-view-deploy-guide": "查看部署指南",
+    "empty-view-deploy-guide": "檢視部署指南",
     "restore-default-dimensions": "恢復預設",
     "use-detected-dimensions": "使用偵測到的 {{dimensions}} 維",
     "copied": "已複製",
     "retry-last-index": "重試上次索引",
     "deadline-exceeded": "連線逾時，請檢查網路或稍後重試。",
-    "default-embedding-name": "{{label}} 嵌入模型",
+    "default-embedding-name": "{{label}} 向量嵌入模型",
     "save-before-indexing": "Unsaved embedding or index settings"
   },
   "webDAVPanel": {
