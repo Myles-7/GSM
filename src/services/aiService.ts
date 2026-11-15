@@ -15,6 +15,9 @@ import { aiTaskJournal, type AITaskKind } from './aiTaskJournal';
 import { taskObservability } from './taskObservability';
 import { useAppStore } from '../store/useAppStore';
 import { parseAIJson } from '../utils/aiJson';
+import { AIRequestError, getAIGatewayError, parseRetryAfterMs, readAIResponse } from './aiRequestError';
+
+export { AIRequestError } from './aiRequestError';
 
 const HTTP_REQUEST_TIMEOUT_MS = 600_000;
 
@@ -73,24 +76,6 @@ type ParsedAIResponse = RepositoryAnalysisResult & {
   invalidReason?: string;
 };
 
-/**
- * 统一的 AI 请求错误，携带 HTTP 状态码与（可选）服务端建议的等待时长。
- * 上层（限流器 / 优化器）依赖 status / retryAfterMs 判断退避策略。
- */
-export class AIRequestError extends Error {
-  readonly status: number;
-  readonly retryAfterMs?: number;
-  readonly isRateLimit: boolean;
-
-  constructor(message: string, status: number, retryAfterMs?: number) {
-    super(message);
-    this.name = 'AIRequestError';
-    this.status = status;
-    this.retryAfterMs = retryAfterMs;
-    this.isRateLimit = status === 429;
-  }
-}
-
 /** 支持检查一个错误对象是否是 AI 限流（429 或代理透传的限流错误）。 */
 export function isRateLimitedError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -108,26 +93,6 @@ export function getRetryAfterMsFromError(error: unknown): number | undefined {
   const e = error as { retryAfterMs?: unknown; retryAfter?: unknown };
   const ms = typeof e.retryAfterMs === 'number' ? e.retryAfterMs : undefined;
   if (ms !== undefined && Number.isFinite(ms) && ms > 0) return ms;
-  return undefined;
-}
-
-/** 解析响应头里的 Retry-After（retry-after-ms → retry-after 秒 → HTTP date）。 */
-function parseRetryAfterMs(response: Response): number | undefined {
-  const msHeader = response.headers.get('retry-after-ms');
-  if (msHeader) {
-    const v = Number(msHeader);
-    if (Number.isFinite(v) && v > 0) return Math.round(v);
-  }
-  const secHeader = response.headers.get('retry-after');
-  if (secHeader) {
-    const v = Number(secHeader);
-    if (Number.isFinite(v) && v > 0) return Math.round(v * 1000);
-    const parsed = Date.parse(secHeader);
-    if (!Number.isNaN(parsed)) {
-      const remaining = parsed - Date.now();
-      if (remaining > 0) return remaining;
-    }
-  }
   return undefined;
 }
 
@@ -151,16 +116,26 @@ export class AIStreamInterruptedError extends Error {
   }
 }
 
-function createStreamReader(apiType: AIApiType, extractDelta: (payload: string) => string, onChunk: (delta: string) => void, onPayload?: (payload: string) => void) {
+function createStreamReader(response: Response, apiType: AIApiType, extractDelta: (payload: string) => string, onChunk: (delta: string) => void, onPayload?: (payload: string) => void) {
   let full = '', completed = false;
   const accept = (payload: string) => {
-    onPayload?.(payload);
-    const delta = extractDelta(payload);
-    if (delta) { full += delta; onChunk(delta); }
     if (payload.trim() === '[DONE]') { completed = true; return; }
     let event: { type?: string; error?: unknown; delta?: { stop_reason?: string }; promptFeedback?: { blockReason?: string }; candidates?: { finishReason?: string }[]; choices?: { finish_reason?: string }[] };
     try { event = JSON.parse(payload); } catch { return; }
+    if (!event || typeof event !== 'object') return;
+    const gatewayError = getAIGatewayError(event, response);
+    if (gatewayError) {
+      if (!full) throw gatewayError;
+      // Once a partial answer exists, the caller must not treat rejection as
+      // proof that the provider did no work. Keep the backoff metadata.
+      throw Object.assign(new AIStreamInterruptedError(full, gatewayError.message), {
+        status: gatewayError.status, retryAfterMs: gatewayError.retryAfterMs, isRateLimit: gatewayError.isRateLimit,
+      });
+    }
     if (event.error || ['error', 'response.failed', 'response.incomplete'].includes(event.type ?? '')) throw new AIStreamInterruptedError(full);
+    onPayload?.(payload);
+    const delta = extractDelta(payload);
+    if (delta) { full += delta; onChunk(delta); }
     if (apiType === 'openai-responses') completed ||= event.type === 'response.completed';
     else if (apiType === 'claude') {
       if (['max_tokens', 'refusal'].includes(event.delta?.stop_reason ?? '')) throw new AIStreamInterruptedError(full);
@@ -341,6 +316,7 @@ function validateResponseCompletion(apiType: AIApiType, data: unknown): void {
 }
 
 function extractFullTextFromResponse(apiType: AIApiType, data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
   validateResponseCompletion(apiType, data);
   if (apiType === 'openai-responses') {
     const typed = data as OpenAIResponse;
@@ -639,7 +615,8 @@ export class AIService {
       return result;
     } catch (error) {
       const status = (error as { status?: number; statusCode?: number } | null)?.status ?? (error as { statusCode?: number } | null)?.statusCode;
-      const rejected = error instanceof AIToolCallUnsupportedError || (typeof status === 'number' && status >= 400 && status < 500 && status !== 408);
+      const rejected = error instanceof AIToolCallUnsupportedError
+        || (!(error instanceof AIStreamInterruptedError) && typeof status === 'number' && status >= 400 && status < 500 && status !== 408);
       const outcome = dispatched && !rejected ? 'unknown' : isAbortError(error) ? 'canceled' : 'failed';
       setOutcome(outcome==='canceled'?'not_started':outcome);
       if (outcome === 'unknown' && error !== null && typeof error === 'object' && Object.isExtensible(error)) Object.assign(error, { providerOutcome: 'unknown' });
@@ -704,7 +681,7 @@ export class AIService {
             ...(isMiMoModel || isDeepSeekThinking ? { thinking: { type: 'disabled' } } : {}),
           };
 
-      let data: Record<string, unknown>;
+      let data: unknown;
       // HTTP details captured in debug mode
       const requestUrl = buildFinalApiUrl(this.config.baseUrl, apiType);
       const requestHeaders: Record<string, string> = {
@@ -719,7 +696,7 @@ export class AIService {
       if (backend.isAvailable) {
         // Note: backend proxy does not return HTTP-level details (headers, body preview).
         // httpDetails will contain only url/requestHeaders/requestBody; response fields stay undefined.
-        data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal) as Record<string, unknown>;
+        data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal);
       } else {
         const response = await fetch(requestUrl, {
           // 直连携带 API Key，禁止跟随重定向以防凭据外泄。
@@ -748,7 +725,7 @@ export class AIService {
             parseRetryAfterMs(response)
           );
         }
-        data = await response.json();
+        data = await readAIResponse(response);
       }
 
       options.capture?.response(data);
@@ -852,7 +829,7 @@ export class AIService {
             parseRetryAfterMs(response)
           );
         }
-        data = await response.json();
+        data = await readAIResponse(response);
       }
 
       options.capture?.response(data);
@@ -944,7 +921,7 @@ ${options.user}` : options.user;
           parseRetryAfterMs(response)
         );
       }
-      data = await response.json();
+      data = await readAIResponse(response);
     }
 
     options.capture?.response(data);
@@ -1108,68 +1085,44 @@ ${options.user}` : options.user;
       );
     }
 
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType) {
-      // 缺失 Content-Type 时按内容嗅探：body 含 data: 帧走 SSE 解析，
-      // 否则按整段 JSON / 纯文本回退（此时 body 已整体读入，逐段回调）。
-      const raw = await response.text();
-      const ssePayloads: string[] = [];
-      let dataLines: string[] = [];
-      // SSE 行分隔符按规范接受 CRLF / LF / 裸 CR。
-      for (const line of raw.split(/\r\n|\r|\n/)) {
-        if (line === '') {
-          if (dataLines.length > 0) {
-            ssePayloads.push(dataLines.join('\n'));
-            dataLines = [];
-          }
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).replace(/^ /, ''));
-        }
-      }
-      if (dataLines.length > 0) ssePayloads.push(dataLines.join('\n'));
-
-      if (ssePayloads.length > 0) {
-        // 只有至少一帧解出当前 API 的有效增量才算 SSE；普通文本里恰好出现
-        // "data:" 开头的行时继续走下方 JSON / 纯文本回退。
-        const isProtocolStream = ssePayloads.some(payload => extractDelta(payload) || /"(?:type|error)"\s*:\s*(?:"(?:response\.|content_block_|message_|error)|\{)/.test(payload));
-        if (isProtocolStream) {
-          const stream = createStreamReader(apiType, extractDelta, options.onChunk, options.capture?.stream);
-          ssePayloads.forEach(stream.accept);
-          const full = stream.finish();
-          this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: full.length }, { url: maskedUrl, streamed: true });
-          return full;
-        }
-      }
-
-      let text = '';
-      try {
-        const data = JSON.parse(raw); options.capture?.response(data);
-        text = extractFullTextFromResponse(apiType, data);
-      } catch (error) {
-        if (error instanceof AIStreamInterruptedError) throw error;
-        text = raw;
-      }
-      if (!text) {
-        this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, { url: maskedUrl });
-        throw new Error('No content received from AI service');
-      }
-      options.onChunk(text);
-      this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: text.length }, { url: maskedUrl, streamed: false });
-      return text;
-    }
-
+    const contentType = response.headers.get('content-type')?.toLowerCase() || '';
     if (!contentType.includes('text/event-stream')) {
-      // 服务端忽略 stream:true 时可能返回整段 JSON（application/json）或纯文本
-      // 回答：先按 JSON 解析提取结构化文本，失败则把原始文本作为一次性 chunk。
+      // Older gateways can omit Content-Type or return an ordinary JSON object
+      // even when streaming was requested.
       const raw = await response.text();
-      let text = '';
-      try {
-        const data = JSON.parse(raw); options.capture?.response(data);
-        text = extractFullTextFromResponse(apiType, data);
-      } catch (error) {
-        if (error instanceof AIStreamInterruptedError) throw error;
-        text = raw;
+      if (!contentType) {
+        const lines = raw.split(/\r\n|\r|\n/);
+        const isSseFramed = lines.every(line => line === '' || /^(?:(?:data|event|id|retry):|:)/.test(line));
+        if (isSseFramed) {
+          const ssePayloads: string[] = [];
+          let dataLines: string[] = [];
+          for (const line of lines) {
+            if (line === '' && dataLines.length > 0) {
+              ssePayloads.push(dataLines.join('\n'));
+              dataLines = [];
+            } else if (line.startsWith('data:')) {
+              dataLines.push(line.slice(5).replace(/^ /, ''));
+            }
+          }
+          if (dataLines.length > 0) ssePayloads.push(dataLines.join('\n'));
+          const isProtocolStream = ssePayloads.some(payload => extractDelta(payload)
+            || /"type"\s*:\s*"(?:response\.|content_block_|message_|error)|"error"\s*:\s*["{]/.test(payload));
+          if (isProtocolStream) {
+            const stream = createStreamReader(response, apiType, extractDelta, options.onChunk, options.capture?.stream);
+            ssePayloads.forEach(stream.accept);
+            const full = stream.finish();
+            this.logAIRequestDebug(startTime, { apiType, model, configId }, { responseLength: full.length }, { url: maskedUrl, streamed: true });
+            return full;
+          }
+        }
       }
+
+      let data: unknown;
+      try { data = JSON.parse(raw); } catch { /* Treat non-JSON as plain text. */ }
+      const gatewayError = getAIGatewayError(data, response);
+      if (gatewayError) throw gatewayError;
+      options.capture?.response(data);
+      const text = data === undefined ? raw : extractFullTextFromResponse(apiType, data);
       if (!text) {
         this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'request failed' }, { url: maskedUrl });
         throw new Error('No content received from AI service');
@@ -1183,7 +1136,7 @@ ${options.user}` : options.user;
       this.logAIRequestDebug(startTime, { apiType, model, configId }, { error: 'empty response body' }, { url: maskedUrl });
       throw new Error('No content received from AI service (empty body)');
     }
-    const stream = createStreamReader(apiType, extractDelta, options.onChunk, options.capture?.stream);
+    const stream = createStreamReader(response, apiType, extractDelta, options.onChunk, options.capture?.stream);
     await consumeSseStream(response.body, stream.accept);
     const full = stream.finish();
 
@@ -1327,13 +1280,13 @@ ${options.user}` : options.user;
     };
     let responseHeaders: Record<string, string> | undefined;
     let responseStatus: number | undefined;
-    let data: Record<string, unknown>;
+    let data: unknown;
 
     options.capture?.sent();
     if (backend.isAvailable) {
       // 代理整体透传请求体（含 tools 字段），响应仍由客户端解析。
       try {
-        data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal) as Record<string, unknown>;
+      data = await backend.proxyAIRequestWithFallback(this.config.id, this.config, requestBody, options.signal);
       } catch (error) {
         // 代理错误不保留上游响应体：按状态码 + 消息识别端点拒绝 tools 的情形，
         // 与直连路径同样转为 AIToolCallUnsupportedError，让调用方落回编排式循环。
@@ -1378,7 +1331,7 @@ ${options.user}` : options.user;
         }
         throw error;
       }
-      data = await response.json();
+      data = await readAIResponse(response);
     }
 
     const httpDetails = logger.isDebugMode() ? {
@@ -2157,8 +2110,7 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
         return { success: text.trim() === 'OK', message: text.trim() === 'OK' ? 'AGY OK' : 'AGY_INVALID_RESULT' };
       } catch (error) { if (signal?.aborted) throw signal.reason; return { success: false, message: error instanceof Error ? error.message : 'AGY_FAILED' }; }
     }
-    const apiType = this.getApiType();
-    const timeoutMs = apiType === 'openai-responses' || apiType === 'gemini' || this.config.reasoningEffort ? 30000 : 10000;
+    const timeoutMs = 30_000;
 
     try {
       const base = new URL(this.config.baseUrl);
@@ -2196,11 +2148,13 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
       const errorMessage = err.message || '';
 
       // 解析状态码
-      const statusMatch = errorMessage.match(/(\d{3})/);
-      const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : undefined;
+      const typedError = error as { status?: number; statusCode?: number } | null;
+      const httpStatus = typedError?.status ?? typedError?.statusCode;
+      const statusMatch = errorMessage.match(/([45]\d{2})/);
+      const statusCode = httpStatus ?? (statusMatch ? Number(statusMatch[1]) : undefined);
 
       // 处理超时错误
-      if (errorMessage.includes('timeout') || errorMessage.includes('abort') || ['AbortError', 'TimeoutError'].includes(err.name)) {
+      if (httpStatus === undefined && (errorMessage.includes('timeout') || errorMessage.includes('abort') || ['AbortError', 'TimeoutError'].includes(err.name))) {
         return {
           success: false,
           errorType: 'timeout',
@@ -2211,7 +2165,7 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
       }
 
       // 处理网络错误
-      if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to fetch')) {
+      if (httpStatus === undefined && /fetch|network/i.test(errorMessage)) {
         return {
           success: false,
           errorType: 'network',
