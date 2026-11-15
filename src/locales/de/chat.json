@@ -42,6 +42,7 @@
       "unknown": "Unbekannt"
   },
   "globalChatHistorySheet": {
+    "load-more": "Weitere Unterhaltungen laden",
     "close-chat-history": "Schließen Sie den Q&A-Verlauf",
     "chat-history": "Q&A-Geschichte",
     "conversations-across-repositories-select-one-to": "Fassen Sie die Frage-und-Antwort-Sitzungen in jedem Lager zusammen und klicken Sie, um das entsprechende Lager zu betreten und das Gespräch fortzusetzen.",
@@ -77,6 +78,8 @@
     "delete-conversation": "Sitzung löschen"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Zugriff auf den ursprünglichen Commit wird geprüft …",
+    "history-read-only": "Der ursprüngliche Commit ist nicht verfügbar. Die gespeicherte Unterhaltung bleibt lesbar.",
     "agent-execution-summary": "Zusammenfassung des Agenten",
     "this-turn-s-work": "Ausführung dieser Aufgabenrunde",
     "failed-attention": "{{failed}} Elemente erfordern Aufmerksamkeit",

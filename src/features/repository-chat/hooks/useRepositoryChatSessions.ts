@@ -35,18 +35,23 @@ const notifyGlobalHistoryChanged = () => {
 export interface UseRepositoryChatSessionsOptions {
   repository: Repository | null;
   language: AppLanguage;
+  historyRepositoryId?: number;
+  initialSessionId?: string | null;
   resolveSourceRefSha?: (repository: Repository, signal?: AbortSignal) => Promise<string>;
 }
 
 export const useRepositoryChatSessions = ({
   repository,
   language,
+  historyRepositoryId,
+  initialSessionId,
   resolveSourceRefSha,
 }: UseRepositoryChatSessionsOptions) => {
   const t = useT('chat');
   const githubToken = useAppStore((state) => state.githubToken);
   const user = useAppStore((state) => state.user);
   const ownerId = user ? String(user.id) : '';
+  const repositoryId = repository?.id ?? historyRepositoryId;
   const retainSessionDays = useAppStore((state) => state.repositoryChatSettings.retainSessionDays);
   const [sessions, setSessions] = useState<RepositoryChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<RepositoryChatSession | null>(null);
@@ -54,6 +59,11 @@ export const useRepositoryChatSessions = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operationIdRef = useRef(0);
+  const selectedIdRef = useRef<string | null>(null);
+  const setSelection = useCallback((session: RepositoryChatSession | null) => {
+    selectedIdRef.current = session?.id ?? null;
+    setActiveSession(session);
+  }, []);
 
   const loadSessionMessages = useCallback(async (session: RepositoryChatSession | null, operationId: number) => {
     if (!session) {
@@ -66,29 +76,32 @@ export const useRepositoryChatSessions = ({
 
   const refresh = useCallback(async () => {
     const operationId = ++operationIdRef.current;
-    if (!repository) {
+    if (!repositoryId || !ownerId) {
       setSessions([]);
-      setActiveSession(null);
+      setSelection(null);
       setMessages([]);
+      setIsLoading(false);
       return;
     }
 
     setIsLoading(true);
     setError(null);
     try {
-      const nextSessions = (await repositoryChatStorage.listSessionsByRepository(repository.id))
-        .filter((session) => Boolean(ownerId) && session.ownerId === ownerId && !session.archived);
+      const nextSessions = (await repositoryChatStorage.listSessionsByRepository(repositoryId))
+        .filter((session) => session.ownerId === ownerId && !session.archived);
       if (operationId !== operationIdRef.current) return;
       setSessions(nextSessions);
-      const mostRecent = nextSessions[0] ?? null;
-      setActiveSession(mostRecent);
-      await loadSessionMessages(mostRecent, operationId);
+      const selected = initialSessionId
+        ? nextSessions.find(session => session.id === initialSessionId) ?? null
+        : nextSessions[0] ?? null;
+      setSelection(selected);
+      await loadSessionMessages(selected, operationId);
     } catch (unknownError) {
       if (operationId === operationIdRef.current) setError(unknownError instanceof Error ? unknownError.message : 'Unable to load repository chat sessions');
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [loadSessionMessages, repository, ownerId]);
+  }, [loadSessionMessages, repositoryId, ownerId, initialSessionId, setSelection]);
 
   useEffect(() => {
     void refresh();
@@ -103,20 +116,25 @@ export const useRepositoryChatSessions = ({
 
   useEffect(() => {
     let active = true;
+    let latestReload = 0;
     const reload = async () => {
-      if (!repository || !ownerId) return;
-      const next = (await repositoryChatStorage.listSessionsByRepository(repository.id))
+      if (!repositoryId || !ownerId) return;
+      const operationId = operationIdRef.current;
+      const reloadId = ++latestReload;
+      const selectedId = selectedIdRef.current;
+      const next = (await repositoryChatStorage.listSessionsByRepository(repositoryId))
         .filter((item) => item.ownerId === ownerId && !item.archived);
-      const current = next.find((item) => item.id === activeSession?.id);
+      const current = next.find(item => item.id === selectedId) ?? null;
       const nextMessages = current ? await repositoryChatStorage.listMessages(current.id) : [];
-      if (!active) return;
+      if (!active || operationId !== operationIdRef.current || reloadId !== latestReload || selectedId !== selectedIdRef.current) return;
       setSessions(next);
-      if (current) { setActiveSession(current); setMessages(nextMessages); }
+      setSelection(current);
+      setMessages(nextMessages);
     };
     const handler = () => { void reload().catch(() => undefined); };
     window.addEventListener('gsm:global-chat-history-changed', handler);
     return () => { active = false; window.removeEventListener('gsm:global-chat-history-changed', handler); };
-  }, [repository, ownerId, activeSession?.id]);
+  }, [repositoryId, ownerId, setSelection]);
 
   const createSession = useCallback(async () => {
     const operationId = ++operationIdRef.current;
@@ -145,7 +163,7 @@ export const useRepositoryChatSessions = ({
       await repositoryChatStorage.saveSession(session);
       if (operationId !== operationIdRef.current) return null;
       setSessions((previous) => [session, ...previous]);
-      setActiveSession(session);
+      setSelection(session);
       setMessages([]);
       notifyGlobalHistoryChanged();
       return session;
@@ -155,14 +173,22 @@ export const useRepositoryChatSessions = ({
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [githubToken, language, repository, resolveSourceRefSha, t, ownerId]);
+  }, [githubToken, language, repository, resolveSourceRefSha, t, ownerId, setSelection]);
 
   const selectSession = useCallback(async (sessionId: string) => {
     const operationId = ++operationIdRef.current;
-    const session = sessions.find((item) => item.id === sessionId) ?? null;
-    setActiveSession(session);
-    await loadSessionMessages(session, operationId);
-  }, [loadSessionMessages, sessions]);
+    const session = sessions.find(item => item.id === sessionId && item.ownerId === ownerId && item.repoId === repositoryId) ?? null;
+    setError(null);
+    setIsLoading(Boolean(session));
+    setSelection(session);
+    try {
+      await loadSessionMessages(session, operationId);
+    } catch (error) {
+      if (operationId === operationIdRef.current) setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (operationId === operationIdRef.current) setIsLoading(false);
+    }
+  }, [loadSessionMessages, sessions, ownerId, repositoryId, setSelection]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     const operationId = ++operationIdRef.current;
@@ -176,14 +202,14 @@ export const useRepositoryChatSessions = ({
       const nextSessions = sessions.filter((session) => session.id !== sessionId);
       setSessions(nextSessions);
       const nextActive = activeSession?.id === sessionId ? (nextSessions[0] ?? null) : activeSession;
-      setActiveSession(nextActive);
+      setSelection(nextActive);
       await loadSessionMessages(nextActive, operationId);
     } catch (unknownError) {
       if (operationId === operationIdRef.current) setError(unknownError instanceof Error ? unknownError.message : 'Unable to delete the repository chat session');
     } finally {
       if (operationId === operationIdRef.current) setIsLoading(false);
     }
-  }, [activeSession, loadSessionMessages, sessions, ownerId]);
+  }, [activeSession, loadSessionMessages, sessions, ownerId, setSelection]);
 
   const updateSession = useCallback(async (session: RepositoryChatSession) => {
     await repositoryChatStorage.saveSession(session);
@@ -193,10 +219,11 @@ export const useRepositoryChatSessions = ({
     setActiveSession((previous) => previous?.id === session.id ? session : previous);
   }, []);
 
+  const visibleSession = ownerId && activeSession?.ownerId === ownerId && activeSession.repoId === repositoryId ? activeSession : null;
   return {
-    sessions,
-    activeSession,
-    messages,
+    sessions: sessions.filter(session => ownerId && session.ownerId === ownerId && session.repoId === repositoryId),
+    activeSession: visibleSession,
+    messages: visibleSession ? messages.filter(message => message.sessionId === visibleSession.id) : [],
     isLoading,
     error,
     refresh,

@@ -42,6 +42,7 @@
       "unknown": "Desconocido"
   },
   "globalChatHistorySheet": {
+    "load-more": "Cargar más conversaciones",
     "close-chat-history": "Cerrar el historial de preguntas y respuestas",
     "chat-history": "Historial de preguntas y respuestas",
     "conversations-across-repositories-select-one-to": "Resuma las sesiones de preguntas y respuestas en cada almacén y haga clic para ingresar al almacén correspondiente para continuar la conversación.",
@@ -77,6 +78,8 @@
     "delete-conversation": "Eliminar sesión"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Comprobando el acceso al commit original…",
+    "history-read-only": "El commit original no está disponible. Aún puedes leer la conversación guardada.",
     "agent-execution-summary": "Resumen ejecutivo del agente",
     "this-turn-s-work": "Ejecución de esta ronda de tareas.",
     "failed-attention": "{{failed}} elementos necesitan atención",

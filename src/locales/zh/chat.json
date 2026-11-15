@@ -144,6 +144,7 @@
     "unknown": "未知"
   },
   "globalChatHistorySheet": {
+    "load-more": "加载更多会话",
     "close-chat-history": "关闭问答历史",
     "chat-history": "问答历史",
     "conversations-across-repositories-select-one-to": "汇总各仓库的问答会话，点击进入对应仓库继续对话。",
@@ -179,6 +180,8 @@
     "delete-conversation": "删除会话"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "正在验证原提交的访问权限…",
+    "history-read-only": "当前无法访问原提交，仍可阅读已保存的会话。",
     "agent-execution-summary": "Agent 执行摘要",
     "this-turn-s-work": "本轮任务执行",
     "failed-attention": "{{failed}} 项需注意",

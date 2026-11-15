@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, Repository } from '../../../types';
 import type { RepositoryChatMessage, RepositoryChatSession } from '../../../types/repositoryChat';
+import type { RepositoryChatTurnInput, RepositoryChatTurnResult } from '../../../services/repositoryChatService';
 const mocks = vi.hoisted(() => ({
   runRepositoryChatTurn: vi.fn(),
   listEvidence: vi.fn(),
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   saveMessage: vi.fn(),
   saveToolEvent: vi.fn(),
   saveEvidence: vi.fn(),
+  saveSession: vi.fn(),
   permanentlyDeleteMessages: vi.fn(),
   appState: {} as Record<string, unknown>,
 }));
@@ -29,6 +31,7 @@ vi.mock('../../../services/repositoryChatStorage', () => ({
     saveMessage: mocks.saveMessage,
     saveToolEvent: mocks.saveToolEvent,
     saveEvidence: mocks.saveEvidence,
+    saveSession: mocks.saveSession,
     permanentlyDeleteMessages: mocks.permanentlyDeleteMessages,
     getSession: vi.fn(async () => null),
   },
@@ -139,6 +142,39 @@ describe('useRepositoryChat persistence failures', () => {
     expect(mocks.permanentlyDeleteMessages).not.toHaveBeenCalled();
     expect(result.current.messages).toHaveLength(outcome === 'configuration' ? 2 : 4);
     if (outcome === 'success') expect(result.current.messages[3].content).toBe('New answer');
+  });
+
+  it('keeps late text and tool events on the former session after selection changes', async () => {
+    mocks.saveMessage.mockResolvedValue(undefined);
+    mocks.saveToolEvent.mockResolvedValue(undefined);
+    mocks.saveSession.mockResolvedValue(undefined);
+    let complete!: (result: RepositoryChatTurnResult) => void;
+    mocks.runRepositoryChatTurn.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const onMessagesChange = vi.fn();
+    const onSessionChange = vi.fn();
+    const {
+      result, rerender,
+    } = renderHook(({ active }) => useRepositoryChat({
+      repository, session: active, messages: [], onMessagesChange, onSessionChange,
+    }), { initialProps: { active: session } });
+    let running!: Promise<void>;
+    act(() => { running = result.current.send('Question'); });
+    await waitFor(() => expect(mocks.runRepositoryChatTurn).toHaveBeenCalledOnce());
+    const oldTurn: RepositoryChatTurnInput = mocks.runRepositoryChatTurn.mock.calls[0][0];
+    rerender({ active: { ...session, id: 'second-session' } });
+    onMessagesChange.mockClear();
+    await act(async () => {
+      oldTurn.onToolEvent?.({ toolName: 'read_repo_file', status: 'success', paramSummary: 'README.md' });
+      oldTurn.onAnswerEvent?.({ phase: 'draft', content: 'The previous draft.' });
+      complete({ content: 'The saved original answer.', evidences: [] });
+      await running;
+    });
+    expect(onMessagesChange).not.toHaveBeenCalled();
+    expect(onSessionChange).not.toHaveBeenCalled();
+    expect(result.current.toolEvents).toEqual([]);
+    expect(mocks.saveMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: session.id, status: 'complete', content: 'The saved original answer.',
+    }));
   });
 
   it('persists distinct events for repeated Agent rounds and orders the user before the assistant', async () => {

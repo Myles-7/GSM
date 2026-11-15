@@ -24,10 +24,11 @@ interface GlobalChatHistorySheetProps {
   isOpen: boolean;
   onClose: () => void;
   repositories: Repository[];
-  onSelectSession: (repository: Repository, sessionId: string) => void;
+  onSelectSession: (repository: Repository | null, sessionId: string, savedSession?: RepositoryChatSession) => void;
 }
 
 const HISTORY_CHANGE_EVENT = 'gsm:global-chat-history-changed';
+const HISTORY_PAGE_SIZE = 30;
 
 export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
   isOpen,
@@ -41,12 +42,16 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
   const ownerId = user ? String(user.id) : '';
   const t = useT('chat');
   const [sessions, setSessions] = useState<RepositoryChatSession[]>([]);
+  const [loadedOwner, setLoadedOwner] = useState('');
+  const [visibleLimit, setVisibleLimit] = useState(HISTORY_PAGE_SIZE);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [pendingDeletion, setPendingDeletion] = useState<RepositoryChatSession | null>(null);
   // 重叠刷新只允许最新请求提交，避免旧结果覆盖新状态。
   const requestIdRef = useRef(0);
+  const ownerRef = useRef(ownerId);
+  ownerRef.current = ownerId;
 
   const repositoryById = useMemo(() => {
     const map = new Map<number, Repository>();
@@ -62,6 +67,7 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
       const nextSessions = ownerId ? await repositoryChatStorage.listWorkbenchSessions(ownerId) : [];
       if (requestId !== requestIdRef.current) return;
       setSessions(nextSessions);
+      setLoadedOwner(ownerId);
     } catch {
       if (requestId !== requestIdRef.current) return;
       setLoadError(t('globalChatHistorySheet.failed-to-load-history-please-retry'));
@@ -73,33 +79,47 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
   useEffect(() => {
     if (isOpen) {
       setQuery('');
+      setVisibleLimit(HISTORY_PAGE_SIZE);
+      setPendingDeletion(null);
       void refresh();
     }
+    return () => { requestIdRef.current += 1; };
   }, [isOpen, refresh]);
 
   const handleDelete = useCallback(async (sessionId: string) => {
     const record = await repositoryChatStorage.getSession(sessionId);
-    if (!ownerId || record?.ownerId !== ownerId) return;
+    if (!ownerId || ownerRef.current !== ownerId || record?.ownerId !== ownerId) return;
     await repositoryChatStorage.softDeleteSession(sessionId);
-    setSessions((previous) => previous.filter((session) => session.id !== sessionId));
+    if (ownerRef.current === ownerId) setSessions(previous => previous.filter(session => session.id !== sessionId));
     window.dispatchEvent(new CustomEvent(HISTORY_CHANGE_EVENT));
   }, [ownerId]);
 
+  const ownedSessions = useMemo(() => loadedOwner === ownerId ? sessions : [], [loadedOwner, ownerId, sessions]);
   const visibleSessions = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return sessions;
-    return sessions.filter((session) =>
+    if (!normalizedQuery) return ownedSessions;
+    return ownedSessions.filter((session) =>
       session.title.toLocaleLowerCase().includes(normalizedQuery) ||
       session.repoFullName.toLocaleLowerCase().includes(normalizedQuery),
     );
-  }, [query, sessions]);
+  }, [query, ownedSessions]);
+  const dayGroups = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(getIntlLocale(language), { dateStyle: 'medium' });
+    const groups = new Map<string, RepositoryChatSession[]>();
+    for (const session of visibleSessions.slice(0, visibleLimit)) {
+      const date = new Date(session.updatedAt);
+      const label = Number.isFinite(date.getTime()) ? formatter.format(date) : session.updatedAt;
+      const group = groups.get(label);
+      if (group) group.push(session);
+      else groups.set(label, [session]);
+    }
+    return Array.from(groups);
+  }, [language, visibleLimit, visibleSessions]);
 
   const formatTime = useCallback((value: string) => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return date.toLocaleString(getIntlLocale(language), {
-      month: 'numeric',
-      day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -130,7 +150,7 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
           <Input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setVisibleLimit(HISTORY_PAGE_SIZE); }}
             className="h-8 pl-8 text-xs"
             placeholder={t('globalChatHistorySheet.search-title-or-repository')}
             aria-label={t('globalChatHistorySheet.search-chat-history')}
@@ -150,7 +170,7 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
           ) : visibleSessions.length === 0 ? (
             <div className="flex min-h-28 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border px-4 text-center text-xs text-muted-foreground">
               <History className="h-5 w-5" aria-hidden="true" />
-              <p>{sessions.length === 0
+              <p>{ownedSessions.length === 0
                 ? t('globalChatHistorySheet.no-saved-conversations-yet')
                 : t('globalChatHistorySheet.no-matching-conversations-found')}</p>
             </div>
@@ -165,8 +185,12 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
                 </div>
               )}
               <ul className="space-y-1">
-              {visibleSessions.map((session) => {
+              {dayGroups.map(([date, group]) => (
+                <React.Fragment key={date}>
+                  <li className="pt-2 text-xs font-medium text-muted-foreground"><h3>{date}</h3></li>
+              {group.map((session) => {
                 const repository = repositoryById.get(session.repoId);
+                const isRepositoryChat = session.kind !== 'workbench' && session.repoId > 0;
                 return (
                   <li key={session.id} className="flex items-center gap-1 rounded-md border border-transparent hover:border-border">
                     <Button
@@ -174,8 +198,10 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
                       variant="ghost"
                       className="h-auto min-w-0 flex-1 items-center justify-start gap-2.5 px-2 py-2 text-left"
                       onClick={() => {
-                        if (repository && session.kind !== 'workbench') onSelectSession(repository, session.id);
-                        else {
+                        if (isRepositoryChat) {
+                          if (repository) onSelectSession(repository, session.id);
+                          else onSelectSession(null, session.id, session);
+                        } else {
                           sessionStorage.setItem('gsm:ai-workbench-session', session.id);
                           onClose();
                           setCurrentView('ai');
@@ -204,7 +230,15 @@ export const GlobalChatHistorySheet: React.FC<GlobalChatHistorySheetProps> = ({
                   </li>
                 );
               })}
+                </React.Fragment>
+              ))}
               </ul>
+              {visibleLimit < visibleSessions.length && (
+                <Button type="button" variant="ghost" size="sm" className="mt-3 w-full"
+                  onClick={() => setVisibleLimit(limit => limit + HISTORY_PAGE_SIZE)}>
+                  {t('globalChatHistorySheet.load-more')}
+                </Button>
+              )}
             </>
           )}
         </section>

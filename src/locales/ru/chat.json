@@ -42,6 +42,7 @@
       "unknown": "Неизвестно"
   },
   "globalChatHistorySheet": {
+    "load-more": "Загрузить ещё беседы",
     "close-chat-history": "Закрыть историю вопросов и ответов",
     "chat-history": "История вопросов и ответов",
     "conversations-across-repositories-select-one-to": "Подведите итоги сеансов вопросов и ответов на каждом складе и нажмите, чтобы войти в соответствующий склад и продолжить разговор.",
@@ -77,6 +78,8 @@
     "delete-conversation": "Удалить сеанс"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Проверяется доступ к исходному коммиту…",
+    "history-read-only": "Исходный коммит недоступен. Сохранённую беседу по-прежнему можно прочитать.",
     "agent-execution-summary": "Резюме агента",
     "this-turn-s-work": "Выполнение этого раунда задач",
     "failed-attention": "{{failed}} элементов требуют внимания",

@@ -144,6 +144,7 @@
     "unknown": "Unknown"
   },
   "globalChatHistorySheet": {
+    "load-more": "Load more conversations",
     "close-chat-history": "Close chat history",
     "chat-history": "Chat history",
     "conversations-across-repositories-select-one-to": "Conversations across repositories. Select one to continue in its repository.",
@@ -179,6 +180,8 @@
     "delete-conversation": "Delete conversation"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Checking access to the original commit…",
+    "history-read-only": "The original commit is unavailable. You can still read the saved conversation.",
     "agent-execution-summary": "Agent execution summary",
     "this-turn-s-work": "This turn’s work",
     "failed-attention": "{{failed}} attention",

@@ -42,6 +42,7 @@
       "unknown": "未知"
   },
   "globalChatHistorySheet": {
+    "load-more": "載入更多對話",
     "close-chat-history": "關閉問答歷史",
     "chat-history": "問答歷史",
     "conversations-across-repositories-select-one-to": "總結各倉庫的問答會話，點選進入對應倉庫繼續對話。",
@@ -77,6 +78,8 @@
     "delete-conversation": "刪除會話"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "正在驗證原始提交的存取權限…",
+    "history-read-only": "目前無法存取原始提交，仍可閱讀已儲存的對話。",
     "agent-execution-summary": "Agent 執行摘要",
     "this-turn-s-work": "本輪任務執行",
     "failed-attention": "{{failed}} 項需注意",
