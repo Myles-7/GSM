@@ -238,6 +238,12 @@ export const useRepositoryChat = ({
         repositoryChatStorage.saveMessage(userMessage),
         repositoryChatStorage.saveMessage(assistantMessage),
       ]);
+      const previous = [...baseMessages].reverse().find(message =>
+        message.sessionId === session.id && message.role === 'assistant' && message.status === 'complete');
+      const priorEvidence = previous?.evidenceIds.length
+        ? await repositoryChatStorage.listEvidence(previous.evidenceIds).catch(() => [])
+        : [];
+      controller.signal.throwIfAborted();
       let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const flushStreamedContent = (content: string) => {
         if (streamFlushTimer) {
@@ -258,6 +264,7 @@ export const useRepositoryChat = ({
           repository,
           session,
           messages: [...baseMessages, userMessage],
+          priorEvidence,
           question: normalizedQuestion,
           githubToken: githubToken ?? '',
           aiConfig,

@@ -109,6 +109,8 @@ export interface RepositoryChatTurnInput {
   retrievalDeadlineAt?: number;
   /** Intermediate workbench collection; final synthesis owns generation and review. */
   evidenceOnly?: boolean;
+  /** Saved file evidence from the preceding completed turn of this session. */
+  priorEvidence?: ToolEvidence[];
   signal?: AbortSignal;
   onToolEvent?: (event: ChatToolEventInput) => void;
 }
@@ -1045,6 +1047,65 @@ export const evidenceFromSegments = (repository: Repository, sourceRefSha: strin
   ...(document.local ? { retrievedAt: document.local.retrievedAt } : {}),
 }));
 
+type ReadmeQuestion = 'overview' | 'usage';
+
+function readmeQuestion(input: RepositoryChatTurnInput): ReadmeQuestion | null {
+  if (input.localSource || input.evidenceOnly || input.session.kind === 'workbench' || !input.session.ownerId
+    || input.session.repoId !== input.repository.id
+    || input.taskDepth === 'deep' || input.taskDepth === 'unlimited'
+    || input.messages.some(message => message.role === 'assistant')
+    || input.messages.filter(message => message.role === 'user').length > 1) return null;
+
+  const question = input.question.toLowerCase().trim().replace(/[.?!。？！]+$/u, '').replace(/\s+/g, ' ');
+  if (/^(?:what (?:is|does) (?:this|the) (?:repo(?:sitory)?|project|tool)(?: do)?|(?:please )?introduce (?:this|the) (?:repo(?:sitory)?|project|tool)|(?:a brief )?overview of (?:this|the) (?:repo(?:sitory)?|project|tool))$/u.test(question)
+    || /^(?:(?:请)?(?:简单)?介绍(?:一下)?(?:这个|该|此)?(?:项目|仓库|工具)|(?:这个|该|此)?(?:项目|仓库|工具)(?:是(?:做)?什么的|有什么用|做什么))$/u.test(question)) return 'overview';
+  if (/^(?:how (?:do i|to) (?:use|start|get started with) (?:this|the) (?:repo(?:sitory)?|project|tool)|how (?:do i|to) get started)$/u.test(question)
+    || /^(?:(?:这个|该|此)?(?:项目|仓库|工具)?(?:怎么用|怎么使用|如何使用|如何上手)|(?:如何|怎么)使用(?:这个|该|此)?(?:项目|仓库|工具))$/u.test(question)) return 'usage';
+  return null;
+}
+
+function readmeSegments(document: CachedDocument, question: ReadmeQuestion) {
+  const headingPattern = question === 'usage'
+    ? /^(?:quick[\s-]?start|getting started|basic usage|usage|how to use|快速开始|快速上手|基本用法|使用方式|使用指南|用法)(?:$|\s|[:：])/iu
+    : /^(?:overview|introduction|about|what is|概览|简介|介绍|项目概述|项目简介)(?:$|\s|[:：])/iu;
+  const headings = document.headings.filter(heading => headingPattern.test(heading.title));
+  const sections = sectionSegments(document, headings.map(heading => heading.title))
+    .filter(segment => headings.some(heading => heading.lineStart === segment.lineStart)
+      && segment.excerpt.split('\n').slice(1).some(line => /[\p{L}\p{N}]/u.test(line)))
+    .slice(0, 2);
+  if (sections.length > 0 || question === 'usage') return sections;
+
+  const firstSection = document.headings.find(heading => heading.level > 1)?.lineStart ?? 33;
+  const lead = document.content.split('\n').slice(0, Math.min(32, firstSection - 1));
+  const hasOverview = lead.some(line => /^(?:[A-Za-z].{23,}|[\p{Script=Han}].{7,})$/u.test(line.trim()));
+  return hasOverview ? [{ lineStart: 1, lineEnd: lead.length, excerpt: lead.join('\n'), label: document.path }] : [];
+}
+
+export function reuseRepositoryChatEvidence(input: RepositoryChatTurnInput, paths: ReadonlySet<string>): ToolEvidence[] {
+  if (!input.priorEvidence?.length || input.localSource || input.evidenceOnly
+    || input.session.kind === 'workbench' || !input.session.ownerId
+    || input.session.repoId !== input.repository.id || !input.session.sourceRefSha
+    || detectMetaIntent(input.question).length > 0) return [];
+  const previous = [...input.messages].reverse().find(message =>
+    message.sessionId === input.session.id && message.role === 'assistant' && message.status === 'complete');
+  const savedIds = new Set(previous?.evidenceIds);
+  const seenIds = new Set<string>();
+  const evidence: ToolEvidence[] = [];
+  for (const item of input.priorEvidence) {
+    if (!savedIds.has(item.id) || seenIds.has(item.id) || item.source !== 'github'
+      || item.repoFullName.toLowerCase() !== input.repository.full_name.toLowerCase()
+      || item.refSha !== input.session.sourceRefSha || !item.path || !paths.has(item.path) || !isSafeEvidencePath(item.path)
+      || !item.lineStart || !Number.isInteger(item.lineStart) || item.lineStart < 1
+      || !item.lineEnd || !Number.isInteger(item.lineEnd) || item.lineEnd < item.lineStart || !item.excerpt.trim()) continue;
+    // Only the canonical fixed-commit link may accompany reused lines.
+    if (item.url !== sourceUrl(input.repository, item.refSha, item.path, item.lineStart, item.lineEnd)) continue;
+    seenIds.add(item.id);
+    evidence.push(item);
+    if (evidence.length >= 6) break;
+  }
+  return evidence;
+}
+
 /**
  * 两个执行循环（编排式 / 受控工具循环）共享的取证脚手架：时间与工具预算、
  * 重复动作拦截、工具级超时、事件上报与模型调用重试。两个循环必须经由同一
@@ -1184,6 +1245,7 @@ export const synthesizeVerifiedAnswer = async (
   answerMaxTokens: number,
   callModelWithRetry: EvidenceToolbox['callModelWithRetry'],
   missing: string[] = [],
+  singlePass = false,
 ): Promise<Pick<RepositoryChatTurnResult, 'content' | 'claims' | 'quality' | 'coverage'>> => {
   if (input.evidenceOnly) return { content: evidences.map(item =>
     `\`${sourceReferences([item])[0] ?? item.path ?? item.repoFullName}\`\n${item.excerpt}`).join('\n\n'), quality: 'unreviewed' };
@@ -1291,7 +1353,7 @@ export const synthesizeVerifiedAnswer = async (
         answerSystem,
         answerUser,
         answerMaxTokens,
-        input.streaming ? 0 : 1,
+        input.streaming || singlePass ? 0 : 1,
         remainingAnswerMs,
         true,
         answerDeadlineAt,
@@ -1301,7 +1363,7 @@ export const synthesizeVerifiedAnswer = async (
 
   let finalContent = validAnswer(answerRaw);
   if (answerRaw) publish('reviewing', answerRaw);
-  if (!finalContent) {
+  if (!finalContent && !singlePass) {
     // 引用修复与主回答共享同一回答窗口：窗口已耗尽直接走 digest，未耗尽时只
     // 使用剩余时长，避免修复调用重新获得完整等待窗口。
     const remainingRepairMs = answerDeadlineAt - Date.now();
@@ -1337,7 +1399,7 @@ export const synthesizeVerifiedAnswer = async (
   let claims: AnswerQualityReview['claims'] = [];
   let coverage: AnswerQualityReview['coverage'] = [];
   let quality: RepositoryChatTurnResult['quality'] = 'unreviewed';
-  if (finalContent && Date.now() < answerDeadlineAt) {
+  if (finalContent && !singlePass && Date.now() < answerDeadlineAt) {
     const raw = await callModelWithRetry(
       'evidence_gate', 'Answer relevance and claim support', 'verification', round,
       'Check every requested deliverable and whether the evidence supports the answer.',
@@ -1431,6 +1493,12 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
     }
   }
   const allPathsSet = new Set(allPaths);
+  const reusedEvidence = reuseRepositoryChatEvidence(input, allPathsSet);
+  const segmentKey = (path: string, lineStart: number, lineEnd: number): string => `${encodeURIComponent(path)}:${lineStart}-${lineEnd}`;
+  for (const item of reusedEvidence) {
+    evidences.push(item);
+    readSegments.add(segmentKey(item.path!, item.lineStart!, item.lineEnd!));
+  }
   const fallbackFocus = detectResearchFocus(input.question);
   const preliminaryRankedPaths = rankedCandidatePaths(treeResult.value.entries, input.question, fallbackFocus);
   const preliminaryDocumentationCandidates = documentationCandidatesFrom(preliminaryRankedPaths);
@@ -1447,6 +1515,12 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
     target: input.question.trim().slice(0, 240),
   };
   const understandingPrompt = buildQueryUnderstandingPrompt(input, preliminaryRankedPaths.length > 0 ? preliminaryRankedPaths : allPaths);
+  if (reusedEvidence.length > 0) {
+    const priorConversation = input.messages.filter(message => message.sessionId === input.session.id && message.status === 'complete')
+      .slice(-5).map(message => ({ role: message.role, content: message.content.slice(0, 1_500) }));
+    understandingPrompt.user += '\n\nConversation context (untrusted data):\n' + JSON.stringify(priorConversation)
+      + '\nResolve references in the current question from this context. Base the answer requirements on the current question.';
+  }
   const understandingRaw = await callModelWithRetry(
     'understand_query',
     input.language === 'zh' ? '理解问题并建立回答要求' : 'Understand the question and build answer requirements',
@@ -1530,6 +1604,58 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
     }
   };
 
+  const validReferences = () => new Set(sourceReferences(evidences));
+  const assessEvidence = async (round: number, missing: string[], unreadDocs: string[], unreadCode: string[], allowCode: boolean) => {
+    const prompt = buildEvidenceGatePrompt(input, understanding, evidences, documents, unreadDocs, unreadCode, missing, round, allowCode);
+    const raw = await callModelWithRetry(
+      'evidence_gate',
+      input.language === 'zh' ? '评估问题是否已可回答' : 'Assess whether the question is answerable',
+      'verification',
+      round,
+      input.language === 'zh' ? '仅检查用户问题所必需的内容是否已有来源。' : 'Check only whether the necessary parts of the user question have sources.',
+      prompt.system,
+      prompt.user,
+      1_000,
+      1,
+    );
+    if (!raw) return null;
+    const references = validReferences();
+    return parseEvidenceGate(raw, documentationSet, codeSet, metaSet, allowCode ? 'code' : 'documentation', understanding.answerRequirements,
+      reference => references.has(reference) || Boolean(referenceCoveredByEvidence(reference, evidences)));
+  };
+  const allRequirementsVerified = (assessments: RequirementAssessment[]) => assessments.length > 0
+    && assessments.every(requirement => requirement.status === 'verified'
+      || (requirement.kind === 'necessary' && requirement.status === 'not_applicable'));
+
+  let missing = understanding.answerRequirements.map(requirement => requirement.text);
+  const quickQuestion = readmeQuestion(input);
+  const rootReadme = quickQuestion && understanding.informationScope === 'documentation'
+    ? documentationCandidates.find(path => !path.includes('/') && README_CANDIDATE.test(path))
+    : undefined;
+  if (quickQuestion && rootReadme) {
+    const document = await loadDocument(rootReadme, 'documentation', 0, rootReadme,
+      input.language === 'zh' ? '读取固定提交的 README，检查是否足以回答。' : 'Read the pinned README and check whether it answers the question.');
+    if (document) {
+      const segments = readmeSegments(document, quickQuestion).map(segment => ({
+        ...segment,
+        lineEnd: segment.lineStart + segment.excerpt.split('\n').length - 1,
+      }));
+      segments.forEach(segment => readSegments.add(segmentKey(document.path, segment.lineStart, segment.lineEnd)));
+      evidences.push(...evidenceFromSegments(input.repository, input.session.sourceRefSha, document, segments));
+    }
+  }
+  if (evidences.length > 0 && hasTime()) {
+    const gate = await assessEvidence(0, missing, documentationCandidates, codeCandidates, false);
+    if (gate) {
+      const assessments = completeRequirementAssessments(understanding.answerRequirements, gate.requirements);
+      if (allRequirementsVerified(assessments)) {
+        missing = [];
+        const answer = await synthesizeVerifiedAnswer(ai, input, evidences, 0, answerMaxTokens, callModelWithRetry, missing);
+        return { ...answer, evidences, missing };
+      }
+    }
+  }
+
   // The LLM selects initial targets. Program logic merely loads their outline so
   // a subsequent LLM retrieval plan can name real document sections, not guessed
   // line ranges or a fixed first chunk.
@@ -1546,17 +1672,13 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
     input.language === 'zh' ? '建立文档章节导航，供后续检索计划选择相关内容。' : 'Build a document outline so the retrieval plan can choose relevant sections.',
   )));
 
-  let missing = understanding.answerRequirements.map((requirement) => requirement.text);
   let requirements: RequirementAssessment[] = [];
   let finalReason = '';
   let canAnswer = false;
   let codeEligible = false;
   let pendingTargets: RetrievalTarget[] = [];
 
-  const validReferences = () => new Set(sourceReferences(evidences));
-
   const targetKey = (target: RetrievalTarget): string => `${target.scope}:${target.path}:${target.sections.map((section) => section.toLowerCase().trim()).sort().join('|')}`;
-  const segmentKey = (path: string, lineStart: number, lineEnd: number): string => `${encodeURIComponent(path)}:${lineStart}-${lineEnd}`;
   const hasCitableSegment = (path: string): boolean => Array.from(readSegments).some((key) => key.startsWith(`${encodeURIComponent(path)}:`));
   const isViableUnseenTarget = (target: RetrievalTarget): boolean => {
     if (target.scope === 'meta') return metaEligible && !metaFetched.has(target.path);
@@ -1833,27 +1955,12 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
     const added = (await Promise.all(targets.map((target) => addTargetEvidence(target, turns))))
       .reduce((sum, count) => sum + count, 0);
 
-    const gatePrompt = buildEvidenceGatePrompt(
-      input,
-      understanding,
-      evidences,
-      documents,
+    const assessed = await assessEvidence(
+      turns,
+      missing,
       unreadDocumentation.filter((path) => !readPaths.has(path)),
       unreadCode.filter((path) => !readPaths.has(path)),
-      missing,
-      turns,
       codeEligible,
-    );
-    const gateRaw = await callModelWithRetry(
-      'evidence_gate',
-      input.language === 'zh' ? '评估问题是否已可回答' : 'Assess whether the question is answerable',
-      'verification',
-      turns,
-      input.language === 'zh' ? '仅检查用户问题所必需的内容是否已有来源。' : 'Check only whether the necessary parts of the user question have sources.',
-      gatePrompt.system,
-      gatePrompt.user,
-      1_000,
-      1,
     );
     const fallbackGate: EvidenceGate = {
       sufficient: false,
@@ -1866,7 +1973,7 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
       nextAction: (codeEligible) ? 'read_code' : 'retrieve_more',
       recommendedTargets: [],
     };
-    const gate = gateRaw ? parseEvidenceGate(gateRaw, documentationSet, codeSet, metaSet, fallbackScope, understanding.answerRequirements, (reference) => validReferences().has(reference) || Boolean(referenceCoveredByEvidence(reference, evidences))) ?? fallbackGate : fallbackGate;
+    const gate = assessed ?? fallbackGate;
     const discoveredViableTarget = gate.recommendedTargets.some((target) => {
       const key = targetKey(target);
       if (knownTargetKeys.has(key) || !isViableUnseenTarget(target)) return false;
@@ -1886,13 +1993,10 @@ export const runEvidenceDrivenRepositoryChatTurn = async (input: RepositoryChatT
       detail: requirementStatusSummary(requirements, input.language),
     });
 
-    const allApplicableRequirementsVerified = requirements.length > 0 && requirements.every((requirement) => (
-      requirement.status === 'verified' || (requirement.kind === 'necessary' && requirement.status === 'not_applicable')
-    ));
     consecutiveNoProgressRounds = added > 0 || discoveredViableTarget ? 0 : consecutiveNoProgressRounds + 1;
     // Completion is bounded by the user's explicit and necessary requirements,
     // not by extra areas the gate might prefer to research.
-    if (allApplicableRequirementsVerified && evidences.length > 0) {
+    if (allRequirementsVerified(requirements) && evidences.length > 0) {
       canAnswer = true;
       break;
     }
@@ -1976,21 +2080,26 @@ export const runModelRepositoryChatTurn = async (input: RepositoryChatTurnInput)
     signal => input.localSource ? Promise.resolve({ entries: input.localSource.entries })
       : github.getRepositoryTree(owner, repo, input.session.sourceRefSha, signal));
   if (!tree.ok) return { content: evidenceAgentInsufficientResponse(input.language, tree.message, true), evidences: [], missing: [tree.message] };
+  const availablePaths = new Set(tree.value.entries.filter(isFileEntry).map(entry => entry.path));
   const paths = documentationCandidatesFrom(rankedCandidatePaths(tree.value.entries, input.question, detectResearchFocus(input.question))).slice(0, 2);
-  const evidences: ToolEvidence[] = [];
+  const evidences = reuseRepositoryChatEvidence(input, availablePaths);
   for (const path of paths) {
     const file = await ctx.invokeTool('read_repo_file', { path }, path, 'retrieval', 0, 'Read text-mode context',
-      async signal => input.localSource ? await input.localSource.read(path, signal) : await github.getRepositoryFile(owner, repo, path, input.session.sourceRefSha, signal));
+      async signal => input.localSource
+        ? await input.localSource.read(path, signal)
+        : await readPinnedFile(JSON.stringify([input.session.ownerId, input.githubToken, input.repository.full_name, input.session.sourceRefSha, 'plain', path]),
+          signal, () => github.getRepositoryFile(owner, repo, path, input.session.sourceRefSha, signal)));
     if (!file.ok) continue;
     const document: CachedDocument = { path, content: file.value.content, headings: [], linkedDocumentationPaths: [],
       ...(input.localSource && 'contentHash' in file.value && 'retrievedAt' in file.value
         ? { local: { contentHash: String(file.value.contentHash), retrievedAt: String(file.value.retrievedAt) } } : {}) };
-    evidences.push(...evidenceFromSegments(input.repository, input.session.sourceRefSha, document,
-      buildEvidenceWindows(document.content, detectResearchFocus(input.question), queryTerms(input.question))));
+    const segments = buildEvidenceWindows(document.content, detectResearchFocus(input.question), queryTerms(input.question))
+      .filter(segment => !evidences.some(item => item.path === path && item.lineStart === segment.lineStart && item.lineEnd === segment.lineEnd));
+    evidences.push(...evidenceFromSegments(input.repository, input.session.sourceRefSha, document, segments));
   }
   const missing: string[] = [];
   if (!evidences.length) return { content: evidenceAgentInsufficientResponse(input.language, 'No readable document context'),
     evidences, missing: ['No readable document context'] };
-  const answer = await synthesizeVerifiedAnswer(ai, input, evidences, 0, answerMaxTokens, ctx.callModelWithRetry, missing);
+  const answer = await synthesizeVerifiedAnswer(ai, input, evidences, 0, answerMaxTokens, ctx.callModelWithRetry, missing, true);
   return { ...answer, evidences, missing };
 };
