@@ -250,6 +250,7 @@
     "download-failed": "下载失败"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "所选搜索 AI 配置不可用，将跳过 AI 增强并继续向量检索。",
     "ai-semantic-analysis": "AI 语义分析…",
     "ai-selecting-relevant-repositories": "AI 精选相关仓库…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AI 请求失败，已回退本地词法搜索",
@@ -1035,6 +1036,7 @@
   },
   "browser": {
     "locate-selection": "定位当前选中项",
+    "selection-not-visible": "当前层未显示该项目，请进入相关方向后定位。",
     "submit-first": "搜索内容尚未提交，请先搜索以切换探索目标。",
     "preview-unavailable": "无法准备分析预览，请检查模型与当前工作区。",
     "directory": "当前层目录",

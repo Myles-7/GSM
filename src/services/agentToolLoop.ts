@@ -21,6 +21,7 @@ import {
   parseJsonObject,
   rankedCandidatePaths,
   resolveTurnLimits,
+  reuseRepositoryChatEvidence,
   citableSegmentsForDocument,
   evidenceSearchTerms,
   splitOwnerAndRepo,
@@ -188,6 +189,8 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
   const codeCandidates = Array.from(new Set(rankedPaths.filter(isRepositoryCodePath)));
   const documentationSet = new Set(documentationCandidates);
   const codeSet = new Set(codeCandidates);
+  evidences.push(...reuseRepositoryChatEvidence(input, new Set([...documentationCandidates, ...codeCandidates])));
+  documentationEvidenceCount = evidences.filter(evidence => evidence.path && documentationSet.has(evidence.path)).length;
 
   const readEvidenceFile = async (path: string, signal: AbortSignal | undefined) => MARKDOWN_EVIDENCE_PATH.test(path)
     ? await github.getRepositoryMarkdownEvidenceFile(owner, repo, path, input.session.sourceRefSha, signal)
@@ -383,7 +386,11 @@ export const runToolLoopRepositoryChatTurn = async (input: RepositoryChatTurnInp
 
   const systemPrompt = `${buildToolLoopSystemPrompt(input.language)}\nIf no documentation candidate exists, or all candidates failed to yield readable evidence, other read-only sources are allowed.`;
   const tools = buildToolLoopTools(input.language);
-  const firstUserContent = buildToolLoopUserPrompt(input, documentationCandidates, codeCandidates);
+  const initialQuestion = buildToolLoopUserPrompt(input, documentationCandidates, codeCandidates);
+  const firstUserContent = evidences.length > 0
+    ? initialQuestion + '\n\nPreviously read pinned files. Check them against this turn before requesting more evidence.\n'
+      + untrustedEvidenceBlock(evidences)
+    : initialQuestion;
   const messages: AIToolLoopMessage[] = [
     { role: 'user', content: firstUserContent },
   ];

@@ -189,6 +189,7 @@ export function WorkbenchComposer({ workbench: w, draft, onDraftChange, onSubmit
           await w.patchData(record.id, { depth: value as typeof w.data.depth, inputIntent });
         });
       }}><SelectTrigger aria-label={t('repositoryChatSheet.task-depth')}><SelectValue /></SelectTrigger><SelectContent>{(['quick', 'standard', 'deep'] as const).map(depth => <SelectItem key={depth} value={depth}>{t(`workbench.${depth}`)}</SelectItem>)}</SelectContent></Select></label>
+      <p className="-mt-1 text-xs text-muted-foreground">{t('workbench.depthHint', { defaultValue: 'Deep mode reads more source evidence and may take longer or use more model tokens.' })}</p>
       <Button type="button" onClick={() => setSettingsOpen(false)}>{t('workbench.done')}</Button>
     </SheetContent></Sheet>
   </>;

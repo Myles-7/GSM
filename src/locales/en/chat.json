@@ -82,6 +82,9 @@
     "discovery": "Discovery",
     "plugins": "Plugins",
     "openPlugin": "Open plugin settings",
+    "hydeSkipped": "HyDE query preprocessing timed out; searched with the raw query",
+    "hydeTimeout": "HyDE query preprocessing timed out; searched with the raw query",
+    "hydeProviderUnavailable": "HyDE provider unavailable; searched with the raw query",
     "rerankUnavailable": "AI reranking failed; vector ranking retained.",
     "vectorUnavailable": "Vector search unavailable; using keyword search.",
     "supported": "Supported",
@@ -141,6 +144,7 @@
     "unknown": "Unknown"
   },
   "globalChatHistorySheet": {
+    "load-more": "Load more conversations",
     "close-chat-history": "Close chat history",
     "chat-history": "Chat history",
     "conversations-across-repositories-select-one-to": "Conversations across repositories. Select one to continue in its repository.",
@@ -176,6 +180,8 @@
     "delete-conversation": "Delete conversation"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Checking access to the original commit…",
+    "history-read-only": "The original commit is unavailable. You can still read the saved conversation.",
     "agent-execution-summary": "Agent execution summary",
     "this-turn-s-work": "This turn’s work",
     "failed-attention": "{{failed}} attention",
@@ -341,6 +347,7 @@
     "quick": "Quick",
     "standard": "Standard",
     "deep": "Deep",
+    "depthHint": "Deep mode reads more source evidence and may take longer or use more model tokens.",
     "manage": "Propose changes",
     "send": "Send",
     "noModelHint": "No AI service configured. You can draft a question now and send it after configuring a model.",

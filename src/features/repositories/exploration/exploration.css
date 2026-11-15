@@ -249,7 +249,7 @@
 .explore-satellite-node.is-dimmed { opacity:.22; }
 .explore-satellite-dot { width:18px; height:18px; border-radius:50%; background:color-mix(in srgb,var(--node-color) 16%,hsl(var(--muted))); color:var(--node-color); display:inline-flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; flex-shrink:0; overflow:hidden; }
 .explore-satellite-dot img { width:100%; height:100%; object-fit:cover; }
-.explore-satellite-label { font-size:11px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+.explore-satellite-label { font-size:var(--satellite-text-size,11px); line-height:1.1; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
 .explore-bookmarks-bar { display:flex; align-items:center; gap:5px; overflow-x:auto; max-width:45%; padding:2px 4px; }
 .explore-bookmark-pill { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border:1px solid var(--explore-line); border-radius:999px; font-size:11px; color:hsl(var(--muted-foreground)); background:hsl(var(--background)); white-space:nowrap; transition:all .15s; }
 .explore-bookmark-pill:hover,.explore-bookmark-pill.is-active { border-color:#368c82; color:#368c82; background:color-mix(in srgb,#368c82 10%,hsl(var(--card))); font-weight:500; }
@@ -263,6 +263,11 @@
 .explore-workbench-link { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:6px; border:1px solid color-mix(in srgb,#368c82 35%,var(--explore-line)); background:hsl(var(--card)); color:#368c82; font-size:11px; font-weight:500; transition:background .15s; }
 .explore-workbench-link:hover { background:color-mix(in srgb,#368c82 12%,hsl(var(--card))); }
 .explore-results-subheading { display:flex; align-items:center; justify-content:space-between; padding:8px 16px; border-bottom:1px solid var(--explore-line); background:hsl(var(--muted)/.3); font-size:11px; color:hsl(var(--muted-foreground)); font-weight:600; }
+
+/* The desktop directory has its own column, so it cannot cover graph nodes. */
+@media (min-width:1024px) {
+  .is-canvas[data-results-open="true"] .explore-map-shell:not(.is-fullscreen) { right:380px; }
+}
 .explore-ai-preview-dialog { display:flex; flex-direction:column; gap:12px; font-size:12px; }
 .explore-ai-preview-target { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--explore-line); border-radius:10px; background:hsl(var(--muted)/.3); }
 .explore-ai-preview-target>svg { color:#368c82; flex-shrink:0; margin-top:2px; }
@@ -273,3 +278,7 @@
 .explore-ai-preview-list>small { font-size:11px; color:hsl(var(--muted-foreground)); }
 .explore-ai-preview-list>div { display:flex; flex-wrap:wrap; gap:5px; }
 .explore-ai-preview-chip { font-size:11px; padding:2px 7px; border-radius:6px; border:1px solid var(--explore-line); background:hsl(var(--muted)/.4); }
+
+/* Below 75%, auxiliary chips duplicate the directory and become unreadable. */
+.explore-map-shell.is-compact-scale .explore-node-subtags,
+.explore-map-shell.is-compact-scale .explore-node-previews { display:none; }

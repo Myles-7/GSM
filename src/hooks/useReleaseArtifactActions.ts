@@ -10,6 +10,8 @@ import { useDialog } from '../hooks/useDialog';
 import { aiTaskJournal } from '../services/aiTaskJournal';
 import { bindTaskSignal, taskConfigSnapshot } from '../services/taskExecution';
 import { loadReleaseSummaryCache, saveReleaseSummaryCache, useReleaseSummaryCache } from '../services/releaseSummaryCache';
+import { commitAgyRecovery } from '../services/agyClient';
+import type { AgyRecoveryRecord } from '../types/agy';
 
 export type ReleaseArtifactSummaryState = {
   status: 'idle' | 'loading' | 'done' | 'error';
@@ -191,6 +193,7 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
     setSummaries((previous) => ({ ...previous, [release.id]: { ...previousSummary, source, generation, owner, status: 'loading', error: undefined } }));
     let persistenceFailed = false;
     try {
+      let recoveryRecord: AgyRecoveryRecord | undefined;
       const aiService = new AIService(config, language);
       const content = await aiService.analyzeReleaseSummary(
         release.body || '',
@@ -199,13 +202,19 @@ export const useReleaseArtifactActions = (): ReleaseArtifactActions => {
           tagName: release.tag_name,
           releaseName: release.name && release.name !== release.tag_name ? release.name : undefined,
         },
-        controller.signal
+        controller.signal,
+        { recovery: { deferAck: true, onResult: record => { recoveryRecord = record; } } },
       );
       // 对齐原 sheet 的 post-await 守卫：服务不响应 signal 而迟到 resolve 时
       // （如 reset()/unmount 之后），丢弃过期结果，不得回写刚清空的状态。
       if (controller.signal.aborted || identityRef.current !== generation || String(useAppStore.getState().user?.id ?? '') !== owner) return;
       try { await saveReleaseSummaryCache(owner, release.id, content, source, generation); }
       catch (error) { persistenceFailed = true; task.error(error); }
+      if (persistenceFailed) throw new Error('LOCAL_RESULT_SAVE_FAILED');
+      if (!persistenceFailed) await commitAgyRecovery(owner, recoveryRecord, {
+        feature: 'release-summary', entityType: 'release', entityId: String(release.id),
+        resultDigest: recoveryRecord?.resultDigest, savedAt: new Date().toISOString(),
+      });
       if (controller.signal.aborted || identityRef.current !== generation || String(useAppStore.getState().user?.id ?? '') !== owner) return;
       setSummaries((previous) => ({ ...previous, [release.id]: { status: 'done', content, source, generation, owner } }));
       task.item(String(release.id), 'complete');

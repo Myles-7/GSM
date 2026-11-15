@@ -14,6 +14,7 @@ import { BulkRestoreModal, RestoreConfig } from './BulkRestoreModal';
 import { ErrorBoundary } from './ErrorBoundary';
 
 import { Repository } from '../types';
+import type { RepositoryChatSession } from '../types/repositoryChat';
 import { useClassificationStore as useAppStore, getAllCategories } from '../store/useClassificationStore';
 import { repositoryChatStorage } from '../services/repositoryChatStorage';
 import { matchesCategory } from '../utils/categoryUtils';
@@ -192,6 +193,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
   // 全局问答历史（S4 入口）：抽屉 + 从历史进入单仓会话的目标会话。
   const [globalHistoryOpen, setGlobalHistoryOpen] = useState(false);
   const [globalChatSessionId, setGlobalChatSessionId] = useState<string | null>(null);
+  const [historySession, setHistorySession] = useState<RepositoryChatSession | null>(null);
   useEffect(() => {
     let alive = true;
     const openTarget = async () => {
@@ -201,9 +203,12 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
         sessionStorage.removeItem('gsm:pending-task-target');
         if (target.kind === 'chat') {
           const session = await repositoryChatStorage.getSession(target.id);
-          if (!alive || !session || session.ownerId !== target.owner) return;
-          const repository = repositories.find(item => item.id === session.repoId);
-          if (repository) { setGlobalChatSessionId(session.id); setActiveChatRepository(repository); }
+          if (!alive || !session || session.ownerId !== target.owner || session.kind === 'workbench'
+            || session.ownerId !== String(useAppStore.getState().user?.id ?? '')) return;
+          const repository = repositories.find(item => item.id === session.repoId) ?? null;
+          setGlobalChatSessionId(session.id);
+          setActiveChatRepository(repository);
+          setHistorySession(repository ? null : session);
         } else {
           const repository = repositories.find(item => String(item.id) === target.id || item.full_name === target.id);
           if (repository) setActiveDetailRepository(repository);
@@ -531,6 +536,7 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     const trigger = document.activeElement;
     activeChatTriggerRef.current = trigger instanceof HTMLElement ? trigger : null;
     setGlobalChatSessionId(null);
+    setHistorySession(null);
     setActiveChatRepository(repository);
   }, []);
 
@@ -541,24 +547,25 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     return () => window.removeEventListener('gsm:open-global-chat-history', handleOpenGlobalHistory);
   }, []);
 
-  const handleSelectGlobalSession = useCallback((repository: Repository, sessionId: string) => {
+  const handleSelectGlobalSession = useCallback((repository: Repository | null, sessionId: string, savedSession?: RepositoryChatSession) => {
     const trigger = document.activeElement;
     activeChatTriggerRef.current = trigger instanceof HTMLElement ? trigger : null;
     setGlobalChatSessionId(sessionId);
     setActiveChatRepository(repository);
+    setHistorySession(savedSession ?? null);
     setGlobalHistoryOpen(false);
   }, []);
 
   const handleCloseChat = useCallback(() => {
     setActiveChatRepository(null);
     setGlobalChatSessionId(null);
+    setHistorySession(null);
   }, []);
 
   const handleBackToGlobalHistory = useCallback(() => {
-    setActiveChatRepository(null);
-    setGlobalChatSessionId(null);
+    handleCloseChat();
     setGlobalHistoryOpen(true);
-  }, []);
+  }, [handleCloseChat]);
 
   const handleBulkAction = async (action: string, selectedRepositories: Repository[]) => {
     try {
@@ -624,12 +631,13 @@ export const RepositoryList: React.FC<RepositoryListProps> = ({
     }
   };
 
-  const chatPortal = activeChatRepository && createPortal(
+  const chatPortal = (activeChatRepository || historySession) && createPortal(
     <ErrorBoundary>
       <React.Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 text-sm text-muted-foreground" role="status">{t('repositoryList.opening-repository-chat')}</div>}>
         <LazyRepositoryChatSheet
           isOpen
           repository={activeChatRepository}
+          historySession={historySession}
           initialSessionId={globalChatSessionId}
           onBack={globalChatSessionId ? handleBackToGlobalHistory : undefined}
           onClose={handleCloseChat}

@@ -3,14 +3,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { initializeSyncV2, getRecord } from '../src/services/syncV2.js';
 import { config } from '../src/config.js';
 import { encrypt } from '../src/services/crypto.js';
+import { logger } from '../src/services/logger.js';
 import { initializeTasks, createTask, getTask, runTask, pauseTask, continueTask, resumeTask, cancelTask, taskEvents, taskEvent, pruneTaskEvents, retainTaskHistory } from '../src/services/taskRunner.js';
 let db:Database.Database;
 const account={workspaceId:'workspace',githubUserId:42};
 const base={...account,requestId:'a',configId:'deepseek',kind:'summary' as const,input:{repositories:['owner/one','owner/two']}};
 const evidence=async(_db:unknown,names:string[])=>[{repository:names[0],commit:'a'.repeat(40),retrievedAt:'2026-10-22',metadata:{id:names[0]==='owner/one'?1:2},readme:'docs',tree:[],files:[],limitations:[]}];
 const answer=JSON.stringify({summary:'answer',tags:[],platforms:[]});
-beforeEach(()=>{db=new Database(':memory:');initializeSyncV2(db);initializeTasks(db);db.exec("INSERT INTO sync_v2_workspace(id,github_user_id,initialized_at) VALUES('workspace',42,'2026-10-22');CREATE TABLE ai_configs(id TEXT,api_key_encrypted TEXT,base_url TEXT,model TEXT,reasoning_effort TEXT)");db.prepare('INSERT INTO ai_configs VALUES(?,?,?,?,?)').run('deepseek',encrypt('fake-key',config.encryptionKey),'https://api.deepseek.com','deepseek-chat',null);});
-afterEach(()=>{db.close();vi.unstubAllGlobals();});
+beforeEach(()=>{logger.setLevel('info');db=new Database(':memory:');initializeSyncV2(db);initializeTasks(db);db.exec("INSERT INTO sync_v2_workspace(id,github_user_id,initialized_at) VALUES('workspace',42,'2026-10-22');CREATE TABLE ai_configs(id TEXT,api_key_encrypted TEXT,base_url TEXT,model TEXT,reasoning_effort TEXT)");db.prepare('INSERT INTO ai_configs VALUES(?,?,?,?,?)').run('deepseek',encrypt('fake-key',config.encryptionKey),'https://api.deepseek.com','deepseek-chat',null);});
+afterEach(()=>{logger.setLevel('info');db.close();vi.unstubAllGlobals();});
 it('pauses dispatch after the in-flight repository saves and continues without repeating it',async()=>{
  const task=createTask(db,base);let release!:(s:string)=>void;
  const model=vi.fn(()=>new Promise<string>(r=>{release=r;}));
@@ -44,7 +45,7 @@ it('caps non-body events and marks gaps while preserving durable result and boun
  const count=db.prepare("SELECT COUNT(*) n FROM ai_task_events WHERE task_id=? AND type NOT IN ('content','reasoning','provider_request','provider_result')").get(task.id) as {n:number};expect(count.n).toBeLessThanOrEqual(5000);
  expect(getTask(db,task.id,'workspace',42).diagnostics.truncated).toBe(true);
  taskEvent(db,task.id,'provider_request',{body:'中'.repeat(400000)});
- const request=db.prepare("SELECT data FROM ai_task_events WHERE task_id=? AND type='provider_request'").get(task.id) as {data:string};const preview=JSON.parse(request.data);expect(Buffer.byteLength(preview.body)).toBeLessThanOrEqual(1024*1024);expect(preview.truncated).toBe(true);expect(preview.body).not.toContain('�');
+ const request=db.prepare("SELECT data FROM ai_task_events WHERE task_id=? AND type='provider_request'").get(task.id) as {data:string};const preview=JSON.parse(request.data);expect(preview.body).toBeUndefined();expect(preview.bodyBytes).toBeGreaterThan(16*1024);
  await runTask(db,task,{evidence,model:async()=>answer});expect(getTask(db,task.id,'workspace',42).status).toBe('completed');
 });
 it('retains paused history and recoverable validated conflicts beyond terminal history expiry',()=>{
@@ -72,16 +73,28 @@ it('does not auto resend a provider call after restart even with a pending dispa
  initializeTasks(db);expect(getTask(db,task.id,'workspace',42)).toMatchObject({status:'interrupted',providerOutcome:'unknown',pauseRequested:true});
  expect(()=>continueTask(db,task.id,'workspace',42)).toThrow('TASK_NOT_CONTINUABLE');
 });
-it('records the actual provider request body without authorization and retains actual usage separately',async()=>{
+it('stores provider request metadata without prompts or authorization by default',async()=>{
  const task=createTask(db,{...base,kind:'chat',input:{prompt:'Explain'}});
  const fetcher=vi.fn(async()=>new Response('data: {"choices":[{"delta":{"reasoning_content":"exposed","content":"answer"}}]}\n\ndata: {"usage":{"prompt_tokens":10,"completion_tokens":3},"choices":[]}\n\ndata: [DONE]\n\n'));
  vi.stubGlobal('fetch',fetcher);await runTask(db,task);
  expect(fetcher).toHaveBeenCalledOnce();
  const events=taskEvents(db,task.id,0),request=events.find(e=>e.type==='provider_request')!;
- expect(request.data.body).toBe((fetcher.mock.calls[0] as unknown as [string,RequestInit])[1].body);
+ expect(request.data).toMatchObject({ model: 'deepseek-chat', endpointHost: 'api.deepseek.com', requestBytes: expect.any(Number), requestHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+ expect(request.data.body).toBeUndefined(); expect(request.data.preview).toBeUndefined();
+ expect(JSON.stringify(request.data)).not.toContain('Explain');
  expect(JSON.stringify(events)).not.toContain('fake-key');
  expect(events.find(e=>e.type==='provider_usage')?.data).toMatchObject({cumulative:true,providerRequestId:request.data.providerRequestId,usage:{prompt_tokens:10,completion_tokens:3}});
  expect(getTask(db,task.id,'workspace',42)).toMatchObject({diagnostics:{providerRequests:1,contentBytes:6,reasoningBytes:7},result:{content:'answer'}});
+});
+
+it('allows only a bounded redacted provider preview in explicit backend debug mode',async()=>{
+ const task=createTask(db,{...base,kind:'chat',input:{prompt:'password=super-secret Explain'}});
+ const fetcher=vi.fn(async()=>new Response('data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'));
+ vi.stubGlobal('fetch',fetcher); logger.setLevel('debug'); await runTask(db,task);
+ const request=taskEvents(db,task.id,0).find(e=>e.type==='provider_request')!;
+ expect(Buffer.byteLength(String(request.data.preview))).toBeLessThanOrEqual(16*1024);
+ expect(String(request.data.preview)).not.toContain('super-secret');
+ expect(request.data).toMatchObject({ previewBytes: expect.any(Number), previewTruncated: expect.any(Boolean) });
 });
 
 

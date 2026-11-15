@@ -1,5 +1,7 @@
 import type { TaskContentChannel, TaskObservationEvent, TaskObservations, TaskObservedResult, TaskRequestObservation } from '../types/taskObservation';
-const DB = 'gsm-task-observations-v1', PREVIEW = 1024 * 1024, EVENTS = 5000, BUDGET = 256 * 1024 * 1024, AGE = 30 * 86400000;
+// Task observations are diagnostics. Business results are stored separately;
+// keep answer/reasoning previews small and bounded by request.
+const DB = 'gsm-task-observations-v1', PREVIEW = 16 * 1024, EVENTS = 5000, BUDGET = 256 * 1024 * 1024, AGE = 30 * 86400000;
 const listeners = new Set<() => void>(), entries = new Map<string, Entry>(), writes = new Map<string, Promise<void>>();
 const remoteLoaders = new Map<string, () => void>(), remotePins = new Map<string, (pinned: boolean) => Promise<void>>(), demanded = new Set<string>();
 interface Meta {
@@ -45,7 +47,12 @@ export function taskPreview(value: string, limit: number): string {
         low--;
     return value.slice(0, low);
 }
-function redact(value: string) { return value.replace(/Bearer\s+[^\s"\\]+/gi, 'Bearer [redacted]').replace(/((?:api[_-]?key|token|secret|password)["']?\s*[=:]\s*["']?)[^\s,"'}]+/gi, '$1[redacted]'); }
+function redact(value: string) {
+    return value
+        .replace(/Bearer\s+[^\s"\\]+/gi, 'Bearer [redacted]')
+        .replace(/((?:api[_-]?key|token|secret|password|authorization|credential)["']?\s*[=:]\s*["']?)[^\s,"'}]+/gi, '$1[redacted]')
+        .replace(/(-----BEGIN [^-]+-----)[\s\S]*?(-----END [^-]+-----)/gi, '$1[redacted]$2');
+}
 function cleanData(value: unknown): unknown { try {
     return JSON.parse(redact(JSON.stringify(value) ?? 'null'));
 }

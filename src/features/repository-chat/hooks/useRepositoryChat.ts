@@ -54,18 +54,20 @@ export const useRepositoryChat = ({
   const t = useT('chat');
   const {
     language,
+    currentOwner,
     githubToken,
     aiConfigs,
     activeAIConfig,
     repositoryChatSettings,
   } = useAppStore(useShallow((state) => ({
     language: state.language,
+    currentOwner: String(state.user?.id ?? ''),
     githubToken: state.githubToken,
     aiConfigs: state.aiConfigs,
     activeAIConfig: state.activeAIConfig,
     repositoryChatSettings: state.repositoryChatSettings,
   })));
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllerRef = useRef<{ sessionId: string; controller: AbortController } | null>(null);
   const retryInFlightRef = useRef(false);
   const toolEventIdsRef = useRef<Map<string, { id: string; createdAt: string }>>(new Map());
   const toolEventWriteChainsRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -75,56 +77,54 @@ export const useRepositoryChat = ({
     timelineTimestampRef.current = timestamp;
     return new Date(timestamp).toISOString();
   };
-  const [localSending, setIsSending] = useState(false);
+  const [sendingSessionId, setSendingSessionId] = useState<string | null>(null);
   const runtime = useSyncExternalStore(workbenchRuntime.subscribe, workbenchRuntime.getSnapshot);
-  const isSending = localSending || (runtime.running && runtime.sessionId === session?.id);
-  const currentSessionRef = useRef(session?.id);
-  currentSessionRef.current = session?.id;
+  const isSending = Boolean(session && session.ownerId === currentOwner
+    && (sendingSessionId === session.id || runtime.running && runtime.sessionId === session.id));
+  const visibleSession = useRef(session);
+  visibleSession.current = session;
+  const isVisible = useCallback((target: RepositoryChatSession | null) => Boolean(target?.ownerId
+    && target.id === visibleSession.current?.id && target.ownerId === visibleSession.current?.ownerId
+    && target.ownerId === String(useAppStore.getState().user?.id ?? '')), []);
   const onMessagesChange = useCallback((next: RepositoryChatMessage[]) => {
-    if (currentSessionRef.current === session?.id) updateVisibleMessages(next);
-  }, [session?.id, updateVisibleMessages]);
+    if (isVisible(session)) updateVisibleMessages(next);
+  }, [session, isVisible, updateVisibleMessages]);
   const onSessionChange = useCallback(async (next: RepositoryChatSession) => {
     const latest = await repositoryChatStorage.getSession(next.id);
+    if (next.ownerId !== String(useAppStore.getState().user?.id ?? '') || latest?.deletedAt
+      || (latest && latest.ownerId !== next.ownerId)) return;
     const merged = { ...next, ...latest, updatedAt: next.updatedAt, modelConfigId: next.modelConfigId, modelLabelAtTime: next.modelLabelAtTime,
       title: latest && !DEFAULT_CHAT_TITLES.has(latest.title) ? latest.title : next.title };
-    if (currentSessionRef.current === next.id) await updateVisibleSession(merged);
+    if (isVisible(next)) await updateVisibleSession(merged);
     else await repositoryChatStorage.saveSession(merged);
-  }, [updateVisibleSession]);
+  }, [isVisible, updateVisibleSession]);
   const [error, setError] = useState<string | null>(null);
   const [toolEvents, setToolEvents] = useState<RepositoryChatToolEvent[]>([]);
   const [evidenceById, setEvidenceById] = useState<Record<string, ToolEvidence>>({});
 
-  const loadedEvidenceKeyRef = useRef('');
+  const evidenceKey = JSON.stringify(Array.from(new Set(messages.flatMap(message => message.evidenceIds))));
   useEffect(() => {
-    // 流式回答会让 messages 每 ~60ms 变化一次，但证据集合只在回合完成时变化；
-    // 用 key 去重，避免流式期间反复查询 IndexedDB。
-    const evidenceKey = messages.map((message) => message.evidenceIds.join('|')).join(',');
-    if (evidenceKey === loadedEvidenceKeyRef.current) return;
-    loadedEvidenceKeyRef.current = evidenceKey;
-    const evidenceIds = Array.from(new Set(messages.flatMap((message) => message.evidenceIds)));
-    if (evidenceIds.length === 0) {
-      setEvidenceById({});
-      return;
-    }
+    const evidenceIds = JSON.parse(evidenceKey) as string[];
+    setEvidenceById({});
+    if (!evidenceIds.length || !currentOwner) return;
     let active = true;
-    void repositoryChatStorage.listEvidence(evidenceIds).then((evidences) => {
+    void repositoryChatStorage.listEvidence(evidenceIds).catch(() => []).then((evidences) => {
       if (!active) return;
       setEvidenceById(Object.fromEntries(evidences.map((evidence) => [evidence.id, evidence])));
     });
     return () => { active = false; };
-  }, [messages]);
+  }, [evidenceKey, session?.id, currentOwner]);
 
+  useEffect(() => setError(null), [session?.id, currentOwner]);
   useEffect(() => {
-    if (!session) {
-      setToolEvents([]);
-      return;
-    }
+    setToolEvents([]);
+    if (!session || session.ownerId !== currentOwner) return;
     let active = true;
-    void repositoryChatStorage.listToolEvents(session.id).then((events) => {
-      if (active) setToolEvents(events);
+    void repositoryChatStorage.listToolEvents(session.id).catch(() => []).then((events) => {
+      if (active && isVisible(session)) setToolEvents(events);
     });
     return () => { active = false; };
-  }, [session]);
+  }, [session, currentOwner, isVisible]);
 
   const resolvedConfigId = repositoryChatSettings.chatConfigId ?? activeAIConfig;
   const aiConfig = aiConfigs.find((config) => config.id === resolvedConfigId) ?? null;
@@ -159,9 +159,11 @@ export const useRepositoryChat = ({
       createdAt,
     };
     toolEventIdsRef.current.set(eventKey, { id: toolEvent.id, createdAt });
-    setToolEvents((previous) => existing
-      ? previous.map((item) => item.id === existing.id ? toolEvent : item)
-      : [...previous, toolEvent]);
+    if (isVisible(session)) {
+      setToolEvents(previous => previous.some(item => item.id === toolEvent.id)
+        ? previous.map(item => item.id === toolEvent.id ? toolEvent : item)
+        : [...previous, toolEvent]);
+    }
     // Running and terminal states arrive asynchronously. Serialize writes for
     // one event ID so an older delayed running write cannot overwrite success.
     const previousWrite = toolEventWriteChainsRef.current.get(toolEvent.id) ?? Promise.resolve();
@@ -176,7 +178,7 @@ export const useRepositoryChat = ({
         toolEventWriteChainsRef.current.delete(toolEvent.id);
       }
     }
-  }, [session]);
+  }, [session, isVisible]);
 
   const send = useCallback(async (question: string, baseMessages = messages, isRetry = false) => {
     if (!repository || !session || !aiConfig || unavailableReason || isSending || (!isRetry && retryInFlightRef.current)) {
@@ -198,8 +200,8 @@ export const useRepositoryChat = ({
     inheritTaskSignal(signal, controller.signal);
     const abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
-    abortControllerRef.current = controller;
-    setIsSending(true);
+    abortControllerRef.current = { sessionId: session.id, controller };
+    setSendingSessionId(session.id);
     setError(null);
     toolEventIdsRef.current.clear();
     toolEventWriteChainsRef.current.clear();
@@ -238,6 +240,12 @@ export const useRepositoryChat = ({
         repositoryChatStorage.saveMessage(userMessage),
         repositoryChatStorage.saveMessage(assistantMessage),
       ]);
+      const previous = [...baseMessages].reverse().find(message =>
+        message.sessionId === session.id && message.role === 'assistant' && message.status === 'complete');
+      const priorEvidence = previous?.evidenceIds.length
+        ? await repositoryChatStorage.listEvidence(previous.evidenceIds).catch(() => [])
+        : [];
+      controller.signal.throwIfAborted();
       let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const flushStreamedContent = (content: string) => {
         if (streamFlushTimer) {
@@ -258,6 +266,7 @@ export const useRepositoryChat = ({
           repository,
           session,
           messages: [...baseMessages, userMessage],
+          priorEvidence,
           question: normalizedQuestion,
           githubToken: githubToken ?? '',
           aiConfig,
@@ -269,7 +278,7 @@ export const useRepositoryChat = ({
           streaming: repositoryChatSettings.streamingMode !== 'off',
           signal: controller.signal,
           onToolEvent: (event) => {
-            void persistToolEvent(event, assistantMessage.id);
+            void persistToolEvent(event, assistantMessage.id).catch(error => taskForSignal(signal)?.error(error));
           },
           onAnswerChunk: (fullText) => {
             if (controller.signal.aborted) return;
@@ -297,6 +306,7 @@ export const useRepositoryChat = ({
           streamFlushTimer = null;
         }
         await Promise.all(result.evidences.map((evidence) => repositoryChatStorage.saveEvidence(evidence)));
+        controller.signal.throwIfAborted();
         const completedAssistant: RepositoryChatMessage = {
           ...assistantMessage,
           content: result.content,
@@ -318,6 +328,9 @@ export const useRepositoryChat = ({
           modelConfigId: aiConfig.id,
           modelLabelAtTime: `${aiConfig.name} · ${aiConfig.model}`,
           updatedAt: new Date().toISOString(),
+        }).catch(error => {
+          // A saved answer stays complete even if refreshing the session metadata fails.
+          taskForSignal(signal)?.error(error);
         });
       } finally {
         if (streamFlushTimer) globalThis.clearTimeout(streamFlushTimer);
@@ -339,21 +352,26 @@ export const useRepositoryChat = ({
       } catch {
         // The original error is already represented in the transcript and banner.
       }
-      if (!aborted) { setError(repositoryChatErrorMessage(unknownError, language)); taskForSignal(signal)?.error(unknownError); taskForSignal(signal)?.item(session.id, 'failed', unknownError); }
+      if (!aborted) {
+        if (isVisible(session)) setError(repositoryChatErrorMessage(unknownError, language));
+        taskForSignal(signal)?.error(unknownError);
+        taskForSignal(signal)?.item(session.id, 'failed', unknownError);
+      }
     } finally {
       signal.removeEventListener('abort', abort);
       abortControllerRef.current = null;
-      setIsSending(false);
+      setSendingSessionId(null);
     }
     }, { kind: 'chat', title: repository.full_name, aiConfig, target: { view: 'repositories', id: session.id } });
     } catch (runtimeError) {
-      setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
+      if (isVisible(session)) setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
     }
-  }, [aiConfig, githubToken, isSending, language, messages, onMessagesChange, onSessionChange, persistToolEvent, repository, repositoryChatSettings.agentBudget, repositoryChatSettings.enableAgentToolLoop, repositoryChatSettings.maxToolsPerTurn, repositoryChatSettings.streamingMode, repositoryChatSettings.taskDepth, session, unavailableReason, t]);
+  }, [aiConfig, githubToken, isSending, isVisible, language, messages, onMessagesChange, onSessionChange, persistToolEvent, repository, repositoryChatSettings.agentBudget, repositoryChatSettings.enableAgentToolLoop, repositoryChatSettings.maxToolsPerTurn, repositoryChatSettings.streamingMode, repositoryChatSettings.taskDepth, session, unavailableReason, t]);
 
   const stop = useCallback(() => {
     if (workbenchRuntime.getSnapshot().sessionId === session?.id) workbenchRuntime.stop();
-    abortControllerRef.current?.abort();
+    const active = abortControllerRef.current;
+    if (active?.sessionId === session?.id) active?.controller.abort();
   }, [session?.id]);
 
   const resendLastPair = useCallback(async (requireFailedStatus: boolean) => {

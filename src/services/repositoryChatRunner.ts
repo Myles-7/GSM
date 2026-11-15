@@ -27,7 +27,17 @@ const isEndpointRejectionError = (error: unknown): boolean => {
 };
 
 const dispatchTurn = async (input: RepositoryChatTurnInput): Promise<RepositoryChatTurnResult> => {
-  if (isAgyConfig(input.aiConfig) && input.aiConfig.agyMode === 'model') return runModelRepositoryChatTurn(input);
+  // Keep AGY model mode fast by default, while making the existing deep task
+  // depth an explicit opt-in to the bounded evidence/code research loop.
+  const deepResearchRequested = input.taskDepth === 'deep' || input.taskDepth === 'unlimited';
+  input.onToolEvent?.({
+    toolName: 'execution_mode', status: 'success', stage: 'context', round: 0,
+    paramSummary: deepResearchRequested ? (input.language === 'zh' ? '深度源码研究' : 'Deep source research') : (input.language === 'zh' ? '快速文档分析' : 'Quick document analysis'),
+    detail: deepResearchRequested
+      ? (input.language === 'zh' ? '将按受控证据循环读取相关文档和源码；耗时与用量更高。' : 'The bounded evidence loop may read related documentation and source code; it uses more time and tokens.')
+      : (input.language === 'zh' ? '默认只读取有限文档上下文，不主动展开源码研究。' : 'The default path reads bounded document context without proactively expanding into source research.'),
+  });
+  if (isAgyConfig(input.aiConfig) && input.aiConfig.agyMode === 'model' && !deepResearchRequested) return runModelRepositoryChatTurn(input);
   // 受控工具循环（实验性）：仅在设置开启、AI 配置协议族支持且用户显式勾选
   // “支持工具调用”时启用；端点不支持工具调用时本轮自动落回编排式循环。
   if (!input.localSource && input.enableAgentToolLoop && supportsChatToolCalls(input.aiConfig)) {

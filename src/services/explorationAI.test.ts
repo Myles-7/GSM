@@ -40,6 +40,8 @@ describe('AI exploration evidence boundaries', () => {
     expect(parse('Does not support Codex.', 'Does not support Codex.').relations[0].verified).toBe(false);
     expect(parse('Cannot support Codex integration.', 'Cannot support Codex integration.').relations[0].verified).toBe(false);
     expect(parse("This tool can't support Codex.", "This tool can't support Codex.").relations[0].verified).toBe(false);
+    expect(parse('Codex is incompatible.', 'Codex is incompatible.').relations[0]).toMatchObject({ kind: 'discovery', verified: false });
+    expect(parse('This tool supports workflows. Codex is mentioned in the name.', 'This tool supports workflows. Codex is mentioned in the name.').relations[0]).toMatchObject({ kind: 'discovery', verified: false });
     expect(parse('Codex and many other tools.', 'Codex and many other tools.').relations[0].verified).toBe(false);
   });
   it('drops invented quotations and never infers facts from names alone', () => {

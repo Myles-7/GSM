@@ -1,6 +1,6 @@
 import { waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { agyQueueStatus, generateAgyText } from './agyClient';
+import { agyQueueStatus, commitAgyRecovery, generateAgyText } from './agyClient';
 import { bindTaskSignal, bindTaskItemSignal } from './taskExecution';
 import type { AgyEvent } from '../types/agy';
 import { aiTaskJournal } from './aiTaskJournal';
@@ -100,6 +100,38 @@ it('tracks a direct authenticated AGY call once when the caller has no parent ta
     expect(start).toHaveBeenCalledTimes(1);
     expect(start.mock.calls[0][2]).toMatchObject({ taskId: created[0].id, itemId: 'operation' });
     expect(taskObservability.begin).toHaveBeenCalledTimes(1);
+  } finally { window.electronAPI = previous; }
+});
+
+it('defers recovery acknowledgement until the durable caller commits the result', async () => {
+  const previous = window.electronAPI;
+  const recovery = { requestId: 'durable-request', resultDigest: 'durable-digest', dispatch: 'sent', providerOutcome: 'succeeded', recoverable: true, createdAt: '2026-10-29T00:00:00Z' };
+  const acknowledge = vi.fn().mockResolvedValue({ ok: true, value: undefined });
+  const start = vi.fn().mockResolvedValue({ ok: true, value: { text: 'durable result', usage: {}, recovery } });
+  const onResult = vi.fn();
+  window.electronAPI = { agy: { setSession: async () => {}, cancel: async () => {}, start, recoveryAck: acknowledge, onEvent: () => () => {} } } as unknown as typeof previous;
+  try {
+    await expect(generateAgyText(
+      { id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'fixture', agyEffort: 'high', agyMode: 'model', isActive: true, deviceBound: true },
+      { system: '', user: '', recovery: { deferAck: true, onResult } },
+    )).resolves.toBe('durable result');
+    expect(onResult).toHaveBeenCalledWith(recovery);
+    expect(acknowledge).not.toHaveBeenCalled();
+  } finally { window.electronAPI = previous; }
+});
+
+it('stages bounded commit metadata before acknowledging a durable result', async () => {
+  const previous = window.electronAPI;
+  const stage = vi.fn().mockResolvedValue({ ok: true, value: undefined });
+  const acknowledge = vi.fn().mockResolvedValue({ ok: true, value: undefined });
+  window.electronAPI = { agy: { setSession: async () => {}, recoveryStage: stage, recoveryAck: acknowledge } } as unknown as typeof previous;
+  try {
+    await commitAgyRecovery('7', { requestId: 'durable-request', resultDigest: 'durable-digest' }, {
+      feature: 'gist-summary', entityType: 'gist', entityId: 'gist-1', resultDigest: 'durable-digest', savedAt: '2026-10-29T00:00:00Z',
+    });
+    expect(stage).toHaveBeenCalledWith(expect.any(String), 'durable-request', 'durable-digest', expect.objectContaining({ entityType: 'gist', entityId: 'gist-1' }));
+    expect(acknowledge).toHaveBeenCalledWith(expect.any(String), 'durable-request', 'durable-digest');
+    expect(stage.mock.invocationCallOrder[0]).toBeLessThan(acknowledge.mock.invocationCallOrder[0]);
   } finally { window.electronAPI = previous; }
 });
 

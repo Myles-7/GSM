@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Category, Repository, VectorSearchConfig } from '../../../types';
+import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { VectorIndexCompatibilityError } from '../../../services/vectorIndexIdentity';
 import corpus from '../../../utils/__fixtures__/submittedRepositorySearch.json';
 import { applyRepoFilters } from '../../../utils/repoSearch';
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   vectorQuery: vi.fn(),
   prepareVectorQuery: vi.fn(),
   generateHyDEQuery: vi.fn(),
+  aiServiceConfig: vi.fn(),
   searchRepositoriesWithSemanticReranking: vi.fn(),
   searchRepositoriesWithSelection: vi.fn(),
   getAllStarredRepositories: vi.fn(),
@@ -52,6 +54,7 @@ vi.mock('../../../services/vectorSearchService', async (importOriginal) => {
 
 vi.mock('../../../services/aiService', () => ({
   AIService: class {
+    constructor(config: unknown) { mocks.aiServiceConfig(config); }
     generateHyDEQuery = mocks.generateHyDEQuery;
     searchRepositoriesWithSemanticReranking = mocks.searchRepositoriesWithSemanticReranking;
     searchRepositoriesWithSelection = mocks.searchRepositoriesWithSelection;
@@ -197,6 +200,111 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
     setupStoreMocks();
   });
 
+  const setupVectorSearch = () => {
+    storeState.repositories = [baseRepo({ id: 1, full_name: 'owner/first' }), baseRepo({ id: 2, full_name: 'owner/second' })];
+    Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.example' });
+    mocks.generateHyDEQuery.mockResolvedValue('expanded query');
+    mocks.embed.mockResolvedValue([[0.1]]);
+    mocks.vectorQuery.mockResolvedValue([{ id: '1', score: 0.9 }, { id: '2', score: 0.8 }]);
+    mocks.searchRepositoriesWithSemanticReranking.mockResolvedValue([...storeState.repositories].reverse());
+  };
+
+  it('uses the independent DeepSeek configuration for both enhancements and records its model', async () => {
+    setupVectorSearch();
+    const deepseek = { ...storeState.aiConfigs[0], id: 'deepseek', name: 'DeepSeek', model: 'deepseek-model' };
+    storeState.aiConfigs.push(deepseek);
+    storeState.vectorSearchConfig.searchAIConfigId = deepseek.id;
+    const begin = vi.spyOn(aiTaskJournal, 'begin');
+    try {
+      const { result } = renderHook(() => useSearchActions());
+      await act(async () => { await result.current.aiSearch('query', identity); });
+      expect(mocks.aiServiceConfig.mock.calls.map(([config]) => config.id)).toEqual(['deepseek', 'deepseek']);
+      expect(mocks.embed).toHaveBeenCalledWith(['expanded query'], 'query', expect.any(AbortSignal));
+      expect(storeState.activeAIConfig).toBe('ai-config');
+      expect(begin.mock.lastCall?.[3]).toBe('deepseek');
+      expect(begin.mock.lastCall?.[5]?.config?.model).toBe('deepseek-model');
+      expect(storeState.setSearchResults.mock.lastCall?.[0]).toEqual([...storeState.repositories].reverse());
+    } finally { begin.mockRestore(); }
+  });
+
+  it('follows the global model when no search configuration is selected', async () => {
+    setupVectorSearch();
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('query', identity); });
+    expect(mocks.aiServiceConfig.mock.calls.map(([config]) => config.id)).toEqual(['ai-config', 'ai-config']);
+  });
+
+  it.each(['query-rewrite', 'reranking'] as const)('keeps vector retrieval when the selected model fails during %s', async phase => {
+    setupVectorSearch();
+    storeState.aiConfigs.push({ ...storeState.aiConfigs[0], id: 'deepseek', model: 'deepseek-model' });
+    storeState.vectorSearchConfig.searchAIConfigId = 'deepseek';
+    if (phase === 'query-rewrite') mocks.generateHyDEQuery.mockRejectedValue(new Error('provider unavailable'));
+    else mocks.searchRepositoriesWithSemanticReranking.mockRejectedValue(new Error('provider unavailable'));
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('query', identity); });
+    expect(mocks.aiServiceConfig.mock.calls.map(([config]) => config.id)).toEqual(['deepseek', 'deepseek']);
+    expect(mocks.embed).toHaveBeenCalledWith([phase === 'query-rewrite' ? 'query' : 'expanded query'], 'query', expect.any(AbortSignal));
+    expect(storeState.setSearchResults.mock.lastCall?.[0]).toEqual(phase === 'reranking'
+      ? storeState.repositories : [...storeState.repositories].reverse());
+    expect(result.current.searchReport?.mode).toBe('vector');
+  });
+
+  it.each(['deleted', 'missing-key', 'decrypt-failed'] as const)('skips enhancements for an explicit %s configuration without switching providers', async kind => {
+    setupVectorSearch();
+    storeState.vectorSearchConfig.searchAIConfigId = 'selected';
+    if (kind !== 'deleted') storeState.aiConfigs.push({ ...storeState.aiConfigs[0], id: 'selected',
+      ...(kind === 'missing-key' ? { apiKey: '' } : { apiKeyStatus: 'decrypt_failed' }) });
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('query', identity); });
+    expect(mocks.aiServiceConfig).not.toHaveBeenCalled();
+    expect(mocks.embed).toHaveBeenCalledWith(['query'], 'query', expect.any(AbortSignal));
+    expect(mocks.toast).toHaveBeenCalledWith(expect.any(String), 'warning');
+    expect(storeState.setSearchResults.mock.lastCall?.[0]).toEqual(storeState.repositories);
+    expect(result.current.searchReport?.mode).toBe('vector');
+    expect(result.current.searchReport?.fallback).toBeTruthy();
+  });
+
+  it('does not call an explicitly selected model while both enhancements are disabled', async () => {
+    setupVectorSearch();
+    Object.assign(storeState.vectorSearchConfig, { searchAIConfigId: 'deleted', enableHyDE: false, enableReranking: false });
+    const { result } = renderHook(() => useSearchActions());
+    await act(async () => { await result.current.aiSearch('query', identity); });
+    expect(mocks.aiServiceConfig).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(storeState.setSearchResults).toHaveBeenCalled();
+  });
+
+  it('discards late reranking after the independent model changes', async () => {
+    setupVectorSearch();
+    storeState.vectorSearchConfig.searchAIConfigId = 'ai-config';
+    let resolve!: (repos: Repository[]) => void;
+    mocks.searchRepositoriesWithSemanticReranking.mockImplementation(() => new Promise(r => { resolve = r; }));
+    const { result } = renderHook(() => useSearchActions());
+    let search!: Promise<void>;
+    await act(async () => { search = result.current.aiSearch('query', identity); });
+    storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, searchAIConfigId: 'another-model' };
+    await act(async () => { resolve(storeState.repositories); await search; });
+    expect(storeState.setSearchResults).not.toHaveBeenCalled();
+    expect(storeState.setSearchFilters).not.toHaveBeenCalled();
+    expect(result.current.isSearching).toBe(false);
+  });
+
+  it('keeps global keyword fallback and records that model when vector search returns no results', async () => {
+    setupVectorSearch();
+    storeState.aiConfigs.push({ ...storeState.aiConfigs[0], id: 'deepseek', model: 'deepseek-model' });
+    storeState.vectorSearchConfig.searchAIConfigId = 'deepseek';
+    mocks.vectorQuery.mockResolvedValue([]);
+    mocks.searchRepositoriesWithSelection.mockResolvedValue(storeState.repositories);
+    const patch = vi.spyOn(aiTaskJournal, 'patch');
+    try {
+      const { result } = renderHook(() => useSearchActions());
+      await act(async () => { await result.current.aiSearch('query', identity); });
+      expect(mocks.aiServiceConfig.mock.calls.map(([config]) => config.id)).toEqual(['deepseek', 'ai-config']);
+      expect(patch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ configId: 'ai-config',
+        config: expect.objectContaining({ model: 'ai-model' }) }));
+    } finally { patch.mockRestore(); }
+  });
+
   it.each(['language', 'config', 'empty'] as const)('rejects late provider results after %s invalidation', async kind => {
     Object.assign(storeState.vectorSearchConfig, { enabled: true, workerUrl: 'https://worker.example', enableHyDE: false });
     let resolve!: (value: number[][]) => void;
@@ -212,6 +320,23 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
     expect(storeState.setSearchResults).not.toHaveBeenCalled();
     expect(storeState.setSearchFilters).not.toHaveBeenCalled();
     expect(result.current.isSearching).toBe(false);
+  });
+
+  it('keeps the submitted session when indexing publishes a new generation mid-flight', async () => {
+    setupVectorSearch();
+    let resolve!: (repos: Repository[]) => void;
+    mocks.searchRepositoriesWithSemanticReranking.mockImplementation(() => new Promise(r => { resolve = r; }));
+    const { result } = renderHook(() => useSearchActions());
+    let search!: Promise<void>;
+    await act(async () => { search = result.current.aiSearch('query', identity); });
+    storeState.vectorSearchConfig = { ...storeState.vectorSearchConfig, activeIndex: {
+      namespace: 'g' + 'a'.repeat(12) + 'b'.repeat(32), identityHash: 'a'.repeat(64),
+      identity: { provider: 'openai', endpoint: 'https://example.test', model: 'test', dimensions: 1,
+        mode: 'description', readmeMaxChars: 0, format: 1, target: 'https://worker.example' },
+    } };
+    await act(async () => { resolve(storeState.repositories); await search; });
+    expect(storeState.setSearchResults).toHaveBeenCalled();
+    expect(result.current.applySubmittedSearch('query', identity)).not.toBeNull();
   });
 
   it('asks for rebuild and avoids embeddings/HyDE/query when the index identity is incompatible', async () => {
@@ -377,6 +502,32 @@ describe('useSearchActions.aiSearch (vector hit)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('grows the HyDE timeout after repeated provider timeouts without replaying a request', async () => {
+    vi.useFakeTimers();
+    try {
+      storeState.vectorSearchConfig = {
+        enabled: true, workerUrl: 'https://worker.example', authToken: 'worker-token', embeddingConfigId: 'emb',
+        indexMode: 'description', readmeMaxChars: 6000, enableHyDE: true, enableReranking: false,
+      };
+      const budgets: number[] = [];
+      mocks.generateHyDEQuery.mockImplementation((_query: string, signal: AbortSignal) => {
+        budgets.push(Date.now());
+        return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')), { once: true }));
+      });
+      mocks.embed.mockResolvedValue([[0.1]]); mocks.vectorQuery.mockResolvedValue([]); mocks.searchRepositoriesWithSelection.mockResolvedValue([]);
+      const { result } = renderHook(() => useSearchActions());
+      let first!: Promise<void>; act(() => { first = result.current.aiSearch('first', identity); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); }); await act(async () => { await first; });
+      let second!: Promise<void>; act(() => { second = result.current.aiSearch('second', identity); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(7499); });
+      expect(mocks.embed).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2); }); await act(async () => { await second; });
+      expect(mocks.embed).toHaveBeenCalledWith(['second'], 'query', expect.any(AbortSignal));
+      expect(result.current.searchReport?.fallback).toBe('hyde-timeout');
+      expect(budgets).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it('returns early for a blank query without touching search state', async () => {

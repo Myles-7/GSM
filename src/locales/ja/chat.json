@@ -7,6 +7,7 @@
     "discovery": "発見タスク",
     "plugins": "プラグイン",
     "openPlugin": "プラグイン設定を開く",
+    "hydeSkipped": "HyDE クエリ前処理がタイムアウトしたため、元のクエリで検索しました",
     "rerankUnavailable": "AI の再順位付けに失敗したため、ベクトル順位を維持しています。",
     "vectorUnavailable": "ベクトル検索を利用できないため、キーワード検索を使用しています。",
     "supported": "対応", "unsupported": "非対応",
@@ -41,6 +42,7 @@
       "unknown": "不明"
   },
   "globalChatHistorySheet": {
+    "load-more": "さらに会話を読み込む",
     "close-chat-history": "Q&A履歴を閉じる",
     "chat-history": "Q&A履歴",
     "conversations-across-repositories-select-one-to": "各ウェアハウスの Q&A セッションを要約し、クリックして対応するウェアハウスに入り、会話を続けます。",
@@ -76,6 +78,8 @@
     "delete-conversation": "セッションの削除"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "元のコミットへのアクセスを確認中…",
+    "history-read-only": "元のコミットにアクセスできません。保存された会話は引き続き閲覧できます。",
     "agent-execution-summary": "エージェントの概要",
     "this-turn-s-work": "このラウンドのタスクの実行",
     "failed-attention": "{{failed}} 個の項目に注意が必要です",

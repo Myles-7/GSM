@@ -246,6 +246,7 @@
     "download-failed": "Загрузка не удалась"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "Выбранная конфигурация ИИ недоступна. Улучшения ИИ будут пропущены; векторный поиск останется доступен.",
     "ai-semantic-analysis": "Семантический анализ ИИ…",
     "ai-selecting-relevant-repositories": "ИИ выбрал соответствующий склад…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "Запрос ИИ не выполнен, выполнен откат к локальному лексическому поиску.",

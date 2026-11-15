@@ -7,6 +7,7 @@
     "discovery": "Découverte",
     "plugins": "Extensions",
     "openPlugin": "Ouvrir les paramètres des extensions",
+    "hydeSkipped": "Le prétraitement HyDE a expiré ; recherche effectuée avec la requête d'origine",
     "rerankUnavailable": "Échec du reclassement IA ; classement vectoriel conservé.",
     "vectorUnavailable": "Recherche vectorielle indisponible ; recherche par mots-clés utilisée.",
     "supported": "Pris en charge", "unsupported": "Non pris en charge",
@@ -41,6 +42,7 @@
       "unknown": "Inconnu"
   },
   "globalChatHistorySheet": {
+    "load-more": "Charger plus de conversations",
     "close-chat-history": "Fermer l'historique des questions et réponses",
     "chat-history": "Historique des questions et réponses",
     "conversations-across-repositories-select-one-to": "Résumez les sessions de questions-réponses dans chaque entrepôt et cliquez pour entrer dans l'entrepôt correspondant pour continuer la conversation.",
@@ -76,6 +78,8 @@
     "delete-conversation": "Supprimer la séance"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "Vérification de l’accès au commit d’origine…",
+    "history-read-only": "Le commit d’origine est inaccessible. Vous pouvez toujours lire la conversation enregistrée.",
     "agent-execution-summary": "Résumé exécutif de l'agent",
     "this-turn-s-work": "Exécution de cette série de tâches",
     "failed-attention": "{{failed}} éléments nécessitent votre attention",

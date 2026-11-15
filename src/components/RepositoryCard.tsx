@@ -885,7 +885,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
   // 使用 useMemo 缓存卡片类名，避免重复计算
   const cardClassName = useMemo(() => {
     const baseClasses = viewMode === 'list'
-      ? repositoryListSurfaceClass
+      ? `${repositoryListSurfaceClass} lg:grid lg:grid-cols-[minmax(9rem,0.8fr)_minmax(0,2fr)_auto] lg:items-start lg:gap-x-4 lg:gap-y-2 lg:py-3`
       : 'repository-card ui-card group relative p-4 transition-[color,background-color,border-color,box-shadow] duration-200 flex flex-col h-full cursor-pointer';
     const selectedClasses = isSelected
       ? 'linear-card-selected'
@@ -915,25 +915,27 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       aria-disabled={isModalOpen}
     >
       {/* Header - Repository Info */}
-      <div className="flex items-start gap-2 mb-3">
-        <img
-          src={repository.owner.avatar_url}
-          alt={repository.owner.login}
-          className={`${viewMode === 'list' ? 'w-10 h-10' : 'w-8 h-8'} rounded-full flex-shrink-0`}
-        />
-        <div className="min-w-0 flex-1">
-          <h3 title={repository.full_name} className={`${viewMode === 'list' ? 'text-base' : 'text-sm'} font-semibold text-foreground dark:text-foreground break-all line-clamp-2`}>
-            {highlightSearchTerm(repository.name, searchQuery)}
-          </h3>
-          <p className="text-sm text-muted-foreground dark:text-muted-foreground truncate">
-            {repository.owner.login}
-            {viewMode === 'grid' && displayContent.isAnalyzed && !displayContent.isAnalysisFailed && <span className="ml-1.5 inline-flex align-middle" title={t('repositoryCard.ai-analyzed')}><Sparkles className="h-3 w-3" /><span className="sr-only">{t('repositoryCard.ai-analyzed')}</span></span>}
-          </p>
+      <div className={viewMode === 'list' ? 'mb-3 flex items-start gap-2 lg:contents' : 'mb-3 flex items-start gap-2'}>
+        <div className={viewMode === 'list' ? 'flex min-w-0 flex-1 items-start gap-2 lg:col-start-1 lg:row-start-1' : 'flex min-w-0 flex-1 items-start gap-2'}>
+          <img
+            src={repository.owner.avatar_url}
+            alt={repository.owner.login}
+            className={`${viewMode === 'list' ? 'w-10 h-10' : 'w-8 h-8'} rounded-full flex-shrink-0`}
+          />
+          <div className="min-w-0 flex-1">
+            <h3 title={repository.full_name} className={`${viewMode === 'list' ? 'text-base' : 'text-sm'} font-semibold text-foreground dark:text-foreground break-all line-clamp-2`}>
+              {highlightSearchTerm(repository.name, searchQuery)}
+            </h3>
+            <p className="text-sm text-muted-foreground dark:text-muted-foreground truncate">
+              {repository.owner.login}
+              {viewMode === 'grid' && displayContent.isAnalyzed && !displayContent.isAnalysisFailed && <span className="ml-1.5 inline-flex align-middle" title={t('repositoryCard.ai-analyzed')}><Sparkles className="h-3 w-3" /><span className="sr-only">{t('repositoryCard.ai-analyzed')}</span></span>}
+            </p>
+          </div>
         </div>
         
         {/* 拖拽按钮 - 右上角 - 手机和平板端隐藏 */}
         {viewMode === 'list' && (
-          <div className="ml-auto flex max-w-[60%] flex-wrap items-start justify-end gap-1.5">
+          <div className="ml-auto flex max-w-[60%] flex-wrap items-start justify-end gap-1.5 lg:col-start-3 lg:row-start-1 lg:ml-0 lg:max-w-[15rem] lg:items-center">
             {displayContent.isAnalysisFailed ? (
                 <span className="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium bg-destructive/10 text-destructive">
                   <Bot className="w-3 h-3" />
@@ -1084,14 +1086,14 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
         viewMode === 'grid'
         && (displayContent.isAnalysisFailed || displayContent.isAnalyzed)
       )) && (
-      <div className={viewMode === 'list' ? 'mb-3' : 'mb-4 flex-1'}>
+      <div className={viewMode === 'list' ? 'mb-3 min-w-0 lg:col-start-2 lg:row-start-1 lg:mb-0' : 'mb-4 flex-1'}>
         {showDescription && (
         <Tooltip>
           <TooltipTrigger asChild>
             <p
               tabIndex={0}
               className={viewMode === 'list'
-                ? repositoryListDescriptionClass
+                ? `${repositoryListDescriptionClass} lg:line-clamp-2`
                 : 'text-foreground dark:text-muted-foreground text-[13px] leading-[1.625] line-clamp-4 mb-2 transition-colors duration-200 [text-wrap:pretty] hover:text-foreground dark:hover:text-foreground rounded-md px-1 -mx-1 hover:bg-muted dark:hover:bg-card/[0.02]'}
             >
               {highlightSearchTerm(displayContent.content, searchQuery)}
@@ -1135,9 +1137,10 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
       </div>
       )}
 
+      <div className={viewMode === 'list' ? 'lg:col-span-full lg:flex lg:min-w-0 lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-2 lg:[&>div:first-child]:mb-0' : 'contents'}>
       <RepositoryClassificationEvidence repository={repository} compact />
       {/* List mode keeps tags and repository metadata on one wrapping information row. */}
-      <div className={viewMode === 'list' ? 'flex flex-wrap items-center gap-x-3 gap-y-2' : 'contents'}>
+      <div className={viewMode === 'list' ? 'flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 lg:contents' : 'contents'}>
       {isRepositoryCardFieldVisible(cardFields, 'tags') && classificationLabels.length > 0 && (
         <div className={`flex flex-wrap ${viewMode === 'list' ? 'gap-1' : 'gap-2 mb-4'}`} aria-label={language === 'zh' ? '标签与分类特征' : 'Tags and classification facets'}>
           {classificationLabels.map((label) => (
@@ -1203,9 +1206,9 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           })()}
         </div>
 
-        {/* Update time is a compact footer in list mode and stays centered between divider and card edge. */}
-        <div className={viewMode === 'list' ? 'basis-full flex-none' : 'mt-4'}>
-        <div className={`flex items-center justify-between text-muted-foreground dark:text-muted-foreground border-t border-border/50 ${viewMode === 'list' ? 'w-full pt-2.5 mt-2.5 text-xs' : 'pt-2 text-sm'}`}>
+        {/* List metadata shares the desktop row; narrower layouts keep the footer divider. */}
+        <div className={viewMode === 'list' ? 'basis-full flex-none lg:ml-auto lg:min-w-0 lg:max-w-full lg:basis-auto' : 'mt-4'}>
+        <div className={`flex items-center justify-between text-muted-foreground dark:text-muted-foreground border-t border-border/50 ${viewMode === 'list' ? 'w-full pt-2.5 mt-2.5 text-xs lg:mt-0 lg:border-t-0 lg:pt-0' : 'pt-2 text-sm'}`}>
           <div className="relative flex min-w-0 items-center gap-1.5 leading-none">
             {isRepositoryCardFieldVisible(cardFields, 'lastUpdated') && (
             <>
@@ -1261,6 +1264,7 @@ const RepositoryCardComponent: React.FC<RepositoryCardProps> = ({
           )}
         </div>
         </div>
+      </div>
       </div>
       </div>
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { Repository } from '../types';
+import type { Gist, Repository } from '../types';
 import {
   AIService,
   AIRequestError,
@@ -614,5 +614,62 @@ describe('AIService.analyzeRepository language following', () => {
     expect(joined).not.toContain('A concise English overview');
     expect(joined).not.toContain('"summary": "English overview"');
     expect(joined).toContain('Write ALL user-facing output in Japanese (日本語)');
+  });
+});
+
+describe('AIService.analyzeRepository response contract', () => {
+  beforeEach(() => {
+    (window.fetch as ReturnType<typeof vi.fn>).mockReset();
+  });
+
+  it('repairs a response that omits required tags and platforms fields', async () => {
+    (window.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"A code editor"}' } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"A code editor","tags":[],"platforms":[]}' } }] }), { status: 200 }));
+    const result = await new AIService(makeConfig() as never, 'en').analyzeRepository(makeRepo({ id: 12, name: 'editor', full_name: 'acme/editor' }), '# Editor');
+    expect(result).toMatchObject({ summary: 'A code editor', tags: [], platforms: [] });
+    expect(window.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts explicit empty arrays and keeps unknown platforms empty', async () => {
+    (window.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"summary":"A code editor","tags":[],"platforms":["quantum-os"]}' } }],
+    }), { status: 200 }));
+    const result = await new AIService(makeConfig() as never, 'en').analyzeRepository(makeRepo({ id: 13, name: 'editor', full_name: 'acme/editor' }), '# Editor');
+    expect(result).toMatchObject({ summary: 'A code editor', tags: [], platforms: [] });
+    expect(window.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('repairs wrong field types instead of silently coercing them to empty arrays', async () => {
+    (window.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"A code editor","tags":"editor","platforms":[]}' } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"A code editor","tags":["editor"],"platforms":[]}' } }] }), { status: 200 }));
+    const result = await new AIService(makeConfig() as never, 'en').analyzeRepository(makeRepo({ id: 14, name: 'editor', full_name: 'acme/editor' }), '# Editor');
+    expect(result.tags).toEqual(['editor']);
+    expect(window.fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('AIService.searchGistsWithReranking result semantics', () => {
+  const gists = [
+    { id: 'g-1', description: 'first', files: { one: { filename: 'one.ts', size: 1 } } },
+    { id: 'g-2', description: 'second', files: { two: { filename: 'two.ts', size: 1 } } },
+  ] as unknown as Gist[];
+  beforeEach(() => { (window.fetch as ReturnType<typeof vi.fn>).mockReset(); });
+  const response = (content: string) => (window.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(new Response(
+    JSON.stringify({ choices: [{ message: { content } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } },
+  ));
+
+  it('keeps a legal empty result empty', async () => {
+    response('[]');
+    await expect(new AIService(makeConfig() as never, 'en').searchGistsWithReranking(gists, 'query')).resolves.toEqual([]);
+  });
+  it('rejects a non-empty result when every ID is unknown', async () => {
+    response('["missing"]');
+    await expect(new AIService(makeConfig() as never, 'en').searchGistsWithReranking(gists, 'query')).rejects.toThrow('Invalid AI search result');
+  });
+  it('keeps valid IDs from a mixed and duplicated result', async () => {
+    response('```json\n["g-2","missing","g-2","g-1"]\n```');
+    await expect(new AIService(makeConfig() as never, 'en').searchGistsWithReranking(gists, 'query')).resolves.toEqual([gists[1], gists[0]]);
   });
 });

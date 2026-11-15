@@ -29,7 +29,7 @@ describe('task observation capture', () => {
     taskObservability.append(owner,taskId,requestId,'answer','LATE');
     await taskObservability.flush(owner,taskId);
     const row=taskObservability.snapshot(owner,taskId).requests[0];
-    expect(new TextEncoder().encode(row.answer+row.reasoning).length).toBeLessThanOrEqual(1024*1024);
+    expect(new TextEncoder().encode(row.answer+row.reasoning).length).toBeLessThanOrEqual(16*1024);
     expect(row.truncated).toBe(true);expect(row.answer).not.toContain('PRIVATE');expect(row.answer).not.toContain('LATE');
     expect(row.answer).not.toContain('\uFFFD');
   });

@@ -1,7 +1,9 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useRepositoryChatSessions } from './useRepositoryChatSessions';
 import type { Repository } from '../../../types';
+import type { RepositoryChatMessage, RepositoryChatSession } from '../../../types/repositoryChat';
+import { repositoryChatStorage } from '../../../services/repositoryChatStorage';
 
 vi.mock('../../../store/useAppStore', () => ({
   useAppStore: (selector: (state: { user: { id: number }; githubToken: string; repositoryChatSettings: { retainSessionDays: number } }) => unknown) =>
@@ -65,6 +67,42 @@ describe('useRepositoryChatSessions global history notification', () => {
       expect(dispatchSpy).toHaveBeenCalled();
     } finally {
       window.removeEventListener('gsm:global-chat-history-changed', dispatchSpy);
+    }
+  });
+
+  it('ignores a history reload for the former selection and clears a deleted active session', async () => {
+    const time = new Date().toISOString();
+    const first: RepositoryChatSession = {
+      id: 'first', repoId: 1, repoFullName: repository.full_name, sourceRefSha: 'a'.repeat(40),
+      title: 'First', ownerId: '7', kind: 'repository', createdAt: time, updatedAt: time,
+    };
+    const second = { ...first, id: 'second', title: 'Second' };
+    await repositoryChatStorage.saveSession(first);
+    await repositoryChatStorage.saveSession(second);
+    const { result } = renderHook(() => useRepositoryChatSessions({
+      repository, language: 'en', initialSessionId: first.id,
+    }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.activeSession?.id).toBe(first.id);
+
+    let finishOldLoad!: (messages: RepositoryChatMessage[]) => void;
+    const messages = vi.spyOn(repositoryChatStorage, 'listMessages').mockImplementationOnce(
+      () => new Promise(resolve => { finishOldLoad = resolve; }),
+    );
+    try {
+      act(() => { window.dispatchEvent(new CustomEvent('gsm:global-chat-history-changed')); });
+      await waitFor(() => expect(messages).toHaveBeenCalledWith(first.id));
+      await act(async () => { await result.current.selectSession(second.id); });
+      await act(async () => { finishOldLoad([]); });
+      expect(result.current.activeSession?.id).toBe(second.id);
+
+      await act(async () => {
+        await repositoryChatStorage.softDeleteSession(second.id);
+        window.dispatchEvent(new CustomEvent('gsm:global-chat-history-changed'));
+      });
+      await waitFor(() => expect(result.current.activeSession).toBeNull());
+    } finally {
+      messages.mockRestore();
     }
   });
 });

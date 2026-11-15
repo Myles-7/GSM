@@ -6,6 +6,7 @@ import { shouldBypassBackend } from './routeMode';
 import { AIRateLimiter, AIRateLimitConfig } from './aiRequestLimiter';
 import { isRateLimitedError, getRetryAfterMsFromError } from './aiService';
 import { bindTaskItemSignal, taskForSignal } from '../utils/taskSignals';
+import type { AgyRecoveryRecord } from '../types/agy';
 
 export interface AnalysisTask {
   repo: Repository;
@@ -23,6 +24,8 @@ export interface AnalysisResult {
   category?: string;
   error?: Error;
   duration: number;
+  /** Deferred AGY result; callers acknowledge only after their durable save. */
+  recovery?: AgyRecoveryRecord;
 }
 
 export interface OptimizerConfig {
@@ -300,7 +303,10 @@ export class AIAnalysisOptimizer {
           const requestSignal = AbortSignal.any([this.batchAbortController.signal]);
           const parentTask = taskForSignal(this.batchAbortController.signal);
           if (parentTask) bindTaskItemSignal(requestSignal, parentTask, String(task.repo.id));
-          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, requestSignal, retryState);
+          let recovery: AgyRecoveryRecord | undefined;
+          const analysis = await aiService.analyzeRepository(task.repo, task.readmeContent, categoryNames, categoryHints, requestSignal, retryState, {
+            recovery: { deferAck: true, step: `summary:${task.repo.id}`, onResult: record => { recovery = record; } },
+          });
           const analysisDuration = Date.now() - analysisStart;
           this.sharedLimiter.notifySuccess();
           this.recordResponseTime(analysisDuration);
@@ -310,6 +316,7 @@ export class AIAnalysisOptimizer {
             summary: analysis.summary,
             tags: analysis.tags,
             platforms: analysis.platforms,
+            ...(recovery ? { recovery } : {}),
             duration: Date.now() - startTime,
           };
         } finally {

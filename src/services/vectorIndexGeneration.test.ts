@@ -60,6 +60,14 @@ beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('vector identity and migration', () => {
+  it('keeps the existing index compatible when the search enhancement model changes', async () => {
+    const activeIndex = await createVectorGeneration(embedding, config);
+    const updated: VectorSearchConfig = { ...config, activeIndex, searchAIConfigId: 'deepseek-search' };
+    await expect(requireCompatibleVectorIndex(embedding, updated)).resolves.toBe(activeIndex);
+    const following: VectorSearchConfig = { ...updated, searchAIConfigId: '' };
+    await expect(requireCompatibleVectorIndex(embedding, following)).resolves.toBe(activeIndex);
+  });
+
   it.each([
     { model: 'model-b' }, { apiType: 'ollama' as const }, { dimensions: 4 },
     { baseUrl: 'https://other.example/embeddings' },

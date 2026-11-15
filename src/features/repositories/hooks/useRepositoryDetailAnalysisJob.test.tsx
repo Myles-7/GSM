@@ -3,6 +3,8 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import type { AIConfig, Repository } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { analyzeRepositoryDetails } from '../../../services/repositoryDetailAnalysis';
+import { confirmRepositoryDetailRecovery, stageRepositoryDetailRecovery } from '../../../services/repositoryDetailRecovery';
+import { checkpointDesktopHomeRepository } from '../../../home/desktop';
 import { useRepositoryDetailAnalysisJob } from './useRepositoryDetailAnalysisJob';
 import { IDBFactory } from 'fake-indexeddb';
 import { applyRepositoryAnalysisAsset, deleteRepositoryAnalysisAssets, hasRepositoryAnalysisAsset, initializeRepositoryAnalysisAssets } from '../../../services/repositoryAnalysisAssets';
@@ -19,6 +21,14 @@ vi.mock('../../../store/useAppStore', async () => {
 });
 
 vi.mock('../../../services/repositoryDetailAnalysis', () => ({ analyzeRepositoryDetails: vi.fn() }));
+vi.mock('../../../services/repositoryDetailRecovery', () => ({
+  stageRepositoryDetailRecovery: vi.fn().mockResolvedValue(undefined),
+  confirmRepositoryDetailRecovery: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../../../home/desktop', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../home/desktop')>(),
+  checkpointDesktopHomeRepository: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../../services/autoSync', () => ({ forceSyncToBackend: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../../services/repositoryDetailReadme', () => ({ clearRepositoryDetailReadmeCache: vi.fn() }));
 const repos = Array.from({ length: 4 }, (_, i) => ({ id: 700 + i, full_name: `test/repo-${i}`, ai_summary: 'old', custom_description: 'manual' }) as Repository);
@@ -123,5 +133,33 @@ it('rejects late model results when the analysis is explicitly deleted while the
   expect(hasRepositoryAnalysisAsset('7', repos[0], 'zh')).toBe(false);
   expect(useAppStore.getState().repositories[0]).toMatchObject({ ai_summary: 'old', custom_description: 'manual' });
   expect(hook.result.current.failures).toHaveLength(0);
+  hook.unmount();
+});
+
+it.each([true, false])('stages the intended write and acknowledges only after the home checkpoint (%s)', async (durable) => {
+  const repo = repos[0];
+  const receipt = { requestId: 'retained', resultDigest: 'result-digest' } as Parameters<typeof stageRepositoryDetailRecovery>[1];
+  const analyze = vi.mocked(analyzeRepositoryDetails).getMockImplementation()!;
+  vi.mocked(analyzeRepositoryDetails).mockImplementationOnce(options => {
+    if (receipt) options.recovery?.onResult?.(receipt);
+    return analyze(options);
+  });
+  const order: string[] = [];
+  vi.mocked(stageRepositoryDetailRecovery).mockImplementationOnce(async (_account, _record, proposed) => {
+    order.push(useAppStore.getState().repositories[0].ai_summary === 'old' ? 'stage-before-write' : 'stage-after-write');
+    expect(proposed.ai_summary).toBe('details ' + repo.id);
+  });
+  vi.mocked(checkpointDesktopHomeRepository).mockImplementationOnce(async () => {
+    order.push(useAppStore.getState().repositories[0].ai_summary === 'details ' + repo.id ? 'checkpoint' : 'missing-write');
+    if (!durable) throw new Error('checkpoint failed');
+  });
+  vi.mocked(confirmRepositoryDetailRecovery).mockImplementationOnce(async () => { order.push('acknowledge'); });
+  const hook = renderHook(() => useRepositoryDetailAnalysisJob());
+  let running!: Promise<void>;
+  act(() => { running = hook.result.current.run([repo]); });
+  await waitFor(() => expect(analyzeRepositoryDetails).toHaveBeenCalledOnce());
+  await act(async () => { releases.splice(0).forEach(resolve => resolve()); await running; });
+  expect(order).toEqual(['stage-before-write', 'checkpoint', ...(durable ? ['acknowledge'] : [])]);
+  if (!durable) expect(confirmRepositoryDetailRecovery).not.toHaveBeenCalled();
   hook.unmount();
 });

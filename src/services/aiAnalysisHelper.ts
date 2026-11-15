@@ -4,6 +4,7 @@ import { AIService } from './aiService';
 import { backend } from './backendAdapter';
 import { shouldBypassBackend } from './routeMode';
 import { resolveCategoryAssignment, buildCategoryHints } from '../utils/categoryUtils';
+import type { AgyRecoveryOptions } from '../types/agy';
 
 export interface AIAnalysisResult {
   summary: string;
@@ -24,6 +25,7 @@ export interface AnalyzeRepositoryOptions {
   categories: Category[];
   onProgress?: (status: string) => void;
   signal?: AbortSignal;
+  recovery?: AgyRecoveryOptions;
 }
 
 export const analyzeRepository = async (options: AnalyzeRepositoryOptions): Promise<AIAnalysisResult> => {
@@ -55,7 +57,7 @@ export const analyzeRepository = async (options: AnalyzeRepositoryOptions): Prom
 
   onProgress?.('Analyzing with AI...');
   const categoryHints = buildCategoryHints(categories);
-  const analysis = await aiService.analyzeRepository(repository, readmeContent, categoryNames, categoryHints, signal);
+  const analysis = await aiService.analyzeRepository(repository, readmeContent, categoryNames, categoryHints, signal, undefined, { recovery: options.recovery });
 
   const resolvedCategory = resolveCategoryAssignment({ ...repository, ai_summary: analysis.summary } as Repository, analysis.tags, categories);
 

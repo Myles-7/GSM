@@ -150,6 +150,11 @@ async function run() {
       const app=await launch(profile);
       try {
         const page=await app.firstWindow();await page.waitForSelector('[data-selection-mode]');
+        const navigationTime=await page.evaluate(()=>performance.timeOrigin);
+        const assertLiveRenderer=async()=>{
+          const renderTime=await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>resolve(performance.timeOrigin))));
+          assert.equal(renderTime,navigationTime,'Restoring the window must preserve the active document');
+        };
         const states=[];
         const record=async name=>{states.push({name,...await app.evaluate(()=>global.gsmDesktopDiagnostic.state())});await fs.writeFile(path.join(output,'desktop.json'),JSON.stringify({states,complete:false},null,2));};
         await app.evaluate(({BrowserWindow})=>{const win=BrowserWindow.getAllWindows()[0];win.show();win.focus();});
@@ -158,13 +163,19 @@ async function run() {
         assert.equal(states.at(-1).visible,false);
         await app.evaluate(()=>global.gsmDesktopDiagnostic.clickTray());await page.waitForFunction(()=>document.hasFocus());await record('hidden-click-restored');
         assert.equal(states.at(-1).visible,true);
-        await app.evaluate(async ({BrowserWindow},file)=>{global.gsmFocusHelper=new BrowserWindow({width:300,height:200,show:true});await global.gsmFocusHelper.loadFile(file);global.gsmFocusHelper.focus();},path.join(buildDir,'seed.html'));
+        await assertLiveRenderer();
+        await app.evaluate(async ({BrowserWindow},file)=>{
+          const main=BrowserWindow.getAllWindows()[0];
+          global.gsmFocusHelper=new BrowserWindow({...main.getBounds(),show:true});
+          await global.gsmFocusHelper.loadFile(file);global.gsmFocusHelper.focus();
+        },path.join(buildDir,'seed.html'));
         await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(win=>win!==global.gsmFocusHelper).blur());
         await record('unfocused-attempt');
         if(!states.at(-1).focused){
           await app.evaluate(()=>global.gsmDesktopDiagnostic.clickTray());await record('unfocused-click-request');
           await record('unfocused-click-focused');
           assert.equal(states.at(-1).visible,true);assert.equal(states.at(-1).focused,true);
+          await assertLiveRenderer();
         }else{states.push({name:'unfocused-case',status:'not-verified',reason:'Native helper focus/blur did not reliably remove main window focus in this desktop session.'});}
         await app.evaluate(()=>global.gsmFocusHelper.destroy());
         await app.evaluate(({BrowserWindow})=>{global.gsmDesktopDiagnostic.preference('minimizeToTray',false);BrowserWindow.getAllWindows()[0].minimize();});
@@ -172,6 +183,16 @@ async function run() {
         await record('minimized');assert.equal(states.at(-1).minimized,true);
         await app.evaluate(()=>global.gsmDesktopDiagnostic.clickTray());await page.waitForFunction(()=>document.hasFocus());await record('minimized-click-restored');
         assert.equal(states.at(-1).minimized,false);assert.equal(states.at(-1).visible,true);
+        await assertLiveRenderer();
+        await app.evaluate(async ({BrowserWindow})=>{
+          global.gsmDesktopDiagnostic.preference('minimizeToTray',true);
+          const win=BrowserWindow.getAllWindows()[0];win.minimize();
+          for(let i=0;i<50&&(win.isVisible()||win.isMinimized());i++)await new Promise(resolve=>setTimeout(resolve,20));
+        });
+        await record('minimized-to-tray');assert.equal(states.at(-1).visible,false);assert.equal(states.at(-1).minimized,false);
+        await app.evaluate(()=>global.gsmDesktopDiagnostic.clickTray());await page.waitForFunction(()=>document.hasFocus());await record('tray-parked-click-restored');
+        assert.equal(states.at(-1).visible,true);assert.equal(states.at(-1).minimized,false);
+        await assertLiveRenderer();
         const query=await app.evaluate(()=>global.gsmDesktopDiagnostic.session('query-session-end'));
         assert.deepEqual(query,{prevented:false,quitting:false});
         const end=await app.evaluate(()=>global.gsmDesktopDiagnostic.session('session-end'));

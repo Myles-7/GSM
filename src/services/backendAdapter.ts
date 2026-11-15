@@ -1,6 +1,7 @@
 import { translateBackendError } from '../utils/backendErrors';
 import { normalizeBackendUrl } from '../utils/backendUrl';
 import { logger } from './logger';
+import { parseRetryAfterMs, readAIResponse } from './aiRequestError';
 
 import { Repository, Release, AIConfig, WebDAVConfig, EmbeddingConfig, VectorSearchConfig } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -358,28 +359,7 @@ class BackendAdapter {
     error.statusCode = res.status;
     if (code) error.code = code;
     // 后端透传上游 Retry-After 头后，这里解析成毫秒供限流器使用（retry-after-ms 为毫秒，retry-after 为秒）
-    if (res.status === 429) {
-      const retryAfterMsHeader = res.headers.get('retry-after-ms');
-      if (retryAfterMsHeader) {
-        const v = Number(retryAfterMsHeader);
-        if (Number.isFinite(v) && v > 0) error.retryAfterMs = Math.round(v);
-      } else {
-        const retryAfter = res.headers.get('retry-after');
-        if (retryAfter) {
-          // Retry-After 可能是「秒数」或「HTTP-date」；数值解析失败时按日期计算剩余时长
-          const numeric = Number(retryAfter);
-          if (Number.isFinite(numeric) && numeric > 0) {
-            error.retryAfterMs = Math.round(numeric * 1000);
-          } else {
-            const parsedDate = Date.parse(retryAfter);
-            if (!Number.isNaN(parsedDate)) {
-              const remaining = parsedDate - Date.now();
-              if (remaining > 0) error.retryAfterMs = Math.round(remaining);
-            }
-          }
-        }
-      }
-    }
+    if (res.status === 429) error.retryAfterMs = parseRetryAfterMs(res);
     throw error;
   }
 
@@ -591,7 +571,7 @@ class BackendAdapter {
       signal,
     }, 600000);
     if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
-    return res.json();
+    return readAIResponse(res);
   }
 
   async proxyAIRequestWithConfig(aiConfig: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string }, body: object, signal?: AbortSignal): Promise<unknown> {
@@ -604,7 +584,7 @@ class BackendAdapter {
       signal,
     }, 600000);
     if (!res.ok) await this.throwTranslatedError(res, 'AI proxy error');
-    return res.json();
+    return readAIResponse(res);
   }
 
   async proxyAIRequestWithFallback(configId: string, aiConfig: { apiType?: string; baseUrl: string; apiKey: string; model: string; reasoningEffort?: string }, body: object, signal?: AbortSignal): Promise<unknown> {
@@ -619,7 +599,7 @@ class BackendAdapter {
           body: JSON.stringify({ configId, body }),
           signal,
         }, 600000);
-        if (res.ok) return res.json();
+        if (res.ok) return readAIResponse(res);
         await this.throwTranslatedError(res, 'AI proxy error');
       } catch (err) {
         // A provider 404 is not a configuration lookup miss. Resending it can

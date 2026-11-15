@@ -246,6 +246,7 @@
     "download-failed": "下載失敗"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "所選搜尋 AI 設定無法使用，將略過 AI 增強並繼續向量搜尋。",
     "ai-semantic-analysis": "AI 語意分析…",
     "ai-selecting-relevant-repositories": "AI 精選相關倉庫…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AI 請求失敗，已回退本地詞法搜索",

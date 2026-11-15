@@ -10,6 +10,9 @@ import { useDialog } from '../../../hooks/useDialog';
 import { applyDiscoveryAnalysisFailure, applyDiscoveryAnalysisSuccess } from '../application/discoveryRepoPatches';
 import { applyRepositoryAnalysisAsset, assertRepositoryAnalysisAssetWrite, beginRepositoryAnalysisAssetWrite } from '../../../services/repositoryAnalysisAssets';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
+import { commitAgyRecovery } from '../../../services/agyClient';
+import type { AgyRecoveryRecord } from '../../../types/agy';
+import { flushAppStorePersistence } from '../../../store/persistence/storage';
 
 export interface UseDiscoveryRepoActionsOptions {
   repo: DiscoveryRepo;
@@ -208,6 +211,7 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
     try {
       const assetVersion = accountId === undefined ? undefined : await beginRepositoryAnalysisAssetWrite(String(accountId), repo.id);
       const allCategories = getAllCategories(customCategories, language);
+      let recoveryRecord: AgyRecoveryRecord | undefined;
 
       const result = await analyzeRepository({
         repository: repo,
@@ -216,6 +220,10 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
         language,
         categories: allCategories,
         signal: controller.signal,
+        recovery: {
+          deferAck: true,
+          onResult: record => { recoveryRecord = record; },
+        },
       });
       if (assetVersion) await assertRepositoryAnalysisAssetWrite(assetVersion);
 
@@ -236,6 +244,11 @@ export const useDiscoveryRepoActions = ({ repo }: UseDiscoveryRepoActionsOptions
         ai_summary: updatedRepo.ai_summary, ai_tags: updatedRepo.ai_tags, ai_platforms: updatedRepo.ai_platforms,
         analyzed_at: updatedRepo.analyzed_at, analysis_failed: false, analysis_error: undefined,
       }));
+      await flushAppStorePersistence();
+      await commitAgyRecovery(String(accountId ?? ''), recoveryRecord, {
+        feature: 'repository-summary', entityType: 'discovery-repository', entityId: String(repo.id),
+        resultDigest: recoveryRecord?.resultDigest, savedAt: new Date().toISOString(),
+      });
 
       if (onAnalyzed) {
         onAnalyzed(updatedRepo);

@@ -2,7 +2,7 @@ import { readStarSyncCheckpoint, writeStarSyncCheckpoint, clearStarSyncCheckpoin
 import { useT } from "../../../i18n/useT";
 import { useCallback, useEffect, useMemo, useState, type MutableRefObject, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { Category, Repository } from '../../../types';
+import type { Category, Repository, VectorSearchConfig } from '../../../types';
 import { useAppStore, getAllCategories } from '../../../store/useAppStore';
 import { AIService, isAbortError } from '../../../services/aiService';
 import { EmbeddingClient, VectorSearchService } from '../../../services/vectorSearchService';
@@ -18,10 +18,19 @@ import { isReservedCategoryName } from '../../../utils/categoryUtils';
 import { performBasicTextSearch } from '../../../utils/repoSearch';
 import { inspectRepositoryIdentities, preserveUnconfirmedLegacyRepositories } from '../../../utils/repositoryIdentity';
 import { submittedRepositoryCandidates } from '../../../utils/submittedRepositorySearch';
+import { isAIConfigAvailable } from '../../../utils/aiConfig';
+
+// 搜索会话仅由影响检索语义的向量配置字段决定：索引发布（activeIndex/embeddingFormatVersion）、
+// 索引内容设置（indexMode/readmeMaxChars）的变化不应清掉用户正在查看的搜索结果。
+const vectorSearchSessionKey = (config: VectorSearchConfig) => [
+  config.enabled, config.workerUrl, config.authToken, config.embeddingConfigId,
+  config.searchThreshold, config.searchTopK, config.enableHyDE, config.enableReranking,
+  config.searchAIConfigId,
+].join('|');
 
 const searchIdentity = () => {
   const state = useAppStore.getState();
-  return [state.user?.id, state.githubToken, state.activeAIConfig, state.aiConfigs, state.vectorSearchConfig, state.embeddingConfigs, state.language] as const;
+  return [state.user?.id, state.githubToken, state.activeAIConfig, state.aiConfigs, state.embeddingConfigs, vectorSearchSessionKey(state.vectorSearchConfig), state.language] as const;
 };
 interface SubmittedSearch {
   query: string;
@@ -260,9 +269,20 @@ export const useSearchActions = (): SearchActions => {
   const skipNextTextSearchRef = useRef(false);
   // 当前在途 AI 搜索的控制器：新搜索启动时中止旧请求（超代语义）
   const aiSearchAbortRef = useRef<AbortController | null>(null);
+  // HyDE latency is scoped to the active model/config identity. A timeout is
+  // still a fast local fallback, but its budget grows for the next attempt so
+  // a consistently slow provider is not doomed to fail at the same 5s mark.
+  const hydeLatencyRef = useRef<number | null>(null);
+  const hydeTimeoutRef = useRef(5000);
   const submittedRef = useRef<SubmittedSearch | null>(null);
   const sortModeRef = useRef<SubmittedSearch['sortMode']>('relevance');
   const [submittedRevision, setSubmittedRevision] = useState(0);
+  const vectorSearchSession = vectorSearchSessionKey(vectorSearchConfig);
+  const aiConfigIdentity = aiConfigs.map(config => [config.id, config.provider, config.baseUrl, config.model, config.apiType,
+    'agyEffort' in config ? config.agyEffort : '', 'agyMode' in config ? config.agyMode : '',
+    'agyFeatureOverrides' in config ? JSON.stringify(config.agyFeatureOverrides) : '', config.reasoningEffort].join(':')).join('|');
+  const embeddingConfigIdentity = embeddingConfigs.map(config => [config.id, config.baseUrl, config.model, config.apiType, config.dimensions].join(':')).join('|');
+  const searchIdentityKey = `${githubToken ?? ''}:${user?.id ?? ''}:${activeAIConfig}:${aiConfigIdentity}:${vectorSearchSession}:${embeddingConfigIdentity}:${language}`;
   const clearSubmittedSearch = useCallback(() => {
     aiSearchAbortRef.current?.abort();
     vectorScoreMapRef.current = null;
@@ -295,16 +315,18 @@ export const useSearchActions = (): SearchActions => {
   }, [applySubmittedSearch]);
   useEffect(() => {
     clearSubmittedSearch();
+    hydeLatencyRef.current = null;
+    hydeTimeoutRef.current = 5000;
     setIsSearching(false);
     setSearchPhase(null);
     return () => {
       aiSearchAbortRef.current?.abort();
       aiSearchAbortRef.current = null;
     };
-  }, [githubToken, user?.id, activeAIConfig, aiConfigs, vectorSearchConfig, embeddingConfigs, language, clearSubmittedSearch]);
+  }, [searchIdentityKey, clearSubmittedSearch]);
   const t = useT('repositories');
   const [searchReport, setSearchReport] = useState<SearchActions['searchReport']>(null);
-  useEffect(() => { setSearchReport(null); }, [githubToken, user?.id, activeAIConfig, aiConfigs, vectorSearchConfig, embeddingConfigs, language]);
+  useEffect(() => { setSearchReport(null); }, [searchIdentityKey]);
 
   const keywordSearch = useCallback(async (
     query: string,
@@ -319,7 +341,8 @@ export const useSearchActions = (): SearchActions => {
       const current = useAppStore.getState();
       if (current.user?.id !== initial.user?.id || current.githubToken !== initial.githubToken
           || current.activeAIConfig !== initial.activeAIConfig || current.aiConfigs !== initial.aiConfigs
-          || current.vectorSearchConfig !== initial.vectorSearchConfig || current.embeddingConfigs !== initial.embeddingConfigs
+          || vectorSearchSessionKey(current.vectorSearchConfig) !== vectorSearchSessionKey(initial.vectorSearchConfig)
+          || current.embeddingConfigs !== initial.embeddingConfigs
           || current.language !== initial.language) throw new DOMException('Stale search', 'AbortError');
     };
     check();
@@ -398,7 +421,15 @@ export const useSearchActions = (): SearchActions => {
     const controller = new AbortController();
     aiSearchAbortRef.current = controller;
     const initial = { ...useAppStore.getState() };
-    const searchConfig = initial.aiConfigs.find(item => item.id === initial.activeAIConfig);
+    const vectorConfig = initial.vectorSearchConfig;
+    const selectedSearchConfig = initial.aiConfigs.find(item => item.id === (vectorConfig.searchAIConfigId || initial.activeAIConfig));
+    // An explicit selection must never silently fall back to another provider.
+    const vectorAIConfig = vectorConfig.searchAIConfigId && !isAIConfigAvailable(selectedSearchConfig) ? undefined : selectedSearchConfig;
+    const vectorReady = vectorConfig.enabled && vectorConfig.workerUrl && initial.embeddingConfigs.some(item => item.id === vectorConfig.embeddingConfigId);
+    const enhancementsEnabled = vectorConfig.enableHyDE !== false || vectorConfig.enableReranking !== false;
+    const searchConfig = vectorReady
+      ? (enhancementsEnabled ? vectorAIConfig : undefined)
+      : initial.aiConfigs.find(item => item.id === initial.activeAIConfig);
     const task = aiTaskJournal.begin(String(initial.user?.id ?? ''), 'search', [{ id: 'search', label: initial.language.startsWith('zh') ? '仓库搜索' : 'Repository search' }], searchConfig?.id,
       undefined, { config: searchConfig ? taskConfigSnapshot(searchConfig, 'repository-rerank') : undefined, target: { view: 'repositories' } });
     bindTaskSignal(controller.signal, task); task.bind({ stop: () => controller.abort() }); task.item('search', 'running');
@@ -408,7 +439,7 @@ export const useSearchActions = (): SearchActions => {
       if (aiSearchAbortRef.current !== controller || current.user?.id !== initial.user?.id
           || current.githubToken !== initial.githubToken || current.activeAIConfig !== initial.activeAIConfig
           || current.aiConfigs !== initial.aiConfigs
-          || current.vectorSearchConfig !== initial.vectorSearchConfig
+          || vectorSearchSessionKey(current.vectorSearchConfig) !== vectorSearchSessionKey(initial.vectorSearchConfig)
           || current.embeddingConfigs !== initial.embeddingConfigs || current.language !== initial.language) {
         controller.abort();
         throw new DOMException('Stale search', 'AbortError');
@@ -419,6 +450,7 @@ export const useSearchActions = (): SearchActions => {
     setSearchPhase(null);
     setSearchReport(null);
     vectorScoreMapRef.current = null;
+    let hydeFallback: 'hyde-timeout' | 'hyde-provider-unavailable' | 'hyde-skipped' | undefined;
 
     try {
       // ====== 向量搜索分支 ======
@@ -434,36 +466,62 @@ export const useSearchActions = (): SearchActions => {
           await vectorService.prepareQuery(controller.signal);
           check();
 
-          // 1. HyDE 查询预处理：用 LLM 生成理想仓库描述再嵌入（可选，5 秒超时降级）
+          const unavailableWarning = vsConfig.searchAIConfigId && !vectorAIConfig && enhancementsEnabled
+            ? t('useSearchActions.search-ai-unavailable') : undefined;
+          if (unavailableWarning) toast(unavailableWarning, 'warning');
+
+          // 1. HyDE 查询预处理：用 LLM 生成理想仓库描述再嵌入（可选，自适应超时降级）
           let embeddingQuery = query;
-          const hydeConfig = aiConfigs.find(config => config.id === activeAIConfig);
+          let hydeStatus: 'timeout' | 'provider-unavailable' | 'skipped' | undefined;
+          const hydeConfig = vectorAIConfig;
           if (vsConfig.enableHyDE !== false && hydeConfig) {
             const hydeAbort = new AbortController();
             inheritTaskSignal(controller.signal, hydeAbort.signal);
             const abortHyde = () => hydeAbort.abort();
             controller.signal.addEventListener('abort', abortHyde, { once: true });
             let hydeTimer: ReturnType<typeof setTimeout> | null = null;
+            let hydeSettled = false;
             try {
               setSearchPhase(t('useSearchActions.ai-analyzing-query'));
               const hydeService = new AIService(hydeConfig, language);
+              const startedAt = Date.now();
+              const budget = Math.min(15000, Math.max(5000, hydeTimeoutRef.current));
               embeddingQuery = await Promise.race([
-                hydeService.generateHyDEQuery(query, hydeAbort.signal).catch(() => query),
+                hydeService.generateHyDEQuery(query, hydeAbort.signal).then(
+                  (expanded) => {
+                    if (hydeSettled) return query;
+                    hydeSettled = true;
+                    const elapsed = Date.now() - startedAt;
+                    hydeLatencyRef.current = elapsed;
+                    hydeTimeoutRef.current = Math.min(15000, Math.max(5000, elapsed * 2 + 1000));
+                    return expanded;
+                  },
+                  () => { if (!hydeSettled) { hydeSettled = true; hydeStatus = 'provider-unavailable'; } return query; },
+                ),
                 new Promise<string>((resolve) => {
                   hydeTimer = setTimeout(() => {
+                    if (hydeSettled) return;
+                    hydeSettled = true;
+                    hydeStatus = 'timeout';
+                    hydeTimeoutRef.current = Math.min(15000, Math.max(5000, Math.ceil(hydeTimeoutRef.current * 1.5)));
                     hydeAbort.abort();
                     resolve(query);
-                  }, 5000);
+                  }, budget);
                 }),
               ]);
               check();
             } catch (hydeError) {
               console.warn('HyDE failed, using raw query:', hydeError);
+              hydeStatus = 'provider-unavailable';
               embeddingQuery = query;
             } finally {
               if (hydeTimer) clearTimeout(hydeTimer);
               controller.signal.removeEventListener('abort', abortHyde);
             }
           }
+          hydeFallback = hydeStatus === 'timeout' ? 'hyde-timeout'
+            : hydeStatus === 'provider-unavailable' ? 'hyde-provider-unavailable'
+              : hydeStatus === 'skipped' ? 'hyde-skipped' : undefined;
 
           // 2. 前端调用 Embedding API 生成查询向量
           check();
@@ -497,7 +555,7 @@ export const useSearchActions = (): SearchActions => {
                 // 4. AI 语义重排序：用 LLM 对向量搜索结果做真正的语义排序
                 let reranked = scoredRepos;
                 let rerankSucceeded = false;
-                const rerankConfig = aiConfigs.find(config => config.id === activeAIConfig);
+                const rerankConfig = vectorAIConfig;
                 if (rerankConfig && vsConfig.enableReranking !== false) {
                   try {
                     setSearchPhase(t('useSearchActions.ai-semantic-reranking'));
@@ -520,8 +578,8 @@ export const useSearchActions = (): SearchActions => {
                 skipNextTextSearchRef.current = true;
                 setSearchResults(finalFiltered);
                 setSearchReport({ query, mode: 'vector', total: reranked.length, count: finalFiltered.length,
-                  fallback: rerankConfig && vsConfig.enableReranking !== false && !rerankSucceeded
-                    ? 'rerank-unavailable' : undefined });
+                  fallback: unavailableWarning ?? (rerankConfig && vsConfig.enableReranking !== false && !rerankSucceeded
+                    ? 'rerank-unavailable' : hydeFallback) });
                 setSearchFilters({ query });
                 return;
               }
@@ -535,13 +593,18 @@ export const useSearchActions = (): SearchActions => {
           if (vectorError instanceof VectorIndexCompatibilityError) toast(vectorError.message, 'error');
           setSearchReport({ query, mode: 'keyword', total: repositories.length, count: 0,
             fallback: vectorError instanceof VectorIndexCompatibilityError ? vectorError.message : 'vector-unavailable' });
+          hydeFallback = undefined;
           console.warn('❌ Vector search failed, falling back to keyword search:', vectorError);
         }
       }
       // ====== 向量搜索分支结束 ======
 
       check();
+      const keywordConfig = initial.aiConfigs.find(item => item.id === initial.activeAIConfig);
+      aiTaskJournal.patch(task.id, { configId: keywordConfig?.id,
+        config: keywordConfig ? taskConfigSnapshot(keywordConfig, 'repository-rerank') : undefined });
       await keywordSearch(query, applyFilters, { signal: controller.signal });
+      if (hydeFallback) setSearchReport(previous => previous?.query === query ? { ...previous, fallback: hydeFallback } : previous);
     } catch (error) {
       // 取消不是失败：静默结束当前搜索（不产出结果），不当作可恢复的 AI 失败
       if (!isAbortError(error)) task.item('search', 'failed', error);
@@ -561,7 +624,7 @@ export const useSearchActions = (): SearchActions => {
         setSearchPhase(null);
       }
     }
-  }, [repositories, aiConfigs, activeAIConfig, language, setSearchResults, setSearchFilters, keywordSearch, t, toast, commitSubmittedSearch, clearSubmittedSearch]);
+  }, [repositories, language, setSearchResults, setSearchFilters, keywordSearch, t, toast, commitSubmittedSearch, clearSubmittedSearch]);
 
   const starSyncAbort=useRef<AbortController|null>(null);
   useEffect(()=>()=>{starSyncAbort.current?.abort();},[githubToken,user?.id]);

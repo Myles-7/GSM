@@ -3,8 +3,8 @@
 
 
 import { useT } from '../i18n/useT';
-import React, { useState, useMemo } from 'react';
-import { Settings, Calendar, Search, Moon, Sun, LogOut, Compass, GitFork, FileCode2, Menu, X, Bot } from 'lucide-react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { Settings, Calendar, Search, Moon, Sun, LogOut, Compass, GitFork, FileCode2, Menu, X, Bot, MoreHorizontal } from 'lucide-react';
 import { Button } from './ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -13,6 +13,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useDialog } from '../hooks/useDialog';
 import { HeaderMenuId, AppState } from '../types';
 import { PageTranslationButton } from './PageTranslationButton';
+
+const BRAND_NAME = 'GitHub Stars Manager';
 
 const MENU_META: Record<HeaderMenuId, {
   icon: React.ComponentType<{ className?: string }>;
@@ -53,6 +55,9 @@ export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel })
   const { confirm } = useDialog();
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [navigationOverflows, setNavigationOverflows] = useState(false);
+  const navigationRef = useRef<HTMLElement>(null);
+  const navigationItemsRef = useRef<HTMLDivElement>(null);
 
   const visibleMenus = useMemo(() =>
     [...headerMenuConfig]
@@ -63,24 +68,46 @@ export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel })
 
   const t = useT('app');
 
+  useEffect(() => {
+    const navigation = navigationRef.current;
+    const items = navigationItemsRef.current;
+    if (!navigation || !items) return;
+
+    // Compare against the entire navigation width so showing the overflow
+    // trigger cannot itself keep the trigger visible after the window grows.
+    const updateOverflow = () => {
+      setNavigationOverflows(navigation.clientWidth > 0 && items.scrollWidth > navigation.clientWidth + 1);
+    };
+    updateOverflow();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateOverflow);
+    observer?.observe(navigation);
+    observer?.observe(items);
+    window.addEventListener('resize', updateOverflow);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateOverflow);
+    };
+  }, [visibleMenus, t]);
+
   return (
     <header className="linear-header sticky top-0 z-50 hd-drag lg:hd-drag relative">
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8">
         <div className="linear-header-inner flex h-14 items-center justify-between">
           {/* Logo and Title */}
-          <div className="flex min-w-0 items-center space-x-3">
+          <div className="flex min-w-0 items-center space-x-3 lg:max-w-[11rem] lg:shrink-0">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-card">
               <img 
                 src="./icon.png" 
-                alt="GitHub Stars Manager" 
+                alt={BRAND_NAME}
                 className="h-full w-full object-cover"
               />
             </div>
             <div className="min-w-0 hidden sm:block">
-              <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">
-                GitHub Stars Manager
+              <h1 title={BRAND_NAME} aria-label={BRAND_NAME} className="truncate text-sm font-semibold tracking-tight text-foreground">
+                <span className="lg:hidden">{BRAND_NAME}</span>
+                <span className="hidden lg:inline" aria-hidden="true">GitHub Stars</span>
               </h1>
-              <p className="truncate text-xs text-muted-foreground">
+              <p className="truncate text-xs text-muted-foreground lg:hidden">
                 AI-powered repository management
               </p>
             </div>
@@ -92,29 +119,58 @@ export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel })
           </div>
 
           {/* Navigation - Desktop & Tablet (≥768px) */}
-          <nav className="hidden items-center gap-1 hd-btns md:flex lg:hd-btns">
-            {visibleMenus.map(menuItem => {
-                        const meta = MENU_META[menuItem.id];
-              const Icon = meta.icon;
-              const label = t(`header.menu-${menuItem.id}`);
-              const isActive = currentView === menuItem.id;
-              return (
-                <Button
-                  key={menuItem.id}
-                  type="button"
-                  variant={isActive ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => setCurrentView(menuItem.id as AppState['currentView'])}
-                  aria-pressed={isActive}
-                  title={label}
-                  aria-label={label}
-                  className="whitespace-nowrap xl:px-3"
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span className="hidden xl:inline">{label}</span>
-                </Button>
-              );
-            })}
+          <nav ref={navigationRef} aria-label={t('header.menu')} className="hidden min-w-0 flex-1 items-center hd-btns md:flex lg:mx-2 lg:hd-btns">
+            <div className="min-w-0 flex-1 overflow-x-auto scrollbar-hide">
+              <div ref={navigationItemsRef} className="mx-auto flex w-max items-center gap-1">
+                {visibleMenus.map(menuItem => {
+                  const Icon = MENU_META[menuItem.id].icon;
+                  const label = t(`header.menu-${menuItem.id}`);
+                  const isActive = currentView === menuItem.id;
+                  return (
+                    <Button
+                      key={menuItem.id}
+                      type="button"
+                      variant={isActive ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setCurrentView(menuItem.id as AppState['currentView'])}
+                      aria-pressed={isActive}
+                      title={label}
+                      aria-label={label}
+                      className="whitespace-nowrap lg:px-1.5 xl:px-2"
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="hidden lg:inline">{label}</span>
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+            {navigationOverflows && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t('header.menu')} title={t('header.menu')}>
+                    <MoreHorizontal className="h-5 w-5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 max-w-[calc(100vw-2rem)]">
+                  {visibleMenus.map(menuItem => {
+                    const Icon = MENU_META[menuItem.id].icon;
+                    const isActive = currentView === menuItem.id;
+                    return (
+                      <DropdownMenuItem
+                        key={menuItem.id}
+                        onSelect={() => setCurrentView(menuItem.id as AppState['currentView'])}
+                        aria-current={isActive ? 'page' : undefined}
+                        className={isActive ? 'bg-muted dark:bg-accent' : undefined}
+                      >
+                        <Icon className="mr-3 h-4 w-4 shrink-0" />
+                        <span className="min-w-0 [overflow-wrap:anywhere]">{t(`header.menu-${menuItem.id}`)}</span>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </nav>
 
           {/* Mobile Dropdown Menu (<768px) */}
@@ -154,7 +210,7 @@ export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel })
           </DropdownMenu>
 
           {/* User Actions */}
-          <div className="flex items-center gap-2 sm:gap-3 hd-btns lg:hd-btns">
+          <div className="flex items-center gap-2 sm:gap-3 hd-btns lg:shrink-0 lg:hd-btns">
             {taskPanel}
             <PageTranslationButton />
             {/* Theme Toggle */}
@@ -181,7 +237,7 @@ export const Header: React.FC<{ taskPanel?: React.ReactNode }> = ({ taskPanel })
                   alt={user.name || user.login}
                   className="w-8 h-8 rounded-full"
                 />
-                <div className="min-w-0 hidden sm:block">
+                <div className="min-w-0 hidden sm:block lg:max-w-24">
                   <p className="truncate text-sm font-medium text-foreground">
                     {user.name || user.login}
                   </p>

@@ -63,6 +63,35 @@ describe('GlobalChatHistorySheet', () => {
     expect(onSelectSession).toHaveBeenCalledWith(repositories[1], 's2');
   });
 
+  it('opens a removed repository by the original saved session', async () => {
+    const history = createSession('unstarred', 9, 'owner/previously-starred', '2026-08-24T00:00:00.000Z');
+    await repositoryChatStorage.saveSession(history);
+    const onSelectSession = vi.fn();
+    render(<GlobalChatHistorySheet isOpen repositories={repositories} onClose={() => {}} onSelectSession={onSelectSession} />);
+    fireEvent.click(await screen.findByText('title-unstarred'));
+    expect(onSelectSession).toHaveBeenCalledWith(null, history.id, expect.objectContaining({
+      id: history.id, ownerId: history.ownerId, repoId: history.repoId, sourceRefSha: history.sourceRefSha,
+    }));
+  });
+
+  it('groups by date, displays the next page, and searches the entire owned history', async () => {
+    const history = Array.from({ length: 31 }, (_, index) =>
+      createSession('paged-' + index, 1, 'owner/repo-one', index === 30 ? '2026-08-25T00:00:00.000Z' : '2026-08-26T00:00:00.000Z'));
+    for (const session of history) await repositoryChatStorage.saveSession(session);
+    const foreign = { ...history[0], id: 'foreign', title: 'Foreign account', ownerId: '8' };
+    await repositoryChatStorage.saveSession(foreign);
+
+    render(<GlobalChatHistorySheet isOpen repositories={repositories} onClose={() => {}} onSelectSession={() => {}} />);
+    const more = await screen.findByRole('button', { name: '加载更多会话' });
+    expect(screen.queryByText('title-paged-30')).toBeNull();
+    fireEvent.click(more);
+    expect(screen.getByText('title-paged-30')).toBeVisible();
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText('搜索问答历史'), { target: { value: 'paged-30' } });
+    expect(screen.getByText('title-paged-30')).toBeVisible();
+    expect(screen.queryByText('Foreign account')).toBeNull();
+  });
+
   it('删除会话后从列表移除', async () => {    await repositoryChatStorage.saveSession(createSession('doomed', 1, 'owner/repo-one', '2026-08-26T00:00:00.000Z'));
 
     render(<GlobalChatHistorySheet isOpen repositories={repositories} onClose={() => {}} onSelectSession={() => {}} />);

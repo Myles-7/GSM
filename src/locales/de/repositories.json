@@ -246,6 +246,7 @@
     "download-failed": "Der Download ist fehlgeschlagen"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "Die ausgewählte Such-KI ist nicht verfügbar. KI-Erweiterungen werden übersprungen; die Vektorsuche bleibt verfügbar.",
     "ai-semantic-analysis": "Semantische KI-Analyse…",
     "ai-selecting-relevant-repositories": "KI wählte zugehöriges Lager aus…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AI-Anfrage fehlgeschlagen, lokale lexikalische Suche wurde zurückgesetzt",

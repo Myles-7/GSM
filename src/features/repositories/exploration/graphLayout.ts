@@ -81,19 +81,22 @@ export function computeLayerSatellites(layout: MapLayout, scene: ExplorationScen
     const ids = (child.previewIds ?? []).filter(id => !used.has(id)).slice(0, maxPerNode);
     if (!ids.length) continue;
     const baseAngle = Math.atan2(child.y - center.y, child.x - center.x);
+    const radialX = Math.cos(baseAngle), radialY = Math.sin(baseAngle);
+    const tangentX = -radialY, tangentY = radialX;
+    // Neighbouring 136 × 32 preview chips need a gap along at least one axis.
+    const spacing = Math.min(144 / Math.max(.001, Math.abs(tangentX)), 40 / Math.max(.001, Math.abs(tangentY)));
     ids.forEach((repoId, index) => {
       used.add(repoId);
-      const spread = (index - (ids.length - 1) / 2) * 0.42;
-      const angle = baseAngle + spread;
-      const dist = 148;
+      const offset = (index - (ids.length - 1) / 2) * spacing;
+      const dist = 180;
       const res = resultMap.get(repoId);
       satellites.push({
         id: `sat-${child.id}-${repoId}`,
         parentId: child.id,
         repositoryId: repoId,
         label: names.get(repoId) ?? String(repoId),
-        x: child.x + Math.cos(angle) * dist,
-        y: child.y + Math.sin(angle) * dist,
+        x: child.x + radialX * dist + tangentX * offset,
+        y: child.y + radialY * dist + tangentY * offset,
         color: child.color,
         kind: res?.kind ?? child.kind,
         verified: res?.verified,

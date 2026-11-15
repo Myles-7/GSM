@@ -3,7 +3,7 @@ import type { AppLanguage } from '../i18n/languages';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowDown, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, CircleDot, Copy, ExternalLink, Gauge, History, Loader2, MessageSquareText, Plus, RotateCcw, Send, Square } from 'lucide-react';
 import type { Repository } from '../types';
-import type { RepositoryChatMessage, RepositoryChatTaskDepth, RepositoryChatToolEvent, ToolEvidence } from '../types/repositoryChat';
+import type { RepositoryChatMessage, RepositoryChatSession, RepositoryChatTaskDepth, RepositoryChatToolEvent, ToolEvidence } from '../types/repositoryChat';
 import { TASK_DEPTH_PRESETS } from '../types/repositoryChat';
 import { useAppStore } from '../store/useAppStore';
 import { useDialog } from '../hooks/useDialog';
@@ -11,12 +11,14 @@ import { safeWriteText } from '../utils/clipboardUtils';
 import { useShallow } from 'zustand/react/shallow';
 import { useRepositoryChatSessions } from '../features/repository-chat/hooks/useRepositoryChatSessions';
 import { useRepositoryChat } from '../features/repository-chat/hooks/useRepositoryChat';
+import { useArchivedRepositoryChat } from '../features/repository-chat/hooks/useArchivedRepositoryChat';
 import { useTurnStatusAnnouncement } from '../features/repository-chat/hooks/useTurnStatusAnnouncement';
 import { RepositoryChatHistoryPanel } from './RepositoryChatHistoryPanel';
 import MarkdownRenderer from './MarkdownRenderer';
 import { AnswerReviewStatus } from './AnswerReviewStatus';
 import { CitationBadge } from '../features/repository-chat/components/CitationBadge';
-import { resolveCitation, stripCitationsForCopy } from '../features/repository-chat/utils/citationUtils';
+import { citationAnchorUrl, citationExcerptPreview, resolveCitation, stripCitationsForCopy } from '../features/repository-chat/utils/citationUtils';
+import { stabilizeStreamingMarkdown } from '../features/repository-chat/utils/streamingMarkdown';
 import { Button } from './ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet';
 import { Textarea } from './ui/textarea';
@@ -26,7 +28,8 @@ interface RepositoryChatSheetProps {
   isOpen: boolean;
   onClose: () => void;
   onCloseAutoFocus?: () => void;
-  repository: Repository;
+  repository: Repository | null;
+  historySession?: RepositoryChatSession | null;
   /** 从全局问答历史进入时，直接选中该会话。 */
   initialSessionId?: string | null;
   /** 从全局问答历史进入时，返回历史列表。 */
@@ -153,7 +156,8 @@ const AssistantMessageBody = React.memo<{ content: string; evidenceIds: string[]
     if (!resolved) return null;
     return <CitationBadge target={resolved} language={language} />;
   }, [evidenceIds, evidenceById, language]);
-  return <MarkdownRenderer content={content} shouldRender breaks isGenerating={generating} fontSize="small" className="repository-chat-markdown" renderInlineCode={renderInlineCode} />;
+  const markdown = generating ? stabilizeStreamingMarkdown(content) : content;
+  return <MarkdownRenderer content={markdown} shouldRender breaks isGenerating={generating} fontSize="small" className="repository-chat-markdown" renderInlineCode={renderInlineCode} />;
 });
 
 const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
@@ -161,11 +165,13 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   onClose,
   onCloseAutoFocus,
   repository,
+  historySession,
   initialSessionId,
   onBack,
 }) => {
-  const { language, setCurrentView, repositoryChatSettings, setRepositoryChatSettings } = useAppStore(useShallow((state) => ({
+  const { language, ownerId, setCurrentView, repositoryChatSettings, setRepositoryChatSettings } = useAppStore(useShallow((state) => ({
     language: state.language,
+    ownerId: String(state.user?.id ?? ''),
     setCurrentView: state.setCurrentView,
     repositoryChatSettings: state.repositoryChatSettings,
     setRepositoryChatSettings: state.setRepositoryChatSettings,
@@ -191,9 +197,13 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
     deleteSession,
     updateSession,
     setMessages,
-  } = useRepositoryChatSessions({ repository, language });
+  } = useRepositoryChatSessions({ repository, language, historyRepositoryId: historySession?.repoId, initialSessionId });
+  const isArchivedConversation = !repository && Boolean(historySession);
+  const archivedAccess = useArchivedRepositoryChat(isOpen && isArchivedConversation ? activeSession : null);
+  const chatRepository = repository ?? archivedAccess.repository;
+  const repositoryId = repository?.id ?? historySession?.repoId;
   const {
-    canChat,
+    canChat: providerReady,
     unavailableReason,
     isSending,
     error: chatError,
@@ -204,12 +214,13 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
     retry,
     regenerate,
   } = useRepositoryChat({
-    repository,
+    repository: chatRepository,
     session: activeSession,
     messages,
     onMessagesChange: setMessages,
     onSessionChange: updateSession,
   });
+  const canChat = providerReady && Boolean(chatRepository);
 
   useEffect(() => {
     if (!isOpen) {
@@ -230,7 +241,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   }, [isOpen, repository]);
 
   // 吸底滚动：流式输出期间自动跟随；用户向上滚动后暂停，可点按钮回到底部。
-  useEffect(() => { followRef.current = true; setIsPinnedToBottom(true); }, [activeSession?.id, repository.id]);
+  useEffect(() => { followRef.current = true; setIsPinnedToBottom(true); }, [activeSession?.id, repositoryId]);
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined' || !messageContent) return;
     const observer = new ResizeObserver(() => {
@@ -262,26 +273,10 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   }, []);
 
   const handleCreateSession = () => {
-    if (isLoading || isSending) return;
+    if (isLoading || isSending || !repository) return;
     void createSession();
     setShowHistory(false);
   };
-
-  // 从全局问答历史进入：会话列表就绪后直接选中目标会话。
-  const initialSessionAppliedRef = useRef<string | null>(null);
-  useEffect(() => {
-    initialSessionAppliedRef.current = null;
-  }, [repository.id]);
-  useEffect(() => {
-    if (!initialSessionId || initialSessionAppliedRef.current === initialSessionId || isLoading) return;
-    if (!sessions.some((session) => session.id === initialSessionId)) return;
-    if (activeSession?.id === initialSessionId) {
-      initialSessionAppliedRef.current = initialSessionId;
-      return;
-    }
-    initialSessionAppliedRef.current = initialSessionId;
-    void selectSession(initialSessionId);
-  }, [initialSessionId, sessions, isLoading, activeSession?.id, selectSession]);
 
   const navigateToAiSettings = () => {
     if (repository) {
@@ -295,7 +290,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const question = draft.trim();
-    if (!question || !canChat || !activeSession || isSending) return;
+    if (!question || !canChat || !activeSession || isLoading || isSending) return;
     setDraft('');
     setIsPinnedToBottom(true);
     void send(question);
@@ -324,7 +319,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
   const depth = depthMeta(repositoryChatSettings.taskDepth, language);
 
   return (
-    <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
+    <Sheet open={isOpen && (!historySession || historySession.ownerId === ownerId)} onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="right"
         className="w-[min(100vw-1rem,48rem)] sm:max-w-none"
@@ -354,14 +349,14 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
             </div>
           )}
           <div className="flex min-w-0 items-start gap-3">
-            <img src={repository.owner.avatar_url} alt="" className="h-9 w-9 shrink-0 rounded-md border border-border" />
+            {chatRepository?.owner.avatar_url && <img src={chatRepository.owner.avatar_url} alt="" className="h-9 w-9 shrink-0 rounded-md border border-border" />}
             <div className="min-w-0 flex-1">
               <SheetTitle className="flex items-center gap-2 text-base">
                 <MessageSquareText className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="truncate">{repository.full_name}</span>
+                <span className="truncate">{chatRepository?.full_name ?? historySession?.repoFullName}</span>
               </SheetTitle>
               <SheetDescription className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                {repository.language && <span>{repository.language}</span>}
+                {chatRepository?.language && <span>{chatRepository.language}</span>}
                 {activeSession?.sourceRefSha ? (
                   <span>{t('repositoryChatSheet.based-on-v1', { v1: shortSha(activeSession.sourceRefSha) })}</span>
                 ) : (
@@ -379,7 +374,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
             onClose();
             setCurrentView('ai');
           }}><ExternalLink className="h-4 w-4" />{t('workbench.title')}</Button>
-          <Button type="button" variant="secondary" size="sm" onClick={handleCreateSession} disabled={isLoading || isSending}>
+          <Button type="button" variant="secondary" size="sm" onClick={handleCreateSession} disabled={!repository || isLoading || isSending}>
             {isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />}
             {t('repositoryChatSheet.new-chat')}
           </Button>
@@ -423,7 +418,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                     {t('repositoryChatSheet.restoring-conversation')}
                   </div>
-                ) : !canChat ? (
+                ) : !providerReady && !activeSession && !isArchivedConversation ? (
                   <div className="flex min-h-56 flex-col items-center justify-center gap-4 rounded-md border border-dashed border-border px-6 text-center">
                     <MessageSquareText className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
                     <div className="space-y-1">
@@ -439,7 +434,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                       <p className="text-sm font-medium">{t('repositoryChatSheet.ask-this-repository')}</p>
                       <p className="text-xs text-muted-foreground">{t('repositoryChatSheet.a-new-conversation-pins-the-current-source-versi')}</p>
                     </div>
-                    <Button type="button" onClick={handleCreateSession} disabled={isLoading || isSending}>
+                    <Button type="button" onClick={handleCreateSession} disabled={!repository || isLoading || isSending}>
                       <Plus className="mr-1.5 h-4 w-4" aria-hidden="true" />
                       {t('repositoryChatSheet.new-conversation')}
                     </Button>
@@ -463,13 +458,13 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                     {chatError && (
                       <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-muted/20 px-3 py-2 text-sm text-destructive">
                         <span>{chatError}</span>
-                        <Button type="button" variant="secondary" size="sm" onClick={() => void retry()}>{t('repositoryChatSheet.retry')}</Button>
+                        <Button type="button" variant="secondary" size="sm" disabled={!canChat} onClick={() => void retry()}>{t('repositoryChatSheet.retry')}</Button>
                       </div>
                     )}
                     {messages.map((message) => {
                       const messageToolEvents = toolEvents.filter((event) => event.messageId === message.id);
                       const isLastAssistant = message === lastMessage && message.role === 'assistant';
-                      const canRegenerate = isLastAssistant && message.status !== 'streaming' && !isSending;
+                      const canRegenerate = canChat && isLastAssistant && message.status !== 'streaming' && !isSending;
                       return (
                       <article key={message.id} className={`group/message rounded-md border border-border p-3 text-sm ${message.role === 'user' ? 'bg-muted/30' : 'bg-card'}`}>
                         <div className="mb-1 flex items-center justify-between gap-2">
@@ -497,15 +492,23 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                             <summary className="cursor-pointer font-medium text-foreground">{t('repositoryChatSheet.sources-and-evidence-v1', { v1: message.evidenceIds.length })}</summary>
                             <p className="mt-1 text-muted-foreground">{t('repositoryChatSheet.expand-to-inspect-this-turn-s-pinned-versions-li')}</p>
                             <div className="mt-2 grid gap-2">
-                              {message.evidenceIds.map((evidenceId) => {
+                              {Array.from(new Set(message.evidenceIds)).map((evidenceId) => {
                                 const evidence = evidenceById[evidenceId];
                                 if (!evidence) return null;
+                                const href = citationAnchorUrl(evidence);
                                 return (
-                                  <a key={evidence.id} href={evidence.url} target="_blank" rel="noopener noreferrer" className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs hover:bg-muted" aria-label={t('repositoryChatSheet.view-source-v1', { v1: evidence.path ?? evidence.repoFullName })}>
-                                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                                    <span className="min-w-0 flex-1 truncate">{evidence.repoFullName} · {evidence.path ? `${evidence.path}:L${evidence.lineStart ?? 1}-L${evidence.lineEnd ?? 1}` : t('repositoryChatSheet.repository-metadata')}</span>
-                                    {evidence.refSha && <code className="shrink-0 text-muted-foreground">{shortSha(evidence.refSha)}</code>}
-                                  </a>
+                                  <div key={evidence.id} className="min-w-0 rounded-md border border-border bg-background/60 px-2.5 py-2">
+                                    <a href={/^https?:\/\//i.test(href) ? href : undefined} target="_blank" rel="noopener noreferrer"
+                                      className="flex min-w-0 items-center gap-2 text-xs hover:text-primary"
+                                      aria-label={t('repositoryChatSheet.view-source-v1', { v1: evidence.path ?? evidence.repoFullName })}>
+                                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                      <span className="min-w-0 flex-1 truncate">{evidence.repoFullName} · {evidence.path ? `${evidence.path}:L${evidence.lineStart ?? 1}-L${evidence.lineEnd ?? 1}` : t('repositoryChatSheet.repository-metadata')}</span>
+                                      {evidence.refSha && <code className="shrink-0 text-muted-foreground">{shortSha(evidence.refSha)}</code>}
+                                    </a>
+                                    <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-muted-foreground">
+                                      {citationExcerptPreview(evidence.excerpt, 300)}
+                                    </p>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -569,6 +572,17 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
           onSubmit={handleSubmit}
         >
           <p role="status" className="sr-only">{statusAnnouncement}</p>
+          {isArchivedConversation && activeSession && !chatRepository && (
+            <p role="status" className="mb-2 text-xs text-muted-foreground">
+              {t(archivedAccess.checking ? 'repositoryChatSheet.checking-pinned-source' : 'repositoryChatSheet.history-read-only')}
+            </p>
+          )}
+          {!providerReady && activeSession && chatRepository && (
+            <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <span>{unavailableReason}</span>
+              <Button type="button" variant="ghost" size="sm" onClick={navigateToAiSettings}>{t('repositoryChatSheet.configure-ai-service')}</Button>
+            </div>
+          )}
           <label className="sr-only" htmlFor="repository-chat-draft">{t('repositoryChatSheet.question')}</label>
           <div className="flex items-end gap-2">
             <Textarea
@@ -577,14 +591,14 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
               onChange={(event) => setDraft(event.target.value)}
               placeholder={t('repositoryChatSheet.for-example-what-does-this-repository-do-how-do')}
               className="min-h-20 resize-y text-sm"
-              disabled={!activeSession || !canChat || isSending}
+              disabled={!activeSession || !canChat || isLoading || isSending}
             />
             {isSending ? (
               <Button type="button" size="icon" variant="secondary" onClick={stop} aria-label={t('repositoryChatSheet.stop-generating')} title={t('repositoryChatSheet.stop-generating')}>
                 <Square className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             ) : (
-              <Button type="submit" size="icon" disabled={!activeSession || !canChat || !draft.trim()} aria-label={t('repositoryChatSheet.send-question')} title={t('repositoryChatSheet.send-question')}>
+              <Button type="submit" size="icon" disabled={!activeSession || !canChat || isLoading || !draft.trim()} aria-label={t('repositoryChatSheet.send-question')} title={t('repositoryChatSheet.send-question')}>
                 <Send className="h-4 w-4" aria-hidden="true" />
               </Button>
             )}
@@ -621,7 +635,7 @@ const RepositoryChatSheet: React.FC<RepositoryChatSheetProps> = ({
                 })}
               </DropdownMenuContent>
             </DropdownMenu>
-            {!isSending && lastMessage?.role === 'assistant' && (lastMessage.status === 'error' || lastMessage.status === 'aborted') && <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => void retry()}><RotateCcw className="mr-1 h-3.5 w-3.5" aria-hidden="true" />{t('repositoryChatSheet.retry')}</Button>}
+            {canChat && !isSending && lastMessage?.role === 'assistant' && (lastMessage.status === 'error' || lastMessage.status === 'aborted') && <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => void retry()}><RotateCcw className="mr-1 h-3.5 w-3.5" aria-hidden="true" />{t('repositoryChatSheet.retry')}</Button>}
           </div>
         </form>
       </SheetContent>

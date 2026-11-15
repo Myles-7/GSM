@@ -95,12 +95,13 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
   let configurationUnavailable = false;
   let nextRequestAt = 0;
   const recoveryResults = new Map<number, AgyRecoveryRecord>();
-  const savedIds = new Set<number>();
+  const durableIds = new Set<number>();
   const acknowledgeSaved = async () => {
-    for (const id of savedIds) {
+    for (const id of durableIds) {
       await confirmRepositoryDetailRecovery(accountId, recoveryResults.get(id));
       recoveryResults.delete(id);
       await clearDetailResponseCheckpoint(accountId, id);
+      durableIds.delete(id);
     }
   };
   const requestInterval = config.requestsPerMinute && config.requestsPerMinute > 0 ? 60000 / config.requestsPerMinute : 0;
@@ -161,12 +162,6 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
         await assertRepositoryAnalysisAssetWrite(assetVersion);
         if (!canContinue()) break;
         journal.commit('pending');
-        await stageRepositoryDetailRecovery(accountId, recoveryResults.get(repository.id), {
-          ...repository, ai_details: details, ai_summary: details.summary ?? details.problem ?? repository.ai_summary,
-          ai_tags: details.tags, ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at,
-          analysis_failed: false, analysis_error: undefined,
-        });
-        if (!canContinue()) break;
         const committed = await finishRepositoryAnalysisTaskLease(String(accountId), key, owner, 'done', details, canContinue);
         if (!committed) throw new Error('Analysis lease lost before save');
         await saveRepositoryAnalysisAsset(String(accountId), repository, state.language, sourceConfig, details, assetVersion);
@@ -184,9 +179,19 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
             analyzed_at: details.generated_at || new Date().toISOString(),
             analysis_failed: false, analysis_error: undefined,
           });
+          const recovery = recoveryResults.get(repository.id);
+          if (recovery?.resultDigest) {
+            // A restart can match either the previous analysis or this staged write.
+            await stageRepositoryDetailRecovery(accountId, recovery, proposed);
+            await assertRepositoryAnalysisAssetWrite(assetVersion);
+            if (!canContinue()) break;
+            const current = useAppStore.getState().repositories.find((item) => item.id === repository.id);
+            if (current !== latest || JSON.stringify(mergeWrite(latest, proposed)) !== JSON.stringify(proposed)) {
+              throw new Error('REPOSITORY_DETAILS_RECOVERY_CONFLICT');
+            }
+          }
           latestState.updateRepository(proposed);
           successfulWrites += 1;
-          savedIds.add(repository.id);
           journal.item(String(repository.id), 'complete');
           // Consume per item after durable Store flush. Keeping every result
           // until the whole batch ends would exhaust the reserved recovery quota.
@@ -194,9 +199,11 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
             durabilityBarrier: () => checkpointDesktopHomeRepository(String(accountId), repository.id),
             failureCode: 'HOME_CHECKPOINT_FAILED',
           })) throw new Error('LOCAL_PERSISTENCE_FAILED');
-          await confirmRepositoryDetailRecovery(accountId, recoveryResults.get(repository.id));
+          durableIds.add(repository.id);
+          await confirmRepositoryDetailRecovery(accountId, recovery);
           recoveryResults.delete(repository.id);
           await clearDetailResponseCheckpoint(accountId, repository.id);
+          durableIds.delete(repository.id);
         }
       } catch (error) {
         if (!canContinue()) break;

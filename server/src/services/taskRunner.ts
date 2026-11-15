@@ -12,7 +12,8 @@ import { initializeTaskProposals } from './taskProposals.js';
 import { taskKinds, taskPrompt, validateTaskResult, readModelStream, type TaskKind, type TaskEvidence } from './taskModel.js';
 import { snapshotTaskProject, bindTaskProjectPrompt, hasLocalTaskSources, type TaskProjectSnapshot } from './taskProject.js';
 import { initializeStarsRefresh, refreshStars, type StarsCheckpoint } from './taskRefreshStars.js';
-import { initializeTaskDiagnostics, appendTaskDiagnostic, taskDiagnostics, type TaskDiagnostics } from './taskDiagnostics.js';
+import { initializeTaskDiagnostics, appendTaskDiagnostic, taskDiagnostics, redactDiagnosticText, utf8Preview, REQUEST_PREVIEW_BYTES, type TaskDiagnostics } from './taskDiagnostics.js';
+import { logger } from './logger.js';
 
 export interface TaskInput {prompt?:string;repositories?:string[];sessionId?:string;userMessageId?:string;projectId?:string;language?:string;expectedVersions?:Record<string,number>;channelId?:string;date?:string}
 export interface CreateTask {requestId:string;workspaceId:string;githubUserId:number;configId?:string;kind:TaskKind;input:TaskInput}
@@ -338,9 +339,22 @@ async function modelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:Ab
   const boundPrompt=bindTaskProjectPrompt(prompt,task.configSnapshot.project);
   const history=task.input.sessionId?(db.prepare("SELECT data FROM sync_v2_records WHERE collection='messages' AND deleted=0 AND id<>? AND json_extract(data,'$.sessionId')=? ORDER BY seq DESC LIMIT 12").all(task.input.userMessageId || '',task.input.sessionId) as {data:string}[]).reverse().map(r=>JSON.parse(r.data)).filter(r=>['user','assistant'].includes(r.role)&&typeof r.content==='string').map(r=>({role:r.role,content:r.content.slice(0,8000)})):[];
   const body=JSON.stringify({model:task.configSnapshot.model,stream:true,max_tokens:6000,messages:[{role:'system',content:boundPrompt.system},...history,{role:'user',content:boundPrompt.user}]});
-  emit('provider_request',{body,model:task.configSnapshot.model,endpoint:`${task.configSnapshot.baseUrl}/chat/completions`});
+  emit('provider_request',providerRequestDiagnostic(body, task.configSnapshot.model, task.configSnapshot.baseUrl));
   const response=await fetch(`${task.configSnapshot.baseUrl}/chat/completions`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body,signal,redirect:'error'});
   return readModelStream(response,signal,emit);
+}
+function providerRequestDiagnostic(body:string, model:string, endpoint:string, providerRequestId?:string):Record<string,unknown> {
+  let endpointHost='[invalid-endpoint]';
+  try { endpointHost=new URL(endpoint).host || endpointHost; } catch { /* keep bounded placeholder */ }
+  const output:Record<string,unknown>={
+    ...(providerRequestId ? { providerRequestId } : {}), model, endpointHost,
+    requestBytes: Buffer.byteLength(body), requestHash: createHash('sha256').update(body).digest('hex'),
+  };
+  if (logger.isDebugMode()) {
+    const preview=utf8Preview(redactDiagnosticText(body), REQUEST_PREVIEW_BYTES);
+    Object.assign(output, { preview, previewBytes: Buffer.byteLength(preview), previewTruncated: Buffer.byteLength(body)>REQUEST_PREVIEW_BYTES });
+  }
+  return output;
 }
 async function observedModelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],signal:AbortSignal,emit:(type:string,data:unknown)=>void,deps:TaskDependencies,prompt?:{system:string;user:string}):Promise<string> {
   const providerRequestId=randomUUID();
@@ -348,7 +362,10 @@ async function observedModelCall(db:DB,task:TaskRecord,evidence:TaskEvidence[],s
   const identity={providerRequestId,...(batch?{batch:{index:batch.completed.length,total:JSON.parse((db.prepare('SELECT input FROM ai_tasks WHERE id=?').get(task.id) as {input:string}).input).repositories.length,repository:batch.current?.repository}}:{})};
   let contentSeen=false;
   const forward=(type:string,data:unknown)=>{if(type==='content')contentSeen=true;emit(type,{...(data&&typeof data==='object'?data:{}),...identity});};
-  if(deps.model)forward('provider_request',{model:task.configSnapshot.model,source:'injected-model',body:JSON.stringify(prompt??taskPrompt(task.kind,task.input,evidence))});
+  if(deps.model) {
+    const injectedBody=JSON.stringify(prompt??taskPrompt(task.kind,task.input,evidence));
+    forward('provider_request',{...providerRequestDiagnostic(injectedBody, task.configSnapshot.model, task.configSnapshot.baseUrl, providerRequestId),source:'injected-model'});
+  }
   try {
     const content=await(deps.model?deps.model(task,evidence,signal,forward):modelCall(db,task,evidence,signal,forward,prompt));
     signal.throwIfAborted();if(!contentSeen)forward('content',{text:content});

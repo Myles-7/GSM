@@ -246,6 +246,7 @@
     "download-failed": "다운로드 실패"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "선택한 검색 AI 설정을 사용할 수 없습니다. AI 보강을 건너뛰고 벡터 검색을 계속합니다.",
     "ai-semantic-analysis": "AI 의미분석…",
     "ai-selecting-relevant-repositories": "AI가 선정한 관련 창고…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AI 요청이 실패하여 로컬 어휘 검색이 롤백되었습니다.",

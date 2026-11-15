@@ -15,6 +15,9 @@
   .workbench-separator { flex: 0 0 7px; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; background: hsl(var(--background)); border-inline: 1px solid hsl(var(--border)); }
   .workbench-separator > span { height: 32px; width: 2px; border-radius: 2px; background: currentColor; opacity: .25; }
   .workbench-separator:hover, .workbench-separator:focus-visible { color: hsl(var(--primary)); outline: 2px solid hsl(var(--primary)); outline-offset: -2px; }
+  .overview-bulk-summary { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+  .overview-bulk-summary p { margin: 0; }
+  .overview-bulk-actions[data-empty="true"] { display: none; }
 }
 
 .overview-container { container-type: inline-size; }

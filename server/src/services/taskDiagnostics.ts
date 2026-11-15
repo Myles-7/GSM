@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 type DB=Database.Database;
-export const REQUEST_PREVIEW_BYTES=1024*1024;
+/** Provider request previews are opt-in debug data and remain small even then. */
+export const REQUEST_PREVIEW_BYTES=16*1024;
 export const ACCOUNT_DIAGNOSTIC_BYTES=256*1024*1024;
 const bodyTypes=new Set(['content','reasoning','provider_request','provider_result']);
 export interface TaskDiagnostics {cumulative:true;providerRequests:number;contentBytes:number;reasoningBytes:number;storedBytes:number;droppedEvents:number;truncated:boolean}
@@ -18,6 +19,12 @@ export function utf8Preview(text:string,limit=REQUEST_PREVIEW_BYTES):string {
  const bytes=Buffer.from(text);if(bytes.length<=limit)return text;
  let end=limit;while(end>0&&(bytes[end]&0xc0)===0x80)end--;return bytes.subarray(0,end).toString('utf8');
 }
+export function redactDiagnosticText(value:string):string {
+ return value
+  .replace(/Bearer\s+[^\s"\\]+/gi,'Bearer [redacted]')
+  .replace(/((?:api[_-]?key|token|secret|password|authorization|credential)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi,'$1[redacted]')
+  .replace(/(-----BEGIN [^-]+-----)[\s\S]*?(-----END [^-]+-----)/gi,'$1[redacted]$2');
+}
 /** Diagnostics may be dropped; task checkpoints and validated results never are. */
 export function appendTaskDiagnostic(db:DB,id:string,type:string,data:unknown):void {
  const task=db.prepare('SELECT request_id,stage,phase,workspace_id,github_user_id,checkpoint,input FROM ai_tasks WHERE id=?').get(id) as {request_id:string;stage:string;phase:string;workspace_id:string;github_user_id:number;checkpoint:string|null;input:string}|undefined;
@@ -27,8 +34,12 @@ export function appendTaskDiagnostic(db:DB,id:string,type:string,data:unknown):v
  let batch:{completed:unknown[];current?:{repository:string}}|undefined;
  try{batch=task.checkpoint?JSON.parse(task.checkpoint)?.batch:undefined;}catch{/* A corrupt recovery checkpoint must not prevent its diagnostic state event. */}
  const output={...input,taskId:id,requestId:task.request_id,phase:task.phase,stage:task.stage,...(!input.batch&&batch?.current?{batch:{index:batch.completed.length,total:JSON.parse(task.input).repositories?.length??0,repository:batch.current.repository}}:{})} as Record<string,unknown>;
- if(type==='provider_request'&&typeof output.body==='string'){
-  const bytes=Buffer.byteLength(output.body);output.body=utf8Preview(output.body);output.bodyBytes=bytes;output.previewBytes=Buffer.byteLength(output.body as string);if(bytes>REQUEST_PREVIEW_BYTES)output.truncated=true;
+ if(type==='provider_request'){
+  // A legacy caller may still pass a raw body. Account for its size, but do
+  // not persist it; explicit debug mode supplies the already-redacted
+  // `preview` field instead.
+  if(typeof output.body==='string') { const bytes=Buffer.byteLength(output.body); delete output.body; output.bodyBytes=bytes; if(bytes>REQUEST_PREVIEW_BYTES) output.truncated=true; }
+  if(typeof output.preview==='string') { const preview=utf8Preview(redactDiagnosticText(output.preview)); output.preview=preview; output.previewBytes=Buffer.byteLength(preview); if(Buffer.byteLength(preview)>=REQUEST_PREVIEW_BYTES) output.truncated=true; }
  }
  // Count the provider stream once, independently of raw-result snapshots.
  db.prepare('UPDATE ai_task_diagnostics SET provider_requests=provider_requests+?,content_bytes=content_bytes+?,reasoning_bytes=reasoning_bytes+?,truncated=MAX(truncated,?) WHERE task_id=?').run(type==='provider_request'?1:0,type==='content'&&typeof input.text==='string'?Buffer.byteLength(input.text):0,type==='reasoning'&&typeof input.text==='string'?Buffer.byteLength(input.text):0,output.truncated?1:0,id);

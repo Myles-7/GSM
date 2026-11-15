@@ -1,10 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearExplorationWorkspace } from '../hooks/useExplorationWorkspace';
 import { ExplorationMap } from './ExplorationMap';
 import { projectScene } from './model';
 import { accountFixture, repositoryFixture } from './testFixtures';
-import { layoutExploration } from './graphLayout';
+import { computeLayerSatellites, layoutExploration, type MapLayout } from './graphLayout';
+import { overviewCamera } from './mapGeometry';
 describe('map camera persistence boundaries', () => {
   beforeEach(()=>clearExplorationWorkspace());
   it('does not let a queued wheel frame overwrite an explicit overview',async()=>{
@@ -68,6 +71,166 @@ describe('map camera persistence boundaries', () => {
     const before=callback.mock.calls.at(-1)![0];
     view.rerender(<ExplorationMap {...props} insets={{left:230,right:350,top:130,bottom:60}}/>);
     expect(callback.mock.calls.at(-1)![0]).toEqual(before);
+  });
+  it('fits the measured canvas and satellite previews until the camera is manually moved', () => {
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:820,height:700,x:0,y:0,left:0,top:0,right:820,bottom:700,toJSON:()=>({})});
+    try {
+      const repos=[repositoryFixture(1)], focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus), callback=vi.fn();
+      const names=new Map(repos.map(repo=>[repo.id,repo.name]));
+      const layout=layoutExploration(scene,focus,names);
+      const bounds=computeLayerSatellites(layout,scene,focus,names).map(item=>({...item,width:136,height:32}));
+      expect(bounds.length).toBeGreaterThan(0);
+      const props={scene,focus,repositories:repos,onFocus:vi.fn(),onSelect:vi.fn(),onBlank:vi.fn(),onAllTopics:vi.fn(),onCameraChange:callback};
+      const view=render(<ExplorationMap {...props}/>);
+      const insets={left:16,right:16,top:160,bottom:58};
+      view.rerender(<ExplorationMap {...props} insets={insets}/>);
+      const fitted=callback.mock.calls.at(-1)![0];
+      expect(fitted).toEqual(overviewCamera(layout,820,700,insets,bounds));
+      for(const item of bounds) {
+        expect((item.x-item.width/2)*fitted.zoom+fitted.x).toBeGreaterThanOrEqual(insets.left);
+        expect((item.x+item.width/2)*fitted.zoom+fitted.x).toBeLessThanOrEqual(820-insets.right);
+        expect((item.y-item.height/2)*fitted.zoom+fitted.y).toBeGreaterThanOrEqual(insets.top);
+        expect((item.y+item.height/2)*fitted.zoom+fitted.y).toBeLessThanOrEqual(700-insets.bottom);
+      }
+      fireEvent.keyDown(screen.getByLabelText('关系画布，方向键平移，Home重置'),{key:'ArrowRight'});
+      const moved=callback.mock.calls.at(-1)![0];
+      view.rerender(<ExplorationMap {...props} insets={{...insets,top:200}}/>);
+      expect(callback.mock.calls.at(-1)![0]).toEqual(moved);
+    } finally { rect.mockRestore(); }
+  });
+  it('refits an untouched overview when the scene arrives after the canvas mounts', () => {
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:820,height:700,x:0,y:0,left:0,top:0,right:820,bottom:700,toJSON:()=>({})});
+    try {
+      const focus={type:'all'} as const, repos=[repositoryFixture(1)], empty: typeof repos=[], callback=vi.fn();
+      const insets={left:16,right:16,top:160,bottom:58};
+      const common={focus,insets,onFocus:vi.fn(),onSelect:vi.fn(),onBlank:vi.fn(),onAllTopics:vi.fn(),onCameraChange:callback};
+      const view=render(<ExplorationMap {...common} repositories={empty} scene={projectScene(accountFixture(empty),empty,focus)}/>);
+      const scene=projectScene(accountFixture(repos),repos,focus), names=new Map(repos.map(repo=>[repo.id,repo.name]));
+      const layout=layoutExploration(scene,focus,names);
+      const bounds=computeLayerSatellites(layout,scene,focus,names).map(item=>({...item,width:136,height:32}));
+      view.rerender(<ExplorationMap {...common} repositories={repos} scene={scene}/>);
+      expect(callback.mock.calls.at(-1)![0]).toEqual(overviewCamera(layout,820,700,insets,bounds));
+      fireEvent.keyDown(screen.getByLabelText('关系画布，方向键平移，Home重置'),{key:'ArrowRight'});
+      const moved=callback.mock.calls.at(-1)![0];
+      view.rerender(<ExplorationMap {...common} repositories={empty} scene={projectScene(accountFixture(empty),empty,focus)}/>);
+      expect(callback.mock.calls.at(-1)![0]).toEqual(moved);
+    } finally { rect.mockRestore(); }
+  });
+  it('keeps an automatically cached overview eligible for fitting after a StrictMode remount', () => {
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:820,height:700,x:0,y:0,left:0,top:0,right:820,bottom:700,toJSON:()=>({})});
+    try {
+      const focus={type:'all'} as const, repos=[repositoryFixture(1)], empty: typeof repos=[], callback=vi.fn();
+      const insets={left:16,right:16,top:160,bottom:58};
+      const common={focus,viewKey:'strict-overview',onFocus:vi.fn(),onSelect:vi.fn(),onBlank:vi.fn(),onAllTopics:vi.fn(),onCameraChange:callback};
+      const view=render(<StrictMode><ExplorationMap {...common} repositories={empty} scene={projectScene(accountFixture(empty),empty,focus)}/></StrictMode>);
+      const scene=projectScene(accountFixture(repos),repos,focus), names=new Map(repos.map(repo=>[repo.id,repo.name]));
+      const layout=layoutExploration(scene,focus,names);
+      const bounds=computeLayerSatellites(layout,scene,focus,names).map(item=>({...item,width:136,height:32}));
+      view.rerender(<StrictMode><ExplorationMap {...common} repositories={repos} scene={scene} insets={insets}/></StrictMode>);
+      expect(callback.mock.calls.at(-1)![0]).toEqual(overviewCamera(layout,820,700,insets,bounds));
+    } finally { rect.mockRestore(); }
+  });
+  it('preserves a panned camera and zoom while the reserved directory changes viewport width', () => {
+    let width=1000;
+    let notify: (() => void) | undefined;
+    const original=window.ResizeObserver;
+    class Observer implements ResizeObserver {
+      constructor(private callback:ResizeObserverCallback) { notify=()=>this.callback([],this); }
+      observe(){notify?.();}
+      unobserve(){}
+      disconnect(){}
+    }
+    window.ResizeObserver=Observer;
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(()=>({width,height:700,x:0,y:0,left:0,top:0,right:width,bottom:700,toJSON:()=>({})}));
+    try {
+      const repos=[repositoryFixture(1)], focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus), callback=vi.fn();
+      render(<ExplorationMap scene={scene} focus={focus} repositories={repos} initialCamera={{zoom:.8,x:145,y:72}} onFocus={vi.fn()} onSelect={vi.fn()} onBlank={vi.fn()} onAllTopics={vi.fn()} onCameraChange={callback}/>);
+      fireEvent.keyDown(screen.getByLabelText('关系画布，方向键平移，Home重置'),{key:'ArrowRight'});
+      const before=callback.mock.calls.at(-1)![0];
+      width=620; act(()=>notify?.());
+      expect(callback.mock.calls.at(-1)![0]).toEqual({...before,x:before.x-190});
+      width=1000; act(()=>notify?.());
+      expect(callback.mock.calls.at(-1)![0]).toEqual(before);
+    } finally { rect.mockRestore(); window.ResizeObserver=original; }
+  });
+  it('centers and locates a selected project satellite within the visible canvas', () => {
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:820,height:700,x:0,y:0,left:0,top:0,right:820,bottom:700,toJSON:()=>({})});
+    try {
+      const repos=[repositoryFixture(1)], focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus), callback=vi.fn();
+      const names=new Map(repos.map(repo=>[repo.id,repo.name])), layout=layoutExploration(scene,focus,names);
+      const satellite=computeLayerSatellites(layout,scene,focus,names)[0];
+      expect(satellite).toBeDefined();
+      const insets={left:16,right:16,top:160,bottom:58};
+      const props={scene,focus,repositories:repos,insets,onFocus:vi.fn(),onSelect:vi.fn(),onBlank:vi.fn(),onAllTopics:vi.fn(),onCameraChange:callback};
+      const view=render(<ExplorationMap {...props}/>);
+      view.rerender(<ExplorationMap {...props} selectedRepositoryId={satellite.repositoryId}/>);
+      const centered=callback.mock.calls.at(-1)![0];
+      expect(satellite.x*centered.zoom+centered.x).toBeCloseTo((insets.left+820-insets.right)/2);
+      expect(satellite.y*centered.zoom+centered.y).toBeCloseTo((insets.top+700-insets.bottom)/2);
+      expect(view.container.querySelector('.explore-satellite-node.is-selected-sat')).toBeInTheDocument();
+      fireEvent.keyDown(screen.getByLabelText('关系画布，方向键平移，Home重置'),{key:'ArrowRight'});
+      fireEvent.click(screen.getByRole('button',{name:'定位当前选中项'}));
+      expect(callback.mock.calls.at(-1)![0]).toEqual(centered);
+    } finally { rect.mockRestore(); }
+  });
+  it('does not apply a late resize shift after centering a newly selected satellite', () => {
+    let width=1000;
+    let notify: (() => void) | undefined;
+    const original=window.ResizeObserver;
+    class Observer implements ResizeObserver {
+      constructor(private callback:ResizeObserverCallback) { notify=()=>this.callback([],this); }
+      observe(){notify?.();}
+      unobserve(){}
+      disconnect(){}
+    }
+    window.ResizeObserver=Observer;
+    const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(()=>({width,height:700,x:0,y:0,left:0,top:0,right:width,bottom:700,toJSON:()=>({})}));
+    try {
+      const repos=[repositoryFixture(1)], focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus), callback=vi.fn();
+      const names=new Map(repos.map(repo=>[repo.id,repo.name])), layout=layoutExploration(scene,focus,names);
+      const satellite=computeLayerSatellites(layout,scene,focus,names)[0], insets={left:16,right:16,top:160,bottom:58};
+      const props={scene,focus,repositories:repos,insets,onFocus:vi.fn(),onSelect:vi.fn(),onBlank:vi.fn(),onAllTopics:vi.fn(),onCameraChange:callback};
+      const view=render(<ExplorationMap {...props}/>);
+      width=620;
+      view.rerender(<ExplorationMap {...props} selectedRepositoryId={satellite.repositoryId}/>);
+      const centered=callback.mock.calls.at(-1)![0];
+      act(()=>notify?.());
+      expect(callback.mock.calls.at(-1)![0]).toEqual(centered);
+      expect(satellite.x*centered.zoom+centered.x).toBeCloseTo(width/2);
+    } finally { rect.mockRestore(); window.ResizeObserver=original; }
+  });
+  it('explains when a selected project has no node at this level', () => {
+    const repos=Array.from({length:4},(_,index)=>repositoryFixture(index+1)), focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus);
+    render(<ExplorationMap scene={scene} focus={focus} repositories={repos} selectedRepositoryId={4} onFocus={vi.fn()} onSelect={vi.fn()} onBlank={vi.fn()} onAllTopics={vi.fn()}/>);
+    expect(screen.getByRole('button',{name:'定位当前选中项'})).toBeDisabled();
+    expect(screen.getByText('当前层未显示该项目，请进入相关方向后定位。')).toBeVisible();
+  });
+  it('lets a satellite be selected with pointer and keyboard without invoking the blank-canvas action', async () => {
+    const user=userEvent.setup();
+    const repos=[repositoryFixture(1)], focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus), onSelect=vi.fn(), onBlank=vi.fn();
+    render(<ExplorationMap scene={scene} focus={focus} repositories={repos} onFocus={vi.fn()} onSelect={onSelect} onBlank={onBlank} onAllTopics={vi.fn()}/>);
+    const satellite=screen.getByRole('button',{name:'查看项目 project-1'});
+    await user.click(satellite);
+    satellite.focus();
+    await user.keyboard('{Enter}');
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect).toHaveBeenCalledWith(1,satellite);
+    expect(onBlank).not.toHaveBeenCalled();
+  });
+  it.each([3,4,5,6,7,8])('keeps %i groups of satellite previews clear of each other and their parent nodes', count => {
+    const repos=Array.from({length:count*3},(_,index)=>repositoryFixture(index+1)), focus={type:'all'} as const, scene=projectScene(accountFixture(repos),repos,focus);
+    const names=new Map(repos.map(repo=>[repo.id,repo.name]));
+    const layout: MapLayout={nodes:[{id:'focus',type:'focus',label:'focus',x:500,y:500,width:164,height:100,color:0},
+      ...Array.from({length:count},(_,index)=>{const angle=index/count*Math.PI*2-Math.PI/2;return {id:`group-${index}`,type:'topic' as const,label:'group',x:500+Math.cos(angle)*300,y:500+Math.sin(angle)*300,width:192,height:86,color:0,previewIds:[index*3+1,index*3+2,index*3+3]};})],edges:[],regions:[],width:1000,height:1000};
+    const satellites=computeLayerSatellites(layout,scene,focus,names);
+    expect(satellites).toHaveLength(count*(count<=4?3:2));
+    for (const satellite of satellites) {
+      const parent=layout.nodes.find(node=>node.id===satellite.parentId)!;
+      expect(Math.abs(satellite.x-parent.x)>=(parent.width+136)/2 || Math.abs(satellite.y-parent.y)>=(parent.height+32)/2).toBe(true);
+      for (const other of satellites.filter(item=>item.parentId===satellite.parentId && item.id!==satellite.id)) {
+        expect(Math.abs(satellite.x-other.x)>=136 || Math.abs(satellite.y-other.y)>=32).toBe(true);
+      }
+    }
   });
   it('allows a positive overview below ten percent in a short canvas', () => {
     const rect=vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({width:100,height:20,x:0,y:0,left:0,top:0,right:100,bottom:20,toJSON:()=>({})});

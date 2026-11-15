@@ -82,6 +82,9 @@
     "discovery": "发现任务",
     "plugins": "插件任务",
     "openPlugin": "打开插件设置",
+    "hydeSkipped": "HyDE 查询预处理超时，已使用原始查询继续搜索",
+    "hydeTimeout": "HyDE 查询预处理超时，已使用原始查询继续搜索",
+    "hydeProviderUnavailable": "HyDE 服务不可用，已使用原始查询继续搜索",
     "rerankUnavailable": "AI 重排序失败，已保留向量排序。",
     "vectorUnavailable": "向量检索不可用，已改用关键词检索。",
     "supported": "支持",
@@ -141,6 +144,7 @@
     "unknown": "未知"
   },
   "globalChatHistorySheet": {
+    "load-more": "加载更多会话",
     "close-chat-history": "关闭问答历史",
     "chat-history": "问答历史",
     "conversations-across-repositories-select-one-to": "汇总各仓库的问答会话，点击进入对应仓库继续对话。",
@@ -176,6 +180,8 @@
     "delete-conversation": "删除会话"
   },
   "repositoryChatSheet": {
+    "checking-pinned-source": "正在验证原提交的访问权限…",
+    "history-read-only": "当前无法访问原提交，仍可阅读已保存的会话。",
     "agent-execution-summary": "Agent 执行摘要",
     "this-turn-s-work": "本轮任务执行",
     "failed-attention": "{{failed}} 项需注意",
@@ -341,6 +347,7 @@
     "quick": "快速",
     "standard": "标准",
     "deep": "深入",
+    "depthHint": "深入模式会读取更多源码证据，耗时和模型用量可能更高。",
     "manage": "生成整理提案",
     "send": "发送",
     "noModelHint": "尚未配置 AI 服务。可先填写问题；配置模型后即可发送。",

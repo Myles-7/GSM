@@ -68,6 +68,15 @@ describe('AI proxy configuration fallback', () => {
     expect(window.fetch).toHaveBeenCalledTimes(2);
     expect(JSON.parse(vi.mocked(window.fetch).mock.calls[1][1]!.body as string)).toMatchObject({ config });
   });
+
+  it.each(['fixture', ''])('retains proxy Retry-After for HTTP 200 gateway errors (config id %s)', async configId => {
+    adapter._backendUrl = 'http://localhost:3000/api';
+    vi.mocked(window.fetch).mockResolvedValue(Response.json({ error: { code: 429 } }, { headers: { 'retry-after': '5' } }));
+    await expect(backend.proxyAIRequestWithFallback(configId, config, {})).rejects.toMatchObject({
+      name: 'AIRequestError', status: 429, retryAfterMs: 5000,
+    });
+    expect(window.fetch).toHaveBeenCalledOnce();
+  });
 });
 
 describe('backendAdapter 429 Retry-After 解析', () => {

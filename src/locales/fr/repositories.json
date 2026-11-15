@@ -246,6 +246,7 @@
     "download-failed": "Le téléchargement a échoué"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "La configuration IA sélectionnée est indisponible. Les améliorations IA seront ignorées ; la recherche vectorielle reste disponible.",
     "ai-semantic-analysis": "Analyse sémantique de l’IA…",
     "ai-selecting-relevant-repositories": "Entrepôt associé sélectionné par l’IA…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "La requête AI a échoué, la recherche lexicale locale a été annulée",

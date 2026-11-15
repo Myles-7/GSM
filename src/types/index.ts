@@ -296,6 +296,7 @@ export interface VectorSearchConfig {
   searchTopK?: number;        // 返回结果数，默认 30
   enableHyDE?: boolean;       // 是否启用 HyDE 查询预处理，默认 true
   enableReranking?: boolean;  // 是否启用 LLM 语义重排序，默认 true
+  searchAIConfigId?: string;  // 查询改写与重排使用的 AI 配置；空值跟随当前 AI 配置
   // 嵌入文本格式版本，buildEmbeddingText 格式变化时递增
   embeddingFormatVersion?: number;
   /** Only a fully verified generation may become active. Missing means rebuild required. */
@@ -310,12 +311,15 @@ export interface VectorSearchStatus {
   error?: string;
 }
 
+/** Guard failures keep raw English messages for logs/tests; the UI maps `errorCode` to localized guidance. */
+export type VectorIndexErrorCode = 'save-first' | 'settings-changed' | 'incomplete' | 'failed';
+
 export interface VectorIndexingState {
   isIndexing: boolean;
   phase: 'readme' | 'embedding' | 'uploading' | null;
   phaseDone: number;
   phaseTotal: number;
-  result: { indexed: number; skipped: number; errors: number; error?: string } | null;
+  result: { indexed: number; skipped: number; errors: number; error?: string; errorCode?: VectorIndexErrorCode } | null;
 }
 
 /** Local (Electron) / client-side MCP service preferences. Server is source of truth when backend is on. */

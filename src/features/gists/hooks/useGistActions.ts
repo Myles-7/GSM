@@ -12,6 +12,9 @@ import { filterAndSortGists } from '../../../utils/gistUtils';
 import { withDeadline } from '../../../utils/requestDeadline';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { bindTaskSignal, taskConfigSnapshot, taskForSignal } from '../../../services/taskExecution';
+import { commitAgyRecovery } from '../../../services/agyClient';
+import type { AgyRecoveryRecord } from '../../../types/agy';
+import { flushAppStorePersistence } from '../../../store/persistence/storage';
 
 const ANALYSIS_DEADLINE_MS = 120_000;
 // Cards and the batch view mount separate instances of this hook.
@@ -129,6 +132,7 @@ export const useGistActions = () => {
         ?? current.gistSearchResults.find(item => item.id === gist.id);
     };
     try {
+      let recoveryRecord: AgyRecoveryRecord | undefined;
       state.setAnalyzingGist(gist.id, true);
       const summary = await withDeadline(async signal => {
         const api = createGitHubApiService(state.githubToken!);
@@ -136,13 +140,20 @@ export const useGistActions = () => {
         signal.throwIfAborted();
         if (!canCommit()) throw new DOMException('Cancelled', 'AbortError');
         const aiService = new AIService(activeConfig, state.language);
-        return aiService.analyzeGist(detail, api.getGistContentPreview(detail), signal);
+        return aiService.analyzeGist(detail, api.getGistContentPreview(detail), signal, {
+          recovery: { deferAck: true, onResult: record => { recoveryRecord = record; } },
+        });
       }, activeConfig.provider === 'agy-cli' ? (activeConfig.agyFeatureOverrides?.['gist-summary']?.timeoutSeconds ?? activeConfig.agyTimeoutSeconds ?? 180) * 2000 + 15000 : ANALYSIS_DEADLINE_MS, task.controller.signal);
       if (!canCommit()) return null;
       // Only analysis fields may change: the fetched/input gist may be deleted or edited.
       const current = readCurrentGist();
       if (!current) return null;
       useAppStore.getState().updateGist(applyGistAnalysisSuccess(current, summary, new Date().toISOString()));
+      await flushAppStorePersistence();
+      await commitAgyRecovery(String(useAppStore.getState().user?.id ?? ''), recoveryRecord, {
+        feature: 'gist-summary', entityType: 'gist', entityId: gist.id,
+        resultDigest: recoveryRecord?.resultDigest, savedAt: new Date().toISOString(),
+      });
       return true;
     } catch (error) {
       if (!canCommit() || ((error instanceof Error || error instanceof DOMException) && error.name === 'AbortError')) return null;

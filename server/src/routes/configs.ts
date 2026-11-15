@@ -726,7 +726,7 @@ router.get('/api/configs/vector-search', (req, res) => {
     const row = db.prepare('SELECT * FROM vector_search_configs WHERE id = ?').get('default') as Record<string, unknown> | undefined;
 
     if (!row) {
-      res.json({ enabled: false, workerUrl: '', authToken: '', embeddingConfigId: '', indexMode: 'readme', readmeMaxChars: 6000, searchThreshold: 0.35, searchTopK: 30, enableHyDE: true, enableReranking: true });
+      res.json({ enabled: false, workerUrl: '', authToken: '', embeddingConfigId: '', indexMode: 'readme', readmeMaxChars: 6000, searchThreshold: 0.35, searchTopK: 30, enableHyDE: true, enableReranking: true, searchAIConfigId: '' });
       return;
     }
 
@@ -759,6 +759,7 @@ router.get('/api/configs/vector-search', (req, res) => {
       searchTopK: typeof row.search_top_k === 'number' ? row.search_top_k : 30,
       enableHyDE: row.enable_hyde === 1,
       enableReranking: row.enable_reranking === 1,
+      searchAIConfigId: row.search_ai_config_id ?? '',
       embeddingFormatVersion: typeof row.embedding_format_version === 'number' ? row.embedding_format_version : undefined,
       status,
       lastSyncAt: row.last_sync_at ?? null,
@@ -774,7 +775,7 @@ router.put('/api/configs/vector-search', (req, res) => {
   try {
     const db = getDb();
     const { enabled, workerUrl, authToken, embeddingConfigId, indexMode, readmeMaxChars, status, lastSyncAt } = req.body as Record<string, unknown>;
-    const { searchThreshold, searchTopK, enableHyDE, enableReranking, embeddingFormatVersion } = req.body as Record<string, unknown>;
+    const { searchThreshold, searchTopK, enableHyDE, enableReranking, searchAIConfigId, embeddingFormatVersion } = req.body as Record<string, unknown>;
 
     let encryptedToken = '';
     const hasAuthToken = Object.prototype.hasOwnProperty.call(req.body, 'authToken');
@@ -800,14 +801,15 @@ router.put('/api/configs/vector-search', (req, res) => {
       : 30;
     const hyde = enableHyDE === true ? 1 : 0;
     const reranking = enableReranking === true ? 1 : 0;
+    const searchAIId = typeof searchAIConfigId === 'string' ? searchAIConfigId.trim() : '';
     const formatVersion = typeof embeddingFormatVersion === 'number' && Number.isInteger(embeddingFormatVersion) && embeddingFormatVersion >= 1
       ? embeddingFormatVersion
       : null;
 
     db.prepare(`
-      INSERT OR REPLACE INTO vector_search_configs (id, enabled, worker_url, auth_token_encrypted, embedding_config_id, index_mode, readme_max_chars, search_threshold, search_top_k, enable_hyde, enable_reranking, embedding_format_version, status_json, last_sync_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run('default', enabled ? 1 : 0, workerUrl ?? '', encryptedToken, embeddingConfigId ?? '', mode, maxChars, threshold, topK, hyde, reranking, formatVersion, statusJson, lastSyncAt ?? null);
+      INSERT OR REPLACE INTO vector_search_configs (id, enabled, worker_url, auth_token_encrypted, embedding_config_id, index_mode, readme_max_chars, search_threshold, search_top_k, enable_hyde, enable_reranking, embedding_format_version, status_json, last_sync_at, search_ai_config_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run('default', enabled ? 1 : 0, workerUrl ?? '', encryptedToken, embeddingConfigId ?? '', mode, maxChars, threshold, topK, hyde, reranking, formatVersion, statusJson, lastSyncAt ?? null, searchAIId);
 
     res.json({ updated: true });
   } catch (err) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { EmbeddingApiType } from '../../../types';
+import type { EmbeddingApiType, VectorIndexErrorCode } from '../../../types';
 import {
   EMBEDDING_FORMAT_VERSION,
   EmbeddingClient,
@@ -24,6 +24,10 @@ export interface EmbeddingDraft {
   dimensions: number;
 }
 
+/** 连接测试的截止时限（毫秒）：命名为常量便于统一调整；超时在 UI 层映射为本地化提示。 */
+const EMBEDDING_TEST_DEADLINE_MS = 11000;
+const WORKER_TEST_DEADLINE_MS = 31000;
+
 export interface VectorWorkerDraft {
   workerUrl: string;
   authToken: string;
@@ -32,6 +36,17 @@ export interface VectorWorkerDraft {
 export interface VectorIndexDraft extends EmbeddingDraft, VectorWorkerDraft {
   indexMode: 'description' | 'readme';
   readmeMaxChars: number;
+}
+
+/**
+ * Guard failures keep their raw English message for logs and tests; the UI maps
+ * `code` to a localized, actionable message.
+ */
+export class VectorIndexGuardError extends Error {
+  constructor(readonly code: VectorIndexErrorCode, message: string) {
+    super(message);
+    this.name = 'VectorIndexGuardError';
+  }
 }
 
 export interface VectorSearchActions {
@@ -95,7 +110,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
     const controller = new AbortController(); embeddingTest.current = controller;
     setTestingEmbedding(true);
     try {
-      const result = await withDeadline(signal => new EmbeddingClient({ id: 'test', name: 'test', ...draft, isActive: true }).testConnection(signal), 11000, controller.signal);
+      const result = await withDeadline(signal => new EmbeddingClient({ id: 'test', name: 'test', ...draft, isActive: true }).testConnection(signal), EMBEDDING_TEST_DEADLINE_MS, controller.signal);
       if (controller.signal.aborted) return;
       setEmbeddingTestResult(result);
     } catch (reason) {
@@ -112,7 +127,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
     const controller = new AbortController(); workerTest.current = controller;
     setTestingWorker(true);
     try {
-      const result = await withDeadline(signal => new VectorSearchService(draft).testConnection(signal), 31000, controller.signal);
+      const result = await withDeadline(signal => new VectorSearchService(draft).testConnection(signal), WORKER_TEST_DEADLINE_MS, controller.signal);
       if (controller.signal.aborted) return;
       setWorkerTestResult(result);
       if (result.success) {
@@ -143,7 +158,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
       if (!embedding || embedding.id !== initial.activeEmbeddingConfig ||
           JSON.stringify(embeddingIdentity(embedding, initial.vectorSearchConfig)) !== JSON.stringify(embeddingIdentity(draft, draft)) ||
           embedding.apiKey !== draft.apiKey || initial.vectorSearchConfig.authToken !== draft.authToken) {
-        throw new Error('Save the embedding and index settings before indexing.');
+        throw new VectorIndexGuardError('save-first', 'Save the embedding and index settings before indexing.');
       }
       const snapshot = (current: typeof initial) => JSON.stringify({
         embedding: current.embeddingConfigs.find((config) => config.id === embedding.id),
@@ -154,7 +169,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
       const check = () => {
         controller.signal.throwIfAborted();
         if (snapshot(useAppStore.getState()) !== originalSnapshot || useAppStore.getState().repositories !== repositories) {
-          throw new Error('Index settings or repositories changed during indexing. Previous generation retained; retry.');
+          throw new VectorIndexGuardError('settings-changed', 'Index settings or repositories changed during indexing. Previous generation retained; retry.');
         }
       };
       const generation = incremental
@@ -185,12 +200,12 @@ export const useVectorSearchActions = (): VectorSearchActions => {
         task.item('index', 'failed', result.error || 'Indexing failed. Previous generation retained.');
         state.setVectorIndexingState({
           isIndexing: false, phase: null,
-          result: { ...result, error: `${result.error || 'Indexing failed.'} Previous generation retained; no generation switch.` },
+          result: { ...result, errorCode: 'failed', error: `${result.error || 'Indexing failed.'} Previous generation retained; no generation switch.` },
         });
         return;
       }
       if (!incremental && result.indexedRepoIds.length !== indexable.length) {
-        throw new Error('Incomplete staged generation. Previous generation retained.');
+        throw new VectorIndexGuardError('incomplete', 'Incomplete staged generation. Previous generation retained.');
       }
       await vectorService.verifyGeneration(result.indexedRepoIds.map((id) => ({
         id: String(id), contentHash: result.indexedContentHashes[String(id)],
@@ -230,7 +245,7 @@ export const useVectorSearchActions = (): VectorSearchActions => {
         state.setVectorIndexingState({
           isIndexing: false,
           phase: null,
-          result: { indexed: 0, skipped: repositories.length - indexable.length, errors: Math.max(1, indexable.length), error: reason instanceof Error ? reason.message : String(reason) },
+          result: { indexed: 0, skipped: repositories.length - indexable.length, errors: Math.max(1, indexable.length), error: reason instanceof Error ? reason.message : String(reason), errorCode: reason instanceof VectorIndexGuardError ? reason.code : undefined },
         });
       }
     } finally {

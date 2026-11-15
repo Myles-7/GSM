@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, Repository } from '../types';
-import type { RepositoryChatSession, RepositoryChatToolEvent } from '../types/repositoryChat';
+import type { RepositoryChatMessage, RepositoryChatSession, RepositoryChatToolEvent, ToolEvidence } from '../types/repositoryChat';
 vi.mock('./indexedDbStorage', () => ({ indexedDBStorage: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} } }));
 
 const mocks = vi.hoisted(() => ({
@@ -104,10 +104,15 @@ describe('research latency regression', () => {
     try {
       mocks.generateChatText.mockResolvedValue(answer('A local note editor.', '/README.md - 1-2', 'Overview'));
       mocks.reviewAnswer.mockImplementation(() => new Promise(() => {}));
-      const pending = runRepositoryChatTurn({ ...turnInput(), aiConfig: {
-        id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'default', isActive: true,
-        agyMode: 'model', agyEffort: 'high', deviceBound: true,
-      }, agentBudget: { maxDurationMs: 30_000 } });
+      const pending = runRepositoryChatTurn({
+        ...turnInput(),
+        localSource: {
+          entries: [{ path: 'README.md', type: 'blob' }],
+          read: vi.fn().mockResolvedValue({ path: 'README.md', content: '# Notes\nA local note editor.',
+            contentHash: 'a'.repeat(64), retrievedAt: '2026-08-26T00:00:00.000Z' }),
+        },
+        agentBudget: { maxDurationMs: 30_000 },
+      });
       await vi.advanceTimersByTimeAsync(29_750);
       const result = await pending;
       expect(result.content).toContain('A local note editor.');
@@ -119,6 +124,21 @@ describe('research latency regression', () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally { mocks.reviewAnswer.mockReset(); vi.useRealTimers(); }
   });
+});
+
+it('generates once in AGY model mode even if the answer needs citation repair', async () => {
+  vi.clearAllMocks();
+  mocks.generateChatText.mockReset().mockResolvedValue('A guess with no verifiable citation.');
+  configureTreeAndFiles({ 'README.md': '# Notes\nA local note editor.' });
+  const result = await runRepositoryChatTurn({ ...turnInput(), aiConfig: {
+    id: 'agy', name: 'AGY', provider: 'agy-cli', model: 'default', isActive: true,
+    agyMode: 'model', agyEffort: 'high', deviceBound: true,
+  } });
+  expect(mocks.generateChatText).toHaveBeenCalledOnce();
+  expect(mocks.reviewAnswer).not.toHaveBeenCalled();
+  expect(result.evidences[0].excerpt).toContain('A local note editor.');
+  expect(result.content).toContain('/README.md - 1-2');
+  expect(result.content).not.toContain('A guess');
 });
 
 // Each test supplies a new synthetic filesystem, even when its SHA is identical.
@@ -278,6 +298,76 @@ describe('runRepositoryChatTurn progressive evidence loop', () => {
     expect(mocks.generateChatText).toHaveBeenCalledTimes(4);
     expect(result.content).toContain(overviewRef);
     expect(events.some((event) => event.paramSummary.includes('README.md · Overview'))).toBe(true);
+  });
+
+  it.each([
+    ['What does this project do?', overviewRef, 'A documented example for repository research.'],
+    ['这个项目怎么用？', usageRef, 'Start with pnpm dev and open the dashboard.'],
+  ])('answers a first-turn question from verified root README without planning (%s)', async (question, ref, content) => {
+    mocks.generateChatText
+      .mockResolvedValueOnce(understanding())
+      .mockResolvedValueOnce(gate({ sufficient: true, requirements: [requirement('project overview', 'verified', [ref])] }))
+      .mockResolvedValueOnce(answer(content, ref, 'Overview'));
+    const events: string[] = [];
+    const result = await runRepositoryChatTurn({
+      ...turnInput(question),
+      session: { ...session, ownerId: '42' },
+      onToolEvent: event => events.push(event.toolName),
+    });
+    expect(result.content).toContain(ref);
+    expect(readPaths()).toEqual(['README.md']);
+    expect(events).not.toContain('plan_research');
+    expect(mocks.generateChatText).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to bounded retrieval when the first README does not cover the requirement', async () => {
+    const configurationRef = '/docs/configuration.md - 1-3';
+    mocks.generateChatText
+      .mockResolvedValueOnce(understanding({ expected_answer: ['how to start the service'] }))
+      .mockResolvedValueOnce(gate({ sufficient: false, requirements: [requirement('how to start the service', 'missing')] }))
+      .mockResolvedValueOnce(plan(target('docs/configuration.md', ['Environment'], 'how to start the service')))
+      .mockResolvedValueOnce(gate({ sufficient: true, requirements: [requirement('how to start the service', 'verified', [configurationRef])] }))
+      .mockResolvedValueOnce(answer('Use the documented environment setup.', configurationRef));
+    const result = await runRepositoryChatTurn({
+      ...turnInput('How do I use this project?'), session: { ...session, ownerId: '42' },
+    });
+    expect(result.content).toContain(configurationRef);
+    expect(readPaths()).toEqual(['README.md', 'docs/configuration.md']);
+  });
+
+  it('checks the current question against only the previous completed turn pinned file evidence', async () => {
+    const evidence: ToolEvidence = {
+      id: 'previous-overview', source: 'github', repoFullName: repository.full_name, refSha: session.sourceRefSha,
+      path: 'README.md', lineStart: 3, lineEnd: 5,
+      url: 'https://github.com/owner/example/blob/' + session.sourceRefSha + '/README.md#L3-L5',
+      excerpt: '## Overview\nA documented example project for repository research.\n', retrievedAt: session.createdAt,
+    };
+    const previous: RepositoryChatMessage = {
+      id: 'previous-answer', sessionId: session.id, role: 'assistant', status: 'complete',
+      content: 'It is a tool for repository research.',
+      evidenceIds: [evidence.id, 'wrong-sha', 'foreign-repo', 'release-metadata', 'unsafe-link'],
+      createdAt: session.createdAt,
+    };
+    mocks.generateChatText
+      .mockResolvedValueOnce(understanding({ expected_answer: ['purpose of the tool'] }))
+      .mockResolvedValueOnce(gate({ sufficient: true, requirements: [requirement('purpose of the tool', 'verified', [overviewRef])] }))
+      .mockResolvedValueOnce(answer('The tool does repository research.', overviewRef));
+    const result = await runRepositoryChatTurn({
+      ...turnInput('What is it for again?'), session: { ...session, ownerId: '42' },
+      messages: [previous],
+      priorEvidence: [
+        evidence,
+        { ...evidence, id: 'wrong-sha', refSha: 'elsewhere' },
+        { ...evidence, id: 'foreign-repo', repoFullName: 'other/project' },
+        { ...evidence, id: 'release-metadata', refSha: undefined },
+        { ...evidence, id: 'unsafe-link', url: 'https://other.invalid/' },
+        { ...evidence, id: 'from-a-different-turn' },
+      ],
+    });
+    expect(result.content).toContain(overviewRef);
+    expect(result.evidences.map(item => item.id)).toEqual([evidence.id]);
+    expect(mocks.generateChatText.mock.calls[0][0].user).toContain('It is a tool for repository research.');
+    expect(readPaths()).toEqual([]);
   });
 
   it('uses LLM semantic concepts to make differently named retrieval documentation a viable target', async () => {

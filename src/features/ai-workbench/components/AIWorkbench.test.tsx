@@ -148,6 +148,22 @@ describe('AIWorkbench Component (Phase 1)', () => {
     } finally { mockWorkbench.aiConfigs = configs; }
   });
 
+  it('guides an empty result conversation and yields the area to messages when they arrive', () => {
+    const repository = { id: 1, name: 'alpha', full_name: 'owner/alpha', owner: { login: 'owner', avatar_url: '' }, stargazers_count: 1 } as Repository;
+    mockWorkbench.data.inputIntent = 'results';
+    mockWorkbench.data.searchBatches = [{
+      id: 'b1', requirements: { purpose: 'Test', required: [], preferred: [], excluded: [], questions: [], queries: [] }, nextPage: 1,
+      candidates: [{ repository, summary: 'Example', reasons: [], limitations: [], sources: [], status: 'candidate' }],
+    }];
+    const { rerender } = render(<AIWorkbench />);
+    expect(within(screen.getByTestId('workbench-empty-conversation')).getByText('问这批结果')).toBeVisible();
+    expect(screen.getByRole('textbox', { name: '问题' })).toBeVisible();
+    mockWorkbench.messages = [{ id: 'm1', role: 'assistant', content: '已有回答', status: 'complete', evidenceIds: [] }];
+    rerender(<AIWorkbench />);
+    expect(screen.queryByTestId('workbench-empty-conversation')).not.toBeInTheDocument();
+    expect(screen.getByText('已有回答')).toBeVisible();
+  });
+
   it('preserves a manually chosen new search when later batches and saved intent arrive', () => {
     const originalData = mockWorkbench.data;
     const originalActive = mockWorkbench.active;
@@ -322,7 +338,7 @@ describe('AIWorkbench Component (Phase 1)', () => {
       },
     ];
 
-    render(<AIWorkbench />);
+    const { rerender } = render(<AIWorkbench />);
 
     expect(screen.getByText('facebook/react')).toBeInTheDocument();
     // Tags diff
@@ -334,6 +350,20 @@ describe('AIWorkbench Component (Phase 1)', () => {
     expect(screen.getAllByText('(未设置)').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('前端框架')).toBeInTheDocument();
     expect(screen.getByText('现代 UI 响应式视图框架')).toBeInTheDocument();
+
+    const selected = screen.getByRole('checkbox', { name: /facebook\/react/ });
+    fireEvent.click(selected);
+    expect(screen.queryByRole('button', { name: '确认修改 1 个仓库' })).not.toBeInTheDocument();
+    expect(mockWorkbench.execute).not.toHaveBeenCalled();
+    fireEvent.click(selected);
+    fireEvent.click(screen.getByRole('button', { name: '确认修改 1 个仓库' }));
+    expect(mockWorkbench.execute).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'prop-1', operations: [expect.objectContaining({ id: 'op-1', selected: true })],
+    }), false);
+    mockWorkbench.proposals[0].operations[0].status = 'success';
+    rerender(<AIWorkbench />);
+    fireEvent.click(screen.getByRole('button', { name: '确认恢复 1 项操作' }));
+    expect(mockWorkbench.execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'prop-1' }), true);
   });
 
   it('1.4 Retention renders as a semantic Chip with Popover options and handles custom input', () => {

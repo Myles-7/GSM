@@ -11,6 +11,7 @@ const { createOrganizationBroker } = require('./mcpOrganization');
 const { createAgyDesktop } = require('./agyDesktop');
 const { registerAgyIpc } = require('./agyIpc');
 const { installRendererRecovery } = require('./rendererRecovery');
+const { hideWindowToTray, minimizeWindowToTray, restoreWindowFromTray, installWindowPaintRecovery } = require('./windowLifecycle');
 const { registerWebdavIpc } = require('./webdavIpc');
 const { isTrustedDocument, isTrustedMainFrame, createTrustedIpcMain, registerMainDocumentNavigation } = require('./trustedRenderer');
 const { pathToFileURL } = require('url');
@@ -111,6 +112,10 @@ const startHidden = process.argv.includes('--hidden');
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 // This process owns no windows or jobs; exit before Chromium opens shared caches.
 if (!gotSingleInstanceLock) app.exit(0);
+else if (process.platform === 'win32') {
+  const disabled = app.commandLine.getSwitchValue('disable-features').split(',').filter(Boolean);
+  app.commandLine.appendSwitch('disable-features', [...new Set([...disabled, 'CalculateNativeWinOcclusion'])].join(','));
+}
 
 protocol.registerSchemesAsPrivileged([{ scheme: PAGE_SCHEME, privileges: { standard: true, secure: true } }]);
 
@@ -157,6 +162,19 @@ function createWindow() {
   mainWindow.webContents.once('destroyed', () => agyDesktop?.cancel(agyOwner));
   installRendererRecovery({ window: mainWindow, dialog, cancel: () => agyDesktop?.cancel(agyOwner),
     userDataPath: app.getPath('userData'), locale: app.getLocale() });
+  if (process.platform === 'win32') {
+    installWindowPaintRecovery({
+      window: mainWindow,
+      isTrusted: url => isTrustedDocument(url, trustedPluginHostURL, getDevURL()),
+      sampleRendererCpu: contents => {
+        try {
+          const renderer = app.getAppMetrics().find(entry => entry.pid === contents.getOSProcessId());
+          return renderer?.cpu?.percentCPUUsage ?? null;
+        } catch { return null; }
+      },
+      recordWake: () => diagnosticSink({ level: 'warn', module: 'electron.window', message: 'Woke focused Windows compositor' }),
+    });
+  }
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) agyDesktop?.cancel(agyOwner);
   });
@@ -342,20 +360,17 @@ function createWindow() {
     }
   });
 
-  mainWindow.on('close', (event) => {
+  mainWindow.on('close', function (event) {
     // #345: 关闭默认常驻托盘（设置-通用可改）。真退出只走 isQuitting 路径。
     if (!isQuitting && desktopPrefs.closeToTray) {
       event.preventDefault();
-      mainWindow.hide();
+      hideWindowToTray(this);
     }
   });
 
-  mainWindow.on('minimize', (event) => {
+  mainWindow.on('minimize', function () {
     // #345: 最小化默认隐藏到托盘。
-    if (desktopPrefs.minimizeToTray) {
-      event.preventDefault();
-      mainWindow.hide();
-    }
+    minimizeWindowToTray(this, () => !isQuitting && desktopPrefs.minimizeToTray);
   });
 
   // A Windows query can be cancelled by the OS: it must not change tray-close semantics.
@@ -783,15 +798,13 @@ function restoreMainWindow() {
     createWindow();
     return;
   }
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  if (!mainWindow.isVisible()) mainWindow.show();
-  mainWindow.focus();
+  restoreWindowFromTray(mainWindow);
 }
 
 function toggleMainWindowFromTray() {
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()
       && (process.platform !== 'win32' || mainWindow.isFocused())) {
-    mainWindow.hide();
+    hideWindowToTray(mainWindow);
   } else {
     restoreMainWindow();
   }
@@ -814,7 +827,7 @@ function refreshTrayMenu() {
   const template = [
     {
       label: windowShown ? '隐藏主窗口' : '显示主窗口',
-      click: () => { if (windowShown) mainWindow.hide(); else restoreMainWindow(); },
+      click: () => { if (windowShown) hideWindowToTray(mainWindow); else restoreMainWindow(); },
     },
     { type: 'separator' },
     {
