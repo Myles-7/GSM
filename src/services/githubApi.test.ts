@@ -422,3 +422,66 @@ describe('GitHubApiService 401 来源区分', () => {
     expect(window.fetch).toHaveBeenCalledWith('https://api.github.com/user', expect.anything());
   });
 });
+
+describe('GitHub read deadlines', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('caps each read attempt when a stalled transport ignores cancellation', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn<typeof globalThis.fetch>(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetch);
+    const reading = new GitHubApiService('fixture').getCurrentUser();
+    const failure = expect(reading).rejects.toMatchObject({ name: 'TimeoutError', message: expect.stringContaining('30000ms') });
+    await vi.advanceTimersByTimeAsync(127_000);
+    await failure;
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.every(([, options]) => options?.signal?.aborted)).toBe(true);
+  });
+
+  it('shares the deadline between proxy headers and body and retries with a fresh signal', async () => {
+    vi.useFakeTimers();
+    const firstResponse = new Response();
+    const body = vi.spyOn(firstResponse, 'json').mockImplementation(() => new Promise(() => {}));
+    const fetch = vi.fn<typeof globalThis.fetch>(() => Promise.resolve(Response.json({ id: 42 })))
+      .mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(firstResponse), 29_000)));
+    vi.stubGlobal('fetch', fetch);
+    const service = new GitHubApiService('fixture');
+    service.setBackendUrl('http://localhost:3000/api');
+    const reading = service.getCurrentUser();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(body).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(reading).resolves.toMatchObject({ id: 42 });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][1]?.signal?.aborted).toBe(false);
+  });
+
+  it('propagates the original cancellation across an unresponsive response body', async () => {
+    const controller = new AbortController();
+    const response = new Response();
+    const reason = new DOMException('User stopped', 'AbortError');
+    const body = vi.spyOn(response, 'json').mockImplementation(() => {
+      controller.abort(reason);
+      return new Promise(() => {});
+    });
+    const fetch = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetch);
+    await expect(new GitHubApiService('fixture').getRepository('owner', 'repo', controller.signal)).rejects.toBe(reason);
+    expect(body).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not replay a mutation after a gateway failure', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 502 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(new GitHubApiService('fixture').starRepository('owner', 'repo')).rejects.toMatchObject({ status: 502 });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});

@@ -264,6 +264,7 @@ function mapGraphqlRepoDetail(node: Record<string, unknown>): GitHubRepoDetailRe
 }
 
 const GITHUB_API_BASE = 'https://api.github.com';
+const GITHUB_READ_TIMEOUT_MS = 30_000;
 // Sentinel message for the 401 thrown above; callers match on it to tell a
 // confirmed auth failure apart from network/rate-limit/5xx errors.
 export const GITHUB_TOKEN_INVALID_ERROR = 'GitHub token expired or invalid';
@@ -403,20 +404,24 @@ export class GitHubApiService {
       await waitForRequest(until - Date.now(), signal);
     }
 
-    // GitHub 的 gist 等端点偶发 502/503/504（网关瞬时故障），这里对 5xx 做指数退避重试，
-    // 退避策略与 backendAdapter.fetchWithRetry 保持一致（1s/2s/4s，最多重试 3 次）。
-    const maxRetries = autoRetry === false ? 0 : 3;
-    let response: Response | undefined;
+    // The GraphQL batch uses POST to read a fixed query. Treat all writes as
+    // single-shot because a lost response cannot prove they did not take effect.
+    const readOnly = ['GET', 'HEAD'].includes(method.toUpperCase())
+      || (endpoint === '/graphql' && operationTag === 'graphql-repo-batch');
+    const maxRetries = readOnly && autoRetry !== false ? 3 : 0;
+    let finalResponse: Response | undefined;
+    let data: T | null = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const viaProxy = this.backendUrl != null;
-      try {
-        if (this.backendUrl) {
-          // 通过后端代理路由：POST {backendUrl}/proxy/github/{endpoint}?query
-          // 服务端负责加鉴权头 + 读取代理配置 + 转发，所以客户端不再传 Authorization。
-          const proxyUrl = `${this.backendUrl}/proxy/github${endpoint}`;
+      const backendUrl = this.backendUrl;
+      const delayMs = 1000 * 2 ** attempt;
+      let headersReceived = false;
+      const request = async (attemptSignal?: AbortSignal) => {
+        let response: Response;
+        if (backendUrl) {
+          // The backend forwards the original GitHub method and required headers.
+          const proxyUrl = `${backendUrl}/proxy/github${endpoint}`;
           const proxyBody: Record<string, unknown> = { method };
           const requestHeaders = fetchOptions.headers as Record<string, string> | undefined;
-          // 转发必要头（如 starred repos 需要 star+json，POST/PATCH 需要 JSON Content-Type）
           const acceptHeader = requestHeaders?.Accept || requestHeaders?.accept;
           const contentTypeHeader = requestHeaders?.['Content-Type'] || requestHeaders?.['content-type'];
           const proxyHeaders: Record<string, string> = {};
@@ -427,14 +432,14 @@ export class GitHubApiService {
 
           response = await fetch(proxyUrl, {
             method: 'POST',
-            signal,
+            signal: attemptSignal,
             headers: this.getBackendHeaders(),
             body: JSON.stringify(proxyBody),
           });
         } else {
           response = await fetch(`${GITHUB_API_BASE}${endpoint}`, {
             ...fetchOptions,
-            signal,
+            signal: attemptSignal,
             headers: {
               'Authorization': `Bearer ${this.token}`,
               'Accept': 'application/vnd.github.v3+json',
@@ -443,60 +448,61 @@ export class GitHubApiService {
             },
           });
         }
-      } catch (fetchError) {
-        const durationMs = Date.now() - startTime;
-        // 网络错误（连接断开、DNS 超时、socket hang-up 等）视为可重试的瞬时故障，
-        // 仅在最后一次尝试时抛出；之前的尝试会继续走指数退避重试。
-        if (attempt === maxRetries || signal?.aborted) {
-          logger.error('githubApi', 'API request network error', { method, endpoint, durationMs, attempt: attempt + 1, maxRetries: maxRetries + 1, error: fetchError instanceof Error ? fetchError.message : String(fetchError) });
-          throw fetchError;
+        if (readOnly) attemptSignal?.throwIfAborted();
+        headersReceived = true;
+        const remaining = response.headers.get('X-RateLimit-Remaining');
+        const reset = response.headers.get('X-RateLimit-Reset');
+        const responseResource = response.headers.get('X-RateLimit-Resource') || resource;
+        const retryAfter = response.headers.get('Retry-After');
+        if (remaining !== null && reset !== null && Number.isFinite(Number(remaining)) && Number.isFinite(Number(reset))) {
+          this.rateLimits.set(responseResource, { remaining: Number(remaining), reset: Number(reset) * 1000 });
         }
-        logger.warn('githubApi', 'API request network error, retrying', { method, endpoint, attempt: attempt + 1, maxRetries: maxRetries + 1, durationMs, error: fetchError instanceof Error ? fetchError.message : String(fetchError) });
-        const delayMs = Math.min(1000 * Math.pow(2, attempt), 4000);
-        await new Promise<void>((resolve, reject) => {
-          const onAbort = () => {
-            clearTimeout(timeoutId);
-            signal?.removeEventListener('abort', onAbort);
-            reject(new Error('Aborted'));
-          };
-          const timeoutId = setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
-            resolve();
-          }, delayMs);
-          signal?.addEventListener('abort', onAbort);
-          if (signal?.aborted) onAbort();
-        });
+        const responseData = response.ok && response.status !== 204 ? await response.json() as T : null;
+        const shouldReadError = (backendUrl != null && response.status === 401)
+          || (response.status === 403 && remaining !== '0' && retryAfter === null);
+        const errorBody = shouldReadError
+          ? await response.json().catch(() => {
+            attemptSignal?.throwIfAborted();
+            return null;
+          }) as { code?: unknown; message?: unknown } | null
+          : null;
+        return { response, responseData, errorBody, remaining, responseResource, retryAfter };
+      };
+
+      let attemptResult: Awaited<ReturnType<typeof request>>;
+      try {
+        attemptResult = readOnly ? await withDeadline(request, GITHUB_READ_TIMEOUT_MS, signal) : await request(signal);
+      } catch (error) {
+        if (readOnly) signal?.throwIfAborted();
+        const timedOut = readOnly && (error as { name?: string } | null)?.name === 'TimeoutError';
+        const failure = timedOut
+          ? new DOMException(`GitHub API request timed out after ${GITHUB_READ_TIMEOUT_MS}ms`, 'TimeoutError')
+          : error;
+        // Successful headers followed by malformed JSON retain the previous
+        // immediate failure. Stalled headers or response bodies may retry.
+        if (attempt === maxRetries || (headersReceived && !timedOut)) {
+          throw failure;
+        }
+        logger.warn('githubApi', 'API read interrupted, retrying', { method, endpoint, attempt: attempt + 1, delayMs });
+        await waitForRequest(delayMs, signal);
         continue;
       }
 
-      // Parse rate limit headers
-      const remaining = response.headers.get('X-RateLimit-Remaining');
-      const reset = response.headers.get('X-RateLimit-Reset');
-      const responseResource = response.headers.get('X-RateLimit-Resource') || resource;
-      if (remaining !== null && reset !== null && Number.isFinite(Number(remaining)) && Number.isFinite(Number(reset))) {
-        this.rateLimits.set(responseResource, { remaining: Number(remaining), reset: Number(reset) * 1000 });
+      const { response, responseData, errorBody, remaining, responseResource, retryAfter } = attemptResult;
+      if (response.ok) {
+        finalResponse = response;
+        data = responseData;
+        break;
       }
-
-      if (response.ok) break;
 
       const durationMs = Date.now() - startTime;
       if (response.status === 401) {
         logger.warn('githubApi', 'API request failed: unauthorized', { method, endpoint, status: response.status, durationMs });
-        if (viaProxy) {
-          // The proxy forwards upstream GitHub bodies verbatim, while the
-          // backend's own auth middleware marks its 401s with code
-          // 'UNAUTHORIZED'. Only the latter is a backend API key problem.
-          const body = await response.json().catch(() => null) as { code?: string } | null;
-          if (body?.code === 'UNAUTHORIZED') {
-            throw Object.assign(new Error(BACKEND_PROXY_UNAUTHORIZED_ERROR), { status: 401 });
-          }
-        }
-        throw Object.assign(new Error(GITHUB_TOKEN_INVALID_ERROR), { status: 401 });
+        // Only the backend auth middleware marks its own 401s as UNAUTHORIZED.
+        const message = errorBody?.code === 'UNAUTHORIZED' ? BACKEND_PROXY_UNAUTHORIZED_ERROR : GITHUB_TOKEN_INVALID_ERROR;
+        throw Object.assign(new Error(message), { status: 401 });
       }
-      const retryAfter = response.headers.get('Retry-After');
-      const forbiddenBody = response.status === 403
-        ? await response.clone().json().catch(() => null) as { message?: unknown } | null : null;
-      const forbiddenMessage = typeof forbiddenBody?.message === 'string' ? forbiddenBody.message : '';
+      const forbiddenMessage = typeof errorBody?.message === 'string' ? errorBody.message : '';
       if (response.status === 429 || (response.status === 403
         && (remaining === '0' || retryAfter !== null || /rate limit|abuse detection/i.test(forbiddenMessage)))) {
         const resetAt = this.rateLimits.get(responseResource)?.reset || 0;
@@ -504,68 +510,35 @@ export class GitHubApiService {
           ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0;
         const retryAfterMs = Math.max(retryMs, remaining === '0' ? resetAt - Date.now() : 0, 1000);
         this.retryUntil.set(resource, Date.now() + retryAfterMs);
-        throw Object.assign(new Error('GitHub API rate limit exceeded'), { code:'rate_limited',status: response.status,retryAt:Date.now()+retryAfterMs, retryAfterMs });
+        throw Object.assign(new Error('GitHub API rate limit exceeded'), { code: 'rate_limited', status: response.status, retryAt: Date.now() + retryAfterMs, retryAfterMs });
       }
 
-      if (response.status === 403) {
-        if (/^Resource not accessible by (?:personal access token|integration)[.!]?$/i.test(forbiddenMessage.trim())) {
-          logger.warn('githubApi', 'API request failed: token permission', { method, endpoint, status: response.status, durationMs });
-          throw new GitHubTokenPermissionError();
-        }
+      if (response.status === 403 && /^Resource not accessible by (?:personal access token|integration)[.!]?$/i.test(forbiddenMessage.trim())) {
+        logger.warn('githubApi', 'API request failed: token permission', { method, endpoint, status: response.status, durationMs });
+        throw new GitHubTokenPermissionError();
       }
 
-      // 5xx 视为可重试的瞬时故障；其余 4xx 直接抛出（重试无意义）。
       const isRetryable = response.status >= 500 && response.status <= 599;
       if (!isRetryable || attempt === maxRetries) {
         logger.warn('githubApi', 'API request failed', { method, endpoint, status: response.status, durationMs });
         throw Object.assign(new Error(`GitHub API error: ${response.status} ${response.statusText}`), { status: response.status });
       }
 
-      // 重试前若请求已被取消，则不再等待，直接以当前失败状态抛出。
-      if (signal?.aborted) {
-        logger.warn('githubApi', 'API request aborted before retry', { method, endpoint, status: response.status });
-        throw new Error('Aborted');
-      }
-      const delayMs = Math.min(1000 * Math.pow(2, attempt), 4000);
       logger.warn('githubApi', 'API request failed, retrying', { method, endpoint, status: response.status, attempt: attempt + 1, maxRetries: maxRetries + 1, delayMs, durationMs });
-      await new Promise<void>((resolve, reject) => {
-        const onAbort = () => {
-          clearTimeout(timeoutId);
-          signal?.removeEventListener('abort', onAbort);
-          reject(new Error('Aborted'));
-        };
-        const timeoutId = setTimeout(() => {
-          signal?.removeEventListener('abort', onAbort);
-          resolve();
-        }, delayMs);
-        signal?.addEventListener('abort', onAbort);
-        if (signal?.aborted) onAbort();
-      });
+      await waitForRequest(delayMs, signal);
     }
 
-    // 循环正常退出时 response 一定已赋值（最后一次成功 break 或在循环内抛出）。
-    const finalResponse = response!;
-
-    if (logger.isDebugMode()) {
-      // Capture request headers (mask auth)
+    if (logger.isDebugMode() && finalResponse) {
       const requestHeaders: Record<string, string> = {
         'Authorization': 'Bearer ***',
         'Accept': 'application/vnd.github.v3+json',
         'X-GitHub-Api-Version': '2022-11-28',
         ...(options.headers as Record<string, string> || {}),
       };
-      // Capture response headers
       const responseHeaders: Record<string, string> = {};
       finalResponse.headers.forEach((v, k) => { responseHeaders[k] = v; });
-      // Capture response body preview (clone to avoid consuming)
-      let responseBody: string | undefined;
-      try {
-        const cloned = finalResponse.clone();
-        const text = await cloned.text();
-        if (text.length > 0) {
-          responseBody = text.length > 4000 ? text.slice(0, 4000) + '...[truncated]' : text;
-        }
-      } catch { /* body not readable */ }
+      const body = data === null ? '' : JSON.stringify(data) ?? '';
+      const responseBody = body.length > 4000 ? body.slice(0, 4000) + '...[truncated]' : body;
       logger.debug('githubApi', 'API request', {
         method, endpoint, status: finalResponse.status, durationMs: Date.now() - startTime,
         rateLimitRemaining: finalResponse.headers.get('x-ratelimit-remaining'),
@@ -573,8 +546,6 @@ export class GitHubApiService {
         ...(operationTag ? { operationTag } : {}),
       });
     }
-
-    const data = finalResponse.status === 204 ? null : await finalResponse.json();
 
     // 如果是starred repositories的响应，需要处理特殊格式
     if (endpoint.includes('/user/starred') && Array.isArray(data)) {
@@ -595,7 +566,7 @@ export class GitHubApiService {
       }) as T;
     }
 
-    return data;
+    return data as T;
   }
 
   async getCurrentUser(): Promise<GitHubUser> {
@@ -740,8 +711,8 @@ export class GitHubApiService {
     return allGists;
   }
 
-  async getGist(gistId: string, existing?: Gist): Promise<Gist> {
-    const gist = await this.makeRequest<Gist>(`/gists/${encodeURIComponent(gistId)}`);
+  async getGist(gistId: string, existing?: Gist, signal?: AbortSignal): Promise<Gist> {
+    const gist = await this.makeRequest<Gist>(`/gists/${encodeURIComponent(gistId)}`, {}, signal);
     return this.mergeGistMetadata(existing, gist, existing?.starred);
   }
 
@@ -751,7 +722,7 @@ export class GitHubApiService {
    */
   async getGistForAnalysis(gistId: string, existing?: Gist, signal?: AbortSignal): Promise<Gist> {
     try {
-      return await this.getGist(gistId, existing);
+      return await this.getGist(gistId, existing, signal);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const isServerFailure = /5\d{2}/.test(msg);
@@ -767,6 +738,7 @@ export class GitHubApiService {
           files[filename] = { ...file, content, truncated: false };
         } catch { /* 单文件失败不影响其他文件 */ }
       }));
+      signal?.throwIfAborted();
       return { ...existing, files };
     }
   }
@@ -778,35 +750,32 @@ export class GitHubApiService {
    * 当 backendUrl 已设置时通过服务端代理路由（走用户配置的代理），否则直连。
    */
   async getGistFileRaw(rawUrl: string, signal?: AbortSignal): Promise<string> {
-    if (this.backendUrl) {
-      const proxyUrl = `${this.backendUrl}/proxy/github-raw`;
-      const response = await fetch(proxyUrl, {
-        method: 'POST',
-        signal,
-        headers: this.getBackendHeaders(),
-        body: JSON.stringify({ url: rawUrl }),
-      });
-      if (!response.ok) {
-        // 尝试从 JSON 错误体提取消息
-        let detail = response.statusText;
-        try { const data = await response.json(); detail = (data as { error?: string }).error || detail; } catch { /* ignore */ }
-        throw new Error(`GitHub raw proxy error: ${response.status} ${detail}`);
-      }
-      return response.text();
-    }
+    return withDeadline(async attemptSignal => {
+      const backendUrl = this.backendUrl;
+      const response = backendUrl
+        ? await fetch(`${backendUrl}/proxy/github-raw`, {
+          method: 'POST',
+          signal: attemptSignal,
+          headers: this.getBackendHeaders(),
+          body: JSON.stringify({ url: rawUrl }),
+        })
+        : await fetch(rawUrl, {
+          signal: attemptSignal,
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        });
+      if (response.ok) return response.text();
+      if (!backendUrl) throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
 
-    const response = await fetch(rawUrl, {
-      signal,
-      headers: {
-        'Authorization': `Bearer ${this.token}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
-    }
-    return response.text();
+      const data = await response.json().catch(() => {
+        attemptSignal.throwIfAborted();
+        return null;
+      }) as { error?: string } | null;
+      throw new Error(`GitHub raw proxy error: ${response.status} ${data?.error || response.statusText}`);
+    }, GITHUB_READ_TIMEOUT_MS, signal);
   }
 
   async createGist(input: GistCreateInput): Promise<Gist> {
