@@ -13,6 +13,9 @@ import { logger } from '../../../services/logger';
 import { applyAnalysisFailure, applyAnalysisSuccess } from '../application/repositoryPatches';
 import { beginRepositoryAnalysisWrite } from '../../../services/repositoryAnalysisWrites';
 import { readRepositoryDetails } from '../../../utils/repositoryDetailsSchema';
+import { commitAgyRecovery } from '../../../services/agyClient';
+import type { AgyRecoveryRecord } from '../../../types/agy';
+import { flushAppStorePersistence } from '../../../store/persistence/storage';
 
 interface UseRepositoryCardActionsOptions {
   repository: Repository;
@@ -174,6 +177,7 @@ export const useRepositoryCardActions = ({
     setAnalyzingRepository(repoId, true);
 
     try {
+      let recoveryRecord: AgyRecoveryRecord | undefined;
       const result = await analyzeRepository({
         repository,
         githubToken,
@@ -189,6 +193,10 @@ export const useRepositoryCardActions = ({
           });
         },
         signal: controller.signal,
+        recovery: {
+          deferAck: true,
+          onResult: record => { recoveryRecord = record; },
+        },
       });
       logger.info('ai.performance', 'Repository card AI request completed', {
         repoId,
@@ -210,6 +218,14 @@ export const useRepositoryCardActions = ({
 
       const updateStartedAt = performance.now();
       updateRepository(mergeAnalysis(latestRepository, updatedRepo));
+      // The AGY receipt is consumed only after the local repository write has
+      // crossed its persistence barrier. A failed flush leaves the encrypted
+      // provider result replayable instead of silently losing it.
+      await flushAppStorePersistence();
+      await commitAgyRecovery(String(useAppStore.getState().user?.id ?? ''), recoveryRecord, {
+        feature: 'repository-summary', entityType: 'repository', entityId: String(repoId),
+        resultDigest: recoveryRecord?.resultDigest, savedAt: new Date().toISOString(),
+      });
       logger.info('ai.performance', 'Repository card AI result stored', {
         repoId,
         fullName: repository.full_name,

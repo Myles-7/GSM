@@ -246,7 +246,7 @@ export async function generateAgyText(config: AgyAIConfig, options: {
       throw Object.assign(new Error(`AGY_${result.code}`), { details: result.details, retryAfterMs: result.details?.retryAfterMs });
     }
     outcome('succeeded');
-    if (!options.recovery?.context && result.value.recovery?.resultDigest && api.recoveryAck) {
+    if (!options.recovery?.deferAck && !options.recovery?.context && result.value.recovery?.resultDigest && api.recoveryAck) {
       const ack = await api.recoveryAck(ownedSession, requestId, result.value.recovery.resultDigest);
       if (!ack.ok) throw new Error(`AGY_${ack.code}`);
     }
@@ -326,6 +326,27 @@ export async function acknowledgeAgyRecovery(owner: string, requestId: string, d
     const items = task.items.map(item => item.recovery?.requestId === requestId ? { ...item, recovery: undefined, commitStatus: 'saved' as const, state: 'complete' as const, error: undefined } : item);
     aiTaskJournal.patch(task.id, { items, ...(items.every(item => item.state === 'complete') ? { commitStatus: 'saved', state: 'complete', error: undefined } : {}) });
   }
+}
+
+/**
+ * Record a bounded business-commit descriptor before consuming a durable AGY
+ * result. The descriptor is intentionally supplied by the caller rather than
+ * the generated text so the encrypted recovery store never receives the full
+ * user-facing result as commit metadata.
+ */
+export async function stageAgyRecovery(owner: string, record: Pick<AgyRecoveryRecord, 'requestId' | 'resultDigest'> | undefined, commit: unknown) {
+  if (!record?.resultDigest) return;
+  const bound = await agyRecoverySession(owner);
+  if (!bound?.api.recoveryStage) throw new Error('AGY_RECOVERY_STAGE_UNAVAILABLE');
+  const result = await bound.api.recoveryStage(bound.session, record.requestId, record.resultDigest, commit);
+  if (!result.ok) throw new Error(`AGY_${result.code}`);
+}
+
+/** Stage and consume a durable result after the caller's persistence barrier. */
+export async function commitAgyRecovery(owner: string, record: Pick<AgyRecoveryRecord, 'requestId' | 'resultDigest'> | undefined, commit: unknown) {
+  if (!record?.resultDigest) return;
+  await stageAgyRecovery(owner, record, commit);
+  await acknowledgeAgyRecovery(owner, record.requestId, record.resultDigest);
 }
 export async function discardAgyRecovery(owner: string, requestId: string) {
   const bound = await agyRecoverySession(owner); if (!bound) throw new Error('AGY_SESSION_CHANGED');

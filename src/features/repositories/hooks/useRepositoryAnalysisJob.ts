@@ -15,6 +15,8 @@ import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { bindTaskSignal, taskConfigSnapshot, confirmLocalTaskCommit } from '../../../services/taskExecution';
 import { checkpointDesktopHomeRepository } from '../../../home/desktop';
 import { classifyAgyError } from '../../../services/agyErrors';
+import { commitAgyRecovery } from '../../../services/agyClient';
+import type { AgyRecoveryRecord } from '../../../types/agy';
 
 export type RepositoryAnalysisScope = 'all' | 'unanalyzed' | 'failed' | 'selected';
 
@@ -259,6 +261,7 @@ export const useRepositoryAnalysisJob = ({
     let commitAttempted = false;
     let persistenceFailed = false;
     const savedIds = new Set<number>();
+    const recoveryResults = new Map<number, AgyRecoveryRecord>();
     const confirmCommit = () => confirmLocalTaskCommit(journal, {
       durabilityBarrier: async () => {
         if (!currentAccount()) throw new Error('ACCOUNT_CHANGED');
@@ -286,6 +289,7 @@ export const useRepositoryAnalysisJob = ({
         }
 
         if (result.success) {
+          if (result.recovery) recoveryResults.set(result.repo.id, result.recovery);
           journal?.commit('pending');
           const resolvedCategory = resolveCategoryAssignment(
             { ...result.repo, ai_summary: result.summary },
@@ -338,6 +342,14 @@ export const useRepositoryAnalysisJob = ({
         commitAttempted = true;
         persistenceFailed = !await confirmCommit();
         if (persistenceFailed) return false;
+        const owner = String(startState.user?.id ?? '');
+        for (const [repositoryId, record] of recoveryResults) {
+          await commitAgyRecovery(owner, record, {
+            feature: 'repository-summary', entityType: 'repository', entityId: String(repositoryId),
+            resultDigest: record.resultDigest, savedAt: new Date().toISOString(),
+          });
+          recoveryResults.delete(repositoryId);
+        }
       }
       const stats = optimizer.getStats();
       console.log('AI Analysis Stats:', stats);

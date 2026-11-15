@@ -56,6 +56,7 @@ const createId = (prefix: string): string => {
 };
 
 type ChatToolName =
+  | 'execution_mode'
   | 'read_repo_tree'
   | 'read_repo_file'
   | 'read_releases'
@@ -506,6 +507,15 @@ const stripUnverifiableMarkers = (content: string, evidences: ToolEvidence[]): s
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+};
+
+/**
+ * Creative answers keep their requested document order and section structure.
+ * Only source markers are normalized or removed; factual-answer pruning is not
+ * appropriate for an article, post, or other creative deliverable.
+ */
+export const normalizeCreativeAnswer = (content: string, evidences: ToolEvidence[]): string => {
+  return stripUnverifiableMarkers(mapFootnoteReferences(content, evidences), evidences);
 };
 
 const ensureVerifiableSources = (content: string, evidences: ToolEvidence[], language: AppLanguage): string => {
@@ -1187,6 +1197,7 @@ export const synthesizeVerifiedAnswer = async (
   // 脚注编号而被整体丢弃，同时不静默返回未核验内容。
   const validAnswer = (raw: string | null): string | null => {
     if (!raw) return null;
+    if (isCreativeRequest(input.question)) return normalizeCreativeAnswer(raw, evidences) || null;
     const footnoteMapped = mapFootnoteReferences(raw, evidences);
     const cleaned = ensureVerifiableSources(footnoteMapped, evidences, input.language);
     if (cleaned !== noVerifiedSummaryResponse(input.language)) return cleaned;

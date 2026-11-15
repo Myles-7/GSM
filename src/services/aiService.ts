@@ -1411,7 +1411,7 @@ ${options.user}` : options.user;
     return { content, toolCalls };
   }
 
-  async analyzeRepository(repository: Repository, readmeContent: string, customCategories?: string[], categoryHints?: string, signal?: AbortSignal, retryState: RepositoryAnalysisRetryState = { attempts: 0 }): Promise<RepositoryAnalysisResult> {
+  async analyzeRepository(repository: Repository, readmeContent: string, customCategories?: string[], categoryHints?: string, signal?: AbortSignal, retryState: RepositoryAnalysisRetryState = { attempts: 0 }, options?: { recovery?: import('../types/agy').AgyRecoveryOptions }): Promise<RepositoryAnalysisResult> {
     const startTime = Date.now();
     const configId = this.config.id;
     const { full_name } = repository;
@@ -1437,6 +1437,9 @@ ${options.user}` : options.user;
       while (retryState.attempts < AIService.ANALYSIS_MAX_ATTEMPTS) {
         signal?.throwIfAborted();
         const attempt = ++retryState.attempts;
+        const recovery = options?.recovery
+          ? { ...options.recovery, step: `${options.recovery.step ?? `summary:${repository.id}`}:attempt-${attempt}` }
+          : undefined;
         const content = await this.requestText({
           responseContract: 'repository-summary-v1',
           feature: 'repository-summary',
@@ -1447,6 +1450,7 @@ ${options.user}` : options.user;
           temperature: retryState.repair ? 0.1 : 0.3,
           maxTokens: AIService.ANALYSIS_MAX_TOKENS,
           signal,
+          recovery,
         });
         signal?.throwIfAborted();
 
@@ -1492,7 +1496,7 @@ ${options.user}` : options.user;
     }
   }
 
-  async analyzeGist(gist: Gist, contentPreview: string, signal?: AbortSignal): Promise<string> {
+  async analyzeGist(gist: Gist, contentPreview: string, signal?: AbortSignal, options?: { recovery?: import('../types/agy').AgyRecoveryOptions }): Promise<string> {
     const fileList = Object.values(gist.files || {})
       .map(file => `${file.filename}${file.language ? ` (${file.language})` : ''}, ${file.size} bytes`)
       .join('\n');
@@ -1549,6 +1553,7 @@ ${outputLanguageDirective ? `\n${outputLanguageDirective}` : ''}
       feature: 'gist-summary',
       maxTokens: 500,
       signal,
+      recovery: options?.recovery,
     });
   }
 
@@ -1562,7 +1567,8 @@ ${outputLanguageDirective ? `\n${outputLanguageDirective}` : ''}
   async analyzeReleaseSummary(
     releaseBody: string,
     meta: { repoName: string; tagName: string; releaseName?: string },
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { recovery?: import('../types/agy').AgyRecoveryOptions }
   ): Promise<string> {
     const body = this.sanitizeForPrompt(releaseBody || '').slice(0, 12000);
     if (!body.trim()) {
@@ -1616,6 +1622,7 @@ ${body}
       temperature: 0.3,
       maxTokens: 4096,
       signal,
+      recovery: options?.recovery,
     });
 
     // 防御性处理：部分模型仍会用 ```markdown 或 ``` 包裹返回内容，
@@ -1668,6 +1675,10 @@ AI Summary: ${gist.ai_summary || 'None'}`;
         })
         .map(id => gistById.get(id))
         .filter((gist): gist is Gist => !!gist);
+      // A non-empty response that contains no candidate IDs is malformed,
+      // whereas [] is a legitimate “no relevant result” answer. Surface the
+      // malformed case so callers can use their lexical fallback.
+      if (ids.length > 0 && ranked.length === 0) throw new Error('Invalid AI search result: no candidate IDs matched');
       return ranked;
     } catch {
       logger.warn('ai', 'Failed to parse gist reranking result', { code: 'INVALID_RESULT' });
@@ -1968,7 +1979,7 @@ ${this.sanitizeForPrompt(selectAnalysisContext(readmeContent))}
 }
 
 平台线索：
-Dockerfile/docker-compose=docker；CLI/命令行/终端=cli；浏览器/前端/API=web；iOS/Swift/Xcode=ios；Android/Kotlin/Gradle=android；macOS/Homebrew=mac；Windows/.exe/MSI=windows；Linux/systemd/apt=linux。
+Dockerfile/docker-compose 可作为 docker 线索；CLI/命令行/终端可作为 cli 线索；浏览器/前端/API 可作为 web 线索。Swift、Kotlin、Gradle、Xcode、Homebrew 等语言或工具本身不足以证明目标平台，只有运行目标、构建目标、平台专属配置或发布物明确支持时才填写 ios、android 或 mac；Windows/.exe/MSI 可作为 windows 线索；Linux/systemd/apt 可作为 linux 线索。
 
 仓库信息：
 ${repoInfo}
@@ -2007,7 +2018,7 @@ Output format:
 }
 
 Platform hints:
-Dockerfile/docker-compose=docker; CLI/command-line/terminal=cli; browser/frontend/API=web; iOS/Swift/Xcode=ios; Android/Kotlin/Gradle=android; macOS/Homebrew=mac; Windows/.exe/MSI=windows; Linux/systemd/apt=linux.
+Dockerfile/docker-compose can indicate docker; CLI/command-line/terminal can indicate cli; browser/frontend/API can indicate web. Swift, Kotlin, Gradle, Xcode, and Homebrew alone do not prove a target platform; choose ios, android, or mac only when runtime targets, build targets, platform-specific configuration, or release artifacts provide direct evidence. Windows/.exe/MSI can indicate windows; Linux/systemd/apt can indicate linux.
 
 Repository information:
 ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
@@ -2069,19 +2080,25 @@ ${repoInfo}${outputLanguageDirective ? `\n\n${outputLanguageDirective}` : ''}
 
       const parsed = this.extractAndParseAIJson(cleaned);
       if (parsed) {
+        const hasRequiredFields = ['summary', 'tags', 'platforms'].every((field) => Object.prototype.hasOwnProperty.call(parsed, field));
+        const rawTags = parsed.tags;
+        const rawPlatforms = parsed.platforms;
+        const fieldsHaveValidTypes = Array.isArray(rawTags) && Array.isArray(rawPlatforms)
+          && rawTags.every((value) => typeof value === 'string')
+          && rawPlatforms.every((value) => typeof value === 'string');
+        if (!hasRequiredFields || !fieldsHaveValidTypes) {
+          return {
+            summary: '', tags: [], platforms: [], isValid: false,
+            invalidReason: this.language === 'zh'
+              ? 'summary、tags、platforms 必须存在且类型正确'
+              : 'summary, tags, and platforms must be present with valid types',
+          };
+        }
         const rawSummary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
         const summary = this.sanitizeSummary(rawSummary);
-        const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((v) => typeof v === 'string').slice(0, 5) : [];
-        const platforms = Array.isArray(parsed.platforms)
-          ? Array.from(
-              new Set(
-                parsed.platforms
-                  .filter((v): v is string => typeof v === 'string')
-                  .map((v) => v.trim().toLowerCase())
-                  .filter((v) => AIService.VALID_PLATFORMS.includes(v))
-              )
-            ).slice(0, 8)
-          : [];
+        const tags = rawTags.map((value) => value.trim()).filter((value) => value.length > 0 && value.length <= 80).slice(0, 5);
+        const platforms = Array.from(new Set(rawPlatforms.map((value) => value.trim().toLowerCase())
+          .filter((value) => AIService.VALID_PLATFORMS.includes(value)))).slice(0, 8);
 
         if (!summary) {
           return {

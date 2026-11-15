@@ -338,7 +338,7 @@ export const AIConfigPanel: React.FC<AIConfigPanelProps> = ({ t }) => {
 }
 
 平台线索：
-Dockerfile/docker-compose=docker；CLI/命令行/终端=cli；浏览器/前端/API=web；iOS/Swift/Xcode=ios；Android/Kotlin/Gradle=android；macOS/Homebrew=mac；Windows/.exe/MSI=windows；Linux/systemd/apt=linux。
+Dockerfile/docker-compose 可作为 docker 线索；CLI/命令行/终端可作为 cli 线索；浏览器/前端/API 可作为 web 线索。Swift、Kotlin、Gradle、Xcode、Homebrew 等语言或工具本身不足以证明目标平台，只有运行目标、构建目标、平台专属配置或发布物明确支持时才填写 ios、android 或 mac；Windows/.exe/MSI 可作为 windows 线索；Linux/systemd/apt 可作为 linux 线索。
 
 仓库信息：
 {REPO_INFO}`;
@@ -360,7 +360,7 @@ Output format:
 }
 
 Platform hints:
-Dockerfile/docker-compose=docker; CLI/command-line/terminal=cli; browser/frontend/API=web; iOS/Swift/Xcode=ios; Android/Kotlin/Gradle=android; macOS/Homebrew=mac; Windows/.exe/MSI=windows; Linux/systemd/apt=linux.
+Dockerfile/docker-compose can indicate docker; CLI/command-line/terminal can indicate cli; browser/frontend/API can indicate web. Swift, Kotlin, Gradle, Xcode, and Homebrew alone do not prove a target platform; choose ios, android, or mac only when runtime targets, build targets, platform-specific configuration, or release artifacts provide direct evidence. Windows/.exe/MSI can indicate windows; Linux/systemd/apt can indicate linux.
 
 Repository information:
 {REPO_INFO}`;
@@ -383,7 +383,7 @@ Output format:
 }
 
 Platform hints:
-Dockerfile/docker-compose=docker; CLI/command-line/terminal=cli; browser/frontend/API=web; iOS/Swift/Xcode=ios; Android/Kotlin/Gradle=android; macOS/Homebrew=mac; Windows/.exe/MSI=windows; Linux/systemd/apt=linux.
+Dockerfile/docker-compose can indicate docker; CLI/command-line/terminal can indicate cli; browser/frontend/API can indicate web. Swift, Kotlin, Gradle, Xcode, and Homebrew alone do not prove a target platform; choose ios, android, or mac only when runtime targets, build targets, platform-specific configuration, or release artifacts provide direct evidence. Windows/.exe/MSI can indicate windows; Linux/systemd/apt can indicate linux.
 
 Repository information:
 {REPO_INFO}`;

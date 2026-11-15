@@ -3,11 +3,12 @@ import type { ExplorationCamera } from './types';
 
 export interface CanvasInsets { left: number; right: number; top: number; bottom: number }
 export const emptyInsets: CanvasInsets = { left: 16, right: 16, top: 16, bottom: 54 };
-export function overviewCamera(layout: MapLayout, width: number, height: number, insets = emptyInsets): ExplorationCamera {
-  const left = Math.min(...layout.nodes.map(n => n.x - n.width / 2)) - 24;
-  const right = Math.max(...layout.nodes.map(n => n.x + n.width / 2)) + 24;
-  const top = Math.min(...layout.nodes.map(n => n.y - n.height / 2)) - 24;
-  const bottom = Math.max(...layout.nodes.map(n => n.y + n.height / 2)) + 24;
+export function overviewCamera(layout: MapLayout, width: number, height: number, insets = emptyInsets, additionalBounds: { x: number; y: number; width: number; height: number }[] = []): ExplorationCamera {
+  const bounds = [...layout.nodes, ...additionalBounds];
+  const left = Math.min(...bounds.map(n => n.x - n.width / 2)) - 24;
+  const right = Math.max(...bounds.map(n => n.x + n.width / 2)) + 24;
+  const top = Math.min(...bounds.map(n => n.y - n.height / 2)) - 24;
+  const bottom = Math.max(...bounds.map(n => n.y + n.height / 2)) + 24;
   const w = Math.max(1, width - insets.left - insets.right), h = Math.max(1, height - insets.top - insets.bottom);
   const zoom = Math.min(1.15, w / Math.max(1, right - left), h / Math.max(1, bottom - top));
   return { zoom, x: insets.left + w / 2 - (left + right) / 2 * zoom, y: insets.top + h / 2 - (top + bottom) / 2 * zoom };

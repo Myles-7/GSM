@@ -380,7 +380,7 @@ export function AIWorkbench() {
   const [view, setView] = useState<'chat' | 'overview'>('chat');
   const [docked, setDocked] = useState(() => { try { return localStorage.getItem('gsm:workbench-dock') !== 'false'; } catch { return true; } });
   const [resultRatio, setResultRatio] = useState(() => {
-    try { const value = Number(localStorage.getItem('gsm:workbench-ratio')); return value >= 35 && value <= 70 ? value : 60; } catch { return 60; }
+    try { const value = Number(localStorage.getItem('gsm:workbench-ratio')); return value >= 35 && value <= 70 ? value : 65; } catch { return 65; }
   });
   const [inputIntent, setInputIntent] = useState<WorkbenchInputIntent>('search');
   const inputIntentSessionRef = useRef<string | null>(null);
@@ -795,7 +795,7 @@ export function AIWorkbench() {
         ) : <div />}
         <div className="flex min-w-0 items-center justify-end gap-0.5">
         {hasNewCandidates && <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" title={t('overview.dock')} aria-label={t('overview.dock')} aria-pressed={docked} onClick={() => setDocked(!docked)}><PanelRight className="h-4 w-4" /></Button>}
-        {hasNewCandidates && <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(55); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
+        {hasNewCandidates && <Button size="icon" variant="ghost" className="hidden h-8 w-8 lg:inline-flex" title={t('overview.resetLayout')} aria-label={t('overview.resetLayout')} onClick={() => { setResultRatio(65); setDocked(true); setLeftOpen(true); }}><RotateCcw className="h-4 w-4" /></Button>}
         {w.project && !isKeyboardOpen && <button className="hidden max-w-40 truncate text-xs text-muted-foreground sm:block" onClick={() => editProject(w.project!)}>{w.project.name}</button>}
         <Button size="icon" variant="ghost" className="h-8 w-8" title={t('workbench.exportMarkdown')} aria-label={t('workbench.exportMarkdown')} disabled={!w.messages.length}
           onClick={() => download('conversation.md', conversationMarkdown(w.messages, w.evidence), 'text/markdown')}><Download className="h-4 w-4" /></Button>
@@ -851,6 +851,10 @@ export function AIWorkbench() {
           <div className={isStart ? 'hidden' : 'relative flex min-h-0 flex-1 flex-col'}>
             <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" onScroll={checkScrollState}>
               <div className="mx-auto max-w-3xl space-y-5">
+              {!w.messages.length && !hasPendingRequirements && !hasProposals && !busy && hasNewCandidates && taskMode === 'discover' && inputIntent === 'results' && <div data-testid="workbench-empty-conversation" className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs leading-5 text-muted-foreground">
+                <p className="flex items-center gap-2 font-medium text-foreground"><MessageSquare className="h-3.5 w-3.5" />{t('overview.ask')}</p>
+                <p className="mt-1">{t('overview.askPlaceholder')}</p>
+              </div>}
               {w.messages.map((message) =>
                 message.role === 'user' ? (
                   <article

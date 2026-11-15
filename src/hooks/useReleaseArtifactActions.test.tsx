@@ -208,6 +208,7 @@ describe('useReleaseArtifactActions.generateSummary', () => {
       'Notes body',
       { repoName: 'owner/repo', tagName: 'v1.0.0', releaseName: 'Version 1.0.0' },
       expect.any(AbortSignal),
+      expect.objectContaining({ recovery: expect.objectContaining({ deferAck: true }) }),
     );
     expect(result.current.summaries[100]).toMatchObject({ status: 'done', content: '# Summary' });
   });

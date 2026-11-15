@@ -21,7 +21,18 @@ export function originalDetailConfig(fallback: AIConfig, context: z.infer<typeof
     agyEffort: context.config.effort, agyTimeoutSeconds: context.config.timeoutSeconds, deviceBound: true,
     agyRequestProfile: { model: context.config.model, effort: context.config.effort, timeoutSeconds: context.config.timeoutSeconds } };
 }
-const analysisSnapshot = (repo: Repository) => JSON.stringify([repo.ai_details ?? null, repo.ai_summary ?? null, repo.ai_tags ?? null, repo.ai_platforms ?? null, repo.analyzed_at ?? null]);
+// Commit metadata must remain bounded and must not duplicate the saved detail
+// payload. This deterministic digest is used only for stale-write detection;
+// the provider's resultDigest remains the authoritative recovery identity.
+const analysisSnapshot = (repo: Repository) => {
+  const value = JSON.stringify([repo.ai_details ?? null, repo.ai_summary ?? null, repo.ai_tags ?? null, repo.ai_platforms ?? null, repo.analyzed_at ?? null]);
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+};
 export function detailRecoveryContext(repository: Repository, evidence: DetailCheckpointContext, config: AIConfig, assetVersion?: RepositoryAnalysisAssetWriteVersion, source?: DetailRecoveryInput['source']) {
   return { kind: 'repository-details', repositoryId: repository.id, evidence, assetVersion, source, baseAnalysis: analysisSnapshot(repository),
     config: { id: config.id, model: evidence.model, effort: config.provider === 'agy-cli' ? config.agyRequestProfile?.effort ?? config.agyEffort : 'medium',
@@ -49,8 +60,11 @@ export async function stageRepositoryDetailRecovery(owner: number, record: AgyRe
   const { agyRecoverySession } = await import('./agyClient');
   const bound = await agyRecoverySession(String(owner)); if (!bound) throw new Error('AGY_SESSION_CHANGED');
   const previous = await readAgyRecovery(String(owner), record.requestId);
+  const previousCommit = previous.commit && typeof previous.commit === 'object' ? previous.commit as { editedText?: unknown } : {};
   const result = await bound.api.recoveryStage(bound.session, record.requestId, record.resultDigest,
-    { ...(previous.commit as object ?? {}), kind: 'repository-details', savedAnalysis: analysisSnapshot(repository) });
+    { ...(typeof previousCommit.editedText === 'string' ? { editedText: previousCommit.editedText } : {}),
+      kind: 'repository-details', entityType: 'repository', entityId: String(repository.id), resultDigest: record.resultDigest,
+      savedAt: new Date().toISOString(), savedAnalysis: analysisSnapshot(repository) });
   if (!result.ok) throw new Error(`AGY_${result.code}`);
 }
 export async function confirmRepositoryDetailRecovery(owner: number, record?: AgyRecoveryRecord) {

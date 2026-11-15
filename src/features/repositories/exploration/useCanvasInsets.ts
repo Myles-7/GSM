@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState, type RefObject } from 'react';
 import { emptyInsets, type CanvasInsets } from './mapGeometry';
 
-/** Observe actual occluding surfaces; opening a panel never changes graph geometry. */
+/** Measure controls that overlap the viewport; node geometry remains independent of the viewport. */
 export function useCanvasInsets(root: RefObject<HTMLElement>, revision: string): CanvasInsets {
   const [insets,setInsets]=useState(emptyInsets);
   useLayoutEffect(()=>{

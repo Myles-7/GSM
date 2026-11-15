@@ -191,7 +191,7 @@ describe('useGistActions card actions', () => {
       expect(mocks.confirm).not.toHaveBeenCalled();
       const signal = mocks.getGistForAnalysis.mock.calls[0][2] as AbortSignal;
       expect(signal).toBeInstanceOf(AbortSignal);
-      expect(mocks.analyzeGist).toHaveBeenCalledWith(gistDetail, 'preview', signal);
+      expect(mocks.analyzeGist).toHaveBeenCalledWith(gistDetail, 'preview', signal, expect.objectContaining({ recovery: expect.objectContaining({ deferAck: true }) }));
       expect(storeState.setAnalyzingGist).toHaveBeenCalledWith('gist-1', true);
       expect(storeState.setAnalyzingGist).toHaveBeenLastCalledWith('gist-1', false);
       expect(storeState.updateGist).toHaveBeenCalledTimes(1);

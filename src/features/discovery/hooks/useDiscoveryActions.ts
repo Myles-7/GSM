@@ -29,6 +29,8 @@ import { refreshPopularReading } from '../workspace/popularReading';
 import { withDeadline } from '../../../utils/requestDeadline';
 import { aiTaskJournal } from '../../../services/aiTaskJournal';
 import { bindTaskSignal } from '../../../services/taskExecution';
+import { commitAgyRecovery } from '../../../services/agyClient';
+import type { AgyRecoveryRecord } from '../../../types/agy';
 export interface ChannelLoadState {
   status: 'idle' | 'loading' | 'ready' | 'partial' | 'error' | 'cancelled';
   issue?: TaskIssue;
@@ -418,6 +420,8 @@ export const useDiscoveryActions = () => {
     try {
       const api = createGitHubApiService(analysisState.githubToken);
       const service = new AIService(forAgyFeature(activeConfig, 'repository-summary', 'background'), analysisState.language);
+      const recoveryResults = new Map<number, AgyRecoveryRecord>();
+      const durableWrites = new Map<number, Promise<boolean>>();
       const readmeCache = await optimizer.prefetchReadmes(unanalyzed, api);
       if (optimizer.isAborted() || !isCurrentSession(analysisSession)) return;
       const results = await optimizer.analyzeRepositories(
@@ -435,6 +439,7 @@ export const useDiscoveryActions = () => {
           if (optimizer.isAborted() || !isCurrentSession(analysisSession) || !result.repo) return;
           const analyzedAt = new Date().toISOString();
           if (result.success) {
+            if (result.recovery) recoveryResults.set(result.repo.id, result.recovery);
             const updatedRepo: DiscoveryRepo = {
               ...result.repo,
               rank: 0,
@@ -450,7 +455,7 @@ export const useDiscoveryActions = () => {
               analysis_error: undefined,
             };
             analysisState.updateDiscoveryRepo(updatedRepo);
-            void discoveryAnalysisStorage.saveAnalysis(updatedRepo.id, { ai_summary: result.summary, ai_tags: result.tags, ai_platforms: result.platforms, analyzed_at: analyzedAt, analysis_failed: false, analysis_error: undefined });
+            durableWrites.set(updatedRepo.id, discoveryAnalysisStorage.saveAnalysis(updatedRepo.id, { ai_summary: result.summary, ai_tags: result.tags, ai_platforms: result.platforms, analyzed_at: analyzedAt, analysis_failed: false, analysis_error: undefined }, { strict: true }));
           } else {
             const failedRepo: DiscoveryRepo = { ...result.repo, rank: 0, channel: analysisState.selectedDiscoveryChannel, platform: analysisState.discoveryPlatform, analyzed_at: analyzedAt, analysis_failed: true, analysis_error: result.error?.message || undefined };
             analysisState.updateDiscoveryRepo(failedRepo);
@@ -459,6 +464,15 @@ export const useDiscoveryActions = () => {
         },
       );
       if (optimizer.isAborted() || !isCurrentSession(analysisSession)) return;
+      const saved = await Promise.all([...durableWrites.entries()].map(async ([id, promise]) => [id, await promise] as const));
+      if (saved.some(([, ok]) => !ok)) throw new Error('DISCOVERY_ANALYSIS_SAVE_FAILED');
+      const owner = String(useAppStore.getState().user?.id ?? '');
+      for (const [repositoryId, record] of recoveryResults) {
+        await commitAgyRecovery(owner, record, {
+          feature: 'repository-summary', entityType: 'discovery-repository', entityId: String(repositoryId),
+          resultDigest: record.resultDigest, savedAt: new Date().toISOString(),
+        });
+      }
       const successCount = results.filter(result => result.success).length;
       const failCount = results.length - successCount;
       toast(t(failCount > 0 ? 'useDiscoveryActions.ai-analysis-complete-with-failures' : 'useDiscoveryActions.ai-analysis-complete', { successCount: successCount, failCount: failCount }), successCount === 0 ? 'error' : failCount > 0 ? 'info' : 'success');

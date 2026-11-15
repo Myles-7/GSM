@@ -62,8 +62,8 @@ const withTimeout = async <T>(
 };
 
 export const discoveryAnalysisStorage = {
-  async saveAnalysis(repoId: number, data: DiscoveryAnalysisData): Promise<void> {
-    if (!canUseIndexedDB()) return;
+  async saveAnalysis(repoId: number, data: DiscoveryAnalysisData, options?: { strict?: boolean }): Promise<boolean> {
+    if (!canUseIndexedDB()) return false;
     try {
       const db = await withTimeout(openDb(), 3000, (lateDb) => lateDb.close());
       await new Promise<void>((resolve, reject) => {
@@ -79,8 +79,11 @@ export const discoveryAnalysisStorage = {
           reject(tx.error);
         };
       });
+      return true;
     } catch (e) {
       console.warn('[discoveryAnalysisStorage] saveAnalysis failed:', e);
+      if (options?.strict) throw e;
+      return false;
     }
   },
 

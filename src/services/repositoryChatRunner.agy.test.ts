@@ -22,6 +22,15 @@ describe('AGY chat mode selection', () => {
     expect(mocks.native).not.toHaveBeenCalled();
     expect(mode === 'model' ? mocks.research : mocks.model).not.toHaveBeenCalled();
   });
+
+  it.each(['deep', 'unlimited'] as const)('routes AGY model mode to bounded research for %s depth', async taskDepth => {
+    const input = { repository: { full_name: 'fixture/project' }, session: { ownerId: 'test-owner' },
+      aiConfig: { provider: 'agy-cli', agyMode: 'model' }, taskDepth } as RepositoryChatTurnInput;
+    await runRepositoryChatTurn(input);
+    expect(mocks.research).toHaveBeenCalledWith(expect.objectContaining({ ...input, taskDepth }));
+    expect(mocks.model).not.toHaveBeenCalled();
+    expect(mocks.native).not.toHaveBeenCalled();
+  });
   it('does not reserve answer time twice for evidence-only workbench collection', async () => {
     await runRepositoryChatTurn({ repository: { full_name: 'fixture/project' }, session: { ownerId: 'test-owner' }, evidenceOnly: true,
       aiConfig: { provider: 'agy-cli', agyMode: 'research' } } as RepositoryChatTurnInput);

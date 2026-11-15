@@ -161,12 +161,6 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
         await assertRepositoryAnalysisAssetWrite(assetVersion);
         if (!canContinue()) break;
         journal.commit('pending');
-        await stageRepositoryDetailRecovery(accountId, recoveryResults.get(repository.id), {
-          ...repository, ai_details: details, ai_summary: details.summary ?? details.problem ?? repository.ai_summary,
-          ai_tags: details.tags, ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at,
-          analysis_failed: false, analysis_error: undefined,
-        });
-        if (!canContinue()) break;
         const committed = await finishRepositoryAnalysisTaskLease(String(accountId), key, owner, 'done', details, canContinue);
         if (!committed) throw new Error('Analysis lease lost before save');
         await saveRepositoryAnalysisAsset(String(accountId), repository, state.language, sourceConfig, details, assetVersion);
@@ -194,6 +188,11 @@ async function run(repositories: Repository[], expectedAccountId?: number, confi
             durabilityBarrier: () => checkpointDesktopHomeRepository(String(accountId), repository.id),
             failureCode: 'HOME_CHECKPOINT_FAILED',
           })) throw new Error('LOCAL_PERSISTENCE_FAILED');
+          await stageRepositoryDetailRecovery(accountId, recoveryResults.get(repository.id), {
+            ...repository, ai_details: details, ai_summary: details.summary ?? details.problem ?? repository.ai_summary,
+            ai_tags: details.tags, ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at,
+            analysis_failed: false, analysis_error: undefined,
+          });
           await confirmRepositoryDetailRecovery(accountId, recoveryResults.get(repository.id));
           recoveryResults.delete(repository.id);
           await clearDetailResponseCheckpoint(accountId, repository.id);

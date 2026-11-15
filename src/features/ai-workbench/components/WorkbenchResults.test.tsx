@@ -60,9 +60,11 @@ describe('WorkbenchResults selection and filters', () => {
 
   it('preserves checked hidden items and sends precisely those items to every batch action', () => {
     const p = props();
-    render(<WorkbenchResults {...p} />);
+    const { container } = render(<WorkbenchResults {...p} />);
+    expect(container.querySelector('.overview-bulk-actions')).toHaveAttribute('data-empty', 'true');
     expect(screen.getByRole('button', { name: 'overview.askCheckedCount:0' })).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: 'overview.select:owner/alpha' }));
+    expect(container.querySelector('.overview-bulk-actions')).toHaveAttribute('data-empty', 'false');
     fireEvent.change(screen.getByRole('textbox', { name: 'overview.search' }), { target: { value: 'beta' } });
     expect(screen.getByText('overview.hiddenChecked:1', { exact: false })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'overview.askCheckedCount:1' })).toBeEnabled();

@@ -17,7 +17,16 @@ const rawProfile = z.object({ repositoryId: z.number().int(), summary: z.string(
   relations: z.array(z.object({ targetType: z.enum(['entity', 'repository']), target: z.string().min(1).max(160), kind: z.enum(['direct', 'interoperable', 'similar', 'discovery']), branch: z.string().trim().min(1).max(100), reason: z.string().trim().min(1).max(1000), citations: z.array(citation).min(1).max(8) }).strict()).max(30),
 }).strict();
 const broad = new Set(['ai', 'ai 应用', 'ai应用', '开发工具', '工具', '其他', '未分类', '开发与工程', '软件', '项目']);
-const hasNegativeSupport = (text: string) => /(?:not|never|no longer|not yet|without|cannot|can't|won't|doesn't|isn't)\s+(?:\w+\s+){0,3}(?:support|compatib|integrat)|\bunsupported\b|不支持|尚未支持|不兼容|无法集成|未适配/i.test(text);
+const hasNegativeSupport = (text: string) => /(?:not|never|no longer|not yet|without|cannot|can't|won't|doesn't|isn't)\s+(?:\w+\s+){0,3}(?:support|compatib|integrat)|\bunsupported\b|\bincompatib(?:le|ility)?\b|\bnot[ -]+compatible\b|不支持|尚未支持|不兼容|无法集成|未适配/i.test(text);
+const hasExplicitPositiveRelation = (text: string, names: string[]) => {
+  const sentences = text.split(/[.!?。！？\n]+/).map(sentence => sentence.trim()).filter(Boolean);
+  return sentences.some(sentence => {
+    const normalized = normalizeConcept(sentence);
+    const mentionsTarget = names.some(name => normalized.includes(normalizeConcept(name)));
+    const positive = /support|integrat|\bfor\b|extend|plugin|skill|workflow|client|manager|works? with|compatible with|supports?|支持|适配|集成|面向|用于|扩展|插件|技能|客户端|管理/i.test(sentence);
+    return mentionsTarget && positive && !hasNegativeSupport(sentence);
+  });
+};
 const now = () => new Date().toISOString();
 export function repositoryExplorationSources(repo: Repository): ExplorationEvidence[] {
   const rows: ExplorationEvidence[] = [];
@@ -63,9 +72,10 @@ export function parseExplorationProfiles(text: string, repositories: Repository[
       const targetId = entity?.id ?? relation.target;
       const names = entity ? [entity.label, ...(targetId === conceptId('entity', 'Codex') ? ['Codex', 'Codex CLI'] : [])] : [referenceRepositories.find(repo => repo.id === Number(targetId))?.full_name ?? ''];
       const text = evidenceIds.map(id => evidence.get(id)!.text).join(' ');
-      const positive = /support|integrat|compatib|\bfor\b|extend|plugin|skill|workflow|client|manager|支持|适配|集成|面向|用于|扩展|插件|技能|客户端|管理/i.test(text);
       const negative = hasNegativeSupport(text);
-      const verified = evidenceIds.every(id => evidence.get(id)?.verified) && !negative && (!['direct', 'interoperable'].includes(relation.kind) || positive) && evidenceIds.some(id => names.filter(Boolean).some(name => normalizeConcept(evidence.get(id)!.text).includes(normalizeConcept(name))));
+      const verified = evidenceIds.every(id => evidence.get(id)?.verified) && !negative
+        && (!['direct', 'interoperable'].includes(relation.kind) || hasExplicitPositiveRelation(text, names))
+        && evidenceIds.some(id => names.filter(Boolean).some(name => normalizeConcept(evidence.get(id)!.text).includes(normalizeConcept(name))));
       const kind = ['direct', 'interoperable'].includes(relation.kind) && !verified ? 'discovery' as const : relation.kind;
       return [{ id: stableId('relation', `${row.repositoryId}:${relation.targetType}:${targetId}:${kind}`), repositoryId: row.repositoryId, targetType: relation.targetType, targetId, kind, branch: relation.branch,
         reason: `${relation.reason}${!verified ? '（AI 推断／尚未核实）' : ''}`, evidenceIds: [...new Set(evidenceIds)], verified }];

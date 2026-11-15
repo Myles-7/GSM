@@ -19,17 +19,24 @@ interface Props {
 }
 const palette = ['#368c82', '#657dcc', '#b68035', '#a9698c', '#7a6ab3', '#63874c'];
 const lineColors = { membership: '#8b9c98', direct: '#368c82', interoperable: '#657dcc', similar: '#a77b30', discovery: '#9878a5' };
+// Cached automatic overviews remain eligible for fitting after StrictMode remounts.
+const automaticCameras = new WeakSet<ExplorationCamera>();
 export function ExplorationMap({ level, scene, focus, repositories, onFocus, onSelect, onBlank, onAllTopics, initialCamera, viewKey = '', onCameraChange, onLayoutChange, selectedRepositoryId, insets }: Props) {
   const t = useT('repositories');
   const viewport = useRef<HTMLDivElement>(null);
   const linesCanvas=useRef<HTMLCanvasElement>(null);
   const [viewportSize,setViewportSize]=useState({width:0,height:0});
+  const measuredSize=useRef<{width:number;height:number}>();
   const [camera, setCamera] = useState<ExplorationCamera>({ zoom: 1, x: 0, y: 0 });
   const [full, setFull] = useState(false), [active, setActive] = useState('');
   const drag = useRef<{ x: number; y: number; camera: ExplorationCamera; moved: boolean } | null>(null);
   const repos = useMemo(() => new Map(repositories.map(repo => [repo.id, repo])), [repositories]);
   const scopeKey = JSON.stringify(focus);
   const layout = useMemo(() => level?.layout ?? layoutExploration(scene, focus, new Map(repositories.map(repo=>[repo.id,repo.name]))),[level,scene,focus,repositories]);
+  const satellites = useMemo(() => computeLayerSatellites(layout, scene, focus, new Map(repositories.map(r => [r.id, r.name]))), [layout, scene, focus, repositories]);
+  const satelliteBounds = useMemo(() => satellites.map(satellite => ({ ...satellite, width: 136, height: 32 })), [satellites]);
+  const selectedTarget = layout.nodes.find(node=>!!selectedRepositoryId&&node.repositoryId===selectedRepositoryId) ?? satellites.find(item=>item.repositoryId===selectedRepositoryId);
+  const visibleInsets = full ? emptyInsets : insets;
   const layoutCallback = useRef(onLayoutChange);layoutCallback.current=onLayoutChange;
   useEffect(()=>{layoutCallback.current?.(Object.fromEntries(layout.nodes.map(node=>[node.id,{x:node.x,y:node.y}])));},[layout]);
   const byId = useMemo(() => new Map(layout.nodes.map(node => [node.id, node])), [layout]);
@@ -43,8 +50,10 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
     frame.current=undefined;pendingCamera.current=undefined;cameraLive.current=next;setCamera(next);
   },[]);
   const cacheKey = `${viewKey}:${scopeKey}`;
-  const overview = () => { const rect=viewport.current?.getBoundingClientRect(); return rect?.width && rect.height ? overviewCamera(layout,rect.width,rect.height,insets) : undefined; };
+  const automaticOverview = useRef(true);
+  const overview = () => { const rect=viewport.current?.getBoundingClientRect(); return rect?.width && rect.height ? overviewCamera(layout,rect.width,rect.height,visibleInsets,satelliteBounds) : undefined; };
   const fit = () => { const next=overview(); if(next){cameraLive.current=next;commitCamera(next);} };
+  const reset = () => { automaticOverview.current = true; fit(); };
   const fitRef = useRef(() => fit()); fitRef.current = () => fit();
   const initialRef = useRef(initialCamera); initialRef.current = initialCamera;
   const appliedInitial=useRef<ExplorationCamera>();
@@ -54,47 +63,65 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
     const cached = viewKey ? explorationViewportCache.read(key)?.camera : undefined;
     const supplied=initialRef.current!==appliedInitial.current?initialRef.current:undefined;
     if(supplied)appliedInitial.current=supplied;
-    setActive('');restored.current=!!(supplied??cached);
+    setActive('');restored.current=!!(supplied??cached);automaticOverview.current=!supplied&&(!cached||automaticCameras.has(cached));
     if(supplied??cached){cameraLive.current=(supplied??cached)!;commitCamera((supplied??cached)!);}else fitRef.current();
-    return () => {if(viewKey)explorationViewportCache.write(key,{camera:pendingCamera.current??cameraLive.current});};
+    return () => {
+      if (!viewKey) return;
+      const current=pendingCamera.current??cameraLive.current;
+      if (automaticOverview.current) automaticCameras.add(current); else automaticCameras.delete(current);
+      explorationViewportCache.write(key,{camera:current});
+    };
   }, [cacheKey,viewKey,commitCamera]);
   useLayoutEffect(() => {
     const element = viewport.current; if (!element) return;
-    let previous: { width: number; height: number } | undefined;
     const observer = new ResizeObserver(() => {
       const rect = element.getBoundingClientRect(); if (!rect.width || !rect.height) return;
       setViewportSize(current=>current.width===rect.width&&current.height===rect.height?current:{width:rect.width,height:rect.height});
+      const previous=measuredSize.current;
+      measuredSize.current={width:rect.width,height:rect.height};
       if (previous) {
         const dx = (rect.width - previous.width) / 2, dy = (rect.height - previous.height) / 2;
-        if (dx || dy) commitCamera(current => ({ ...current, x: current.x + dx, y: current.y + dy }));
+        if (dx || dy) {
+          if (automaticOverview.current) fitRef.current();
+          else commitCamera(current => ({ ...current, x: current.x + dx, y: current.y + dy }));
+        }
       } else if (!restored.current) fitRef.current();
-      previous = { width: rect.width, height: rect.height };
     });
     observer.observe(element); return () => observer.disconnect();
   }, [commitCamera]);
-  const selectionView = useRef({ layout, insets }); selectionView.current = { layout, insets };
+  // The scene can arrive after the first viewport measurement. Keep an untouched
+  // overview fitted as nodes and satellite previews are added, without resetting
+  // a restored or manually moved camera.
+  useLayoutEffect(() => { if (automaticOverview.current) fitRef.current(); }, [layout, satelliteBounds, visibleInsets]);
+  const selectionView = useRef({ layout, insets: visibleInsets, satellites, satelliteBounds }); selectionView.current = { layout, insets: visibleInsets, satellites, satelliteBounds };
   const selectionRestored = useRef(!!initialCamera);
   useLayoutEffect(()=>{selectionRestored.current=restored.current;},[cacheKey]);
   useEffect(() => {
     if (selectionRestored.current) { selectionRestored.current = false; return; }
     if (!selectedRepositoryId) {setActive('');return;}
-    const { layout, insets } = selectionView.current;
-    const node = layout.nodes.find(node => node.repositoryId === selectedRepositoryId), rect = viewport.current?.getBoundingClientRect();
-    if (!node || !rect?.width) return;
-    setActive(node.id);
-    commitCamera(current=>{const space=insets??emptyInsets,zoom=Math.max(.75,current.zoom);return {zoom,x:(space.left+rect.width-space.right)/2-node.x*zoom,y:(space.top+rect.height-space.bottom)/2-node.y*zoom};});
+    const { layout, insets, satellites } = selectionView.current;
+    const node = layout.nodes.find(node => node.repositoryId === selectedRepositoryId);
+    const satellite = satellites.find(item => item.repositoryId === selectedRepositoryId);
+    const target = node ?? satellite, rect = viewport.current?.getBoundingClientRect();
+    if (!target || !rect?.width) return;
+    automaticOverview.current = false;
+    measuredSize.current = { width: rect.width, height: rect.height };
+    setActive(node?.id ?? satellite!.parentId);
+    commitCamera(current=>{const space=insets??emptyInsets,zoom=Math.max(.75,current.zoom);return {zoom,x:(space.left+rect.width-space.right)/2-target.x*zoom,y:(space.top+rect.height-space.bottom)/2-target.y*zoom};});
     // Selection centers once; folding panels must not move the camera.
   }, [selectedRepositoryId,commitCamera]);
   const cameraCallback = useRef(onCameraChange); cameraCallback.current = onCameraChange;
   useEffect(() => { cameraCallback.current?.(camera); }, [camera]);
   const locate = () => {
-    const node=layout.nodes.find(node=>!!selectedRepositoryId&&node.repositoryId===selectedRepositoryId),rect=viewport.current?.getBoundingClientRect();
-    if(!node||!rect)return;
-    const space=insets??emptyInsets;
-    commitCamera(current=>{const zoom=Math.max(.75,current.zoom);return {zoom,x:(space.left+rect.width-space.right)/2-node.x*zoom,y:(space.top+rect.height-space.bottom)/2-node.y*zoom};});
+    const target=selectedTarget,rect=viewport.current?.getBoundingClientRect();
+    if(!target||!rect)return;
+    automaticOverview.current = false;
+    measuredSize.current = { width: rect.width, height: rect.height };
+    const space=visibleInsets??emptyInsets;
+    commitCamera(current=>{const zoom=Math.max(.75,current.zoom);return {zoom,x:(space.left+rect.width-space.right)/2-target.x*zoom,y:(space.top+rect.height-space.bottom)/2-target.y*zoom};});
   };
   const minimumZoom = () => Math.min(.1,(overview()?.zoom??.1)*.8);
-  const zoom = (factor: number) => commitCamera(current => {const rect=viewport.current?.getBoundingClientRect();return zoomCamera(current,factor,(rect?.width??600)/2,(rect?.height??500)/2,minimumZoom());});
+  const zoom = (factor: number) => { automaticOverview.current = false; commitCamera(current => {const rect=viewport.current?.getBoundingClientRect();return zoomCamera(current,factor,(rect?.width??600)/2,(rect?.height??500)/2,minimumZoom());}); };
   const enqueue=(update:(current:ExplorationCamera)=>ExplorationCamera)=>{
     pendingCamera.current=update(pendingCamera.current??cameraLive.current);
     if(frame.current===undefined)frame.current=requestAnimationFrame(()=>{frame.current=undefined;const next=pendingCamera.current;pendingCamera.current=undefined;if(next)commitCamera(next);});
@@ -105,15 +132,15 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
     const element=viewport.current;if(!element)return;
     const wheel=(event:WheelEvent)=>{
       if(!event.deltaY)return;event.preventDefault();
+      automaticOverview.current = false;
       const rect=element.getBoundingClientRect(),x=event.clientX-rect.left,y=event.clientY-rect.top;
       const delta=Math.max(-120,Math.min(120,event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?rect.height:1)));
-      enqueueRef.current(current=>zoomCamera(current,Math.exp(-delta*.002),x,y,Math.min(.1,overviewCamera(selectionView.current.layout,rect.width,rect.height,selectionView.current.insets).zoom*.8)));
+      enqueueRef.current(current=>zoomCamera(current,Math.exp(-delta*.002),x,y,Math.min(.1,overviewCamera(selectionView.current.layout,rect.width,rect.height,selectionView.current.insets,selectionView.current.satelliteBounds).zoom*.8)));
     };
     element.addEventListener('wheel',wheel,{passive:false});return()=>element.removeEventListener('wheel',wheel);
   },[]);
   useEffect(() => { if (!full) return; const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setFull(false); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [full]);
   const nodeLabel = useCallback((node:MapNode)=>explorationNodeLabel(node,t),[t]);
-  const satellites = useMemo(() => computeLayerSatellites(layout, scene, focus, new Map(repositories.map(r => [r.id, r.name]))), [layout, scene, focus, repositories]);
   const isOverview=camera.zoom<.22||(layout.nodes.length>36&&camera.zoom<.45);
   const activate = (node:MapNode,anchor:Element) => {
     if(node.repositoryId&&(node.type==='repository'||node.type==='focus'))onSelect(node.repositoryId,anchor);
@@ -172,7 +199,7 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
     return layout.nodes.filter(node=>{if(isOverview)return node.id===activeNode||(!!selectedRepositoryId&&node.repositoryId===selectedRepositoryId);const x=node.x*camera.zoom+camera.x,y=node.y*camera.zoom+camera.y,w=node.width*camera.zoom/2+100,h=node.height*camera.zoom/2+100;return x+w>=0&&x-w<=viewportSize.width&&y+h>=0&&y-h<=viewportSize.height;});
   },[layout,viewportSize,camera,isOverview,activeNode,selectedRepositoryId]);
   const renderedNodes=useMemo(()=><>
-        {visibleNodes.map(node => <button key={node.id} aria-pressed={node.repositoryId ? node.repositoryId === selectedRepositoryId : undefined} className={`explore-graph-node ${isOverview?'is-overview-node':''} node-${node.type} ${activeNode && !neighbors.has(node.id) && activeNode !== node.id ? 'is-dimmed' : ''}`} style={{ left:isOverview?Math.max(8,Math.min(viewportSize.width-(insets?.right??8)-220,node.x*camera.zoom+camera.x-110)):node.x-node.width/2, top:isOverview?Math.max(insets?.top??8,Math.min(viewportSize.height-(insets?.bottom??8)-80,node.y*camera.zoom+camera.y-40)):node.y-node.height/2, width:isOverview?220:node.width, height:isOverview?80:node.height, '--node-color':palette[node.color] } as React.CSSProperties}
+        {visibleNodes.map(node => <button key={node.id} aria-pressed={node.repositoryId ? node.repositoryId === selectedRepositoryId : undefined} className={`explore-graph-node ${isOverview?'is-overview-node':''} node-${node.type} ${activeNode && !neighbors.has(node.id) && activeNode !== node.id ? 'is-dimmed' : ''}`} style={{ left:isOverview?Math.max(8,Math.min(viewportSize.width-(visibleInsets?.right??8)-220,node.x*camera.zoom+camera.x-110)):node.x-node.width/2, top:isOverview?Math.max(visibleInsets?.top??8,Math.min(viewportSize.height-(visibleInsets?.bottom??8)-80,node.y*camera.zoom+camera.y-40)):node.y-node.height/2, width:isOverview?220:node.width, height:isOverview?80:node.height, '--node-color':palette[node.color] } as React.CSSProperties}
           title={node.repositoryId ? repos.get(node.repositoryId)?.full_name : nodeLabel(node)} aria-label={node.type === 'repository' ? t('exploration.view-project', { name: node.label }) : `${node.kind&&node.label!==`relation:${node.kind}` ? t(`exploration.relations.${node.kind}`) + ' ' : ''}${nodeLabel(node)}${node.count !== undefined ? t('exploration.project-count', { count: node.count }) : ''}`}
           onMouseEnter={() => setActive(node.id)} onMouseLeave={() => setActive('')} onFocus={() => setActive(node.id)} onBlur={() => setActive('')}
           onClick={event => { if(node.repositoryId && node.type==='focus')onSelect(node.repositoryId,event.currentTarget); else if (node.type === 'repository') onSelect(node.repositoryId!, event.currentTarget); else if (node.focus) onFocus(node.focus.type==='all'?node.focus:{...node.focus,label:nodeLabel(node)}); else if(node.type==='more')onAllTopics(); }}>
@@ -182,9 +209,12 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
           const repo = repos.get(sat.repositoryId);
           if (!repo) return null;
           return (
-            <div
+            <button
+              type="button"
               key={sat.id}
               data-testid={`satellite-${sat.repositoryId}`}
+              aria-label={t('exploration.view-project', { name: repo.name })}
+              aria-pressed={selectedRepositoryId === sat.repositoryId}
               className={`explore-satellite-node ${sat.verified ? 'is-verified-sat' : ''} ${selectedRepositoryId === sat.repositoryId ? 'is-selected-sat' : ''} ${activeNode && activeNode !== sat.parentId ? 'is-dimmed' : ''}`}
               style={{ left: sat.x - 68, top: sat.y - 16, '--node-color': palette[sat.color] } as React.CSSProperties}
               onMouseEnter={() => setActive(sat.parentId)}
@@ -193,33 +223,33 @@ export function ExplorationMap({ level, scene, focus, repositories, onFocus, onS
             >
               <span className="explore-satellite-dot">{repo.owner.avatar_url ? <img src={repo.owner.avatar_url} alt="" loading="lazy" /> : repo.name[0]?.toUpperCase()}</span>
               <span className="explore-satellite-label">{repo.name}</span>
-            </div>
+            </button>
           );
         })}
-  </>,[visibleNodes,activeNode,neighbors,repos,selectedRepositoryId,nodeLabel,t,onSelect,onFocus,onAllTopics,isOverview,camera,viewportSize,insets,satellites]);
+  </>,[visibleNodes,activeNode,neighbors,repos,selectedRepositoryId,nodeLabel,t,onSelect,onFocus,onAllTopics,isOverview,camera,viewportSize,visibleInsets,satellites]);
 
-  return <section className={`explore-map-shell ${full ? 'is-fullscreen' : ''} ${camera.zoom < .5 ? 'is-overview-scale' : ''}`} aria-label={t('exploration.project-relationship-map')}>
+  return <section className={`explore-map-shell ${full ? 'is-fullscreen' : ''} ${camera.zoom < .5 ? 'is-overview-scale' : ''} ${camera.zoom < .75 ? 'is-compact-scale' : ''}`} aria-label={t('exploration.project-relationship-map')}>
     <div className="explore-map-toolbar"><span title={t('exploration.drag-to-pan-ctrl-scroll-to-zoom')}><Move size={13} /></span><div>
       <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-out-map')} onClick={() => zoom(.85)}><Minus size={15} /></Button><span>{Math.round(camera.zoom * 100)}%</span>
-      <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-in-map')} onClick={() => zoom(1.15)}><Plus size={15} /></Button><Button size="icon" variant="ghost" aria-label={t('exploration.fit-canvas-and-reset')} onClick={fit}><Expand size={15} /></Button>
-      <Button size="icon" variant="ghost" disabled={!selectedRepositoryId} aria-label={t('browser.locate-selection')} onClick={locate}><LocateFixed size={15}/></Button>
+      <Button size="icon" variant="ghost" aria-label={t('exploration.zoom-in-map')} onClick={() => zoom(1.15)}><Plus size={15} /></Button><Button size="icon" variant="ghost" aria-label={t('exploration.fit-canvas-and-reset')} onClick={reset}><Expand size={15} /></Button>
+      <span title={selectedRepositoryId && !selectedTarget ? t('browser.selection-not-visible') : t('browser.locate-selection')}><Button size="icon" variant="ghost" disabled={!selectedTarget} aria-label={t('browser.locate-selection')} onClick={locate}><LocateFixed size={15}/></Button></span>
       <Button size="icon" variant="ghost" aria-label={full ? t('exploration.exit-map-fullscreen') : t('exploration.view-map-fullscreen')} onClick={() => setFull(value => !value)}>{full ? <X size={15} /> : <Maximize2 size={15} />}</Button>
     </div></div>
     <div ref={viewport} className="explore-map-viewport" tabIndex={0} aria-label={t('exploration.relationship-canvas-arrow-keys-pan-home-resets')} onKeyDown={event => {
       if (event.target !== event.currentTarget) return;
       const delta = ({ ArrowLeft: [30, 0], ArrowRight: [-30, 0], ArrowUp: [0, 30], ArrowDown: [0, -30] } as Record<string, number[]>)[event.key];
-      if (delta) { event.preventDefault(); commitCamera(current => ({ ...current, x: current.x + delta[0], y: current.y + delta[1] })); }
-      if (event.key === 'Home') { event.preventDefault(); fit(); }
+      if (delta) { event.preventDefault(); automaticOverview.current = false; commitCamera(current => ({ ...current, x: current.x + delta[0], y: current.y + delta[1] })); }
+      if (event.key === 'Home') { event.preventDefault(); reset(); }
     }} onPointerDown={event => { if (event.button !== 0 || (event.target as Element).closest('button,a,input')) return; drag.current = { x: event.clientX, y: event.clientY, camera, moved: false }; event.currentTarget.setPointerCapture(event.pointerId); }}
-    onDoubleClick={event=>{if(!(event.target as Element).closest('button,a,input')&&(!isOverview||!hovered(event)))fit();}}
-    onPointerMove={event => { if (!drag.current) {if(isOverview&&!(event.target as Element).closest('button'))setActive(hovered(event)?.id??'');return;} const dx = event.clientX - drag.current.x, dy = event.clientY - drag.current.y; if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true; const start=drag.current.camera;enqueue(()=>({...start,x:start.x+dx,y:start.y+dy})); }}
+    onDoubleClick={event=>{if(!(event.target as Element).closest('button,a,input')&&(!isOverview||!hovered(event)))reset();}}
+    onPointerMove={event => { if (!drag.current) {if(isOverview&&!(event.target as Element).closest('button'))setActive(hovered(event)?.id??'');return;} const dx = event.clientX - drag.current.x, dy = event.clientY - drag.current.y; if (Math.abs(dx) + Math.abs(dy) > 4) { drag.current.moved = true; automaticOverview.current = false; } const start=drag.current.camera;enqueue(()=>({...start,x:start.x+dx,y:start.y+dy})); }}
     onPointerUp={event => { if (drag.current && !drag.current.moved) {const node=isOverview?hovered(event):undefined;if(node)activate(node,event.currentTarget);else onBlank();} drag.current = null; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { drag.current = null; }}>
       <canvas ref={linesCanvas} className="explore-lines explore-canvas-lines" data-edge-count={layout.edges.length} aria-hidden="true"/>
-      <div className="explore-world" data-total-nodes={layout.nodes.length} data-camera={JSON.stringify(camera)} style={{ width:0,height:0, transform: isOverview?undefined:`translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`, '--node-text-size':'18px', '--repo-text-size':'16px', '--count-text-size':'14px' } as React.CSSProperties}>
+      <div className="explore-world" data-total-nodes={layout.nodes.length} data-camera={JSON.stringify(camera)} style={{ width:0,height:0, transform: isOverview?undefined:`translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`, '--node-text-size':`${Math.max(18,12/(isOverview?1:camera.zoom))}px`, '--repo-text-size':`${Math.max(16,12/(isOverview?1:camera.zoom))}px`, '--count-text-size':`${Math.max(14,11/(isOverview?1:camera.zoom))}px`, '--satellite-text-size':`${Math.max(11,10/camera.zoom)}px` } as React.CSSProperties}>
         {renderedNodes}
       </div>
       {!layout.nodes.length && <div className="explore-map-empty">{t('exploration.no-topics-yet')}</div>}
     </div>
-    <div className="explore-map-footer" title={t('exploration.topic-branch-project-solid-verified-dashed-membership-or')}>{focus.type === 'all' && <Button variant="ghost" size="sm" onClick={onAllTopics}>{t('exploration.all-topics')}{scene.topics.length})</Button>}</div>
+    <div className="explore-map-footer" title={t('exploration.topic-branch-project-solid-verified-dashed-membership-or')}>{selectedRepositoryId && !selectedTarget && <span role="status">{t('browser.selection-not-visible')}</span>}{focus.type === 'all' && <Button variant="ghost" size="sm" onClick={onAllTopics}>{t('exploration.all-topics')}{scene.topics.length})</Button>}</div>
   </section>;
 }

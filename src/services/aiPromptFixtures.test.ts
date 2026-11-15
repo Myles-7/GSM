@@ -11,6 +11,7 @@ import {
   buildUserPrompt,
   evidenceAgentInsufficientResponse,
   makeEvidence,
+  normalizeCreativeAnswer,
   noVerifiedSummaryResponse,
   pruneUnverifiableSections,
   sourceBoundEvidenceDigest,
@@ -283,5 +284,18 @@ describe('AI prompt fixtures（zh/en 字节级稳定保障）', () => {
       return;
     }
     expect(snapshot).toEqual(readFixture(FIXTURE_FILE));
+  });
+});
+
+describe('creative answer validation', () => {
+  it('preserves article order when evidence is listed at the end', () => {
+    const evidence = makeEvidenceForFixture(makeRepo({ id: 42, name: 'sample-app', full_name: 'acme/sample-app' }));
+    const content = normalizeCreativeAnswer([
+      '# Article title', '', 'Introduction stays first.', '', '## Body', '',
+      'The factual detail is explained here.', '', '## Factual basis', '', '`/README.md - 1-12`',
+    ].join('\n'), [evidence]);
+    expect(content.indexOf('# Article title')).toBeLessThan(content.indexOf('## Factual basis'));
+    expect(content).toContain('Introduction stays first.');
+    expect(content).toContain('`/README.md - 1-12`');
   });
 });

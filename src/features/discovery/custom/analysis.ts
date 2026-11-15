@@ -193,10 +193,6 @@ async function drain() {
         source = 'storage';
         await assertRepositoryAnalysisAssetWrite(assetVersion);
         check();
-        await stageRepositoryDetailRecovery(Number(work.account), recoveryResult, { ...work.repo, ai_details: details,
-          ai_summary: details.summary ?? details.problem ?? work.repo.ai_summary, ai_tags: details.tags,
-          ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at, analysis_failed: false, analysis_error: undefined });
-        check();
         const saved = await transact(work.account, data =>
           isIdentity(work) && !controller.signal.aborted && validChannel(data, work)
             && commitAnalysis(data, work.key, owner, { status: 'done', details, issue: undefined }));
@@ -211,6 +207,9 @@ async function drain() {
           latestState.updateRepository(proposed);
         }
         await flushAppStorePersistence(); check();
+        await stageRepositoryDetailRecovery(Number(work.account), recoveryResult, { ...work.repo, ai_details: details,
+          ai_summary: details.summary ?? details.problem ?? work.repo.ai_summary, ai_tags: details.tags,
+          ai_platforms: platformsFromDetails(details), analyzed_at: details.generated_at, analysis_failed: false, analysis_error: undefined });
         await confirmRepositoryDetailRecovery(Number(work.account), recoveryResult);
         work.journal?.itemExecution(String(work.repo.id), { commitStatus: 'saved' });
         work.journal?.commit('saved');
