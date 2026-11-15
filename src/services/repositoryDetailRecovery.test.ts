@@ -62,4 +62,15 @@ describe('detail and subscription encrypted save-only recovery', () => {
     expect((await recoverRepositoryDetail(7, target, 'en', 'result'))?.record.requestId).toBe('result');
     await expect(recoverRepositoryDetail(7, { ...target, ai_summary: 'new edit' }, 'en', 'result')).rejects.toThrow('RECOVERY_CONFLICT');
   });
+  it('reads legacy JSON before and after a staged write while rejecting intervening edits', async () => {
+    const saved = payload();
+    const target = { ...repo, ai_summary: 'saved' };
+    saved.context.baseAnalysis = JSON.stringify([null, 'before', null, null, null]);
+    mocks.read.mockResolvedValue({ ...saved, commit: {
+      kind: 'repository-details', savedAnalysis: JSON.stringify([null, 'saved', null, null, null]),
+    } });
+    await expect(recoverRepositoryDetail(7, repo, 'en', 'result')).resolves.toMatchObject({ record });
+    await expect(recoverRepositoryDetail(7, target, 'en', 'result')).resolves.toMatchObject({ record });
+    await expect(recoverRepositoryDetail(7, { ...target, ai_summary: 'edited' }, 'en', 'result')).rejects.toThrow('RECOVERY_CONFLICT');
+  });
 });
