@@ -7,7 +7,7 @@ import { useT } from '../i18n/useT';
 import { logger } from '../services/logger';
 import { Input } from './ui/input';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2, MoreHorizontal } from 'lucide-react';
+import { Search, X, SlidersHorizontal, CheckCircle, Bell, BellOff, Bot, Edit3, Lock, Unlock, AlertCircle, ChevronDown, RefreshCw, Clock, ArrowDown, ArrowUp, History, Archive, Link2, MoreHorizontal, Square } from 'lucide-react';
 import { BatchStarImportDialog } from './BatchStarImportDialog';
 import {
   CANONICAL_PLATFORMS,
@@ -858,17 +858,19 @@ export const SearchBar: React.FC = () => {
             </Button>
           )}
           <Button
-            onClick={handleAISearch}
+            onClick={isSearching ? clearSubmittedSearch : handleAISearch}
             variant="ghost"
             size="icon"
-            aria-label={isSearching ? t('searchBar.ai-searching') : t('searchBar.ai-search')}
-            disabled={isSearching || !searchQuery.trim()}
-            className="h-8 w-8 shrink-0 text-primary"
-            title={activeAIConfig
-              ? t('searchBar.use-configured-ai-service-for-semantic-search-an')
-              : t('searchBar.use-local-intelligent-ranking-algorithm-for-sear')}
+            aria-label={isSearching ? t('searchBar.stop-search') : t('searchBar.ai-search')}
+            disabled={!isSearching && !searchQuery.trim()}
+            className={`h-8 w-8 shrink-0 ${isSearching ? 'text-muted-foreground hover:text-foreground' : 'text-primary'}`}
+            title={isSearching
+              ? t('searchBar.stop-search')
+              : activeAIConfig
+                ? t('searchBar.use-configured-ai-service-for-semantic-search-an')
+                : t('searchBar.use-local-intelligent-ranking-algorithm-for-sear')}
           >
-            <Bot className="w-4 h-4" />
+            {isSearching ? <Square className="w-3.5 h-3.5" fill="currentColor" aria-hidden="true" /> : <Bot className="w-4 h-4" />}
           </Button>
           </div>
           </div>

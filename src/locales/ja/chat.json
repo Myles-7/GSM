@@ -7,6 +7,7 @@
     "discovery": "発見タスク",
     "plugins": "プラグイン",
     "openPlugin": "プラグイン設定を開く",
+    "hydeSkipped": "HyDE クエリ前処理がタイムアウトしたため、元のクエリで検索しました",
     "rerankUnavailable": "AI の再順位付けに失敗したため、ベクトル順位を維持しています。",
     "vectorUnavailable": "ベクトル検索を利用できないため、キーワード検索を使用しています。",
     "supported": "対応", "unsupported": "非対応",

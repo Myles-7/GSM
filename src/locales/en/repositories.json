@@ -250,6 +250,7 @@
     "download-failed": "Download failed"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "The selected search AI configuration is unavailable. AI enhancements will be skipped; vector search remains available.",
     "ai-semantic-analysis": "AI semantic analysis…",
     "ai-selecting-relevant-repositories": "AI selecting relevant repositories…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AI request failed, fell back to local lexical search",
@@ -1035,6 +1036,7 @@
   },
   "browser": {
     "locate-selection": "Locate selected project",
+    "selection-not-visible": "This project is not shown at this level. Open a relevant direction to locate it.",
     "submit-first": "Submit your search before changing the exploration target.",
     "preview-unavailable": "Analysis preview unavailable. Check the model and current workspace.",
     "directory": "Current level",

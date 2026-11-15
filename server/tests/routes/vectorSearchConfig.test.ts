@@ -1,4 +1,6 @@
 import express from 'express';
+import Database from 'better-sqlite3';
+import { initializeSchema } from '../../src/db/schema.js';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -60,10 +62,28 @@ const fullConfig = {
   searchTopK: 25,
   enableHyDE: false,
   enableReranking: true,
+  searchAIConfigId: 'deepseek-search',
   embeddingFormatVersion: 2,
 };
 
 describe('vector search config route (GET/PUT /api/configs/vector-search)', () => {
+  it('migrates an existing index config and round-trips an independent search AI reference', async () => {
+    const db = new Database(':memory:');
+    try {
+      initializeSchema(db);
+      db.exec("ALTER TABLE vector_search_configs DROP COLUMN search_ai_config_id; INSERT INTO vector_search_configs(id, worker_url) VALUES ('default', 'https://existing.worker')");
+      initializeSchema(db);
+      initializeSchema(db); // Migration is safe to repeat.
+      getDbMock.mockReturnValue(db);
+      const app = createTestApp();
+      const migrated = await request(app).get('/api/configs/vector-search');
+      expect(migrated.body).toMatchObject({ workerUrl: 'https://existing.worker', searchAIConfigId: '' });
+      expect((await request(app).put('/api/configs/vector-search').send(fullConfig)).status).toBe(200);
+      const saved = await request(app).get('/api/configs/vector-search?decrypt=true');
+      expect(saved.body).toMatchObject(fullConfig);
+    } finally { db.close(); }
+  });
+
   it('PUT persists all vector-search fields to the backend', async () => {
     const capture = capturePut();
     const res = await request(createTestApp()).put('/api/configs/vector-search').send(fullConfig);
@@ -85,6 +105,7 @@ describe('vector search config route (GET/PUT /api/configs/vector-search)', () =
     expect(p[9]).toBe(0); // enableHyDE false → 0
     expect(p[10]).toBe(1); // enableReranking true → 1
     expect(p[11]).toBe(2); // embedding_format_version
+    expect(p[14]).toBe(fullConfig.searchAIConfigId);
   });
 
   it('GET returns all persisted vector-search fields', async () => {
@@ -100,6 +121,7 @@ describe('vector search config route (GET/PUT /api/configs/vector-search)', () =
       search_top_k: fullConfig.searchTopK,
       enable_hyde: 0,
       enable_reranking: 1,
+      search_ai_config_id: fullConfig.searchAIConfigId,
       embedding_format_version: 2,
       status_json: null,
       last_sync_at: null,
@@ -120,6 +142,7 @@ describe('vector search config route (GET/PUT /api/configs/vector-search)', () =
       searchTopK: fullConfig.searchTopK,
       enableHyDE: false,
       enableReranking: true,
+      searchAIConfigId: fullConfig.searchAIConfigId,
       embeddingFormatVersion: 2,
     });
   });
@@ -140,5 +163,17 @@ describe('vector search config route (GET/PUT /api/configs/vector-search)', () =
     expect(p[9]).toBe(0); // enable_hyde absent → false
     expect(p[10]).toBe(0); // enable_reranking absent → false
     expect(p[11]).toBeNull(); // embeddingFormatVersion 0 (invalid) → null
+    expect(p[14]).toBe(''); // absent selection follows the current AI config
+  });
+
+  it('preserves unresolved AI references and allows explicit follow-current selection', async () => {
+    const capture = capturePut();
+    for (const searchAIConfigId of ['deleted-deepseek', '']) {
+      await request(createTestApp()).put('/api/configs/vector-search').send({ ...fullConfig, searchAIConfigId });
+    }
+    expect(capture.params.map(params => params[14])).toEqual(['deleted-deepseek', '']);
+    mockGetReturningRow({ enabled: 0 });
+    const res = await request(createTestApp()).get('/api/configs/vector-search');
+    expect(res.body.searchAIConfigId).toBe('');
   });
 });

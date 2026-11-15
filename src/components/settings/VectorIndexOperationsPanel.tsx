@@ -1,9 +1,10 @@
-import { Loader2, RefreshCw, Square, Zap } from 'lucide-react';
+import { Loader2, RefreshCw, RotateCcw, Square, Zap } from 'lucide-react';
 import type { TranslateFn } from '../../i18n/useT';
 import type { VectorIndexingState } from '../../types';
 import { Button } from '../ui/button';
 import { Alert, AlertDescription } from '../ui/alert';
 import { VectorPendingBadge } from './VectorPendingBadge';
+import { revealSection } from './vectorIndexSection';
 
 interface VectorIndexOperationsPanelProps {
   t: TranslateFn;
@@ -13,14 +14,25 @@ interface VectorIndexOperationsPanelProps {
   compatibleIndex: boolean;
   candidateCount: number;
   localPendingCount: number;
-  onRebuild: () => Promise<void>;
-  onIncremental: () => Promise<void>;
+  /** Sections with unsaved edits; each chip scrolls to and reveals its section. */
+  unsavedSections?: { id: string; label: string }[];
+  onRebuild: () => void | Promise<void>;
+  onIncremental: () => void | Promise<void>;
   onAbort: () => void;
+  /** Retry the last indexing operation; present only after a failed run. */
+  onRetry?: () => void;
 }
+
+const GUARD_ERROR_KEYS: Record<string, string> = {
+  'save-first': 'vectorSearchSettings.index-error-save-first',
+  'settings-changed': 'vectorSearchSettings.index-error-settings-changed',
+  'incomplete': 'vectorSearchSettings.index-error-incomplete',
+  'failed': 'vectorSearchSettings.index-error-failed',
+};
 
 export function VectorIndexOperationsPanel({
   t, state, configComplete, settingsSaved, compatibleIndex, candidateCount,
-  localPendingCount, onRebuild, onIncremental, onAbort,
+  localPendingCount, unsavedSections = [], onRebuild, onIncremental, onAbort, onRetry,
 }: VectorIndexOperationsPanelProps) {
   const { isIndexing, phase, phaseDone, phaseTotal, result } = state;
   const progress = phaseTotal > 0 ? Math.max(0, Math.min(100, Math.round(phaseDone / phaseTotal * 100))) : 0;
@@ -48,9 +60,23 @@ export function VectorIndexOperationsPanel({
         <Alert><AlertDescription>{t('vectorSearchSettings.must-rebuild-index-after-changing-embedding-mode')}</AlertDescription></Alert>
       )}
       {!settingsSaved && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {t('vectorSearchSettings.save-before-indexing', { defaultValue: 'Unsaved embedding or index settings' })}
-        </p>
+        <div role="status" className="space-y-1.5 text-sm text-muted-foreground">
+          <p>{t('vectorSearchSettings.save-before-indexing', { defaultValue: 'Unsaved embedding or index settings' })}</p>
+          {unsavedSections.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {unsavedSections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => revealSection(section.id)}
+                  className="rounded-full border border-amber-300 bg-amber-50/60 px-2.5 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-400 dark:hover:bg-amber-900/40"
+                >
+                  {section.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
       <div className="flex flex-wrap gap-2">
         <Button className="h-auto min-h-9 max-w-full whitespace-normal" onClick={() => { void onRebuild(); }} disabled={isIndexing || !configComplete || !settingsSaved}>
@@ -94,9 +120,21 @@ export function VectorIndexOperationsPanel({
           <AlertDescription>
             {t('vectorSearchSettings.indexing-complete')}: {result.indexed} {t('vectorSearchSettings.indexed')},
             {' '}{result.skipped} {t('vectorSearchSettings.skipped')}, {result.errors} {t('vectorSearchSettings.errors')}
-            {result.error && <div className="mt-1 text-xs">{result.error}</div>}
+            {(result.error || result.errorCode) && (
+              <div className="mt-1 text-xs">
+                {result.errorCode && GUARD_ERROR_KEYS[result.errorCode]
+                  ? `${t(GUARD_ERROR_KEYS[result.errorCode])}${result.errorCode === 'failed' && result.error ? ` — ${result.error}` : ''}`
+                  : result.error}
+              </div>
+            )}
           </AlertDescription>
         </Alert>
+      )}
+      {result && result.errors > 0 && onRetry && !isIndexing && (
+        <Button variant="outline" className="h-auto min-h-9 max-w-full whitespace-normal" onClick={onRetry}>
+          <RotateCcw className="h-4 w-4" aria-hidden="true" />
+          {t('vectorSearchSettings.retry-last-index')}
+        </Button>
       )}
     </section>
   );

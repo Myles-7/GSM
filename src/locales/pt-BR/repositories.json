@@ -246,6 +246,7 @@
     "download-failed": "Falha no download"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "A configuração de IA selecionada não está disponível. As melhorias de IA serão ignoradas; a busca vetorial continua disponível.",
     "ai-semantic-analysis": "Análise semântica de IA…",
     "ai-selecting-relevant-repositories": "Armazém relacionado selecionado pela IA…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "A solicitação de IA falhou, a pesquisa lexical local foi revertida",

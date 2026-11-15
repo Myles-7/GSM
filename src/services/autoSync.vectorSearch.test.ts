@@ -16,6 +16,13 @@ const canonical = {
 };
 
 describe('vectorSearchFingerprint (loop-breaker)', () => {
+  it('syncs independent search AI selections and treats absent selections as follow-current', () => {
+    expect(vectorSearchFingerprint(canonical)).toBe(vectorSearchFingerprint({ ...canonical, searchAIConfigId: '' }));
+    expect(vectorSearchFingerprint({ ...canonical, searchAIConfigId: 'deepseek' }))
+      .not.toBe(vectorSearchFingerprint(canonical));
+    expect(vectorSearchFingerprint({ ...canonical, searchAIConfigId: 'deleted-deepseek' }))
+      .toBe(vectorSearchFingerprint({ ...canonical, searchAIConfigId: 'deleted-deepseek', authTokenStatus: 'ok' }));
+  });
   it('produces identical fingerprints for a backend payload and store config', () => {
     // Shape returned by GET /api/configs/vector-search (extra derived fields, different key order).
     const backendPayload = {

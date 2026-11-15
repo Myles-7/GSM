@@ -223,6 +223,7 @@ export const defaultVectorSearchConfig: VectorSearchConfig = {
   searchTopK: 30,
   enableHyDE: true,
   enableReranking: true,
+  searchAIConfigId: '',
   embeddingFormatVersion: EMBEDDING_FORMAT_VERSION,
 };
 
@@ -340,6 +341,8 @@ export const normalizeVectorSearchConfig = (
     enableReranking: typeof config.enableReranking === 'boolean'
       ? config.enableReranking
       : defaultVectorSearchConfig.enableReranking,
+    // Keep unresolved references so a deleted model cannot silently switch providers.
+    searchAIConfigId: typeof config.searchAIConfigId === 'string' ? config.searchAIConfigId.trim() : '',
     embeddingFormatVersion,
     ...(normalizeVectorGeneration(config.activeIndex) ? { activeIndex: normalizeVectorGeneration(config.activeIndex) } : {}),
   };

@@ -131,6 +131,7 @@ export function vectorSearchFingerprint(config: unknown): string {
     searchTopK: c.searchTopK ?? 30,
     enableHyDE: c.enableHyDE ?? true,
     enableReranking: c.enableReranking ?? true,
+    searchAIConfigId: typeof c.searchAIConfigId === 'string' ? c.searchAIConfigId.trim() : '',
     embeddingFormatVersion: c.embeddingFormatVersion ?? null,
   });
 }

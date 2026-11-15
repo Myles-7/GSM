@@ -370,6 +370,7 @@ describe('useAppStore vector search config normalization', () => {
         searchTopK: 12,
         enableHyDE: false,
         enableReranking: false,
+        searchAIConfigId: 'configured-search-model',
         embeddingFormatVersion: 2,
       },
     }, useAppStore.getState());
@@ -385,6 +386,7 @@ describe('useAppStore vector search config normalization', () => {
       searchTopK: 12,
       enableHyDE: false,
       enableReranking: false,
+      searchAIConfigId: 'configured-search-model',
       embeddingFormatVersion: 2,
     });
   });

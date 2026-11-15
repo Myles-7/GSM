@@ -7,6 +7,7 @@
     "discovery": "Descoberta",
     "plugins": "Plugins",
     "openPlugin": "Abrir configurações de plugins",
+    "hydeSkipped": "O pré-processamento HyDE expirou; a busca usou a consulta original",
     "rerankUnavailable": "Falha na reordenação por IA; classificação vetorial mantida.",
     "vectorUnavailable": "Busca vetorial indisponível; usando busca por palavras.",
     "supported": "Compatível", "unsupported": "Não compatível",

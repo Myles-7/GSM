@@ -7,6 +7,7 @@
     "discovery": "탐색 작업",
     "plugins": "플러그인",
     "openPlugin": "플러그인 설정 열기",
+    "hydeSkipped": "HyDE 쿼리 전처리가 시간 초과되어 원본 쿼리로 검색했습니다",
     "rerankUnavailable": "AI 재정렬에 실패하여 벡터 순위를 유지합니다.",
     "vectorUnavailable": "벡터 검색을 사용할 수 없어 키워드 검색을 사용합니다.",
     "supported": "지원", "unsupported": "미지원",

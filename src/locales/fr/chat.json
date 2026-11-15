@@ -7,6 +7,7 @@
     "discovery": "Découverte",
     "plugins": "Extensions",
     "openPlugin": "Ouvrir les paramètres des extensions",
+    "hydeSkipped": "Le prétraitement HyDE a expiré ; recherche effectuée avec la requête d'origine",
     "rerankUnavailable": "Échec du reclassement IA ; classement vectoriel conservé.",
     "vectorUnavailable": "Recherche vectorielle indisponible ; recherche par mots-clés utilisée.",
     "supported": "Pris en charge", "unsupported": "Non pris en charge",

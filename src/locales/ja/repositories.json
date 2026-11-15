@@ -246,6 +246,7 @@
     "download-failed": "ダウンロードに失敗しました"
   },
   "useSearchActions": {
+    "search-ai-unavailable": "選択した検索用 AI 設定は利用できません。AI 拡張をスキップしてベクトル検索を続行します。",
     "ai-semantic-analysis": "AI セマンティック分析…",
     "ai-selecting-relevant-repositories": "AIが関連倉庫を選択…",
     "ai-request-failed-fell-back-to-local-lexical-sea": "AIリクエストが失敗したため、ローカルの語彙検索にフォールバックしました。",

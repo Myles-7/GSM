@@ -7,6 +7,7 @@
     "discovery": "探索任務",
     "plugins": "外掛任務",
     "openPlugin": "開啟外掛設定",
+    "hydeSkipped": "HyDE 查詢前置處理逾時，已使用原始查詢繼續搜尋",
     "rerankUnavailable": "AI 重新排序失敗，已保留向量排序。",
     "vectorUnavailable": "向量搜尋無法使用，已改用關鍵字搜尋。",
     "supported": "支援", "unsupported": "不支援",

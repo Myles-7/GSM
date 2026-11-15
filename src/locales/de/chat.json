@@ -7,6 +7,7 @@
     "discovery": "Entdeckung",
     "plugins": "Plugins",
     "openPlugin": "Plugin-Einstellungen öffnen",
+    "hydeSkipped": "HyDE-Vorverarbeitung hat das Zeitlimit überschritten; mit der ursprünglichen Abfrage weitergesucht",
     "rerankUnavailable": "KI-Neusortierung fehlgeschlagen; Vektorreihenfolge beibehalten.",
     "vectorUnavailable": "Vektorsuche nicht verfügbar; Stichwortsuche wird verwendet.",
     "supported": "Unterstützt", "unsupported": "Nicht unterstützt",

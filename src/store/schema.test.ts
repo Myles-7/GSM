@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRepositoryChatSettings } from './schema';
+import { mergeVectorSearchConfig, normalizeRepositoryChatSettings, normalizeVectorSearchConfig } from './schema';
+
+describe('vector search AI config reference', () => {
+  it('defaults legacy and invalid selections to following the current AI config', () => {
+    expect(normalizeVectorSearchConfig({}, []).searchAIConfigId).toBe('');
+    expect(normalizeVectorSearchConfig({ searchAIConfigId: 42 }, []).searchAIConfigId).toBe('');
+    expect(normalizeVectorSearchConfig(null, []).searchAIConfigId).toBe('');
+  });
+
+  it('restores unresolved selections without switching providers and supports clearing', () => {
+    const restored = normalizeVectorSearchConfig({ searchAIConfigId: 'deleted-deepseek' }, []);
+    expect(restored.searchAIConfigId).toBe('deleted-deepseek');
+    expect(mergeVectorSearchConfig(restored, { searchTopK: 20 }).searchAIConfigId).toBe('deleted-deepseek');
+    expect(mergeVectorSearchConfig(restored, { searchAIConfigId: '' }).searchAIConfigId).toBe('');
+  });
+});
 
 describe('normalizeRepositoryChatSettings', () => {
   it('migrates legacy tool limits into the evidence-driven agent budget', () => {
