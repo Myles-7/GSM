@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskCenter } from './TaskCenter';
 import type { AITaskRecord } from '../../services/aiTaskJournal';
@@ -17,7 +18,7 @@ const record = (id: string, state: AITaskRecord['state'], extra: Partial<AITaskR
   title: id, config: { model: 'saved-model', provider: 'agy-cli', effort: 'max', timeoutSeconds: 90 },
   items: [{ id: 'a', label: 'owner/repo', state: state === 'failed' ? 'failed' : state === 'complete' ? 'complete' : 'running', error: state === 'failed' ? 'Rate limit' : undefined }], ...extra,
 });
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); mocks.supports.mockReturnValue(false); mocks.live.mockReturnValue(false); });
 
 describe('unified task center', () => {
   it('counts active batches and distinguishes partial timeout failures from the running task', () => {
@@ -39,6 +40,102 @@ describe('unified task center', () => {
     const details = screen.getByRole('complementary', { name:'Task details' });
     expect(within(details).getByText('Private provider diagnostic')).toBeVisible();
     expect(within(details).getByText('Failure: PROVIDER_ERROR')).toBeVisible();
+  });
+  it('shows a fixed known failure reason while keeping provider diagnostics in details', async () => {
+    const user = userEvent.setup();
+    const raw = 'AGY_SERVICE_UNAVAILABLE: private provider diagnostic';
+    render(<TaskCenter tasks={[record('known-failure', 'failed', { error: raw })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    const card = screen.getByRole('article');
+    const reason = 'Model service unavailable or at capacity. Continue manually later; sent requests may have an unknown outcome or cost.';
+    expect(within(card).getByText(reason)).toBeVisible();
+    expect(card.textContent!.indexOf(reason)).toBeLessThan(card.textContent!.indexOf('Device / sync task'));
+    expect(card).not.toHaveTextContent('private provider diagnostic');
+    within(card).getByRole('button', { name: 'Open details' }).focus();
+    await user.keyboard('{Enter}');
+    expect(within(screen.getByRole('complementary', { name: 'Task details' })).getByText(raw)).toBeVisible();
+  });
+  it('uses a fixed prompt for unknown errors without exposing their text in the card or drawer', () => {
+    const raw = 'Private diagnostic AGY_TIMEOUT_EXTRA token=do-not-show';
+    const task = record('unknown-failure', 'failed', { error: raw, items: [{ id: 'a', label: 'owner/repo', state: 'failed' }] });
+    const { unmount } = render(<TaskCenter tasks={[task]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.getByText('Open details for the reason.')).toBeVisible();
+    expect(screen.getByRole('article')).not.toHaveTextContent('Private diagnostic');
+    expect(screen.getByRole('article')).not.toHaveTextContent('do-not-show');
+    expect(screen.queryByText('Model response timed out; outcome unknown')).toBeNull();
+    unmount();
+    const open = vi.fn();
+    render(<TaskCenter compact tasks={[task]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} onOpenCenter={open} />);
+    expect(screen.getByText('Open details for the reason.')).toBeVisible();
+    expect(screen.getByRole('article')).not.toHaveTextContent('Private diagnostic');
+    fireEvent.click(screen.getByRole('button', { name: 'Open details' }));
+    expect(open).toHaveBeenCalledWith('unknown-failure');
+  });
+  it('shows a failed item reason and progress while the task is still running', () => {
+    render(<TaskCenter tasks={[record('partial-active', 'running', { items: [
+      { id: 'a', label: 'failed batch', state: 'failed', error: 'AGY_TIMEOUT' },
+      { id: 'b', label: 'running batch', state: 'running' },
+      { id: 'c', label: 'completed batch', state: 'complete' },
+    ] })]} chinese retry={vi.fn()} onNavigate={vi.fn()} />);
+    const card = screen.getByRole('article');
+    expect(within(card).getByText('模型响应超时，结果待核对')).toBeVisible();
+    expect(within(card).getByRole('progressbar', { name: '子项完成比例' })).toHaveAttribute('aria-valuenow', '1');
+    expect(card).toHaveTextContent('完成 1/3 · 失败 1');
+    expect(card).toHaveTextContent('running batch');
+  });
+  it('does not imply that every request was unsent when deferred and timed-out items are mixed', () => {
+    render(<TaskCenter tasks={[record('mixed-failures', 'failed', { error: 'AGY_RESOURCE_DEFERRED; AGY_TIMEOUT', items: [
+      { id: 'a', label: 'deferred batch', state: 'failed', error: 'AGY_RESOURCE_DEFERRED' },
+      { id: 'b', label: 'timed-out batch', state: 'failed', error: 'AGY_TIMEOUT', providerOutcome: 'unknown' },
+    ] })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    const card = screen.getByRole('article');
+    expect(within(card).getByText('Multiple failure reasons were recorded; some provider outcomes are unknown. Open details.')).toBeVisible();
+    expect(card).not.toHaveTextContent('this request was not sent');
+    fireEvent.click(within(card).getByRole('button', { name: 'Open details' }));
+    const details = screen.getByRole('complementary', { name: 'Task details' });
+    expect(within(details).getAllByText(/Model response timed out; outcome unknown/).length).toBeGreaterThan(0);
+    expect(within(details).getAllByText(/Execution capacity busy/).length).toBeGreaterThan(0);
+  });
+  it('scopes a deferred reason to part of a multi-item task', () => {
+    render(<TaskCenter tasks={[record('deferred-batch', 'partial', { error: 'AGY_RESOURCE_DEFERRED', items: [
+      { id: 'a', label: 'deferred batch', state: 'failed', error: 'AGY_RESOURCE_DEFERRED' },
+      { id: 'b', label: 'finished batch', state: 'complete' },
+    ] })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.getByText('Some requests were deferred due to capacity. Check each item in details.')).toBeVisible();
+    expect(screen.getByRole('article')).not.toHaveTextContent('this request was not sent');
+  });
+  it('summarizes unconfirmed server status and save failures without exposing their diagnostic text', () => {
+    render(<TaskCenter tasks={[
+      record('stale-server', 'running', { connectionError: 'Private server diagnostic' }),
+      record('save-failure', 'failed', { commitStatus: 'failed', error: 'Private save diagnostic' }),
+    ]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    const server = screen.getByRole('button', { name: 'Repository summaries · stale-server' }).closest('article')!;
+    const save = screen.getByRole('button', { name: 'Repository summaries · save-failure' }).closest('article')!;
+    expect(within(server).getByText('Showing the last server receipt; current status is not confirmed.')).toBeVisible();
+    expect(within(save).getByText('Save failed')).toBeVisible();
+    expect(server).not.toHaveTextContent('Private server diagnostic');
+    expect(save).not.toHaveTextContent('Private save diagnostic');
+  });
+  it('keeps stop and confirmed resume controls operable from compact cards', async () => {
+    mocks.supports.mockReturnValue(true);
+    mocks.live.mockReturnValue(true);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    render(<TaskCenter tasks={[record('running-control', 'running'), record('paused-control', 'paused', {
+      providerOutcome: 'unknown', items: [{ id: 'a', label: 'owner/repo', state: 'pending', providerOutcome: 'unknown' }],
+    })]} chinese={false} retry={vi.fn()} onNavigate={vi.fn()} />);
+    const running = screen.getByRole('button', { name: 'Repository summaries · running-control' }).closest('article')!;
+    const paused = screen.getByRole('button', { name: 'Repository summaries · paused-control' }).closest('article')!;
+    within(running).getByRole('button', { name: 'Stop' }).focus();
+    await user.keyboard('{Enter}');
+    expect(mocks.control).toHaveBeenCalledWith('running-control', 'stop');
+    const resume = within(paused).getByRole('button', { name: 'Start new provider call' });
+    resume.focus();
+    await user.keyboard('{Enter}');
+    expect(mocks.control).not.toHaveBeenCalledWith('paused-control', 'resume');
+    await user.keyboard('{Enter}');
+    expect(mocks.control).toHaveBeenCalledWith('paused-control', 'resume');
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
   });
   it('presents provider and save outcomes in the selected language', () => {
     render(<TaskCenter tasks={[record('状态', 'failed', { items: [{ id: 'a', label: 'owner/repo', state: 'complete', providerOutcome: 'succeeded', commitStatus: 'saved' }] })]} chinese retry={vi.fn()} onNavigate={vi.fn()} />);

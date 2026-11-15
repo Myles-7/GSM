@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ pending: vi.fn(), recover: vi.fn(), confirm: v
 vi.mock('../home/taskSubmission', () => ({ readPendingTaskRequests: mocks.pending, lookupTaskReceipt: mocks.recover, confirmPolledTaskReceipt: mocks.confirm }));
 vi.mock('./taskJournalStorage', () => ({ taskJournalStorage: { read: async () => ({ initialized: true, records: [], hidden: [] }), commit: async () => {} } }));
 let dispose: (() => void) | undefined;
-beforeEach(() => { vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers(); mocks.pending.mockResolvedValue([]); mocks.recover.mockResolvedValue(null); mocks.confirm.mockResolvedValue(undefined); mocks.storage.getItem.mockResolvedValue(null); mocks.storage.setItem.mockResolvedValue(undefined); });
+beforeEach(() => { vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers({ now: new Date('2026-10-18T00:00:00.000Z') }); mocks.pending.mockResolvedValue([]); mocks.recover.mockResolvedValue(null); mocks.confirm.mockResolvedValue(undefined); mocks.storage.getItem.mockResolvedValue(null); mocks.storage.setItem.mockResolvedValue(undefined); });
 afterEach(() => { dispose?.(); dispose = undefined; vi.useRealTimers(); });
 const remote = (status = 'running'): HomeTask => ({ id: 'original-server-id', requestId: 'original-request', kind: 'summary', status,
   input: { repositories: ['owner/repo'], prompt: 'DO_NOT_EXPORT' }, createdAt: '2026-10-02T08:00:00.000Z', updatedAt: '2026-10-02T08:01:00.000Z' });

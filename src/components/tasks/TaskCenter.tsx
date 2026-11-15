@@ -16,6 +16,30 @@ export interface TaskCenterProps {
   discardResults?(task: AITaskRecord): Promise<void>;
 }
 const retryKinds = new Set(['summary', 'details', 'gists', 'discovery', 'discovery-analysis', 'exploration']);
+const cardFailureCode = /\b(AGY_TIMEOUT|AGY_RECOVERY_STORAGE_FULL|AGY_SERVICE_UNAVAILABLE|AGY_RESOURCE_DEFERRED)\b/g;
+
+function cardFailureSummary(task: AITaskRecord, zh: boolean): string | undefined {
+  if (task.connectionError) return zh ? '显示最近一次服务器状态，尚未重新确认。' : 'Showing the last server receipt; current status is not confirmed.';
+  if (task.commitStatus === 'failed' || task.commitStatus === 'conflict') return taskCommitStatusLabel(task.commitStatus, zh);
+  const failedItems = task.items.filter(item => item.state === 'failed');
+  if (!taskNeedsAttention(task) && !failedItems.length) return undefined;
+  // Only present known codes here. Provider diagnostics remain in task details.
+  const codes = new Set([task.failureCode, task.error, ...failedItems.flatMap(item => [item.failureCode, item.error])]
+    .flatMap(value => value?.match(cardFailureCode) ?? []));
+  const unknownOutcome = task.providerOutcome === 'unknown' || task.items.some(item => item.providerOutcome === 'unknown');
+  if (task.items.length > 1 && codes.size > 1) return unknownOutcome || codes.has('AGY_TIMEOUT')
+    ? (zh ? '记录了多种失败原因，部分模型结果待核对；请查看详情。' : 'Multiple failure reasons were recorded; some provider outcomes are unknown. Open details.')
+    : (zh ? '记录了多种失败原因，请打开详情逐项核对。' : 'Multiple failure reasons were recorded. Check each item in details.');
+  const code = codes.values().next().value;
+  if (task.items.length > 1 && code === 'AGY_RESOURCE_DEFERRED') return unknownOutcome
+    ? (zh ? '部分请求因资源繁忙延期，模型结果待核对；请查看详情。' : 'Some requests were deferred due to capacity; provider outcomes need review. Open details.')
+    : (zh ? '部分请求因资源繁忙延期，请在详情核对各子项状态。' : 'Some requests were deferred due to capacity. Check each item in details.');
+  if (code) return taskFailureLabel(code, zh);
+  if (task.error || task.failureCode || failedItems.length || task.state === 'failed') {
+    return zh ? '请打开详情查看原因。' : 'Open details for the reason.';
+  }
+  return undefined;
+}
 export function TaskCenter({ tasks, chinese: zh, compact = false, retry, retrySave, discardResults, onNavigate, onOpenCenter, selectedTaskId }: TaskCenterProps) {
   const txt = (cn: string, en: string) => zh ? cn : en;
   const configs = useAppStore(state => state.aiConfigs);
@@ -112,12 +136,12 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, retrySa
     else if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(item.label)) window.open(`https://github.com/${item.label}`, '_blank', 'noopener,noreferrer');
     else onNavigate(task);
   };
-  const actions = (task: AITaskRecord) => <div className="flex flex-wrap items-center gap-2">
+  const actions = (task: AITaskRecord, inCard = false) => <div className="flex flex-wrap items-center gap-2">
     {(['pause', 'resume', 'stop'] as const).filter(action => aiTaskJournal.supports(task.id, action)
       && (action === 'resume' ? ['paused', 'pausing', 'interrupted', 'unconfirmed', 'failed', 'canceled'].includes(task.state) : action !== 'pause' || task.state === 'running' || task.state === 'queued')).map(action => {
       const Icon = action === 'pause' ? Pause : action === 'resume' ? Play : Square;
       const label = action === 'pause' ? txt('暂停后续批次', 'Pause subsequent batches') : action === 'resume' ? task.state === 'unconfirmed' ? txt('核对并恢复提交', 'Verify and recover submission') : task.capabilities?.resume === 'new-provider-call' || task.providerOutcome === 'unknown' ? txt('重新调用模型', 'Start new provider call') : txt('继续后续批次', 'Resume subsequent batches') : txt('停止', 'Stop');
-      return <Button key={action} variant="outline" size="icon" title={label} aria-label={label} disabled={task.state === 'stopping'} onClick={() => controlTask(task, action)}><Icon size={16} /></Button>;
+      return <Button key={action} variant="outline" size="icon" className={inCard ? 'h-8 w-8' : undefined} title={label} aria-label={label} disabled={task.state === 'stopping'} onClick={() => controlTask(task, action)}><Icon size={16} /></Button>;
     })}
     {['failed', 'conflict'].includes(task.commitStatus ?? '') && (aiTaskJournal.supports(task.id, 'commit') || task.items.some(item => item.recovery) && retrySave) && <Button variant="outline" size="sm" disabled={busy.includes(task.id)} onClick={() => {
       if (aiTaskJournal.supports(task.id, 'commit')) aiTaskJournal.control(task.id, 'commit');
@@ -131,25 +155,31 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, retrySa
       <Button variant="outline" size="sm" disabled={busy.includes(task.id)} onClick={() => void runRetry(task, true)}><RotateCcw size={14} />{txt('重试失败项', 'Retry failed')}</Button>}
     {!aiTaskJournal.live(task.id) && task.location !== 'server' && retryKinds.has(task.kind) && ['interrupted', 'canceled', 'partial'].includes(task.state) && task.items.some(item => item.state !== 'complete') &&
       <Button variant="outline" size="sm" disabled={busy.includes(task.id)} onClick={() => void runRetry(task, false)}><Play size={14} />{txt('继续未完成项', 'Continue unfinished')}</Button>}
-    <Button size="icon" variant="ghost" title={txt('打开来源／结果', 'Open source / result')} aria-label={txt('打开来源／结果', 'Open source / result')} onClick={() => onNavigate(task)}><ArrowUpRight size={16} /></Button>
+    {inCard && <Button size="sm" variant="ghost" onClick={() => selectTask(task.id)}>{txt('打开详情', 'Open details')}<ArrowUpRight size={14} /></Button>}
+    <Button size="icon" variant="ghost" className={inCard ? 'h-8 w-8' : undefined} title={txt('打开来源／结果', 'Open source / result')} aria-label={txt('打开来源／结果', 'Open source / result')} onClick={() => onNavigate(task)}><ArrowUpRight size={16} /></Button>
   </div>;
   const card = (task: AITaskRecord) => {
     const status = taskDisplayState(task), complete = task.items.filter(item => item.state === 'complete').length;
     const failed = task.items.filter(item => item.state === 'failed').length;
     const running = task.items.filter(item => item.state === 'running');
+    const summary = cardFailureSummary(task, zh);
+    const phase = !taskIsTerminal(task) && task.phase ? taskPhaseLabel(task.phase, zh) : '';
+    const progress = task.progress && task.progress.total > 0 ? `${task.kind === 'exploration' ? txt('累计项目已保存', 'Total projects saved') + ' ' : ''}${task.progress.done}/${task.progress.total}` : '';
+    const runningNames = running.slice(0, compact ? 2 : 3).map(item => item.label).join(' · ')
+      + (running.length > (compact ? 2 : 3) ? ` · +${running.length - (compact ? 2 : 3)}` : '');
     const Icon = taskNeedsAttention(task) ? AlertCircle : status === 'complete' ? CheckCircle2 : status === 'canceled' ? Square : Activity;
-    return <article key={task.id} className={`min-w-0 rounded-lg border bg-card p-4 text-card-foreground shadow-sm ${selected === task.id ? 'border-primary ring-1 ring-primary/20' : 'border-border'}`}>
+    return <article key={task.id} className={`min-w-0 rounded-lg border bg-card p-3 text-card-foreground shadow-sm ${selected === task.id ? 'border-primary ring-1 ring-primary/20' : 'border-border'}`}>
       <div className="flex items-start gap-3">
         {!compact && <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-primary" checked={checked.includes(task.id)} aria-label={`${txt('选择', 'Select')} ${taskTitle(task, zh)}`} onChange={e => setChecked(ids => e.target.checked ? [...ids, task.id] : ids.filter(id => id !== task.id))} />}
-        <div className="min-w-0 flex-1"><button type="button" className="w-full break-words text-left text-sm font-semibold hover:text-primary focus-visible:outline-primary" onClick={() => selectTask(task.id)}>{taskTitle(task, zh)}</button>
+        <div className="min-w-0 flex-1"><button type="button" className="w-full break-words text-left text-sm font-semibold hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary" onClick={() => selectTask(task.id)}>{taskTitle(task, zh)}</button>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"><span role="status" className="inline-flex items-center gap-1 font-medium"><Icon size={14} className={`shrink-0 ${taskNeedsAttention(task) ? 'text-destructive' : status === 'complete' ? 'text-emerald-600 dark:text-emerald-400' : 'text-primary'}`} />{taskOutcomeLabel(task, zh)}</span><span className="inline-flex items-center gap-1 text-muted-foreground"><Clock3 size={12} />{taskElapsed(task, clock)}</span>{task.items.length > 1 && <span className="text-muted-foreground">{txt('完成', 'Complete')} {complete}/{task.items.length}{failed > 0 && ` · ${txt('失败', 'Failed')} ${failed}`}</span>}{(phase || progress) && <span className="break-words text-muted-foreground">{[phase, progress].filter(Boolean).join(' · ')}</span>}</div>
+          {summary && <p className="mt-1 line-clamp-2 break-words text-xs text-destructive">{summary}</p>}
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>{taskExecutorLabel(task.executor, zh)}</span>{task.pinned && <span>{txt('已保留历史', 'Pinned history')}</span>}<span>{task.trigger === 'automatic' ? txt('自动', 'Automatic') : txt('手动', 'Manual')}</span><span>{task.createdAt ? new Date(task.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US') : txt('时间未记录', 'Time not recorded')}</span></div>
-        </div><Icon size={18} className={`shrink-0 ${taskNeedsAttention(task) ? 'text-destructive' : status === 'complete' ? 'text-emerald-600 dark:text-emerald-400' : 'text-primary'}`} />
+          {task.items.length > 1 && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={txt('子项完成比例', 'Completed items')} aria-valuenow={complete} aria-valuemin={0} aria-valuemax={task.items.length}><div className="h-full bg-primary transition-[width]" style={{ width: `${complete / task.items.length * 100}%` }} /></div>}
+          {runningNames && <p className="mt-1 truncate text-xs" title={runningNames}>{runningNames}</p>}
+          <div className="mt-2">{actions(task, true)}</div>
+        </div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs"><span role="status" className="font-medium">{taskOutcomeLabel(task, zh)}</span><span className="flex items-center gap-1 text-muted-foreground"><Clock3 size={12} />{taskElapsed(task, clock)}</span></div>
-      {task.items.length > 1 && <><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={txt('子项完成比例', 'Completed items')} aria-valuenow={complete} aria-valuemin={0} aria-valuemax={task.items.length}><div className="h-full bg-primary transition-[width]" style={{ width: `${complete / task.items.length * 100}%` }} /></div><p className="mt-2 text-xs text-muted-foreground">{txt('完成', 'Complete')} {complete}/{task.items.length}{failed > 0 && ` · ${txt('失败', 'Failed')} ${failed}`}</p></>}
-      {(task.phase || task.progress) && <p className="mt-2 break-words text-xs text-muted-foreground">{!taskIsTerminal(task) && task.phase ? taskPhaseLabel(task.phase, zh) : ''}{task.progress && task.progress.total > 0 ? `${!taskIsTerminal(task) && task.phase ? ' · ' : ''}${task.kind === 'exploration' ? txt('累计项目已保存', 'Total projects saved') + ' ' : ''}${task.progress.done}/${task.progress.total}` : ''}</p>}
-      {running.length > 0 && <ul className="mt-3 space-y-1 text-xs">{running.slice(0, compact ? 2 : 3).map(item => <li key={item.id} className="truncate" title={item.label}>{item.label}</li>)}{running.length > (compact ? 2 : 3) && <li className="text-muted-foreground">+{running.length - (compact ? 2 : 3)}</li>}</ul>}
-      <div className="mt-4 space-y-2 border-t border-border pt-3">{actions(task)}{compact && <Button className="w-full" size="sm" variant="ghost" onClick={() => selectTask(task.id)}>{txt('打开详情', 'Open details')}<ArrowUpRight size={14} /></Button>}</div>
     </article>;
   };
   const detail = activeTask && !compact && <aside className="min-w-0 rounded-lg border border-border bg-card p-5 text-card-foreground" aria-label={txt('任务详情', 'Task details')}>
@@ -211,7 +241,7 @@ export function TaskCenter({ tasks, chinese: zh, compact = false, retry, retrySa
     {aiTaskJournal.storageError() && <p role="alert" className="text-xs text-destructive">{txt('任务历史未能保存或读取，请检查本机存储。当前进度仍可查看。', 'Task history could not be saved or loaded. Check device storage. Current progress remains visible.')}</p>}
     {compact && onOpenCenter && <Button className="w-full" variant="outline" onClick={() => onOpenCenter()}><ListTodo size={16} />{txt('打开任务中心', 'Open task center')}<ArrowUpRight size={15} /></Button>}
     <div>
-      {!activeTask && <div>{visible.length ? <div className={compact || activeTask ? 'grid gap-4' : 'grid gap-4 lg:grid-cols-2'}>{visible.slice(0, taskLimit).map(card)}</div> : <div className="flex flex-col items-center justify-center py-14 text-muted-foreground"><ListTodo size={32} className="mb-3 opacity-50" /><p className="text-sm">{txt('暂无符合条件的任务', 'No matching tasks')}</p></div>}
+      {!activeTask && <div>{visible.length ? <div className={compact || activeTask ? 'grid gap-3' : 'grid gap-3 lg:grid-cols-2'}>{visible.slice(0, taskLimit).map(card)}</div> : <div className="flex flex-col items-center justify-center py-14 text-muted-foreground"><ListTodo size={32} className="mb-3 opacity-50" /><p className="text-sm">{txt('暂无符合条件的任务', 'No matching tasks')}</p></div>}
         {visible.length > taskLimit && <Button className="mt-4" variant="outline" size="sm" onClick={() => setTaskLimit(value => value + 50)}>{txt('显示更多任务', 'Show more tasks')} ({taskLimit}/{visible.length})</Button>}
         {compact && tasks.some(task => taskIsTerminal(task) && !taskNeedsAttention(task)) && <details className="mt-5"><summary className="cursor-pointer text-sm text-muted-foreground">{txt('完成历史', 'Completed history')} ({tasks.filter(task => taskIsTerminal(task) && !taskNeedsAttention(task) && !task.archived).length})</summary><div className="mt-3 grid gap-3">{tasks.filter(task => taskIsTerminal(task) && !taskNeedsAttention(task) && !task.archived).sort((a, b) => (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0)).slice(0, 5).map(card)}</div></details>}
       </div>}{detail}

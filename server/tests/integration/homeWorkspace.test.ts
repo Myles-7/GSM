@@ -17,7 +17,7 @@ vi.mock('../../src/config.js', () => ({ config: {
   apiSecret: 'integration-api-secret', encryptionKey: '1'.repeat(64), nodeEnv: 'test',
 } }));
 vi.mock('../../src/services/logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn(), errorFromError: vi.fn() },
+  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn(), errorFromError: vi.fn(), isDebugMode: () => false },
   morganLoggerStream: { write: vi.fn() },
 }));
 
